@@ -2804,6 +2804,119 @@ pub mod optimize {
 
         result
     }
+
+    /// Branch Simplification (Phase 15 - Issue #16)
+    /// Simplifies control flow by removing redundant branches and folding constant conditions
+    pub fn simplify_branches(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            func.instructions = simplify_branches_in_block(&func.instructions);
+        }
+        Ok(())
+    }
+
+    /// Recursively simplify branches in a block of instructions
+    fn simplify_branches_in_block(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut result = Vec::new();
+        let mut i = 0;
+
+        while i < instructions.len() {
+            let instr = &instructions[i];
+
+            // Try to detect constant condition patterns (look ahead for br_if/if)
+            if i + 1 < instructions.len() {
+                match (&instructions[i], &instructions[i + 1]) {
+                    // Pattern: (i32.const N) followed by (br_if label)
+                    (Instruction::I32Const(val), Instruction::BrIf(label)) => {
+                        if *val == 0 {
+                            // Condition is false - never taken, remove both
+                            i += 2; // Skip both instructions
+                            continue;
+                        } else {
+                            // Condition is true - always taken, convert to unconditional br
+                            result.push(Instruction::Br(*label));
+                            i += 2; // Skip both instructions
+                            continue;
+                        }
+                    }
+
+                    // Pattern: (i32.const N) followed by (if ...)
+                    (
+                        Instruction::I32Const(val),
+                        Instruction::If {
+                            block_type: _,
+                            then_body,
+                            else_body,
+                        },
+                    ) => {
+                        if *val == 0 {
+                            // Condition is false - take else branch
+                            let simplified_else = simplify_branches_in_block(else_body);
+                            result.extend(simplified_else);
+                            i += 2;
+                            continue;
+                        } else {
+                            // Condition is true - take then branch
+                            let simplified_then = simplify_branches_in_block(then_body);
+                            result.extend(simplified_then);
+                            i += 2;
+                            continue;
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+
+            // Process the instruction normally
+            let processed = match instr {
+                // Recursively simplify nested control flow
+                Instruction::Block { block_type, body } => {
+                    let simplified_body = simplify_branches_in_block(body);
+                    Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: simplified_body,
+                    }
+                }
+
+                Instruction::Loop { block_type, body } => {
+                    let simplified_body = simplify_branches_in_block(body);
+                    Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: simplified_body,
+                    }
+                }
+
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    // Recursively simplify both branches
+                    let simplified_then = simplify_branches_in_block(then_body);
+                    let simplified_else = simplify_branches_in_block(else_body);
+                    Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: simplified_then,
+                        else_body: simplified_else,
+                    }
+                }
+
+                // Remove Nop instructions while we're at it
+                Instruction::Nop => {
+                    i += 1;
+                    continue;
+                }
+
+                _ => instr.clone(),
+            };
+
+            result.push(processed);
+
+            i += 1;
+        }
+
+        result
+    }
 }
 
 /// Component Model Support (Phase 9)
@@ -3620,6 +3733,243 @@ mod tests {
             "DCE should remove code after unreachable (before: {}, after: {})",
             instructions_before,
             instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    // Branch Simplification Tests (Issue #16)
+
+    /// Helper function to count instructions recursively
+    fn count_all_instructions(instructions: &[Instruction]) -> usize {
+        let mut count = instructions.len();
+        for instr in instructions {
+            match instr {
+                Instruction::Block { body, .. } => {
+                    count += count_all_instructions(body);
+                }
+                Instruction::Loop { body, .. } => {
+                    count += count_all_instructions(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    count += count_all_instructions(then_body);
+                    count += count_all_instructions(else_body);
+                }
+                _ => {}
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn test_branch_simplify_br_if_always_taken() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block $exit (result i32)
+                  (i32.const 42)
+                  (i32.const 1)
+                  (br_if $exit)
+                  (i32.const 99)
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have removed the constant and converted br_if to br
+        assert!(
+            instructions_after < instructions_before,
+            "Should simplify constant br_if (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 42
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_branch_simplify_br_if_never_taken() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block $exit (result i32)
+                  (i32.const 0)
+                  (br_if $exit)
+                  (i32.const 42)
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have removed the constant and br_if entirely
+        assert!(
+            instructions_after < instructions_before,
+            "Should remove never-taken br_if (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 42
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_branch_simplify_if_constant_true() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (if (result i32) (i32.const 1)
+                  (then (i32.const 42))
+                  (else (i32.const 99))
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have selected the then branch
+        assert!(
+            instructions_after < instructions_before,
+            "Should simplify constant if (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 42
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_branch_simplify_if_constant_false() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (if (result i32) (i32.const 0)
+                  (then (i32.const 99))
+                  (else (i32.const 42))
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have selected the else branch
+        assert!(
+            instructions_after < instructions_before,
+            "Should simplify constant if (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 42
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_branch_simplify_nested_constants() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (if (result i32) (i32.const 1)
+                  (then
+                    (if (result i32) (i32.const 0)
+                      (then (i32.const 10))
+                      (else (i32.const 20))
+                    )
+                  )
+                  (else (i32.const 30))
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have simplified nested ifs down to just (i32.const 20)
+        assert!(
+            instructions_after < instructions_before,
+            "Should simplify nested constant ifs (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 20
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_branch_simplify_nop_removal() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (nop)
+                (i32.const 42)
+                (nop)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply branch simplification
+        optimize::simplify_branches(&mut module).expect("Branch simplification failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have removed nops
+        assert_eq!(
+            instructions_after, 1,
+            "Should remove all nops (before: {}, after: {})",
+            instructions_before, instructions_after
         );
 
         // Verify the function still works

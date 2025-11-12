@@ -228,6 +228,7 @@ fn optimize_command(
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
     loom_core::optimize::optimize_module(&mut module).context("Optimization failed")?;
+    loom_core::optimize::simplify_branches(&mut module).context("Branch simplification failed")?;
     loom_core::optimize::eliminate_dead_code(&mut module).context("DCE failed")?;
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
     println!("✓ Optimized in {} ms", stats.optimization_time_ms);
