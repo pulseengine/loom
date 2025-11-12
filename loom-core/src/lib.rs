@@ -78,6 +78,20 @@ pub enum ValueType {
     F64,
 }
 
+/// Block type for control flow structures
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockType {
+    /// No parameters, no results
+    Empty,
+    /// No parameters, single result
+    Value(ValueType),
+    /// Full function signature (for multi-value blocks)
+    Func {
+        params: Vec<ValueType>,
+        results: Vec<ValueType>,
+    },
+}
+
 /// WebAssembly instructions
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
@@ -229,6 +243,41 @@ pub enum Instruction {
         /// Memory alignment
         align: u32,
     },
+
+    // Control flow instructions (Phase 14)
+    /// Block structured control
+    Block {
+        block_type: BlockType,
+        body: Vec<Instruction>,
+    },
+    /// Loop structured control
+    Loop {
+        block_type: BlockType,
+        body: Vec<Instruction>,
+    },
+    /// If-then-else conditional
+    If {
+        block_type: BlockType,
+        then_body: Vec<Instruction>,
+        else_body: Vec<Instruction>,
+    },
+    /// Unconditional branch
+    Br(u32),
+    /// Conditional branch
+    BrIf(u32),
+    /// Branch table
+    BrTable { targets: Vec<u32>, default: u32 },
+    /// Return from function
+    Return,
+    /// Direct function call
+    Call(u32),
+    /// Indirect function call
+    CallIndirect { type_idx: u32, table_idx: u32 },
+    /// Unreachable (trap)
+    Unreachable,
+    /// No operation
+    Nop,
+
     /// End of block/function
     End,
 }
@@ -936,7 +985,7 @@ pub mod encode {
 /// Term construction functionality: Convert WebAssembly instructions to ISLE terms
 pub mod terms {
 
-    use super::{Instruction, Value};
+    use super::{BlockType, Instruction, Value, ValueType};
     use anyhow::{anyhow, Result};
     use loom_isle::{
         i32_load, i32_store, i64_load, i64_store, iadd32, iadd64, iand32, iand64, iclz32, iclz64,
@@ -1852,9 +1901,179 @@ pub mod terms {
                     align: *align,
                 });
             }
+
+            // Control flow (Phase 14)
+            ValueData::Block {
+                label: _,
+                block_type,
+                body,
+            } => {
+                let mut body_instrs = Vec::new();
+                for term in body {
+                    term_to_instructions_recursive(term, &mut body_instrs)?;
+                }
+                instructions.push(Instruction::Block {
+                    block_type: convert_block_type_from_isle(block_type),
+                    body: body_instrs,
+                });
+            }
+
+            ValueData::Loop {
+                label: _,
+                block_type,
+                body,
+            } => {
+                let mut body_instrs = Vec::new();
+                for term in body {
+                    term_to_instructions_recursive(term, &mut body_instrs)?;
+                }
+                instructions.push(Instruction::Loop {
+                    block_type: convert_block_type_from_isle(block_type),
+                    body: body_instrs,
+                });
+            }
+
+            ValueData::If {
+                label: _,
+                block_type,
+                condition,
+                then_body,
+                else_body,
+            } => {
+                // Push condition onto stack
+                term_to_instructions_recursive(condition, instructions)?;
+
+                // Convert then body
+                let mut then_instrs = Vec::new();
+                for term in then_body {
+                    term_to_instructions_recursive(term, &mut then_instrs)?;
+                }
+
+                // Convert else body
+                let mut else_instrs = Vec::new();
+                for term in else_body {
+                    term_to_instructions_recursive(term, &mut else_instrs)?;
+                }
+
+                instructions.push(Instruction::If {
+                    block_type: convert_block_type_from_isle(block_type),
+                    then_body: then_instrs,
+                    else_body: else_instrs,
+                });
+            }
+
+            ValueData::Br { depth, value } => {
+                // Push value if present
+                if let Some(val) = value {
+                    term_to_instructions_recursive(val, instructions)?;
+                }
+                instructions.push(Instruction::Br(*depth));
+            }
+
+            ValueData::BrIf {
+                depth,
+                condition,
+                value,
+            } => {
+                // Push value if present
+                if let Some(val) = value {
+                    term_to_instructions_recursive(val, instructions)?;
+                }
+                // Push condition
+                term_to_instructions_recursive(condition, instructions)?;
+                instructions.push(Instruction::BrIf(*depth));
+            }
+
+            ValueData::BrTable {
+                targets,
+                default,
+                index,
+                value,
+            } => {
+                // Push value if present
+                if let Some(val) = value {
+                    term_to_instructions_recursive(val, instructions)?;
+                }
+                // Push index
+                term_to_instructions_recursive(index, instructions)?;
+                instructions.push(Instruction::BrTable {
+                    targets: targets.clone(),
+                    default: *default,
+                });
+            }
+
+            ValueData::Return { values } => {
+                // Push return values onto stack
+                for val in values {
+                    term_to_instructions_recursive(val, instructions)?;
+                }
+                instructions.push(Instruction::Return);
+            }
+
+            ValueData::Call { func_idx, args } => {
+                // Push arguments onto stack
+                for arg in args {
+                    term_to_instructions_recursive(arg, instructions)?;
+                }
+                instructions.push(Instruction::Call(*func_idx));
+            }
+
+            ValueData::CallIndirect {
+                table_idx,
+                type_idx,
+                table_offset,
+                args,
+            } => {
+                // Push arguments onto stack
+                for arg in args {
+                    term_to_instructions_recursive(arg, instructions)?;
+                }
+                // Push table offset
+                term_to_instructions_recursive(table_offset, instructions)?;
+                instructions.push(Instruction::CallIndirect {
+                    type_idx: *type_idx,
+                    table_idx: *table_idx,
+                });
+            }
+
+            ValueData::Unreachable => {
+                instructions.push(Instruction::Unreachable);
+            }
+
+            ValueData::Nop => {
+                instructions.push(Instruction::Nop);
+            }
         }
 
         Ok(())
+    }
+
+    /// Convert ISLE BlockType to loom-core BlockType
+    fn convert_block_type_from_isle(block_type: &loom_isle::BlockType) -> BlockType {
+        match block_type {
+            loom_isle::BlockType::Empty => BlockType::Empty,
+            loom_isle::BlockType::Value(vt) => BlockType::Value(convert_value_type_from_isle(*vt)),
+            loom_isle::BlockType::Func { params, results } => BlockType::Func {
+                params: params
+                    .iter()
+                    .map(|v| convert_value_type_from_isle(*v))
+                    .collect(),
+                results: results
+                    .iter()
+                    .map(|v| convert_value_type_from_isle(*v))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Convert ISLE ValueType to loom-core ValueType
+    fn convert_value_type_from_isle(vt: loom_isle::ValueType) -> ValueType {
+        match vt {
+            loom_isle::ValueType::I32 => ValueType::I32,
+            loom_isle::ValueType::I64 => ValueType::I64,
+            loom_isle::ValueType::F32 => ValueType::F32,
+            loom_isle::ValueType::F64 => ValueType::F64,
+        }
     }
 }
 

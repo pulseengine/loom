@@ -7,6 +7,29 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+/// WebAssembly value types
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ValueType {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+/// Block type for control flow structures
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BlockType {
+    /// No parameters, no results
+    Empty,
+    /// No parameters, single result
+    Value(ValueType),
+    /// Full function signature (for multi-value blocks)
+    Func {
+        params: Vec<ValueType>,
+        results: Vec<ValueType>,
+    },
+}
+
 /// Primitive type for 32-bit immediates
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Imm32(pub i32);
@@ -360,6 +383,103 @@ pub enum ValueData {
         offset: u32,
         align: u32,
     },
+
+    // ========================================================================
+    // Control Flow Operations (Phase 14 - Control Flow Representation)
+    // ========================================================================
+    /// Block: structured control that can be branched to
+    /// Branches to this label jump past the end (forward)
+    Block {
+        /// Optional label for debugging
+        label: Option<String>,
+        /// Block type (input/output signature)
+        block_type: BlockType,
+        /// Body instructions (sequence)
+        body: Vec<Value>,
+    },
+
+    /// Loop: structured control where branches restart
+    /// Branches to this label jump to the start (backward)
+    Loop {
+        label: Option<String>,
+        block_type: BlockType,
+        body: Vec<Value>,
+    },
+
+    /// If-then-else conditional
+    /// Pops i32 condition, executes then or else branch
+    If {
+        label: Option<String>,
+        block_type: BlockType,
+        condition: Value,
+        then_body: Vec<Value>,
+        else_body: Vec<Value>, // empty Vec for if without else
+    },
+
+    /// Unconditional branch to label
+    /// Jumps to target, unwinds stack to block entry
+    Br {
+        /// Relative label depth (0 = innermost)
+        depth: u32,
+        /// Value to leave on stack (if block expects result)
+        value: Option<Box<Value>>,
+    },
+
+    /// Conditional branch
+    /// Pops i32 condition, if non-zero branches
+    BrIf {
+        depth: u32,
+        condition: Value,
+        value: Option<Box<Value>>,
+    },
+
+    /// Branch table (switch/case)
+    /// Pops i32 index, branches to targets[index] or default
+    BrTable {
+        /// List of target label depths
+        targets: Vec<u32>,
+        /// Default label depth
+        default: u32,
+        /// Index to select target
+        index: Value,
+        /// Value to pass (if blocks expect results)
+        value: Option<Box<Value>>,
+    },
+
+    /// Return from function
+    /// Returns from function with values matching function signature
+    Return {
+        /// Return values
+        values: Vec<Value>,
+    },
+
+    /// Function call (direct)
+    /// Calls function by index with arguments
+    Call {
+        /// Function index
+        func_idx: u32,
+        /// Arguments
+        args: Vec<Value>,
+    },
+
+    /// Function call (indirect through table)
+    /// Dynamically calls function from table with type checking
+    CallIndirect {
+        /// Table index
+        table_idx: u32,
+        /// Type index (for signature checking)
+        type_idx: u32,
+        /// Table offset (which function in table)
+        table_offset: Value,
+        /// Arguments
+        args: Vec<Value>,
+    },
+
+    /// Unreachable - traps execution
+    Unreachable,
+
+    /// Nop - no operation
+    Nop,
 }
 
 // Include the ISLE-generated code in a module so `super::*` works
@@ -733,6 +853,107 @@ pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
         offset,
         align,
     }))
+}
+
+// ============================================================================
+// Control Flow Constructors (Phase 14)
+// ============================================================================
+
+/// Construct a block
+pub fn block(label: Option<String>, block_type: BlockType, body: Vec<Value>) -> Value {
+    Value(Box::new(ValueData::Block {
+        label,
+        block_type,
+        body,
+    }))
+}
+
+/// Construct a loop
+pub fn loop_construct(label: Option<String>, block_type: BlockType, body: Vec<Value>) -> Value {
+    Value(Box::new(ValueData::Loop {
+        label,
+        block_type,
+        body,
+    }))
+}
+
+/// Construct an if-then-else
+pub fn if_then_else(
+    label: Option<String>,
+    block_type: BlockType,
+    condition: Value,
+    then_body: Vec<Value>,
+    else_body: Vec<Value>,
+) -> Value {
+    Value(Box::new(ValueData::If {
+        label,
+        block_type,
+        condition,
+        then_body,
+        else_body,
+    }))
+}
+
+/// Construct an unconditional branch
+pub fn br(depth: u32, value: Option<Value>) -> Value {
+    Value(Box::new(ValueData::Br {
+        depth,
+        value: value.map(Box::new),
+    }))
+}
+
+/// Construct a conditional branch
+pub fn br_if(depth: u32, condition: Value, value: Option<Value>) -> Value {
+    Value(Box::new(ValueData::BrIf {
+        depth,
+        condition,
+        value: value.map(Box::new),
+    }))
+}
+
+/// Construct a branch table
+pub fn br_table(targets: Vec<u32>, default: u32, index: Value, value: Option<Value>) -> Value {
+    Value(Box::new(ValueData::BrTable {
+        targets,
+        default,
+        index,
+        value: value.map(Box::new),
+    }))
+}
+
+/// Construct a return
+pub fn return_val(values: Vec<Value>) -> Value {
+    Value(Box::new(ValueData::Return { values }))
+}
+
+/// Construct a direct function call
+pub fn call(func_idx: u32, args: Vec<Value>) -> Value {
+    Value(Box::new(ValueData::Call { func_idx, args }))
+}
+
+/// Construct an indirect function call
+pub fn call_indirect(
+    table_idx: u32,
+    type_idx: u32,
+    table_offset: Value,
+    args: Vec<Value>,
+) -> Value {
+    Value(Box::new(ValueData::CallIndirect {
+        table_idx,
+        type_idx,
+        table_offset,
+        args,
+    }))
+}
+
+/// Construct an unreachable instruction
+pub fn unreachable() -> Value {
+    Value(Box::new(ValueData::Unreachable))
+}
+
+/// Construct a nop instruction
+pub fn nop() -> Value {
+    Value(Box::new(ValueData::Nop))
 }
 
 /// Extract ValueData from Value (for ISLE pattern matching)

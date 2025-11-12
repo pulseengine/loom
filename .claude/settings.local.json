@@ -29,7 +29,8 @@
       "Bash(for i in 0 1 2 3)",
       "Bash(done)",
       "Bash(./target/release/loom optimize:*)",
-      "Bash(wasm-tools validate:*)"
+      "Bash(wasm-tools validate:*)",
+      "WebFetch(domain:webassembly.github.io)"
     ],
     "deny": [],
     "ask": []
