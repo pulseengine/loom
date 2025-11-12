@@ -376,7 +376,7 @@ pub mod parse {
                     }
 
                     // Parse instructions recursively to handle control flow
-                    let instructions = parse_instructions(&mut reader)?;
+                    let (instructions, _terminator) = parse_instructions(&mut reader)?;
 
                     // Get function type using the index from function section
                     let func_idx = functions.len();
@@ -429,9 +429,19 @@ pub mod parse {
         })
     }
 
+    /// What terminated a block of instructions
+    #[derive(Debug, PartialEq)]
+    enum BlockTerminator {
+        End,
+        Else,
+    }
+
     /// Recursively parse a sequence of WebAssembly instructions
     /// Handles nested control flow (blocks, loops, if/else)
-    fn parse_instructions(reader: &mut wasmparser::OperatorsReader) -> Result<Vec<Instruction>> {
+    /// Returns the instructions and what terminated the block (End or Else)
+    fn parse_instructions(
+        reader: &mut wasmparser::OperatorsReader,
+    ) -> Result<(Vec<Instruction>, BlockTerminator)> {
         let mut instructions = Vec::new();
 
         while !reader.eof() {
@@ -644,36 +654,40 @@ pub mod parse {
                 // Control flow (Phase 14)
                 Operator::Block { blockty } => {
                     let block_type = convert_blocktype(blockty)?;
-                    let body = parse_instructions(reader)?;
+                    let (body, _terminator) = parse_instructions(reader)?;
                     instructions.push(Instruction::Block { block_type, body });
                 }
                 Operator::Loop { blockty } => {
                     let block_type = convert_blocktype(blockty)?;
-                    let body = parse_instructions(reader)?;
+                    let (body, _terminator) = parse_instructions(reader)?;
                     instructions.push(Instruction::Loop { block_type, body });
                 }
                 Operator::If { blockty } => {
                     let block_type = convert_blocktype(blockty)?;
-                    let then_body = parse_instructions(reader)?;
-                    // else_body will be set if we encounter an Else
+                    let (then_body, terminator) = parse_instructions(reader)?;
+
+                    // If the then_body ended with Else, parse the else_body
+                    let else_body = if terminator == BlockTerminator::Else {
+                        let (else_instrs, _) = parse_instructions(reader)?;
+                        else_instrs
+                    } else {
+                        vec![]
+                    };
+
                     instructions.push(Instruction::If {
                         block_type,
                         then_body,
-                        else_body: vec![],
+                        else_body,
                     });
                 }
                 Operator::Else => {
-                    // Parse else body and return, parent If will be updated
-                    let else_body_parsed = parse_instructions(reader)?;
-                    // Update the last instruction (which should be If) with the else body
-                    if let Some(Instruction::If { else_body, .. }) = instructions.last_mut() {
-                        *else_body = else_body_parsed;
-                    }
-                    return Ok(instructions);
+                    // Else terminates the then branch and starts the else branch
+                    // The parent If handler will parse the else body
+                    return Ok((instructions, BlockTerminator::Else));
                 }
                 Operator::End => {
                     // End terminates the current block/loop/if
-                    return Ok(instructions);
+                    return Ok((instructions, BlockTerminator::End));
                 }
                 Operator::Br { relative_depth } => {
                     instructions.push(Instruction::Br(relative_depth));
@@ -719,7 +733,8 @@ pub mod parse {
             }
         }
 
-        Ok(instructions)
+        // If we reach EOF without hitting End or Else, treat it as End
+        Ok((instructions, BlockTerminator::End))
     }
 
     /// Parse a WebAssembly text (WAT) module
@@ -1134,10 +1149,15 @@ pub mod encode {
                         func_body.instruction(&EncoderInstruction::Nop);
                     }
                     Instruction::End => {
-                        func_body.instruction(&EncoderInstruction::End);
+                        // End should not appear in instruction lists after parsing
+                        // It's only used to terminate blocks during parsing
+                        // The wasm-encoder will add the final End automatically
                     }
                 }
             }
+
+            // Add final End instruction for the function body
+            func_body.instruction(&EncoderInstruction::End);
 
             code.function(&func_body);
         }
@@ -3179,5 +3199,214 @@ mod tests {
             module2.functions[0].instructions[0],
             Instruction::I32Const(42)
         );
+    }
+
+    // Control Flow Tests (Phase 14)
+
+    #[test]
+    fn test_parse_block() {
+        let wat = r#"
+            (module
+              (func $test_block (result i32)
+                (block (result i32)
+                  i32.const 42
+                )
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse block WAT");
+        assert_eq!(module.functions.len(), 1);
+
+        let func = &module.functions[0];
+        assert_eq!(func.instructions.len(), 1);
+
+        // Check for Block instruction
+        if let Instruction::Block { block_type, body } = &func.instructions[0] {
+            assert_eq!(*block_type, BlockType::Value(ValueType::I32));
+            assert_eq!(body.len(), 1);
+            assert_eq!(body[0], Instruction::I32Const(42));
+        } else {
+            panic!("Expected Block instruction");
+        }
+    }
+
+    #[test]
+    fn test_parse_loop() {
+        let wat = r#"
+            (module
+              (func $test_loop (param $n i32) (result i32)
+                (local $i i32)
+                (block $exit
+                  (loop $continue
+                    (local.set $i
+                      (i32.add (local.get $i) (i32.const 1))
+                    )
+                    (br_if $continue
+                      (i32.lt_u (local.get $i) (local.get $n))
+                    )
+                  )
+                )
+                (local.get $i)
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse loop WAT");
+        assert_eq!(module.functions.len(), 1);
+
+        let func = &module.functions[0];
+        // Should have a block, then local.get
+        assert!(matches!(func.instructions[0], Instruction::Block { .. }));
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let wat = r#"
+            (module
+              (func $test_if (param $x i32) (result i32)
+                (if (result i32) (i32.eqz (local.get $x))
+                  (then
+                    (i32.const 42)
+                  )
+                  (else
+                    (i32.const 0)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse if/else WAT");
+        assert_eq!(module.functions.len(), 1);
+
+        let func = &module.functions[0];
+        // Function should have LocalGet, Eqz, and If instructions
+        // Find the If instruction
+        let if_instr = func
+            .instructions
+            .iter()
+            .find(|instr| matches!(instr, Instruction::If { .. }));
+
+        assert!(if_instr.is_some(), "Expected If instruction");
+
+        if let Some(Instruction::If {
+            block_type,
+            then_body,
+            else_body,
+        }) = if_instr
+        {
+            assert_eq!(*block_type, BlockType::Value(ValueType::I32));
+            assert!(!then_body.is_empty());
+            assert!(!else_body.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_parse_branches() {
+        let wat = r#"
+            (module
+              (func $test_br (result i32)
+                (block $outer (result i32)
+                  (i32.const 1)
+                  (br $outer)
+                  (i32.const 2)
+                )
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse branch WAT");
+        assert_eq!(module.functions.len(), 1);
+
+        let func = &module.functions[0];
+        // Should have a Block with Br inside
+        if let Instruction::Block { body, .. } = &func.instructions[0] {
+            assert!(body.iter().any(|instr| matches!(instr, Instruction::Br(_))));
+        } else {
+            panic!("Expected Block instruction");
+        }
+    }
+
+    #[test]
+    fn test_control_flow_round_trip() {
+        let wat = r#"
+            (module
+              (func $test (param $x i32) (result i32)
+                (if (result i32) (local.get $x)
+                  (then
+                    (i32.const 10)
+                  )
+                  (else
+                    (i32.const 20)
+                  )
+                )
+              )
+            )
+        "#;
+
+        // Parse WAT
+        let module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Encode to WASM
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode WASM");
+
+        // Parse WASM back
+        let module2 = parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse WASM");
+
+        // Verify
+        assert_eq!(module2.functions.len(), 1);
+
+        // Validate with wasm-tools
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_nested_blocks_round_trip() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (block (result i32)
+                    (i32.const 5)
+                    (i32.const 10)
+                    (i32.add)
+                  )
+                  (i32.const 3)
+                  (i32.add)
+                )
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse nested blocks");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        let module2 = parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse");
+
+        assert_eq!(module2.functions.len(), 1);
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_return_instruction() {
+        let wat = r#"
+            (module
+              (func $test (param $x i32) (result i32)
+                (if (i32.eqz (local.get $x))
+                  (then
+                    (i32.const 0)
+                    (return)
+                  )
+                )
+                (i32.const 1)
+              )
+            )
+        "#;
+
+        let module = parse::parse_wat(wat).expect("Failed to parse return");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse");
+
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
     }
 }
