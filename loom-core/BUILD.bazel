@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "loom_core",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "loom_core",
+    edition = "2021",
+    deps = [
+        "//loom-isle:loom_isle",
+        "@crates//:wasmparser",
+        "@crates//:wasm-encoder",
+        "@crates//:wat",
+        "@crates//:anyhow",
+        "@crates//:thiserror",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "loom_core_test",
+    crate = ":loom_core",
+    deps = [
+        "@crates//:proptest",
+    ],
+)

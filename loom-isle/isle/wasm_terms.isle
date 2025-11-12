@@ -1,0 +1,479 @@
+;; LOOM - WebAssembly ISLE Term Definitions
+;; Phase 3: ISLE Term Construction
+;;
+;; This file defines the ISLE term representation for WebAssembly instructions
+;; and provides the foundation for optimization rules.
+
+;; ============================================================================
+;; Primitive Types
+;; ============================================================================
+
+;; 32-bit immediate values
+(type Imm32 (primitive Imm32))
+
+;; 64-bit immediate values
+(type Imm64 (primitive Imm64))
+
+;; ============================================================================
+;; WebAssembly Value Types
+;; ============================================================================
+
+;; ValueData represents the actual value content
+;; We use a separate type to allow for proper boxing in recursive structures
+(type ValueData (enum
+    ;; i32.const N - 32-bit constant
+    (I32Const (val Imm32))
+
+    ;; i32.add - binary addition
+    ;; Note: In ISLE, recursive enum fields need boxing, which is handled
+    ;; by wrapping in Value type
+    (I32Add (lhs Value) (rhs Value))
+
+    ;; i32.sub - binary subtraction
+    (I32Sub (lhs Value) (rhs Value))
+
+    ;; i32.mul - binary multiplication
+    (I32Mul (lhs Value) (rhs Value))
+
+    ;; i64.const N - 64-bit constant
+    (I64Const (val Imm64))
+
+    ;; i64.add - binary addition (64-bit)
+    (I64Add (lhs Value) (rhs Value))
+
+    ;; i64.sub - binary subtraction (64-bit)
+    (I64Sub (lhs Value) (rhs Value))
+
+    ;; i64.mul - binary multiplication (64-bit)
+    (I64Mul (lhs Value) (rhs Value))
+
+    ;; Bitwise operations (i32)
+    (I32And (lhs Value) (rhs Value))
+    (I32Or (lhs Value) (rhs Value))
+    (I32Xor (lhs Value) (rhs Value))
+    (I32Shl (lhs Value) (rhs Value))
+    (I32ShrS (lhs Value) (rhs Value))
+    (I32ShrU (lhs Value) (rhs Value))
+
+    ;; Bitwise operations (i64)
+    (I64And (lhs Value) (rhs Value))
+    (I64Or (lhs Value) (rhs Value))
+    (I64Xor (lhs Value) (rhs Value))
+    (I64Shl (lhs Value) (rhs Value))
+    (I64ShrS (lhs Value) (rhs Value))
+    (I64ShrU (lhs Value) (rhs Value))
+
+    ;; Comparison operations (i32) - return i32 (0 or 1)
+    (I32Eq (lhs Value) (rhs Value))
+    (I32Ne (lhs Value) (rhs Value))
+    (I32LtS (lhs Value) (rhs Value))
+    (I32LtU (lhs Value) (rhs Value))
+    (I32GtS (lhs Value) (rhs Value))
+    (I32GtU (lhs Value) (rhs Value))
+    (I32LeS (lhs Value) (rhs Value))
+    (I32LeU (lhs Value) (rhs Value))
+    (I32GeS (lhs Value) (rhs Value))
+    (I32GeU (lhs Value) (rhs Value))
+
+    ;; Comparison operations (i64) - return i32 (0 or 1)
+    (I64Eq (lhs Value) (rhs Value))
+    (I64Ne (lhs Value) (rhs Value))
+    (I64LtS (lhs Value) (rhs Value))
+    (I64LtU (lhs Value) (rhs Value))
+    (I64GtS (lhs Value) (rhs Value))
+    (I64GtU (lhs Value) (rhs Value))
+    (I64LeS (lhs Value) (rhs Value))
+    (I64LeU (lhs Value) (rhs Value))
+    (I64GeS (lhs Value) (rhs Value))
+    (I64GeU (lhs Value) (rhs Value))
+
+    ;; Division and remainder operations (i32)
+    (I32DivS (lhs Value) (rhs Value))
+    (I32DivU (lhs Value) (rhs Value))
+    (I32RemS (lhs Value) (rhs Value))
+    (I32RemU (lhs Value) (rhs Value))
+
+    ;; Division and remainder operations (i64)
+    (I64DivS (lhs Value) (rhs Value))
+    (I64DivU (lhs Value) (rhs Value))
+    (I64RemS (lhs Value) (rhs Value))
+    (I64RemU (lhs Value) (rhs Value))
+
+    ;; Unary operations (i32)
+    (I32Eqz (val Value))
+    (I32Clz (val Value))
+    (I32Ctz (val Value))
+    (I32Popcnt (val Value))
+
+    ;; Unary operations (i64)
+    (I64Eqz (val Value))
+    (I64Clz (val Value))
+    (I64Ctz (val Value))
+    (I64Popcnt (val Value))
+
+    ;; Select instruction
+    (Select (cond Value) (true_val Value) (false_val Value))
+
+    ;; Local variable operations (Phase 12)
+    (LocalGet (idx u32))
+    (LocalSet (idx u32) (val Value))
+    (LocalTee (idx u32) (val Value))
+
+    ;; Memory operations (Phase 13 - Memory Optimization)
+    (I32Load (addr Value) (offset u32) (align u32))
+    (I32Store (addr Value) (value Value) (offset u32) (align u32))
+    (I64Load (addr Value) (offset u32) (align u32))
+    (I64Store (addr Value) (value Value) (offset u32) (align u32))
+))
+
+;; Value is a boxed pointer to ValueData
+;; This allows recursive structures without infinite size
+(type Value (primitive Value))
+
+;; Primitive types for local variable indices
+(type u32 (primitive u32))
+
+;; ============================================================================
+;; Constructors
+;; ============================================================================
+
+;; Construct an i32 constant value
+(decl iconst32 (Imm32) Value)
+(extern constructor iconst32 iconst32)
+
+;; Construct an i32 add operation
+(decl iadd32 (Value Value) Value)
+(extern constructor iadd32 iadd32)
+
+;; Construct an i32 sub operation
+(decl isub32 (Value Value) Value)
+(extern constructor isub32 isub32)
+
+;; Construct an i32 mul operation
+(decl imul32 (Value Value) Value)
+(extern constructor imul32 imul32)
+
+;; Construct an i64 constant value
+(decl iconst64 (Imm64) Value)
+(extern constructor iconst64 iconst64)
+
+;; Construct an i64 add operation
+(decl iadd64 (Value Value) Value)
+(extern constructor iadd64 iadd64)
+
+;; Construct an i64 sub operation
+(decl isub64 (Value Value) Value)
+(extern constructor isub64 isub64)
+
+;; Construct an i64 mul operation
+(decl imul64 (Value Value) Value)
+(extern constructor imul64 imul64)
+
+;; Bitwise constructors (i32)
+(decl iand32 (Value Value) Value)
+(extern constructor iand32 iand32)
+
+(decl ior32 (Value Value) Value)
+(extern constructor ior32 ior32)
+
+(decl ixor32 (Value Value) Value)
+(extern constructor ixor32 ixor32)
+
+(decl ishl32 (Value Value) Value)
+(extern constructor ishl32 ishl32)
+
+(decl ishrs32 (Value Value) Value)
+(extern constructor ishrs32 ishrs32)
+
+(decl ishru32 (Value Value) Value)
+(extern constructor ishru32 ishru32)
+
+;; Bitwise constructors (i64)
+(decl iand64 (Value Value) Value)
+(extern constructor iand64 iand64)
+
+(decl ior64 (Value Value) Value)
+(extern constructor ior64 ior64)
+
+(decl ixor64 (Value Value) Value)
+(extern constructor ixor64 ixor64)
+
+(decl ishl64 (Value Value) Value)
+(extern constructor ishl64 ishl64)
+
+(decl ishrs64 (Value Value) Value)
+(extern constructor ishrs64 ishrs64)
+
+(decl ishru64 (Value Value) Value)
+(extern constructor ishru64 ishru64)
+
+;; Comparison constructors (i32) - result is i32 (0 or 1)
+(decl ieq32 (Value Value) Value)
+(extern constructor ieq32 ieq32)
+
+(decl ine32 (Value Value) Value)
+(extern constructor ine32 ine32)
+
+(decl ilts32 (Value Value) Value)
+(extern constructor ilts32 ilts32)
+
+(decl iltu32 (Value Value) Value)
+(extern constructor iltu32 iltu32)
+
+(decl igts32 (Value Value) Value)
+(extern constructor igts32 igts32)
+
+(decl igtu32 (Value Value) Value)
+(extern constructor igtu32 igtu32)
+
+(decl iles32 (Value Value) Value)
+(extern constructor iles32 iles32)
+
+(decl ileu32 (Value Value) Value)
+(extern constructor ileu32 ileu32)
+
+(decl iges32 (Value Value) Value)
+(extern constructor iges32 iges32)
+
+(decl igeu32 (Value Value) Value)
+(extern constructor igeu32 igeu32)
+
+;; Comparison constructors (i64) - result is i32 (0 or 1)
+(decl ieq64 (Value Value) Value)
+(extern constructor ieq64 ieq64)
+
+(decl ine64 (Value Value) Value)
+(extern constructor ine64 ine64)
+
+(decl ilts64 (Value Value) Value)
+(extern constructor ilts64 ilts64)
+
+(decl iltu64 (Value Value) Value)
+(extern constructor iltu64 iltu64)
+
+(decl igts64 (Value Value) Value)
+(extern constructor igts64 igts64)
+
+(decl igtu64 (Value Value) Value)
+(extern constructor igtu64 igtu64)
+
+(decl iles64 (Value Value) Value)
+(extern constructor iles64 iles64)
+
+(decl ileu64 (Value Value) Value)
+(extern constructor ileu64 ileu64)
+
+(decl iges64 (Value Value) Value)
+(extern constructor iges64 iges64)
+
+(decl igeu64 (Value Value) Value)
+(extern constructor igeu64 igeu64)
+
+;; Division and remainder constructors (i32)
+(decl idivs32 (Value Value) Value)
+(extern constructor idivs32 idivs32)
+
+(decl idivu32 (Value Value) Value)
+(extern constructor idivu32 idivu32)
+
+(decl irems32 (Value Value) Value)
+(extern constructor irems32 irems32)
+
+(decl iremu32 (Value Value) Value)
+(extern constructor iremu32 iremu32)
+
+;; Division and remainder constructors (i64)
+(decl idivs64 (Value Value) Value)
+(extern constructor idivs64 idivs64)
+
+(decl idivu64 (Value Value) Value)
+(extern constructor idivu64 idivu64)
+
+(decl irems64 (Value Value) Value)
+(extern constructor irems64 irems64)
+
+(decl iremu64 (Value Value) Value)
+(extern constructor iremu64 iremu64)
+
+;; Unary operation constructors (i32)
+(decl ieqz32 (Value) Value)
+(extern constructor ieqz32 ieqz32)
+
+(decl iclz32 (Value) Value)
+(extern constructor iclz32 iclz32)
+
+(decl ictz32 (Value) Value)
+(extern constructor ictz32 ictz32)
+
+(decl ipopcnt32 (Value) Value)
+(extern constructor ipopcnt32 ipopcnt32)
+
+;; Unary operation constructors (i64)
+(decl ieqz64 (Value) Value)
+(extern constructor ieqz64 ieqz64)
+
+(decl iclz64 (Value) Value)
+(extern constructor iclz64 iclz64)
+
+(decl ictz64 (Value) Value)
+(extern constructor ictz64 ictz64)
+
+(decl ipopcnt64 (Value) Value)
+(extern constructor ipopcnt64 ipopcnt64)
+
+;; Select instruction constructor
+(decl select_instr (Value Value Value) Value)
+(extern constructor select_instr select_instr)
+
+;; Local variable constructors (Phase 12)
+(decl local_get (u32) Value)
+(extern constructor local_get local_get)
+
+(decl local_set (u32 Value) Value)
+(extern constructor local_set local_set)
+
+(decl local_tee (u32 Value) Value)
+(extern constructor local_tee local_tee)
+
+;; Memory operation constructors (Phase 13)
+(decl i32_load (Value u32 u32) Value)
+(extern constructor i32_load i32_load)
+
+(decl i32_store (Value Value u32 u32) Value)
+(extern constructor i32_store i32_store)
+
+(decl i64_load (Value u32 u32) Value)
+(extern constructor i64_load i64_load)
+
+(decl i64_store (Value Value u32 u32) Value)
+(extern constructor i64_store i64_store)
+
+;; ============================================================================
+;; Extractors
+;; ============================================================================
+
+;; Extract ValueData from a Value
+(decl value_data (Value) ValueData)
+(extern extractor value_data value_data)
+
+;; ============================================================================
+;; Helper Functions
+;; ============================================================================
+
+;; Add two 32-bit immediates (with wrapping overflow semantics)
+;;
+;; Specification (informal for Phase 5):
+;;   forall x, y: i32.
+;;     imm32_add(x, y) = (x + y) mod 2^32
+;;     where addition wraps on overflow per WebAssembly spec
+;;
+;; Verification Property:
+;;   The result is equivalent to WebAssembly i32.add semantics
+;;
+;; SMT Encoding (Crocus-style, for future):
+;;   (spec (imm32_add x y)
+;;     (provide (= result (bvadd x y))))
+(decl imm32_add (Imm32 Imm32) Imm32)
+(extern constructor imm32_add imm32_add)
+
+;; Subtract two 32-bit immediates (with wrapping overflow semantics)
+(decl imm32_sub (Imm32 Imm32) Imm32)
+(extern constructor imm32_sub imm32_sub)
+
+;; Multiply two 32-bit immediates (with wrapping overflow semantics)
+(decl imm32_mul (Imm32 Imm32) Imm32)
+(extern constructor imm32_mul imm32_mul)
+
+;; Add two 64-bit immediates (with wrapping overflow semantics)
+(decl imm64_add (Imm64 Imm64) Imm64)
+(extern constructor imm64_add imm64_add)
+
+;; Subtract two 64-bit immediates (with wrapping overflow semantics)
+(decl imm64_sub (Imm64 Imm64) Imm64)
+(extern constructor imm64_sub imm64_sub)
+
+;; Multiply two 64-bit immediates (with wrapping overflow semantics)
+(decl imm64_mul (Imm64 Imm64) Imm64)
+(extern constructor imm64_mul imm64_mul)
+
+;; Bitwise AND for 32-bit immediates
+(decl imm32_and (Imm32 Imm32) Imm32)
+(extern constructor imm32_and imm32_and)
+
+;; Bitwise OR for 32-bit immediates
+(decl imm32_or (Imm32 Imm32) Imm32)
+(extern constructor imm32_or imm32_or)
+
+;; Bitwise XOR for 32-bit immediates
+(decl imm32_xor (Imm32 Imm32) Imm32)
+(extern constructor imm32_xor imm32_xor)
+
+;; Shift left for 32-bit immediates
+(decl imm32_shl (Imm32 Imm32) Imm32)
+(extern constructor imm32_shl imm32_shl)
+
+;; Arithmetic shift right for 32-bit immediates (signed)
+(decl imm32_shr_s (Imm32 Imm32) Imm32)
+(extern constructor imm32_shr_s imm32_shr_s)
+
+;; Logical shift right for 32-bit immediates (unsigned)
+(decl imm32_shr_u (Imm32 Imm32) Imm32)
+(extern constructor imm32_shr_u imm32_shr_u)
+
+;; Bitwise AND for 64-bit immediates
+(decl imm64_and (Imm64 Imm64) Imm64)
+(extern constructor imm64_and imm64_and)
+
+;; Bitwise OR for 64-bit immediates
+(decl imm64_or (Imm64 Imm64) Imm64)
+(extern constructor imm64_or imm64_or)
+
+;; Bitwise XOR for 64-bit immediates
+(decl imm64_xor (Imm64 Imm64) Imm64)
+(extern constructor imm64_xor imm64_xor)
+
+;; Shift left for 64-bit immediates
+(decl imm64_shl (Imm64 Imm64) Imm64)
+(extern constructor imm64_shl imm64_shl)
+
+;; Arithmetic shift right for 64-bit immediates (signed)
+(decl imm64_shr_s (Imm64 Imm64) Imm64)
+(extern constructor imm64_shr_s imm64_shr_s)
+
+;; Logical shift right for 64-bit immediates (unsigned)
+(decl imm64_shr_u (Imm64 Imm64) Imm64)
+(extern constructor imm64_shr_u imm64_shr_u)
+
+;; ============================================================================
+;; Optimization Rules
+;; ============================================================================
+
+;; Simplify - entry point for optimization
+;; This is a pure function that applies optimization rules
+;;
+;; Correctness Property:
+;;   For all Value v:
+;;     eval(simplify(v)) = eval(v)
+;;   where eval() is the WebAssembly evaluation semantics
+;;
+;; Specific Rule - Constant Folding for i32.add:
+;;   simplify(I32Add(I32Const(x), I32Const(y))) = I32Const(imm32_add(x, y))
+;;
+;; Proof Obligation:
+;;   eval(I32Add(I32Const(x), I32Const(y))) = eval(I32Const(imm32_add(x, y)))
+;;   <=> (x + y) mod 2^32 = imm32_add(x, y)
+;;   <=> true (by definition of imm32_add)
+(decl simplify (Value) Value)
+
+;; Default case: return value unchanged if no rule applies
+(rule (simplify val) val)
+
+;; ============================================================================
+;; Pattern Matching
+;; ============================================================================
+;;
+;; Pattern matching is done by first extracting ValueData, then matching on variants:
+;;   (value_data v)       - extract ValueData from Value
+;;   (I32Const val)       - matches i32.const variant
+;;   (I32Add lhs rhs)     - matches i32.add variant
+;;   (I64Const val)       - matches i64.const variant

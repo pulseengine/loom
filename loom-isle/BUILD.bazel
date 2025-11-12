@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+# Generate Rust code from ISLE files
+genrule(
+    name = "isle_generated",
+    srcs = glob(["isle/*.isle"]),
+    outs = ["isle_generated.rs"],
+    cmd = """
+        # For Phase 1, we create a minimal generated file
+        # In Phase 4, this will run the actual ISLE compiler
+        echo '// ISLE generated code placeholder for Bazel build' > $@
+        echo 'pub trait Context {}' >> $@
+    """,
+    visibility = ["//visibility:private"],
+)
+
+rust_library(
+    name = "loom_isle",
+    srcs = glob(["src/**/*.rs"]) + [":isle_generated"],
+    crate_name = "loom_isle",
+    edition = "2021",
+    deps = [
+        "@crates//:cranelift-isle",
+    ],
+    visibility = ["//visibility:public"],
+)

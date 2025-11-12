@@ -1,0 +1,24 @@
+[package]
+name = "loom-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for LOOM WebAssembly optimizer"
+
+[dependencies]
+# Core library
+loom-core = { path = "../loom-core" }
+loom-isle = { path = "../loom-isle" }
+
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+[[bin]]
+name = "loom"
+path = "src/main.rs"

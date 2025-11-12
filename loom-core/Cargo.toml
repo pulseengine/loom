@@ -1,0 +1,30 @@
+[package]
+name = "loom-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core library for LOOM WebAssembly optimizer"
+
+[dependencies]
+# WebAssembly
+wasmparser = { workspace = true }
+wasm-encoder = { workspace = true }
+wasmprinter = { workspace = true }
+wat = { workspace = true }
+wit-component = { workspace = true }
+
+# ISLE generated code
+loom-isle = { path = "../loom-isle" }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lib]
+path = "src/lib.rs"

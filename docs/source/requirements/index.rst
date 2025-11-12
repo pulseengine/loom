@@ -13,7 +13,9 @@ LOOM requirements are organized into the following categories:
    :maxdepth: 2
 
    core
+   build_systems
    verification
+   research_verification
    testing
    optimizations_dce
    optimizations_constants

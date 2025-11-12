@@ -1,0 +1,6 @@
+# Root BUILD file for LOOM workspace
+
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])

@@ -3,7 +3,7 @@
 # Constants
 cat > optimizations_constants.rst << 'EOF'
 ================================
-Constant Folding and Propagation  
+Constant Folding and Propagation
 ================================
 
 .. req:: Precompute

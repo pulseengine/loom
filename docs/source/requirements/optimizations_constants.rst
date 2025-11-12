@@ -1,5 +1,5 @@
 ================================
-Constant Folding and Propagation  
+Constant Folding and Propagation
 ================================
 
 .. req:: Precompute

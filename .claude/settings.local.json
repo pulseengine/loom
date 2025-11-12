@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:dl.acm.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh repo view:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh label create:*)",
+      "Bash(gh api:*)",
+      "Bash(gh project create:*)",
+      "Bash(PROJECT_ID=\"PVT_kwDODLQEWc4BHxBh\" for i in {1..8})",
+      "Bash(do gh project item-add:*)",
+      "Bash(gh project item-add:*)",
+      "Bash(gh issue view:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo search:*)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo test:*)",
+      "Bash(bazel version:*)",
+      "Bash(CARGO_BAZEL_REPIN=1 bazel sync:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh issue close:*)",
+      "Bash(./target/debug/loom optimize:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(wat2wasm:*)",
+      "Bash(wasm2wat:*)",
+      "Bash(wasm-objdump:*)",
+      "Bash(for i in 0 1 2 3)",
+      "Bash(done)",
+      "Bash(./target/release/loom optimize:*)",
+      "Bash(wasm-tools validate:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

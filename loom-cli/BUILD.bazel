@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "loom",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = [
+        "//loom-core:loom_core",
+        "@crates//:clap",
+        "@crates//:anyhow",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "loom_cli_test",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = [
+        "//loom-core:loom_core",
+        "@crates//:clap",
+        "@crates//:anyhow",
+    ],
+)
