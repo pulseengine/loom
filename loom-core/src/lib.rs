@@ -2702,7 +2702,7 @@ pub mod terms {
 /// Optimization functionality: Apply optimization rules to WebAssembly modules
 pub mod optimize {
 
-    use super::{Module, Value};
+    use super::{Instruction, Module, Value};
     use anyhow::Result;
 
     /// Optimize a module by applying constant folding and other optimizations
@@ -2734,6 +2734,75 @@ pub mod optimize {
         }
 
         Ok(())
+    }
+
+    /// Dead Code Elimination (Phase 14 - Issue #13)
+    /// Removes unreachable code that follows terminators (return, br, unreachable)
+    pub fn eliminate_dead_code(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            func.instructions = eliminate_dead_code_in_block(&func.instructions);
+        }
+
+        Ok(())
+    }
+
+    /// Recursively eliminate dead code in a block of instructions
+    fn eliminate_dead_code_in_block(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut result = Vec::new();
+        let mut reachable = true;
+
+        for instr in instructions {
+            if !reachable {
+                // Skip unreachable instructions
+                continue;
+            }
+
+            // Process the instruction based on its type
+            let processed_instr = match instr {
+                // Recurse into nested control flow
+                Instruction::Block { block_type, body } => {
+                    let clean_body = eliminate_dead_code_in_block(body);
+                    Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: clean_body,
+                    }
+                }
+                Instruction::Loop { block_type, body } => {
+                    let clean_body = eliminate_dead_code_in_block(body);
+                    Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: clean_body,
+                    }
+                }
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    let clean_then = eliminate_dead_code_in_block(then_body);
+                    let clean_else = eliminate_dead_code_in_block(else_body);
+                    Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: clean_then,
+                        else_body: clean_else,
+                    }
+                }
+                // Other instructions pass through unchanged
+                _ => instr.clone(),
+            };
+
+            result.push(processed_instr);
+
+            // Check if this instruction makes following code unreachable
+            match instr {
+                Instruction::Return => reachable = false,
+                Instruction::Br(_) => reachable = false,
+                Instruction::Unreachable => reachable = false,
+                _ => {}
+            }
+        }
+
+        result
     }
 }
 
@@ -3407,6 +3476,154 @@ mod tests {
         let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
         parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse");
 
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    // Dead Code Elimination Tests (Issue #13)
+
+    #[test]
+    fn test_dce_unreachable_after_return() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (return (i32.const 42))
+                (i32.const 99)
+                (drop)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply DCE
+        optimize::eliminate_dead_code(&mut module).expect("DCE failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have removed the dead instructions after return
+        assert!(
+            instructions_after < instructions_before,
+            "DCE should remove dead code (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_dce_unreachable_after_br() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block $exit (result i32)
+                  (br $exit (i32.const 42))
+                  (i32.const 99)
+                  (i32.const 100)
+                  (i32.add)
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Get the block body before DCE
+        let block_body_before =
+            if let Instruction::Block { body, .. } = &module.functions[0].instructions[0] {
+                body.len()
+            } else {
+                panic!("Expected block instruction");
+            };
+
+        // Apply DCE
+        optimize::eliminate_dead_code(&mut module).expect("DCE failed");
+
+        // Get the block body after DCE
+        let block_body_after =
+            if let Instruction::Block { body, .. } = &module.functions[0].instructions[0] {
+                body.len()
+            } else {
+                panic!("Expected block instruction");
+            };
+
+        // Should have removed dead code after branch
+        assert!(
+            block_body_after < block_body_before,
+            "DCE should remove dead code after branch (before: {}, after: {})",
+            block_body_before,
+            block_body_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_dce_preserves_live_code() {
+        let wat = r#"
+            (module
+              (func $test (param $x i32) (result i32)
+                (local.get $x)
+                (i32.const 10)
+                (i32.add)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply DCE
+        optimize::eliminate_dead_code(&mut module).expect("DCE failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should preserve all live code
+        assert_eq!(
+            instructions_before, instructions_after,
+            "DCE should not remove live code"
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_dce_after_unreachable() {
+        let wat = r#"
+            (module
+              (func $test
+                (unreachable)
+                (i32.const 42)
+                (drop)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = module.functions[0].instructions.len();
+
+        // Apply DCE
+        optimize::eliminate_dead_code(&mut module).expect("DCE failed");
+
+        let instructions_after = module.functions[0].instructions.len();
+
+        // Should have removed dead code after unreachable
+        assert!(
+            instructions_after < instructions_before,
+            "DCE should remove code after unreachable (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
         wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
     }
 }

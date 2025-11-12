@@ -30,7 +30,8 @@
       "Bash(done)",
       "Bash(./target/release/loom optimize:*)",
       "Bash(wasm-tools validate:*)",
-      "WebFetch(domain:webassembly.github.io)"
+      "WebFetch(domain:webassembly.github.io)",
+      "Bash(cargo fmt:*)"
     ],
     "deny": [],
     "ask": []
