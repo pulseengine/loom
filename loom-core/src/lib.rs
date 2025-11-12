@@ -304,7 +304,7 @@ pub enum Instruction {
 /// Module parsing functionality: Parse WebAssembly modules into LOOM's internal representation
 pub mod parse {
 
-    use super::{Function, FunctionSignature, Instruction, Module, ValueType};
+    use super::{BlockType, Function, FunctionSignature, Instruction, Module, ValueType};
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
 
@@ -365,7 +365,6 @@ pub mod parse {
                 }
                 Payload::CodeSectionEntry(body) => {
                     // Parse function body
-                    let mut instructions = Vec::new();
                     let mut locals = Vec::new();
                     let mut reader = body.get_operators_reader()?;
 
@@ -376,222 +375,8 @@ pub mod parse {
                         locals.push((count, convert_valtype(val_type)));
                     }
 
-                    while !reader.eof() {
-                        let op = reader.read()?;
-                        match op {
-                            Operator::I32Const { value } => {
-                                instructions.push(Instruction::I32Const(value));
-                            }
-                            Operator::I32Add => {
-                                instructions.push(Instruction::I32Add);
-                            }
-                            Operator::I32Sub => {
-                                instructions.push(Instruction::I32Sub);
-                            }
-                            Operator::I32Mul => {
-                                instructions.push(Instruction::I32Mul);
-                            }
-                            Operator::I32And => {
-                                instructions.push(Instruction::I32And);
-                            }
-                            Operator::I32Or => {
-                                instructions.push(Instruction::I32Or);
-                            }
-                            Operator::I32Xor => {
-                                instructions.push(Instruction::I32Xor);
-                            }
-                            Operator::I32Shl => {
-                                instructions.push(Instruction::I32Shl);
-                            }
-                            Operator::I32ShrS => {
-                                instructions.push(Instruction::I32ShrS);
-                            }
-                            Operator::I32ShrU => {
-                                instructions.push(Instruction::I32ShrU);
-                            }
-                            Operator::I64Const { value } => {
-                                instructions.push(Instruction::I64Const(value));
-                            }
-                            Operator::I64Add => {
-                                instructions.push(Instruction::I64Add);
-                            }
-                            Operator::I64Sub => {
-                                instructions.push(Instruction::I64Sub);
-                            }
-                            Operator::I64Mul => {
-                                instructions.push(Instruction::I64Mul);
-                            }
-                            Operator::I64And => {
-                                instructions.push(Instruction::I64And);
-                            }
-                            Operator::I64Or => {
-                                instructions.push(Instruction::I64Or);
-                            }
-                            Operator::I64Xor => {
-                                instructions.push(Instruction::I64Xor);
-                            }
-                            Operator::I64Shl => {
-                                instructions.push(Instruction::I64Shl);
-                            }
-                            Operator::I64ShrS => {
-                                instructions.push(Instruction::I64ShrS);
-                            }
-                            Operator::I64ShrU => {
-                                instructions.push(Instruction::I64ShrU);
-                            }
-                            Operator::I32Eq => {
-                                instructions.push(Instruction::I32Eq);
-                            }
-                            Operator::I32Ne => {
-                                instructions.push(Instruction::I32Ne);
-                            }
-                            Operator::I32LtS => {
-                                instructions.push(Instruction::I32LtS);
-                            }
-                            Operator::I32LtU => {
-                                instructions.push(Instruction::I32LtU);
-                            }
-                            Operator::I32GtS => {
-                                instructions.push(Instruction::I32GtS);
-                            }
-                            Operator::I32GtU => {
-                                instructions.push(Instruction::I32GtU);
-                            }
-                            Operator::I32LeS => {
-                                instructions.push(Instruction::I32LeS);
-                            }
-                            Operator::I32LeU => {
-                                instructions.push(Instruction::I32LeU);
-                            }
-                            Operator::I32GeS => {
-                                instructions.push(Instruction::I32GeS);
-                            }
-                            Operator::I32GeU => {
-                                instructions.push(Instruction::I32GeU);
-                            }
-                            Operator::I64Eq => {
-                                instructions.push(Instruction::I64Eq);
-                            }
-                            Operator::I64Ne => {
-                                instructions.push(Instruction::I64Ne);
-                            }
-                            Operator::I64LtS => {
-                                instructions.push(Instruction::I64LtS);
-                            }
-                            Operator::I64LtU => {
-                                instructions.push(Instruction::I64LtU);
-                            }
-                            Operator::I64GtS => {
-                                instructions.push(Instruction::I64GtS);
-                            }
-                            Operator::I64GtU => {
-                                instructions.push(Instruction::I64GtU);
-                            }
-                            Operator::I64LeS => {
-                                instructions.push(Instruction::I64LeS);
-                            }
-                            Operator::I64LeU => {
-                                instructions.push(Instruction::I64LeU);
-                            }
-                            Operator::I64GeS => {
-                                instructions.push(Instruction::I64GeS);
-                            }
-                            Operator::I64GeU => {
-                                instructions.push(Instruction::I64GeU);
-                            }
-                            Operator::I32DivS => {
-                                instructions.push(Instruction::I32DivS);
-                            }
-                            Operator::I32DivU => {
-                                instructions.push(Instruction::I32DivU);
-                            }
-                            Operator::I32RemS => {
-                                instructions.push(Instruction::I32RemS);
-                            }
-                            Operator::I32RemU => {
-                                instructions.push(Instruction::I32RemU);
-                            }
-                            Operator::I64DivS => {
-                                instructions.push(Instruction::I64DivS);
-                            }
-                            Operator::I64DivU => {
-                                instructions.push(Instruction::I64DivU);
-                            }
-                            Operator::I64RemS => {
-                                instructions.push(Instruction::I64RemS);
-                            }
-                            Operator::I64RemU => {
-                                instructions.push(Instruction::I64RemU);
-                            }
-                            Operator::I32Eqz => {
-                                instructions.push(Instruction::I32Eqz);
-                            }
-                            Operator::I32Clz => {
-                                instructions.push(Instruction::I32Clz);
-                            }
-                            Operator::I32Ctz => {
-                                instructions.push(Instruction::I32Ctz);
-                            }
-                            Operator::I32Popcnt => {
-                                instructions.push(Instruction::I32Popcnt);
-                            }
-                            Operator::I64Eqz => {
-                                instructions.push(Instruction::I64Eqz);
-                            }
-                            Operator::I64Clz => {
-                                instructions.push(Instruction::I64Clz);
-                            }
-                            Operator::I64Ctz => {
-                                instructions.push(Instruction::I64Ctz);
-                            }
-                            Operator::I64Popcnt => {
-                                instructions.push(Instruction::I64Popcnt);
-                            }
-                            Operator::Select => {
-                                instructions.push(Instruction::Select);
-                            }
-                            Operator::LocalGet { local_index } => {
-                                instructions.push(Instruction::LocalGet(local_index));
-                            }
-                            Operator::LocalSet { local_index } => {
-                                instructions.push(Instruction::LocalSet(local_index));
-                            }
-                            Operator::LocalTee { local_index } => {
-                                instructions.push(Instruction::LocalTee(local_index));
-                            }
-                            Operator::I32Load { memarg } => {
-                                instructions.push(Instruction::I32Load {
-                                    offset: memarg.offset as u32,
-                                    align: memarg.align as u32,
-                                });
-                            }
-                            Operator::I32Store { memarg } => {
-                                instructions.push(Instruction::I32Store {
-                                    offset: memarg.offset as u32,
-                                    align: memarg.align as u32,
-                                });
-                            }
-                            Operator::I64Load { memarg } => {
-                                instructions.push(Instruction::I64Load {
-                                    offset: memarg.offset as u32,
-                                    align: memarg.align as u32,
-                                });
-                            }
-                            Operator::I64Store { memarg } => {
-                                instructions.push(Instruction::I64Store {
-                                    offset: memarg.offset as u32,
-                                    align: memarg.align as u32,
-                                });
-                            }
-                            Operator::End => {
-                                instructions.push(Instruction::End);
-                            }
-                            _ => {
-                                // For Phase 11, we handle locals and memory operations
-                                // Other instructions will be added in later phases
-                            }
-                        }
-                    }
+                    // Parse instructions recursively to handle control flow
+                    let instructions = parse_instructions(&mut reader)?;
 
                     // Get function type using the index from function section
                     let func_idx = functions.len();
@@ -644,6 +429,299 @@ pub mod parse {
         })
     }
 
+    /// Recursively parse a sequence of WebAssembly instructions
+    /// Handles nested control flow (blocks, loops, if/else)
+    fn parse_instructions(reader: &mut wasmparser::OperatorsReader) -> Result<Vec<Instruction>> {
+        let mut instructions = Vec::new();
+
+        while !reader.eof() {
+            let op = reader.read()?;
+            match op {
+                Operator::I32Const { value } => {
+                    instructions.push(Instruction::I32Const(value));
+                }
+                Operator::I32Add => {
+                    instructions.push(Instruction::I32Add);
+                }
+                Operator::I32Sub => {
+                    instructions.push(Instruction::I32Sub);
+                }
+                Operator::I32Mul => {
+                    instructions.push(Instruction::I32Mul);
+                }
+                Operator::I32And => {
+                    instructions.push(Instruction::I32And);
+                }
+                Operator::I32Or => {
+                    instructions.push(Instruction::I32Or);
+                }
+                Operator::I32Xor => {
+                    instructions.push(Instruction::I32Xor);
+                }
+                Operator::I32Shl => {
+                    instructions.push(Instruction::I32Shl);
+                }
+                Operator::I32ShrS => {
+                    instructions.push(Instruction::I32ShrS);
+                }
+                Operator::I32ShrU => {
+                    instructions.push(Instruction::I32ShrU);
+                }
+                Operator::I64Const { value } => {
+                    instructions.push(Instruction::I64Const(value));
+                }
+                Operator::I64Add => {
+                    instructions.push(Instruction::I64Add);
+                }
+                Operator::I64Sub => {
+                    instructions.push(Instruction::I64Sub);
+                }
+                Operator::I64Mul => {
+                    instructions.push(Instruction::I64Mul);
+                }
+                Operator::I64And => {
+                    instructions.push(Instruction::I64And);
+                }
+                Operator::I64Or => {
+                    instructions.push(Instruction::I64Or);
+                }
+                Operator::I64Xor => {
+                    instructions.push(Instruction::I64Xor);
+                }
+                Operator::I64Shl => {
+                    instructions.push(Instruction::I64Shl);
+                }
+                Operator::I64ShrS => {
+                    instructions.push(Instruction::I64ShrS);
+                }
+                Operator::I64ShrU => {
+                    instructions.push(Instruction::I64ShrU);
+                }
+                Operator::I32Eq => {
+                    instructions.push(Instruction::I32Eq);
+                }
+                Operator::I32Ne => {
+                    instructions.push(Instruction::I32Ne);
+                }
+                Operator::I32LtS => {
+                    instructions.push(Instruction::I32LtS);
+                }
+                Operator::I32LtU => {
+                    instructions.push(Instruction::I32LtU);
+                }
+                Operator::I32GtS => {
+                    instructions.push(Instruction::I32GtS);
+                }
+                Operator::I32GtU => {
+                    instructions.push(Instruction::I32GtU);
+                }
+                Operator::I32LeS => {
+                    instructions.push(Instruction::I32LeS);
+                }
+                Operator::I32LeU => {
+                    instructions.push(Instruction::I32LeU);
+                }
+                Operator::I32GeS => {
+                    instructions.push(Instruction::I32GeS);
+                }
+                Operator::I32GeU => {
+                    instructions.push(Instruction::I32GeU);
+                }
+                Operator::I64Eq => {
+                    instructions.push(Instruction::I64Eq);
+                }
+                Operator::I64Ne => {
+                    instructions.push(Instruction::I64Ne);
+                }
+                Operator::I64LtS => {
+                    instructions.push(Instruction::I64LtS);
+                }
+                Operator::I64LtU => {
+                    instructions.push(Instruction::I64LtU);
+                }
+                Operator::I64GtS => {
+                    instructions.push(Instruction::I64GtS);
+                }
+                Operator::I64GtU => {
+                    instructions.push(Instruction::I64GtU);
+                }
+                Operator::I64LeS => {
+                    instructions.push(Instruction::I64LeS);
+                }
+                Operator::I64LeU => {
+                    instructions.push(Instruction::I64LeU);
+                }
+                Operator::I64GeS => {
+                    instructions.push(Instruction::I64GeS);
+                }
+                Operator::I64GeU => {
+                    instructions.push(Instruction::I64GeU);
+                }
+                Operator::I32DivS => {
+                    instructions.push(Instruction::I32DivS);
+                }
+                Operator::I32DivU => {
+                    instructions.push(Instruction::I32DivU);
+                }
+                Operator::I32RemS => {
+                    instructions.push(Instruction::I32RemS);
+                }
+                Operator::I32RemU => {
+                    instructions.push(Instruction::I32RemU);
+                }
+                Operator::I64DivS => {
+                    instructions.push(Instruction::I64DivS);
+                }
+                Operator::I64DivU => {
+                    instructions.push(Instruction::I64DivU);
+                }
+                Operator::I64RemS => {
+                    instructions.push(Instruction::I64RemS);
+                }
+                Operator::I64RemU => {
+                    instructions.push(Instruction::I64RemU);
+                }
+                Operator::I32Eqz => {
+                    instructions.push(Instruction::I32Eqz);
+                }
+                Operator::I32Clz => {
+                    instructions.push(Instruction::I32Clz);
+                }
+                Operator::I32Ctz => {
+                    instructions.push(Instruction::I32Ctz);
+                }
+                Operator::I32Popcnt => {
+                    instructions.push(Instruction::I32Popcnt);
+                }
+                Operator::I64Eqz => {
+                    instructions.push(Instruction::I64Eqz);
+                }
+                Operator::I64Clz => {
+                    instructions.push(Instruction::I64Clz);
+                }
+                Operator::I64Ctz => {
+                    instructions.push(Instruction::I64Ctz);
+                }
+                Operator::I64Popcnt => {
+                    instructions.push(Instruction::I64Popcnt);
+                }
+                Operator::Select => {
+                    instructions.push(Instruction::Select);
+                }
+                Operator::LocalGet { local_index } => {
+                    instructions.push(Instruction::LocalGet(local_index));
+                }
+                Operator::LocalSet { local_index } => {
+                    instructions.push(Instruction::LocalSet(local_index));
+                }
+                Operator::LocalTee { local_index } => {
+                    instructions.push(Instruction::LocalTee(local_index));
+                }
+                Operator::I32Load { memarg } => {
+                    instructions.push(Instruction::I32Load {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Store { memarg } => {
+                    instructions.push(Instruction::I32Store {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load { memarg } => {
+                    instructions.push(Instruction::I64Load {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Store { memarg } => {
+                    instructions.push(Instruction::I64Store {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                // Control flow (Phase 14)
+                Operator::Block { blockty } => {
+                    let block_type = convert_blocktype(blockty)?;
+                    let body = parse_instructions(reader)?;
+                    instructions.push(Instruction::Block { block_type, body });
+                }
+                Operator::Loop { blockty } => {
+                    let block_type = convert_blocktype(blockty)?;
+                    let body = parse_instructions(reader)?;
+                    instructions.push(Instruction::Loop { block_type, body });
+                }
+                Operator::If { blockty } => {
+                    let block_type = convert_blocktype(blockty)?;
+                    let then_body = parse_instructions(reader)?;
+                    // else_body will be set if we encounter an Else
+                    instructions.push(Instruction::If {
+                        block_type,
+                        then_body,
+                        else_body: vec![],
+                    });
+                }
+                Operator::Else => {
+                    // Parse else body and return, parent If will be updated
+                    let else_body_parsed = parse_instructions(reader)?;
+                    // Update the last instruction (which should be If) with the else body
+                    if let Some(Instruction::If { else_body, .. }) = instructions.last_mut() {
+                        *else_body = else_body_parsed;
+                    }
+                    return Ok(instructions);
+                }
+                Operator::End => {
+                    // End terminates the current block/loop/if
+                    return Ok(instructions);
+                }
+                Operator::Br { relative_depth } => {
+                    instructions.push(Instruction::Br(relative_depth));
+                }
+                Operator::BrIf { relative_depth } => {
+                    instructions.push(Instruction::BrIf(relative_depth));
+                }
+                Operator::BrTable { targets } => {
+                    // Parse all targets (excluding default)
+                    let targets_vec: Vec<u32> = targets.targets().collect::<Result<Vec<_>, _>>()?;
+                    let default = targets.default();
+                    instructions.push(Instruction::BrTable {
+                        targets: targets_vec,
+                        default,
+                    });
+                }
+                Operator::Return => {
+                    instructions.push(Instruction::Return);
+                }
+                Operator::Call { function_index } => {
+                    instructions.push(Instruction::Call(function_index));
+                }
+                Operator::CallIndirect {
+                    type_index,
+                    table_index,
+                    ..
+                } => {
+                    instructions.push(Instruction::CallIndirect {
+                        type_idx: type_index,
+                        table_idx: table_index,
+                    });
+                }
+                Operator::Unreachable => {
+                    instructions.push(Instruction::Unreachable);
+                }
+                Operator::Nop => {
+                    instructions.push(Instruction::Nop);
+                }
+                _ => {
+                    // For now, we handle the main instructions
+                    // Other instructions will be added as needed
+                }
+            }
+        }
+
+        Ok(instructions)
+    }
+
     /// Parse a WebAssembly text (WAT) module
     pub fn parse_wat(text: &str) -> Result<Module> {
         // Use the wat crate to convert WAT to WASM binary
@@ -660,6 +738,21 @@ pub mod parse {
             ValType::F32 => ValueType::F32,
             ValType::F64 => ValueType::F64,
             _ => ValueType::I32, // Default to I32 for unsupported types in Phase 2
+        }
+    }
+
+    /// Convert wasmparser::BlockType to our BlockType
+    fn convert_blocktype(bt: wasmparser::BlockType) -> Result<BlockType> {
+        match bt {
+            wasmparser::BlockType::Empty => Ok(BlockType::Empty),
+            wasmparser::BlockType::Type(vt) => Ok(BlockType::Value(convert_valtype(vt))),
+            wasmparser::BlockType::FuncType(_) => {
+                // Function type blocks require looking up the type in the type section
+                // For now, we'll return an error as this is complex
+                Err(anyhow!(
+                    "Function type blocks not yet supported in parser (BlockType::FuncType)"
+                ))
+            }
         }
     }
 }
