@@ -87,7 +87,9 @@ pub enum BlockType {
     Value(ValueType),
     /// Full function signature (for multi-value blocks)
     Func {
+        /// Input parameter types
         params: Vec<ValueType>,
+        /// Output result types
         results: Vec<ValueType>,
     },
 }
@@ -247,18 +249,25 @@ pub enum Instruction {
     // Control flow instructions (Phase 14)
     /// Block structured control
     Block {
+        /// Block result type signature
         block_type: BlockType,
+        /// Instructions in block body
         body: Vec<Instruction>,
     },
     /// Loop structured control
     Loop {
+        /// Loop result type signature
         block_type: BlockType,
+        /// Instructions in loop body
         body: Vec<Instruction>,
     },
     /// If-then-else conditional
     If {
+        /// Conditional result type signature
         block_type: BlockType,
+        /// Instructions in then branch
         then_body: Vec<Instruction>,
+        /// Instructions in else branch
         else_body: Vec<Instruction>,
     },
     /// Unconditional branch
@@ -266,13 +275,23 @@ pub enum Instruction {
     /// Conditional branch
     BrIf(u32),
     /// Branch table
-    BrTable { targets: Vec<u32>, default: u32 },
+    BrTable {
+        /// Branch target label depths
+        targets: Vec<u32>,
+        /// Default label depth
+        default: u32,
+    },
     /// Return from function
     Return,
     /// Direct function call
     Call(u32),
     /// Indirect function call
-    CallIndirect { type_idx: u32, table_idx: u32 },
+    CallIndirect {
+        /// Type index for signature
+        type_idx: u32,
+        /// Table index
+        table_idx: u32,
+    },
     /// Unreachable (trap)
     Unreachable,
     /// No operation
@@ -648,7 +667,7 @@ pub mod parse {
 /// Module encoding functionality: Encode LOOM's internal representation back to WebAssembly
 pub mod encode {
 
-    use super::{Instruction, Module, ValueType};
+    use super::{BlockType, Instruction, Module, ValueType};
     use anyhow::{Context, Result};
     use wasm_encoder::{
         CodeSection, ConstExpr, Function as EncoderFunction, FunctionSection, GlobalSection,
@@ -949,6 +968,78 @@ pub mod encode {
                             },
                         ));
                     }
+                    // Control flow instructions (Phase 14)
+                    Instruction::Block { block_type, body } => {
+                        let bt = convert_blocktype_to_encoder(block_type);
+                        func_body.instruction(&EncoderInstruction::Block(bt));
+                        // Recursively encode body
+                        for nested_instr in body {
+                            encode_instruction_recursive(nested_instr, &mut func_body);
+                        }
+                        func_body.instruction(&EncoderInstruction::End);
+                    }
+                    Instruction::Loop { block_type, body } => {
+                        let bt = convert_blocktype_to_encoder(block_type);
+                        func_body.instruction(&EncoderInstruction::Loop(bt));
+                        // Recursively encode body
+                        for nested_instr in body {
+                            encode_instruction_recursive(nested_instr, &mut func_body);
+                        }
+                        func_body.instruction(&EncoderInstruction::End);
+                    }
+                    Instruction::If {
+                        block_type,
+                        then_body,
+                        else_body,
+                    } => {
+                        let bt = convert_blocktype_to_encoder(block_type);
+                        func_body.instruction(&EncoderInstruction::If(bt));
+                        // Encode then body
+                        for nested_instr in then_body {
+                            encode_instruction_recursive(nested_instr, &mut func_body);
+                        }
+                        // Encode else body if non-empty
+                        if !else_body.is_empty() {
+                            func_body.instruction(&EncoderInstruction::Else);
+                            for nested_instr in else_body {
+                                encode_instruction_recursive(nested_instr, &mut func_body);
+                            }
+                        }
+                        func_body.instruction(&EncoderInstruction::End);
+                    }
+                    Instruction::Br(depth) => {
+                        func_body.instruction(&EncoderInstruction::Br(*depth));
+                    }
+                    Instruction::BrIf(depth) => {
+                        func_body.instruction(&EncoderInstruction::BrIf(*depth));
+                    }
+                    Instruction::BrTable { targets, default } => {
+                        func_body.instruction(&EncoderInstruction::BrTable(
+                            targets.as_slice().into(),
+                            *default,
+                        ));
+                    }
+                    Instruction::Return => {
+                        func_body.instruction(&EncoderInstruction::Return);
+                    }
+                    Instruction::Call(func_idx) => {
+                        func_body.instruction(&EncoderInstruction::Call(*func_idx));
+                    }
+                    Instruction::CallIndirect {
+                        type_idx,
+                        table_idx,
+                    } => {
+                        func_body.instruction(&EncoderInstruction::CallIndirect {
+                            type_index: *type_idx,
+                            table_index: *table_idx,
+                        });
+                    }
+                    Instruction::Unreachable => {
+                        func_body.instruction(&EncoderInstruction::Unreachable);
+                    }
+                    Instruction::Nop => {
+                        func_body.instruction(&EncoderInstruction::Nop);
+                    }
                     Instruction::End => {
                         func_body.instruction(&EncoderInstruction::End);
                     }
@@ -980,6 +1071,315 @@ pub mod encode {
             ValueType::F64 => ValType::F64,
         }
     }
+
+    /// Convert our BlockType to wasm-encoder BlockType
+    fn convert_blocktype_to_encoder(bt: &BlockType) -> wasm_encoder::BlockType {
+        match bt {
+            BlockType::Empty => wasm_encoder::BlockType::Empty,
+            BlockType::Value(vt) => wasm_encoder::BlockType::Result(convert_to_valtype(*vt)),
+            BlockType::Func {
+                params: _,
+                results: _,
+            } => {
+                // For function types, we need a type index
+                // This is a limitation - we would need to track function types in the module
+                // For now, if we have a complex signature, we'll panic
+                // This should be handled by proper type section management
+                panic!("Complex function type blocks not yet supported in encoder")
+            }
+        }
+    }
+
+    /// Recursively encode a single instruction (helper for nested control flow)
+    fn encode_instruction_recursive(instr: &Instruction, func_body: &mut wasm_encoder::Function) {
+        use wasm_encoder::Instruction as EncoderInstruction;
+
+        match instr {
+            Instruction::I32Const(value) => {
+                func_body.instruction(&EncoderInstruction::I32Const(*value));
+            }
+            Instruction::I32Add => {
+                func_body.instruction(&EncoderInstruction::I32Add);
+            }
+            Instruction::I32Sub => {
+                func_body.instruction(&EncoderInstruction::I32Sub);
+            }
+            Instruction::I32Mul => {
+                func_body.instruction(&EncoderInstruction::I32Mul);
+            }
+            Instruction::I32And => {
+                func_body.instruction(&EncoderInstruction::I32And);
+            }
+            Instruction::I32Or => {
+                func_body.instruction(&EncoderInstruction::I32Or);
+            }
+            Instruction::I32Xor => {
+                func_body.instruction(&EncoderInstruction::I32Xor);
+            }
+            Instruction::I32Shl => {
+                func_body.instruction(&EncoderInstruction::I32Shl);
+            }
+            Instruction::I32ShrS => {
+                func_body.instruction(&EncoderInstruction::I32ShrS);
+            }
+            Instruction::I32ShrU => {
+                func_body.instruction(&EncoderInstruction::I32ShrU);
+            }
+            Instruction::I64Const(value) => {
+                func_body.instruction(&EncoderInstruction::I64Const(*value));
+            }
+            Instruction::I64Add => {
+                func_body.instruction(&EncoderInstruction::I64Add);
+            }
+            Instruction::I64Sub => {
+                func_body.instruction(&EncoderInstruction::I64Sub);
+            }
+            Instruction::I64Mul => {
+                func_body.instruction(&EncoderInstruction::I64Mul);
+            }
+            Instruction::I64And => {
+                func_body.instruction(&EncoderInstruction::I64And);
+            }
+            Instruction::I64Or => {
+                func_body.instruction(&EncoderInstruction::I64Or);
+            }
+            Instruction::I64Xor => {
+                func_body.instruction(&EncoderInstruction::I64Xor);
+            }
+            Instruction::I64Shl => {
+                func_body.instruction(&EncoderInstruction::I64Shl);
+            }
+            Instruction::I64ShrS => {
+                func_body.instruction(&EncoderInstruction::I64ShrS);
+            }
+            Instruction::I64ShrU => {
+                func_body.instruction(&EncoderInstruction::I64ShrU);
+            }
+            Instruction::I32Eq => {
+                func_body.instruction(&EncoderInstruction::I32Eq);
+            }
+            Instruction::I32Ne => {
+                func_body.instruction(&EncoderInstruction::I32Ne);
+            }
+            Instruction::I32LtS => {
+                func_body.instruction(&EncoderInstruction::I32LtS);
+            }
+            Instruction::I32LtU => {
+                func_body.instruction(&EncoderInstruction::I32LtU);
+            }
+            Instruction::I32GtS => {
+                func_body.instruction(&EncoderInstruction::I32GtS);
+            }
+            Instruction::I32GtU => {
+                func_body.instruction(&EncoderInstruction::I32GtU);
+            }
+            Instruction::I32LeS => {
+                func_body.instruction(&EncoderInstruction::I32LeS);
+            }
+            Instruction::I32LeU => {
+                func_body.instruction(&EncoderInstruction::I32LeU);
+            }
+            Instruction::I32GeS => {
+                func_body.instruction(&EncoderInstruction::I32GeS);
+            }
+            Instruction::I32GeU => {
+                func_body.instruction(&EncoderInstruction::I32GeU);
+            }
+            Instruction::I64Eq => {
+                func_body.instruction(&EncoderInstruction::I64Eq);
+            }
+            Instruction::I64Ne => {
+                func_body.instruction(&EncoderInstruction::I64Ne);
+            }
+            Instruction::I64LtS => {
+                func_body.instruction(&EncoderInstruction::I64LtS);
+            }
+            Instruction::I64LtU => {
+                func_body.instruction(&EncoderInstruction::I64LtU);
+            }
+            Instruction::I64GtS => {
+                func_body.instruction(&EncoderInstruction::I64GtS);
+            }
+            Instruction::I64GtU => {
+                func_body.instruction(&EncoderInstruction::I64GtU);
+            }
+            Instruction::I64LeS => {
+                func_body.instruction(&EncoderInstruction::I64LeS);
+            }
+            Instruction::I64LeU => {
+                func_body.instruction(&EncoderInstruction::I64LeU);
+            }
+            Instruction::I64GeS => {
+                func_body.instruction(&EncoderInstruction::I64GeS);
+            }
+            Instruction::I64GeU => {
+                func_body.instruction(&EncoderInstruction::I64GeU);
+            }
+            Instruction::I32DivS => {
+                func_body.instruction(&EncoderInstruction::I32DivS);
+            }
+            Instruction::I32DivU => {
+                func_body.instruction(&EncoderInstruction::I32DivU);
+            }
+            Instruction::I32RemS => {
+                func_body.instruction(&EncoderInstruction::I32RemS);
+            }
+            Instruction::I32RemU => {
+                func_body.instruction(&EncoderInstruction::I32RemU);
+            }
+            Instruction::I64DivS => {
+                func_body.instruction(&EncoderInstruction::I64DivS);
+            }
+            Instruction::I64DivU => {
+                func_body.instruction(&EncoderInstruction::I64DivU);
+            }
+            Instruction::I64RemS => {
+                func_body.instruction(&EncoderInstruction::I64RemS);
+            }
+            Instruction::I64RemU => {
+                func_body.instruction(&EncoderInstruction::I64RemU);
+            }
+            Instruction::I32Eqz => {
+                func_body.instruction(&EncoderInstruction::I32Eqz);
+            }
+            Instruction::I32Clz => {
+                func_body.instruction(&EncoderInstruction::I32Clz);
+            }
+            Instruction::I32Ctz => {
+                func_body.instruction(&EncoderInstruction::I32Ctz);
+            }
+            Instruction::I32Popcnt => {
+                func_body.instruction(&EncoderInstruction::I32Popcnt);
+            }
+            Instruction::I64Eqz => {
+                func_body.instruction(&EncoderInstruction::I64Eqz);
+            }
+            Instruction::I64Clz => {
+                func_body.instruction(&EncoderInstruction::I64Clz);
+            }
+            Instruction::I64Ctz => {
+                func_body.instruction(&EncoderInstruction::I64Ctz);
+            }
+            Instruction::I64Popcnt => {
+                func_body.instruction(&EncoderInstruction::I64Popcnt);
+            }
+            Instruction::Select => {
+                func_body.instruction(&EncoderInstruction::Select);
+            }
+            Instruction::LocalGet(idx) => {
+                func_body.instruction(&EncoderInstruction::LocalGet(*idx));
+            }
+            Instruction::LocalSet(idx) => {
+                func_body.instruction(&EncoderInstruction::LocalSet(*idx));
+            }
+            Instruction::LocalTee(idx) => {
+                func_body.instruction(&EncoderInstruction::LocalTee(*idx));
+            }
+            Instruction::I32Load { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Store { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Store(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Store { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Store(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            // Control flow instructions (Phase 14)
+            Instruction::Block { block_type, body } => {
+                let bt = convert_blocktype_to_encoder(block_type);
+                func_body.instruction(&EncoderInstruction::Block(bt));
+                // Recursively encode body
+                for nested_instr in body {
+                    encode_instruction_recursive(nested_instr, func_body);
+                }
+                func_body.instruction(&EncoderInstruction::End);
+            }
+            Instruction::Loop { block_type, body } => {
+                let bt = convert_blocktype_to_encoder(block_type);
+                func_body.instruction(&EncoderInstruction::Loop(bt));
+                // Recursively encode body
+                for nested_instr in body {
+                    encode_instruction_recursive(nested_instr, func_body);
+                }
+                func_body.instruction(&EncoderInstruction::End);
+            }
+            Instruction::If {
+                block_type,
+                then_body,
+                else_body,
+            } => {
+                let bt = convert_blocktype_to_encoder(block_type);
+                func_body.instruction(&EncoderInstruction::If(bt));
+                // Encode then body
+                for nested_instr in then_body {
+                    encode_instruction_recursive(nested_instr, func_body);
+                }
+                // Encode else body if non-empty
+                if !else_body.is_empty() {
+                    func_body.instruction(&EncoderInstruction::Else);
+                    for nested_instr in else_body {
+                        encode_instruction_recursive(nested_instr, func_body);
+                    }
+                }
+                func_body.instruction(&EncoderInstruction::End);
+            }
+            Instruction::Br(depth) => {
+                func_body.instruction(&EncoderInstruction::Br(*depth));
+            }
+            Instruction::BrIf(depth) => {
+                func_body.instruction(&EncoderInstruction::BrIf(*depth));
+            }
+            Instruction::BrTable { targets, default } => {
+                func_body.instruction(&EncoderInstruction::BrTable(
+                    targets.as_slice().into(),
+                    *default,
+                ));
+            }
+            Instruction::Return => {
+                func_body.instruction(&EncoderInstruction::Return);
+            }
+            Instruction::Call(func_idx) => {
+                func_body.instruction(&EncoderInstruction::Call(*func_idx));
+            }
+            Instruction::CallIndirect {
+                type_idx,
+                table_idx,
+            } => {
+                func_body.instruction(&EncoderInstruction::CallIndirect {
+                    type_index: *type_idx,
+                    table_index: *table_idx,
+                });
+            }
+            Instruction::Unreachable => {
+                func_body.instruction(&EncoderInstruction::Unreachable);
+            }
+            Instruction::Nop => {
+                func_body.instruction(&EncoderInstruction::Nop);
+            }
+            Instruction::End => {
+                func_body.instruction(&EncoderInstruction::End);
+            }
+        }
+    }
 }
 
 /// Term construction functionality: Convert WebAssembly instructions to ISLE terms
@@ -988,13 +1388,14 @@ pub mod terms {
     use super::{BlockType, Instruction, Value, ValueType};
     use anyhow::{anyhow, Result};
     use loom_isle::{
-        i32_load, i32_store, i64_load, i64_store, iadd32, iadd64, iand32, iand64, iclz32, iclz64,
-        iconst32, iconst64, ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32, ieq64,
-        ieqz32, ieqz64, iges32, iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32,
-        iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64,
-        ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, ishl32, ishl64,
-        ishrs32, ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set,
-        local_tee, select_instr, Imm32, Imm64,
+        block, br, br_if, br_table, call, call_indirect, i32_load, i32_store, i64_load, i64_store,
+        iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64,
+        idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
+        iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
+        ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
+        ipopcnt64, irems32, irems64, iremu32, iremu64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
+        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
+        nop, return_val, select_instr, unreachable, Imm32, Imm64,
     };
 
     /// Convert a sequence of WebAssembly instructions to ISLE terms
@@ -1532,6 +1933,86 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store address"))?;
                     stack.push(i64_store(addr, value, *offset, *align));
                 }
+                // Control flow instructions (Phase 14)
+                Instruction::Block { block_type, body } => {
+                    // Convert body instructions to terms recursively
+                    let body_terms = instructions_to_terms(body)?;
+                    let bt = convert_blocktype_to_isle(block_type);
+                    stack.push(block(None, bt, body_terms));
+                }
+                Instruction::Loop { block_type, body } => {
+                    // Convert body instructions to terms recursively
+                    let body_terms = instructions_to_terms(body)?;
+                    let bt = convert_blocktype_to_isle(block_type);
+                    stack.push(loop_construct(None, bt, body_terms));
+                }
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    // Pop condition from stack
+                    let condition = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for if condition"))?;
+
+                    // Convert bodies to terms
+                    let then_terms = instructions_to_terms(then_body)?;
+                    let else_terms = instructions_to_terms(else_body)?;
+                    let bt = convert_blocktype_to_isle(block_type);
+
+                    stack.push(if_then_else(None, bt, condition, then_terms, else_terms));
+                }
+                Instruction::Br(depth) => {
+                    // Branch may have a value on stack for the target block
+                    // For now, we'll assume no value (Empty block type)
+                    // TODO: Proper handling requires tracking block result types
+                    stack.push(br(*depth, None));
+                }
+                Instruction::BrIf(depth) => {
+                    // Pop condition from stack
+                    let condition = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for br_if condition"))?;
+                    // Branch may have a value - for now assume none
+                    stack.push(br_if(*depth, condition, None));
+                }
+                Instruction::BrTable { targets, default } => {
+                    // Pop index from stack
+                    let index = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for br_table index"))?;
+                    // Branch may have a value - for now assume none
+                    stack.push(br_table(targets.clone(), *default, index, None));
+                }
+                Instruction::Return => {
+                    // Collect all remaining values on stack as return values
+                    let values = std::mem::take(&mut stack);
+                    stack.push(return_val(values));
+                }
+                Instruction::Call(func_idx) => {
+                    // TODO: Proper call handling requires knowing function signature
+                    // to pop correct number of arguments from stack
+                    // For now, assume no arguments
+                    stack.push(call(*func_idx, vec![]));
+                }
+                Instruction::CallIndirect {
+                    type_idx,
+                    table_idx,
+                } => {
+                    // Pop table offset from stack
+                    let table_offset = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for call_indirect offset"))?;
+                    // TODO: Proper handling requires knowing type signature for arguments
+                    stack.push(call_indirect(*table_idx, *type_idx, table_offset, vec![]));
+                }
+                Instruction::Unreachable => {
+                    stack.push(unreachable());
+                }
+                Instruction::Nop => {
+                    stack.push(nop());
+                }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
                 }
@@ -1539,6 +2020,34 @@ pub mod terms {
         }
 
         Ok(stack)
+    }
+
+    /// Convert our BlockType to loom-isle BlockType
+    fn convert_blocktype_to_isle(bt: &BlockType) -> loom_isle::BlockType {
+        match bt {
+            BlockType::Empty => loom_isle::BlockType::Empty,
+            BlockType::Value(vt) => loom_isle::BlockType::Value(convert_valuetype_to_isle(*vt)),
+            BlockType::Func { params, results } => loom_isle::BlockType::Func {
+                params: params
+                    .iter()
+                    .map(|v| convert_valuetype_to_isle(*v))
+                    .collect(),
+                results: results
+                    .iter()
+                    .map(|v| convert_valuetype_to_isle(*v))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Convert our ValueType to loom-isle ValueType
+    fn convert_valuetype_to_isle(vt: ValueType) -> loom_isle::ValueType {
+        match vt {
+            ValueType::I32 => loom_isle::ValueType::I32,
+            ValueType::I64 => loom_isle::ValueType::I64,
+            ValueType::F32 => loom_isle::ValueType::F32,
+            ValueType::F64 => loom_isle::ValueType::F64,
+        }
     }
 
     /// Convert ISLE terms back to WebAssembly instructions
