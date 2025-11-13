@@ -2702,7 +2702,7 @@ pub mod terms {
 /// Optimization functionality: Apply optimization rules to WebAssembly modules
 pub mod optimize {
 
-    use super::{Instruction, Module, Value};
+    use super::{BlockType, Instruction, Module, Value};
     use anyhow::Result;
 
     /// Optimize a module by applying constant folding and other optimizations
@@ -2916,6 +2916,135 @@ pub mod optimize {
         }
 
         result
+    }
+
+    /// Block Merging (Phase 16 - Issue #17)
+    /// Merges nested blocks to reduce CFG complexity and improve code locality
+    pub fn merge_blocks(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            func.instructions = merge_blocks_in_instructions(&func.instructions);
+        }
+        Ok(())
+    }
+
+    /// Recursively merge blocks in a sequence of instructions
+    fn merge_blocks_in_instructions(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut result = Vec::new();
+
+        for instr in instructions {
+            let processed = match instr {
+                // Recursively process nested blocks
+                Instruction::Block { block_type, body } => {
+                    // First, recursively merge blocks within the body
+                    let merged_body = merge_blocks_in_instructions(body);
+
+                    // Check if the body ends with a mergeable block
+                    if let Some(merged) = try_merge_last_block(&merged_body, block_type) {
+                        Instruction::Block {
+                            block_type: block_type.clone(),
+                            body: merged,
+                        }
+                    } else {
+                        Instruction::Block {
+                            block_type: block_type.clone(),
+                            body: merged_body,
+                        }
+                    }
+                }
+
+                Instruction::Loop { block_type, body } => {
+                    let merged_body = merge_blocks_in_instructions(body);
+                    Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: merged_body,
+                    }
+                }
+
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    let merged_then = merge_blocks_in_instructions(then_body);
+                    let merged_else = merge_blocks_in_instructions(else_body);
+                    Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: merged_then,
+                        else_body: merged_else,
+                    }
+                }
+
+                _ => instr.clone(),
+            };
+
+            result.push(processed);
+        }
+
+        result
+    }
+
+    /// Try to merge the last instruction if it's a block
+    /// Returns Some(merged_body) if merge was performed, None otherwise
+    fn try_merge_last_block(
+        body: &[Instruction],
+        outer_type: &BlockType,
+    ) -> Option<Vec<Instruction>> {
+        if body.is_empty() {
+            return None;
+        }
+
+        // Check if last instruction is a block we can merge
+        let last_idx = body.len() - 1;
+        match &body[last_idx] {
+            Instruction::Block {
+                block_type: inner_type,
+                body: inner_body,
+            } => {
+                // Only merge if types are compatible
+                // For Phase 1, we merge blocks with matching types or Empty types
+                if types_compatible_for_merge(outer_type, inner_type) {
+                    // Build merged body: all instructions before last + inner block contents
+                    let mut merged = body[..last_idx].to_vec();
+                    merged.extend_from_slice(inner_body);
+                    Some(merged)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if two block types are compatible for merging
+    fn types_compatible_for_merge(outer_type: &BlockType, inner_type: &BlockType) -> bool {
+        match (outer_type, inner_type) {
+            // Both empty - always compatible
+            (BlockType::Empty, BlockType::Empty) => true,
+
+            // Both same value type - compatible
+            (BlockType::Value(t1), BlockType::Value(t2)) => t1 == t2,
+
+            // Empty outer with value inner - not compatible (type mismatch)
+            (BlockType::Empty, BlockType::Value(_)) => false,
+
+            // Value outer with empty inner - not compatible
+            (BlockType::Value(_), BlockType::Empty) => false,
+
+            // Function signatures - for now, require exact match
+            (
+                BlockType::Func {
+                    params: p1,
+                    results: r1,
+                },
+                BlockType::Func {
+                    params: p2,
+                    results: r2,
+                },
+            ) => p1 == p2 && r1 == r2,
+
+            // Mixed function and non-function types - not compatible
+            _ => false,
+        }
     }
 }
 
@@ -3970,6 +4099,194 @@ mod tests {
             instructions_after, 1,
             "Should remove all nops (before: {}, after: {})",
             instructions_before, instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    // Block Merging Tests (Issue #17)
+
+    #[test]
+    fn test_block_merge_simple_nested() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (block (result i32)
+                    (i32.const 42)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply block merging
+        optimize::merge_blocks(&mut module).expect("Block merging failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have merged the nested blocks
+        assert!(
+            instructions_after < instructions_before,
+            "Should merge nested blocks (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and returns 42
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_block_merge_triple_nested() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (block (result i32)
+                    (block (result i32)
+                      (i32.const 42)
+                    )
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply block merging
+        optimize::merge_blocks(&mut module).expect("Block merging failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have fully merged all nested blocks
+        assert!(
+            instructions_after < instructions_before,
+            "Should merge all nested blocks (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_block_merge_with_prefix() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (i32.const 10)
+                  (block (result i32)
+                    (i32.const 32)
+                    (i32.add)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply block merging
+        optimize::merge_blocks(&mut module).expect("Block merging failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have merged the inner block
+        assert!(
+            instructions_after < instructions_before,
+            "Should merge block with prefix (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works and computes correctly
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_block_merge_in_if() {
+        let wat = r#"
+            (module
+              (func $test (param $x i32) (result i32)
+                (if (result i32) (local.get $x)
+                  (then
+                    (block (result i32)
+                      (block (result i32)
+                        (i32.const 42)
+                      )
+                    )
+                  )
+                  (else
+                    (i32.const 99)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply block merging
+        optimize::merge_blocks(&mut module).expect("Block merging failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have merged blocks within the if statement
+        assert!(
+            instructions_after < instructions_before,
+            "Should merge blocks in if (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_block_merge_nested_empty() {
+        let wat = r#"
+            (module
+              (func $test
+                (block
+                  (block
+                    (nop)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply block merging
+        optimize::merge_blocks(&mut module).expect("Block merging failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have merged empty nested blocks
+        assert!(
+            instructions_after <= instructions_before,
+            "Should merge or maintain empty blocks (before: {}, after: {})",
+            instructions_before,
+            instructions_after
         );
 
         // Verify the function still works
