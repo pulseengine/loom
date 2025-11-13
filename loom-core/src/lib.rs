@@ -2011,9 +2011,9 @@ pub mod terms {
                     let val = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for local.tee"))?;
-                    let tee_term = local_tee(*idx, val.clone());
-                    stack.push(tee_term);
-                    stack.push(val); // local.tee keeps value on stack
+                    // local.tee returns the value, so we only push the tee term
+                    // The tee term itself represents both the assignment and the value on stack
+                    stack.push(local_tee(*idx, val));
                 }
                 // Memory operations (Phase 13)
                 Instruction::I32Load { offset, align } => {

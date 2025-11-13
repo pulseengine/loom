@@ -31,7 +31,9 @@
       "Bash(./target/release/loom optimize:*)",
       "Bash(wasm-tools validate:*)",
       "WebFetch(domain:webassembly.github.io)",
-      "Bash(cargo fmt:*)"
+      "Bash(cargo fmt:*)",
+      "Bash(wasm-tools parse:*)",
+      "Bash(1 wasm-tools print /tmp/bench_locals_debug.wasm)"
     ],
     "deny": [],
     "ask": []
