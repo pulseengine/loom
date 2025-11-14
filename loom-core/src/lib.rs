@@ -41,6 +41,8 @@ pub struct Global {
     pub value_type: ValueType,
     /// Mutable flag
     pub mutable: bool,
+    /// Initializer expression (Phase 18: Precompute)
+    pub init: Vec<Instruction>,
 }
 
 /// Internal representation of a WebAssembly function
@@ -355,11 +357,18 @@ pub mod parse {
                 }
                 Payload::GlobalSection(reader) => {
                     // Phase 14: Capture global variable declarations
+                    // Phase 18: Also capture initializer expressions for precompute
                     for global in reader.clone() {
                         let global = global?;
+
+                        // Parse the initializer expression
+                        let mut init_reader = global.init_expr.get_operators_reader();
+                        let (init_instructions, _) = parse_instructions(&mut init_reader)?;
+
                         globals.push(super::Global {
                             value_type: convert_valtype(global.ty.content_type),
                             mutable: global.ty.mutable,
+                            init: init_instructions,
                         });
                     }
                 }
@@ -783,6 +792,39 @@ pub mod encode {
         ValType,
     };
 
+    /// Helper function to encode a constant expression (for global initializers)
+    fn encode_const_expr(
+        instructions: &[Instruction],
+        expected_type: ValueType,
+    ) -> Result<ConstExpr> {
+        // Global initializers should be simple constant expressions
+        // For now, we support single constant instructions
+        if instructions.len() != 1 {
+            // Fallback to zero for complex expressions
+            return Ok(match expected_type {
+                ValueType::I32 => ConstExpr::i32_const(0),
+                ValueType::I64 => ConstExpr::i64_const(0),
+                ValueType::F32 => ConstExpr::f32_const(0.0),
+                ValueType::F64 => ConstExpr::f64_const(0.0),
+            });
+        }
+
+        match &instructions[0] {
+            Instruction::I32Const(val) => Ok(ConstExpr::i32_const(*val)),
+            Instruction::I64Const(val) => Ok(ConstExpr::i64_const(*val)),
+            // TODO: Add F32Const and F64Const to Instruction enum
+            _ => {
+                // Fallback to zero for unsupported expressions (including floats)
+                Ok(match expected_type {
+                    ValueType::I32 => ConstExpr::i32_const(0),
+                    ValueType::I64 => ConstExpr::i64_const(0),
+                    ValueType::F32 => ConstExpr::f32_const(0.0),
+                    ValueType::F64 => ConstExpr::f64_const(0.0),
+                })
+            }
+        }
+    }
+
     /// Encode to WebAssembly binary module
     pub fn encode_wasm(module: &Module) -> Result<Vec<u8>> {
         let mut wasm_module = wasm_encoder::Module::new();
@@ -830,6 +872,7 @@ pub mod encode {
         }
 
         // Phase 14: Build global section
+        // Phase 18: Encode actual initializer expressions
         if !module.globals.is_empty() {
             let mut globals = GlobalSection::new();
             for global in &module.globals {
@@ -838,13 +881,8 @@ pub mod encode {
                     mutable: global.mutable,
                     shared: false,
                 };
-                // Globals need init expressions - for now use zero
-                let init_expr = match global.value_type {
-                    ValueType::I32 => ConstExpr::i32_const(0),
-                    ValueType::I64 => ConstExpr::i64_const(0),
-                    ValueType::F32 => ConstExpr::f32_const(0.0),
-                    ValueType::F64 => ConstExpr::f64_const(0.0),
-                };
+                // Encode the initializer expression
+                let init_expr = encode_const_expr(&global.init, global.value_type)?;
                 globals.global(global_type, &init_expr);
             }
             wasm_module.section(&globals);
@@ -3384,6 +3422,61 @@ pub mod optimize {
         }
 
         result
+    }
+
+    /// Precompute / Global Constant Propagation (Phase 19 - Issue #18)
+    ///
+    /// Propagates immutable global constants throughout the module.
+    /// Replaces `global.get $x` with constant values when:
+    /// 1. Global is immutable (!mutable)
+    /// 2. Global has constant initializer
+    ///
+    /// This enables further optimizations:
+    /// - Branch simplification when globals are boolean flags
+    /// - Constant folding when globals are numeric constants
+    /// - Dead code elimination when paths become unreachable
+    ///
+    /// NOTE: Currently a placeholder as GlobalGet/GlobalSet instructions
+    /// are not yet implemented in our Instruction enum. This function
+    /// captures global metadata for future use.
+    pub fn precompute(module: &mut Module) -> Result<()> {
+        use std::collections::HashMap;
+
+        // Phase 1: Analyze globals to find constants
+        let mut _global_constants: HashMap<u32, ConstantValue> = HashMap::new();
+
+        for (idx, global) in module.globals.iter().enumerate() {
+            // Only track immutable globals
+            if global.mutable {
+                continue;
+            }
+
+            // Check if initializer is a single constant instruction
+            if global.init.len() == 1 {
+                let constant = match &global.init[0] {
+                    Instruction::I32Const(val) => Some(ConstantValue::I32(*val)),
+                    Instruction::I64Const(val) => Some(ConstantValue::I64(*val)),
+                    _ => None,
+                };
+
+                if let Some(const_val) = constant {
+                    _global_constants.insert(idx as u32, const_val);
+                }
+            }
+        }
+
+        // Phase 2: Propagation
+        // TODO: Implement when GlobalGet/GlobalSet instructions are added to Instruction enum
+        // For now, this pass is a no-op but infrastructure is in place
+
+        Ok(())
+    }
+
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)] // Used when GlobalGet/GlobalSet are implemented
+    enum ConstantValue {
+        I32(i32),
+        I64(i64),
     }
 }
 

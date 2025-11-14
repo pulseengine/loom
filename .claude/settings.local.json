@@ -33,7 +33,8 @@
       "WebFetch(domain:webassembly.github.io)",
       "Bash(cargo fmt:*)",
       "Bash(wasm-tools parse:*)",
-      "Bash(1 wasm-tools print /tmp/bench_locals_debug.wasm)"
+      "Bash(1 wasm-tools print /tmp/bench_locals_debug.wasm)",
+      "Bash(xargs curl -s)"
     ],
     "deny": [],
     "ask": []
