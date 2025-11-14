@@ -231,6 +231,7 @@ fn optimize_command(
     loom_core::optimize::simplify_branches(&mut module).context("Branch simplification failed")?;
     loom_core::optimize::eliminate_dead_code(&mut module).context("DCE failed")?;
     loom_core::optimize::merge_blocks(&mut module).context("Block merging failed")?;
+    loom_core::optimize::vacuum(&mut module).context("Vacuum cleanup failed")?;
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
     println!("✓ Optimized in {} ms", stats.optimization_time_ms);
 

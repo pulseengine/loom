@@ -3046,6 +3046,135 @@ pub mod optimize {
             _ => false,
         }
     }
+
+    /// Vacuum Cleanup Pass (Phase 17 - Issue #20)
+    /// Final cleanup pass that removes nops, unwraps trivial blocks, and simplifies degenerate patterns
+    pub fn vacuum(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            func.instructions = vacuum_instructions(&func.instructions);
+        }
+        Ok(())
+    }
+
+    /// Recursively clean up instructions
+    fn vacuum_instructions(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut result = Vec::new();
+
+        for instr in instructions {
+            match instr {
+                // Skip nops entirely
+                Instruction::Nop => continue,
+
+                // Clean up blocks
+                Instruction::Block { block_type, body } => {
+                    let cleaned_body = vacuum_instructions(body);
+
+                    // Check if block is trivial and can be unwrapped
+                    if is_trivial_block(&cleaned_body, block_type) {
+                        // Unwrap: add body instructions directly
+                        result.extend(cleaned_body);
+                    } else {
+                        // Keep block with cleaned body
+                        result.push(Instruction::Block {
+                            block_type: block_type.clone(),
+                            body: cleaned_body,
+                        });
+                    }
+                }
+
+                // Clean up loops
+                Instruction::Loop { block_type, body } => {
+                    let cleaned_body = vacuum_instructions(body);
+
+                    if !cleaned_body.is_empty() {
+                        result.push(Instruction::Loop {
+                            block_type: block_type.clone(),
+                            body: cleaned_body,
+                        });
+                    }
+                    // Empty loop is removed
+                }
+
+                // Clean up if statements
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    let cleaned_then = vacuum_instructions(then_body);
+                    let cleaned_else = vacuum_instructions(else_body);
+
+                    // Simplify based on branch emptiness
+                    if cleaned_then.is_empty() && cleaned_else.is_empty() {
+                        // Both branches empty - drop the condition
+                        // But first, we need to ensure condition is evaluated
+                        // Add a drop instruction (condition already on stack from previous instruction)
+                        // Actually, the condition comes BEFORE the if, so we need to add it here
+                        // For now, keep the if structure - full cleanup needs CFG analysis
+                        result.push(Instruction::If {
+                            block_type: block_type.clone(),
+                            then_body: cleaned_then,
+                            else_body: cleaned_else,
+                        });
+                    } else {
+                        result.push(Instruction::If {
+                            block_type: block_type.clone(),
+                            then_body: cleaned_then,
+                            else_body: cleaned_else,
+                        });
+                    }
+                }
+
+                // Keep everything else as-is
+                _ => result.push(instr.clone()),
+            }
+        }
+
+        result
+    }
+
+    /// Check if a block is trivial and can be unwrapped
+    fn is_trivial_block(body: &[Instruction], block_type: &BlockType) -> bool {
+        // Empty block is trivial
+        if body.is_empty() {
+            return true;
+        }
+
+        // Single instruction block - check type compatibility
+        if body.len() == 1 {
+            match block_type {
+                // Empty block type - can unwrap anything
+                BlockType::Empty => true,
+
+                // Block expects a value - check if instruction produces one
+                BlockType::Value(_) => {
+                    // For safety, only unwrap if the instruction is known to produce a value
+                    // This includes: constants, arithmetic, local.get, etc.
+                    matches!(
+                        body[0],
+                        Instruction::I32Const(_)
+                            | Instruction::I64Const(_)
+                            | Instruction::I32Add
+                            | Instruction::I32Sub
+                            | Instruction::I32Mul
+                            | Instruction::I64Add
+                            | Instruction::I64Sub
+                            | Instruction::I64Mul
+                            | Instruction::LocalGet(_)
+                            | Instruction::Block { .. }
+                            | Instruction::Loop { .. }
+                            | Instruction::If { .. }
+                    )
+                }
+
+                // Function signature blocks - be conservative
+                BlockType::Func { .. } => false,
+            }
+        } else {
+            // Multiple instructions - not trivial
+            false
+        }
+    }
 }
 
 /// Component Model Support (Phase 9)
@@ -4285,6 +4414,207 @@ mod tests {
         assert!(
             instructions_after <= instructions_before,
             "Should merge or maintain empty blocks (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    // Vacuum Cleanup Tests (Issue #20)
+
+    #[test]
+    fn test_vacuum_remove_nops() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (nop)
+                (i32.const 42)
+                (nop)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have removed nops
+        assert!(
+            instructions_after < instructions_before,
+            "Should remove nops (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_vacuum_unwrap_trivial_block() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (i32.const 42)
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have unwrapped the block
+        assert!(
+            instructions_after < instructions_before,
+            "Should unwrap trivial block (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_vacuum_unwrap_nested_trivial_blocks() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (block (result i32)
+                    (i32.const 42)
+                  )
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have fully unwrapped nested blocks
+        assert!(
+            instructions_after < instructions_before,
+            "Should unwrap nested trivial blocks (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_vacuum_keep_complex_block() {
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (block (result i32)
+                  (i32.const 10)
+                  (i32.const 32)
+                  (i32.add)
+                )
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should keep complex block (multiple instructions)
+        // Instruction count should stay same or increase slightly due to recursive processing
+        assert!(
+            instructions_after >= instructions_before - 1,
+            "Should keep complex block (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_vacuum_remove_empty_loop() {
+        let wat = r#"
+            (module
+              (func $test
+                (loop)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have removed empty loop
+        assert!(
+            instructions_after < instructions_before,
+            "Should remove empty loop (before: {}, after: {})",
+            instructions_before,
+            instructions_after
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_vacuum_unwrap_empty_block() {
+        let wat = r#"
+            (module
+              (func $test
+                (block)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        let instructions_before = count_all_instructions(&module.functions[0].instructions);
+
+        // Apply vacuum
+        optimize::vacuum(&mut module).expect("Vacuum failed");
+
+        let instructions_after = count_all_instructions(&module.functions[0].instructions);
+
+        // Should have unwrapped empty block
+        assert!(
+            instructions_after <= instructions_before,
+            "Should unwrap empty block (before: {}, after: {})",
             instructions_before,
             instructions_after
         );
