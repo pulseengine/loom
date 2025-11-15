@@ -5403,4 +5403,66 @@ mod tests {
         let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
         wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
     }
+
+    // Property-Based Tests for Correctness Verification
+
+    /// Property: All optimizations must produce valid WASM
+    #[test]
+    fn prop_optimizations_produce_valid_wasm() {
+        let test_cases = vec![
+            include_str!("../../tests/fixtures/bench_locals.wat"),
+            include_str!("../../tests/fixtures/bench_bitops.wat"),
+        ];
+
+        for wat in test_cases {
+            let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+            // Apply full pipeline
+            optimize::precompute(&mut module).expect("Precompute failed");
+            optimize::optimize_module(&mut module).expect("Optimize failed");
+            optimize::eliminate_common_subexpressions(&mut module).expect("CSE failed");
+            optimize::simplify_branches(&mut module).expect("Branch failed");
+            optimize::eliminate_dead_code(&mut module).expect("DCE failed");
+
+            // PROPERTY: Output must be valid WASM
+            let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+            wasmparser::validate(&wasm_bytes).expect("Optimized WASM must be valid");
+        }
+    }
+
+    /// Property: Optimization is idempotent (optimize twice = optimize once)
+    #[test]
+    fn prop_optimization_idempotent() {
+        let wat = r#"(module (func (result i32) (i32.const 1) (i32.const 2) (i32.add)))"#;
+
+        let mut m1 = parse::parse_wat(wat).unwrap();
+        let mut m2 = parse::parse_wat(wat).unwrap();
+
+        optimize::optimize_module(&mut m1).unwrap();
+        optimize::optimize_module(&mut m2).unwrap();
+        optimize::optimize_module(&mut m2).unwrap(); // Apply twice
+
+        let b1 = encode::encode_wasm(&m1).unwrap();
+        let b2 = encode::encode_wasm(&m2).unwrap();
+
+        assert_eq!(b1, b2, "Optimization must be idempotent");
+    }
+
+    /// Property: Optimizations are deterministic
+    #[test]
+    fn prop_deterministic() {
+        let wat = r#"(module (func (result i32) (i32.const 10) (i32.const 20) (i32.add)))"#;
+
+        let mut m1 = parse::parse_wat(wat).unwrap();
+        let mut m2 = parse::parse_wat(wat).unwrap();
+
+        optimize::optimize_module(&mut m1).unwrap();
+        optimize::optimize_module(&mut m2).unwrap();
+
+        assert_eq!(
+            encode::encode_wasm(&m1).unwrap(),
+            encode::encode_wasm(&m2).unwrap(),
+            "Same input must produce identical output"
+        );
+    }
 }
