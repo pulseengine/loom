@@ -3597,15 +3597,71 @@ pub mod optimize {
                 }
             }
 
-            // Phase 2: Apply CSE transformations
+            // Phase 2: Apply CSE transformations for constants (MVP)
             if !duplicates.is_empty() {
-                // For MVP, we'll do a simple transformation:
-                // Track which instructions need to become local.tee and local.get
-                // This is simplified - a full implementation would handle nested expressions
+                // Filter to only constants (safe, no side effects)
+                let const_duplicates: Vec<_> = duplicates
+                    .iter()
+                    .filter(|(orig_pos, _dup_pos, _type)| {
+                        matches!(
+                            func.instructions.get(*orig_pos),
+                            Some(Instruction::I32Const(_)) | Some(Instruction::I64Const(_))
+                        )
+                    })
+                    .collect();
 
-                // For now, just mark that we found duplicates
-                // Full implementation deferred due to complexity of stack-based transformation
-                // TODO: Implement full CSE transformation with local allocation
+                if !const_duplicates.is_empty() {
+                    // Allocate new locals for cached constants
+                    let mut new_locals_needed = HashMap::new();
+                    for (orig_pos, _dup_pos, value_type) in &const_duplicates {
+                        new_locals_needed.insert(*orig_pos, *value_type);
+                    }
+
+                    // Add new locals to function
+                    let base_local_idx = func.signature.params.len() as u32
+                        + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+
+                    let mut local_map: HashMap<usize, u32> = HashMap::new();
+                    for (idx, (orig_pos, value_type)) in new_locals_needed.iter().enumerate() {
+                        local_map.insert(*orig_pos, base_local_idx + idx as u32);
+                        func.locals.push((1, *value_type));
+                    }
+
+                    // Transform instructions
+                    let mut new_instructions = Vec::new();
+                    let mut pos = 0;
+
+                    while pos < func.instructions.len() {
+                        let instr = &func.instructions[pos];
+
+                        // Check if this is a first occurrence we should cache
+                        if let Some(&local_idx) = local_map.get(&pos) {
+                            // Replace with local.tee
+                            new_instructions.push(instr.clone());
+                            new_instructions.push(Instruction::LocalTee(local_idx));
+                        }
+                        // Check if this is a duplicate we should replace
+                        else if const_duplicates.iter().any(|(_orig, dup, _)| *dup == pos) {
+                            // Find the original position
+                            if let Some((orig, _, _)) =
+                                const_duplicates.iter().find(|(_, dup, _)| *dup == pos)
+                            {
+                                if let Some(&local_idx) = local_map.get(orig) {
+                                    // Replace with local.get
+                                    new_instructions.push(Instruction::LocalGet(local_idx));
+                                    pos += 1;
+                                    continue;
+                                }
+                            }
+                            new_instructions.push(instr.clone());
+                        } else {
+                            new_instructions.push(instr.clone());
+                        }
+                        pos += 1;
+                    }
+
+                    func.instructions = new_instructions;
+                }
             }
         }
 
