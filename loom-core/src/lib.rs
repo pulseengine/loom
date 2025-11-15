@@ -219,6 +219,10 @@ pub enum Instruction {
     LocalSet(u32),
     /// local.tee
     LocalTee(u32),
+    /// global.get
+    GlobalGet(u32),
+    /// global.set
+    GlobalSet(u32),
     /// i32.load
     I32Load {
         /// Memory offset
@@ -635,6 +639,12 @@ pub mod parse {
                 }
                 Operator::LocalTee { local_index } => {
                     instructions.push(Instruction::LocalTee(local_index));
+                }
+                Operator::GlobalGet { global_index } => {
+                    instructions.push(Instruction::GlobalGet(global_index));
+                }
+                Operator::GlobalSet { global_index } => {
+                    instructions.push(Instruction::GlobalSet(global_index));
                 }
                 Operator::I32Load { memarg } => {
                     instructions.push(Instruction::I32Load {
@@ -1082,6 +1092,12 @@ pub mod encode {
                     Instruction::LocalTee(idx) => {
                         func_body.instruction(&EncoderInstruction::LocalTee(*idx));
                     }
+                    Instruction::GlobalGet(idx) => {
+                        func_body.instruction(&EncoderInstruction::GlobalGet(*idx));
+                    }
+                    Instruction::GlobalSet(idx) => {
+                        func_body.instruction(&EncoderInstruction::GlobalSet(*idx));
+                    }
                     Instruction::I32Load { offset, align } => {
                         func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
@@ -1519,6 +1535,12 @@ pub mod encode {
                     type_index: *type_idx,
                     table_index: *table_idx,
                 });
+            }
+            Instruction::GlobalGet(idx) => {
+                func_body.instruction(&EncoderInstruction::GlobalGet(*idx));
+            }
+            Instruction::GlobalSet(idx) => {
+                func_body.instruction(&EncoderInstruction::GlobalSet(*idx));
             }
             Instruction::Unreachable => {
                 func_body.instruction(&EncoderInstruction::Unreachable);
@@ -2162,6 +2184,11 @@ pub mod terms {
                     stack.push(unreachable());
                 }
                 Instruction::Nop => {
+                    stack.push(nop());
+                }
+                Instruction::GlobalGet(_) | Instruction::GlobalSet(_) => {
+                    // Global instructions not yet supported in ISLE term conversion
+                    // For now, treat as nop (will be handled by precompute pass)
                     stack.push(nop());
                 }
                 Instruction::End => {
@@ -3436,14 +3463,12 @@ pub mod optimize {
     /// - Constant folding when globals are numeric constants
     /// - Dead code elimination when paths become unreachable
     ///
-    /// NOTE: Currently a placeholder as GlobalGet/GlobalSet instructions
-    /// are not yet implemented in our Instruction enum. This function
-    /// captures global metadata for future use.
+    /// Propagates immutable global constants throughout the module.
     pub fn precompute(module: &mut Module) -> Result<()> {
         use std::collections::HashMap;
 
         // Phase 1: Analyze globals to find constants
-        let mut _global_constants: HashMap<u32, ConstantValue> = HashMap::new();
+        let mut global_constants: HashMap<u32, ConstantValue> = HashMap::new();
 
         for (idx, global) in module.globals.iter().enumerate() {
             // Only track immutable globals
@@ -3460,20 +3485,70 @@ pub mod optimize {
                 };
 
                 if let Some(const_val) = constant {
-                    _global_constants.insert(idx as u32, const_val);
+                    global_constants.insert(idx as u32, const_val);
                 }
             }
         }
 
-        // Phase 2: Propagation
-        // TODO: Implement when GlobalGet/GlobalSet instructions are added to Instruction enum
-        // For now, this pass is a no-op but infrastructure is in place
+        // Phase 2: Propagate constants into functions
+        if global_constants.is_empty() {
+            return Ok(());
+        }
+
+        for func in &mut module.functions {
+            func.instructions =
+                propagate_global_constants_in_instructions(&func.instructions, &global_constants);
+        }
 
         Ok(())
     }
 
+    fn propagate_global_constants_in_instructions(
+        instructions: &[Instruction],
+        constants: &std::collections::HashMap<u32, ConstantValue>,
+    ) -> Vec<Instruction> {
+        instructions
+            .iter()
+            .map(|instr| match instr {
+                Instruction::GlobalGet(idx) => {
+                    if let Some(const_val) = constants.get(idx) {
+                        // Replace global.get with constant
+                        match const_val {
+                            ConstantValue::I32(val) => Instruction::I32Const(*val),
+                            ConstantValue::I64(val) => Instruction::I64Const(*val),
+                        }
+                    } else {
+                        instr.clone()
+                    }
+                }
+
+                // Recursively process control flow
+                Instruction::Block { block_type, body } => Instruction::Block {
+                    block_type: block_type.clone(),
+                    body: propagate_global_constants_in_instructions(body, constants),
+                },
+
+                Instruction::Loop { block_type, body } => Instruction::Loop {
+                    block_type: block_type.clone(),
+                    body: propagate_global_constants_in_instructions(body, constants),
+                },
+
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => Instruction::If {
+                    block_type: block_type.clone(),
+                    then_body: propagate_global_constants_in_instructions(then_body, constants),
+                    else_body: propagate_global_constants_in_instructions(else_body, constants),
+                },
+
+                _ => instr.clone(),
+            })
+            .collect()
+    }
+
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // Used when GlobalGet/GlobalSet are implemented
     enum ConstantValue {
         I32(i32),
         I64(i64),
