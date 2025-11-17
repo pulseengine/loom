@@ -216,6 +216,13 @@ fn optimize_command(
     let parse_time = start_parse.elapsed();
     println!("✓ Parsed in {:?}", parse_time);
 
+    // Save original module for verification (if requested)
+    let original_module = if run_verify {
+        Some(module.clone())
+    } else {
+        None
+    };
+
     // Collect statistics before optimization
     let mut stats = OptimizationStats {
         instructions_before: count_instructions(&module),
@@ -273,7 +280,9 @@ fn optimize_command(
     // Run verification if requested
     if run_verify {
         println!("\n🔍 Running verification...");
-        run_verification(&module)?;
+        if let Some(ref original) = original_module {
+            run_verification(original, &module)?;
+        }
     }
 
     println!("\n✅ Optimization complete!");
@@ -281,17 +290,45 @@ fn optimize_command(
 }
 
 /// Run property-based verification on the module
-fn run_verification(module: &loom_core::Module) -> Result<()> {
+fn run_verification(original: &loom_core::Module, optimized: &loom_core::Module) -> Result<()> {
     use loom_core::Instruction;
     use loom_isle::{iadd32, iconst32, simplify, Imm32, ValueData};
 
+    // First, run Z3 SMT-based formal verification (if feature enabled)
+    #[cfg(feature = "verification")]
+    {
+        println!("🔬 Running Z3 SMT verification...");
+        match loom_core::verify::verify_optimization(original, optimized) {
+            Ok(true) => {
+                println!("  ✅ Z3 verification passed: optimizations are semantically equivalent");
+            }
+            Ok(false) => {
+                println!("  ❌ Z3 verification failed: counterexample found");
+                println!("  ⚠️  The optimization may have changed program semantics!");
+                return Err(anyhow!("Z3 verification failed"));
+            }
+            Err(e) => {
+                println!("  ⚠️  Z3 verification error: {}", e);
+                println!("  💡 Continuing with property-based verification...");
+            }
+        }
+    }
+    #[cfg(not(feature = "verification"))]
+    {
+        let _ = original; // Suppress unused warning when verification is disabled
+        println!("⚠️  Z3 verification feature not enabled");
+        println!("💡 Rebuild with --features verification to enable formal verification");
+        println!();
+    }
+
+    // Run property-based verification on ISLE optimizations
     let mut test_count = 0;
     let mut pass_count = 0;
 
-    println!("Running verification tests...");
+    println!("🧪 Running ISLE property-based verification...");
 
     // Test each constant folding in the module
-    for func in &module.functions {
+    for func in &optimized.functions {
         let instrs = &func.instructions;
         for instr in instrs {
             if let Instruction::I32Const(result) = instr {
