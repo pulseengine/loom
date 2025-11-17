@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = "0.5"
 
 [features]
 # Verification support with Z3 SMT solver
@@ -36,3 +37,7 @@ optional = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "optimization_benchmarks"
+harness = false
