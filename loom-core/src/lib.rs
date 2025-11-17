@@ -6890,15 +6890,106 @@ mod tests {
 
     // Property-Based Tests for Correctness Verification
 
+    /// Debug test to identify which optimization phase causes stack mismatch
+    #[test]
+    fn debug_identify_problematic_pass() {
+        use loom_isle::{simplify_with_env, LocalEnv};
+
+        let wat = include_str!("../../tests/fixtures/bench_locals.wat");
+
+        eprintln!("\n=== Original ===");
+        let mut module = parse::parse_wat(wat).expect("Failed to parse");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+
+        eprintln!("\n=== After Precompute ===");
+        let mut module = parse::parse_wat(wat).expect("Failed to parse");
+        optimize::precompute(&mut module).expect("Precompute failed");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+
+        eprintln!("\n=== After ISLE conversion (Phase 2 of optimize_module) ===");
+        let mut module = parse::parse_wat(wat).expect("Failed to parse");
+        optimize::precompute(&mut module).expect("Precompute failed");
+
+        // Phase 2: ISLE-based optimizations
+        for func in &mut module.functions {
+            let had_end = func.instructions.last() == Some(&Instruction::End);
+            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
+                if !terms.is_empty() {
+                    let mut env = LocalEnv::new();
+                    let optimized_terms: Vec<Value> = terms
+                        .into_iter()
+                        .map(|term| simplify_with_env(term, &mut env))
+                        .collect();
+                    if let Ok(mut new_instrs) =
+                        super::terms::terms_to_instructions(&optimized_terms)
+                    {
+                        if !new_instrs.is_empty() {
+                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
+                                new_instrs.pop();
+                            }
+                            func.instructions = new_instrs;
+                        }
+                    }
+                }
+            }
+        }
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+
+        // Continue testing other phases
+        eprintln!("\n=== After optimize_advanced_instructions ===");
+        optimize::optimize_advanced_instructions(&mut module).expect("Failed");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+
+        eprintln!("\n=== After CSE ===");
+        optimize::eliminate_common_subexpressions(&mut module).expect("Failed");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+
+        eprintln!("\n=== After inline_functions ===");
+        optimize::inline_functions(&mut module).expect("Failed");
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        match wasmparser::validate(&wasm_bytes) {
+            Ok(_) => eprintln!("✓ Valid"),
+            Err(e) => eprintln!("✗ INVALID: {:?}", e),
+        }
+    }
+
     /// Property: All optimizations must produce valid WASM
     #[test]
     fn prop_optimizations_produce_valid_wasm() {
         let test_cases = vec![
-            include_str!("../../tests/fixtures/bench_locals.wat"),
-            include_str!("../../tests/fixtures/bench_bitops.wat"),
+            (
+                "bench_locals.wat",
+                include_str!("../../tests/fixtures/bench_locals.wat"),
+            ),
+            (
+                "bench_bitops.wat",
+                include_str!("../../tests/fixtures/bench_bitops.wat"),
+            ),
         ];
 
-        for wat in test_cases {
+        for (name, wat) in test_cases {
+            eprintln!("Testing fixture: {}", name);
             let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
 
             // Apply full pipeline
@@ -6910,7 +7001,8 @@ mod tests {
 
             // PROPERTY: Output must be valid WASM
             let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
-            wasmparser::validate(&wasm_bytes).expect("Optimized WASM must be valid");
+            wasmparser::validate(&wasm_bytes)
+                .unwrap_or_else(|e| panic!("Optimized WASM must be valid for {}: {:?}", name, e));
         }
     }
 
