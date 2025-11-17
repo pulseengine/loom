@@ -104,3 +104,48 @@ jobs:
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
+
+  benchmark:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmarks
+        run: cargo bench --no-fail-fast
+
+  verify:
+    name: Z3 Verification Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Z3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+      - name: Build with verification feature
+        run: cargo build --release --features verification
+      - name: Test verification
+        run: |
+          ./target/release/loom optimize tests/fixtures/test_input.wat \
+            -o /tmp/test.wasm --verify --stats
+
+  wasm-build:
+    name: WASM Build (wasm32-wasip2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - name: Build for wasm32-wasip2
+        run: cargo build --release --target wasm32-wasip2
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-wasm
+          path: target/wasm32-wasip2/release/loom.wasm
