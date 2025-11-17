@@ -3134,17 +3134,56 @@ pub mod optimize {
             } => {
                 // Only merge if types are compatible
                 // For Phase 1, we merge blocks with matching types or Empty types
-                if types_compatible_for_merge(outer_type, inner_type) {
-                    // Build merged body: all instructions before last + inner block contents
-                    let mut merged = body[..last_idx].to_vec();
-                    merged.extend_from_slice(inner_body);
-                    Some(merged)
-                } else {
-                    None
+                if !types_compatible_for_merge(outer_type, inner_type) {
+                    return None;
                 }
+
+                // CRITICAL: Don't merge blocks that contain branch instructions
+                // Merging would invalidate branch depths and create invalid WASM
+                if contains_branches(inner_body) {
+                    return None;
+                }
+
+                // Build merged body: all instructions before last + inner block contents
+                let mut merged = body[..last_idx].to_vec();
+                merged.extend_from_slice(inner_body);
+                Some(merged)
             }
             _ => None,
         }
+    }
+
+    /// Check if instructions contain branch instructions (Br, BrIf, BrTable)
+    /// These make block merging unsafe as it would invalidate branch depths
+    fn contains_branches(instructions: &[Instruction]) -> bool {
+        for instr in instructions {
+            match instr {
+                Instruction::Br { .. }
+                | Instruction::BrIf { .. }
+                | Instruction::BrTable { .. } => return true,
+
+                // Recursively check nested structures
+                Instruction::Block { body, .. }
+                | Instruction::Loop { body, .. } => {
+                    if contains_branches(body) {
+                        return true;
+                    }
+                }
+
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    if contains_branches(then_body) || contains_branches(else_body) {
+                        return true;
+                    }
+                }
+
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Check if two block types are compatible for merging
