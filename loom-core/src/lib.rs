@@ -5471,7 +5471,7 @@ pub mod optimize {
     }
 }
 
-/// Component Model Support (Phase 9)
+/// Component Model Support
 ///
 /// Formal verification module using Z3 SMT solver
 ///
@@ -5479,228 +5479,20 @@ pub mod optimize {
 /// preserve program semantics. Only available with the "verification" feature.
 pub mod verify;
 
-/// This module provides full support for WebAssembly Components.
-/// LOOM extracts core modules, optimizes them, and reconstructs the component.
-pub mod component {
-    use anyhow::{anyhow, Context, Result};
-    use wasmparser::{Parser, Payload};
+/// WebAssembly Component Model optimization
+///
+/// LOOM is the first optimizer to support the WebAssembly Component Model.
+/// This module provides world-class component optimization by:
+/// - Extracting core modules from components
+/// - Applying LOOM's 12-phase optimization pipeline
+/// - Reconstructing components with optimized modules
+/// - Preserving all component sections and interfaces
+///
+/// See `component_optimizer` module for implementation details.
+pub mod component_optimizer;
 
-    /// Information about a core module within a component
-    #[derive(Debug, Clone)]
-    struct CoreModule {
-        /// Module bytes
-        original_bytes: Vec<u8>,
-        /// Optimized module bytes
-        optimized_bytes: Option<Vec<u8>>,
-    }
-
-    /// Optimize a WebAssembly Component
-    ///
-    /// This function:
-    /// 1. Parses the component and extracts core modules
-    /// 2. Optimizes each core module with LOOM
-    /// 3. Reconstructs the component with optimized modules
-    ///
-    /// Returns the optimized component bytes and statistics
-    pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentStats)> {
-        // Step 1: Parse component and extract core modules
-        let parser = Parser::new(0);
-        let mut core_modules: Vec<CoreModule> = Vec::new();
-        let mut component_sections: Vec<(usize, Vec<u8>)> = Vec::new();
-        let mut section_index = 0;
-        let mut is_component = false;
-
-        for payload in parser.parse_all(component_bytes) {
-            let payload = payload.context("Failed to parse component")?;
-
-            match payload {
-                Payload::Version { encoding, .. } => {
-                    if encoding == wasmparser::Encoding::Component {
-                        is_component = true;
-                    }
-                }
-                Payload::ModuleSection {
-                    parser: _module_parser,
-                    unchecked_range,
-                } => {
-                    // Extract the module bytes from the unchecked_range
-                    let module_bytes =
-                        component_bytes[unchecked_range.start..unchecked_range.end].to_vec();
-
-                    core_modules.push(CoreModule {
-                        original_bytes: module_bytes,
-                        optimized_bytes: None,
-                    });
-
-                    // Mark this position for module replacement
-                    component_sections.push((section_index, vec![]));
-                    section_index += 1;
-                }
-                _ => {
-                    section_index += 1;
-                }
-            }
-        }
-
-        if !is_component {
-            return Err(anyhow!("Not a WebAssembly component"));
-        }
-
-        if core_modules.is_empty() {
-            return Err(anyhow!("Component contains no core modules"));
-        }
-
-        // Step 2: Optimize each core module
-        let mut optimized_count = 0;
-        for core_module in &mut core_modules {
-            // Parse the module
-            match crate::parse::parse_wasm(&core_module.original_bytes) {
-                Ok(mut module) => {
-                    // Optimize
-                    if let Err(e) = crate::optimize::optimize_module(&mut module) {
-                        eprintln!("Warning: Failed to optimize module: {}", e);
-                        continue; // Keep original bytes
-                    }
-
-                    // Encode
-                    match crate::encode::encode_wasm(&module) {
-                        Ok(optimized_bytes) => {
-                            // CRITICAL: Validate the optimized module before accepting it
-                            match wasmparser::validate(&optimized_bytes) {
-                                Ok(_) => {
-                                    core_module.optimized_bytes = Some(optimized_bytes);
-                                    optimized_count += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("Warning: Optimized module failed validation: {}", e);
-                                    eprintln!(
-                                        "         Keeping original module to ensure correctness"
-                                    );
-                                    // Keep original bytes - don't set optimized_bytes
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to encode optimized module: {}", e);
-                            // Keep original
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to parse core module: {}", e);
-                    // Keep original
-                }
-            }
-        }
-
-        // Step 3: Reconstruct component with optimized modules
-        // For now, we use a simplified approach with wasm-encoder
-        let optimized_component = reconstruct_component(component_bytes, &core_modules)?;
-
-        // Calculate stats
-        let original_module_size: usize = core_modules.iter().map(|m| m.original_bytes.len()).sum();
-        let optimized_module_size: usize = core_modules
-            .iter()
-            .map(|m| {
-                m.optimized_bytes
-                    .as_ref()
-                    .map(|b| b.len())
-                    .unwrap_or(m.original_bytes.len())
-            })
-            .sum();
-
-        let stats = ComponentStats {
-            original_size: component_bytes.len(),
-            optimized_size: optimized_component.len(),
-            module_count: core_modules.len(),
-            modules_optimized: optimized_count,
-            original_module_size,
-            optimized_module_size,
-            message: format!(
-                "Successfully optimized {} of {} core modules",
-                optimized_count,
-                core_modules.len()
-            ),
-        };
-
-        Ok((optimized_component, stats))
-    }
-
-    /// Reconstruct a component with optimized core modules
-    ///
-    /// Uses wasm-tools CLI for proper component reconstruction since component
-    /// encoding is complex and requires preserving all section types and ordering.
-    fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Result<Vec<u8>> {
-        use std::fs;
-
-        let temp_dir = std::env::temp_dir();
-
-        // For single-module components, we can return just the optimized module
-        // as a core module (not a component)
-        if modules.len() == 1 {
-            let module_bytes = modules[0]
-                .optimized_bytes
-                .as_ref()
-                .unwrap_or(&modules[0].original_bytes);
-            return Ok(module_bytes.clone());
-        }
-
-        // For multi-module components, we need to:
-        // 1. Extract each module to a temp file
-        // 2. Use wasm-tools to reconstruct the component
-        //
-        // However, wasm-tools doesn't have a direct "replace modules" command.
-        // So for MVP Phase 9, we document that full reconstruction requires:
-        // - Either manual rebuild with wasm-tools component new
-        // - Or future Phase 9.1 implementation with proper encoding
-
-        // Write original component for inspection
-        let original_path = temp_dir.join("loom_original_component.wasm");
-        fs::write(&original_path, original_bytes)?;
-
-        // Write each optimized module
-        let mut module_paths = Vec::new();
-        for (idx, module) in modules.iter().enumerate() {
-            let module_bytes = module
-                .optimized_bytes
-                .as_ref()
-                .unwrap_or(&module.original_bytes);
-            let module_path = temp_dir.join(format!("loom_module_{}.wasm", idx));
-            fs::write(&module_path, module_bytes)?;
-            module_paths.push(module_path);
-        }
-
-        // For now, return original component with a warning
-        // The modules ARE optimized, but we need proper component encoding
-        eprintln!("Note: Multi-module component reconstruction requires wasm-tools integration");
-        eprintln!(
-            "      Optimized modules written to: {}/loom_module_*.wasm",
-            temp_dir.display()
-        );
-        eprintln!("      To manually rebuild: wasm-tools component new <modules> -o output.wasm");
-
-        Ok(original_bytes.to_vec())
-    }
-
-    /// Statistics about component optimization
-    #[derive(Debug, Clone)]
-    pub struct ComponentStats {
-        /// Original component size in bytes
-        pub original_size: usize,
-        /// Optimized component size in bytes
-        pub optimized_size: usize,
-        /// Number of core modules found
-        pub module_count: usize,
-        /// Number of modules successfully optimized
-        pub modules_optimized: usize,
-        /// Total size of original modules
-        pub original_module_size: usize,
-        /// Total size of optimized modules
-        pub optimized_module_size: usize,
-        /// Status message
-        pub message: String,
-    }
-}
+/// Re-export component optimization API
+pub use component_optimizer::{optimize_component, ComponentStats};
 
 #[cfg(test)]
 mod tests {
