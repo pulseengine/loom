@@ -525,6 +525,26 @@
 ;;   <=> true (by definition of imm32_add)
 (decl simplify (Value) Value)
 
+;; ============================================================================
+;; Optimization Rules - Placeholder
+;; ============================================================================
+
+;; Note: Constant folding and algebraic simplifications are currently
+;; implemented as Rust-based peephole optimizations in optimize_advanced_instructions.
+;;
+;; ISLE pattern matching for these optimizations requires:
+;; 1. Proper extractor usage to match ValueData variants from Value
+;; 2. Nested pattern matching to handle expressions like (I32Add (I32Const x) (I32Const y))
+;; 3. Complex extractor chains for multi-level patterns
+;;
+;; The Rust implementation handles these cases more efficiently and is easier
+;; to maintain. Future ISLE rules could be added once proper extractors are
+;; set up for the Value/ValueData boxing pattern.
+;;
+;; Helper functions (imm32_add, imm32_shl, etc.) are defined above and ready
+;; for use when ISLE rules are implemented.
+
+
 ;; Default case: return value unchanged if no rule applies
 (rule (simplify val) val)
 

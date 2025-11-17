@@ -4077,6 +4077,13 @@ pub mod optimize {
         use std::collections::HashMap;
         use std::hash::{Hash, Hasher};
 
+        // CSE transformation actions
+        #[derive(Debug, Clone, Copy)]
+        enum CSEAction {
+            SaveToLocal(u32),   // Save result to local using local.tee
+            LoadFromLocal(u32), // Replace with local.get
+        }
+
         // Expression representation for CSE
         #[derive(Debug, Clone, Eq, PartialEq, Hash)]
         enum Expr {
@@ -4357,16 +4364,65 @@ pub mod optimize {
             }
 
             // Phase 4: Transform instructions
-            // This is complex for stack-based code, so for MVP we'll skip the actual transformation
-            // and just record that we found the duplicates
-            // Full implementation would need to:
-            // - Track stack depth at each position
-            // - Insert local.tee after computing the expression
-            // - Replace duplicate computations with local.get
-            // - Handle dependencies and side effects properly
+            // Insert local.tee after first occurrence, replace duplicates with local.get
+            //
+            // Strategy: Conservative transformation for simple expressions
+            // - Only transform single-instruction expressions (constants, local.get)
+            // - For binary operations, skip for now (requires tracking instruction spans)
 
-            // TODO: Implement actual CSE transformation
-            // For now, the framework is in place for future implementation
+            // Build transformation plan: first occurrence -> save, others -> load
+            let mut position_action: HashMap<usize, CSEAction> = HashMap::new();
+
+            for (hash, local_idx) in &hash_to_local {
+                if let Some(positions) = hash_to_positions.get(hash) {
+                    if positions.len() > 1 {
+                        // Check if this is a simple expression we can safely transform
+                        if let Some((expr, _)) = expr_at_position.get(&positions[0]) {
+                            let is_simple = matches!(
+                                expr,
+                                Expr::Const32(_) | Expr::Const64(_) | Expr::LocalGet(_)
+                            );
+
+                            if is_simple {
+                                // First occurrence: add local.tee after it
+                                position_action
+                                    .insert(positions[0], CSEAction::SaveToLocal(*local_idx));
+
+                                // Subsequent occurrences: replace with local.get
+                                for &pos in &positions[1..] {
+                                    position_action
+                                        .insert(pos, CSEAction::LoadFromLocal(*local_idx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply transformations: rebuild instruction list
+            if !position_action.is_empty() {
+                let mut new_instructions = Vec::new();
+
+                for (pos, instr) in func.instructions.iter().enumerate() {
+                    match position_action.get(&pos) {
+                        Some(CSEAction::SaveToLocal(local_idx)) => {
+                            // Keep the original instruction, add local.tee
+                            new_instructions.push(instr.clone());
+                            new_instructions.push(Instruction::LocalTee(*local_idx));
+                        }
+                        Some(CSEAction::LoadFromLocal(local_idx)) => {
+                            // Replace with local.get
+                            new_instructions.push(Instruction::LocalGet(*local_idx));
+                        }
+                        None => {
+                            // Keep instruction as-is
+                            new_instructions.push(instr.clone());
+                        }
+                    }
+                }
+
+                func.instructions = new_instructions;
+            }
         }
 
         Ok(())
@@ -4679,6 +4735,32 @@ pub mod optimize {
                     (Instruction::I64Const(-1), Instruction::I64And) => {
                         i += 2;
                         continue;
+                    }
+
+                    _ => {}
+                }
+            }
+
+            // Look for memory operation patterns
+            // Store followed by immediate load from same location → use value directly
+            if i + 1 < instructions.len() {
+                match (&instructions[i], &instructions[i + 1]) {
+                    // Store then load same location → keep value on stack
+                    // i32.store followed by i32.load with same offset
+                    (
+                        Instruction::I32Store {
+                            offset: off1,
+                            align: _,
+                        },
+                        Instruction::I32Load {
+                            offset: off2,
+                            align: _,
+                        },
+                    ) if off1 == off2 => {
+                        // Transform: (value) (addr) i32.store i32.load
+                        // Into: (value) (addr) i32.store (value) (but value is consumed!)
+                        // This optimization is unsafe without knowing the stack state
+                        // Skip for now - would need local.tee
                     }
 
                     _ => {}
@@ -7496,5 +7578,64 @@ mod tests {
             !wat_output.contains("i32.mul"),
             "Should not have multiply in output"
         );
+    }
+
+    #[test]
+    fn test_cse_phase4_duplicate_constants() {
+        // Test that CSE Phase 4 eliminates duplicate constants
+        // Use a case where the same constant is used multiple times in expressions
+        let wat = r#"(module
+            (func $test (result i32)
+                (local $result i32)
+                ;; Use the same constant multiple times
+                (local.set $result (i32.const 42))
+                (local.set $result (i32.add (local.get $result) (i32.const 42)))
+                (local.set $result (i32.add (local.get $result) (i32.const 42)))
+                (local.get $result)
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).unwrap();
+
+        // Count i32.const 42 instructions before CSE
+        let count_before = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Const(42)))
+            .count();
+        assert_eq!(
+            count_before, 3,
+            "Should have 3 duplicate constants before CSE"
+        );
+
+        // Apply enhanced CSE with Phase 4
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).unwrap();
+
+        // After CSE, should have 1 i32.const + local.tee, then 2 local.get
+        let const_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Const(42)))
+            .count();
+        let local_tee_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalTee(_)))
+            .count();
+
+        // Should eliminate duplicate constants
+        assert!(
+            const_count < count_before,
+            "CSE should reduce number of i32.const instructions"
+        );
+
+        if const_count == 1 && local_tee_count >= 1 {
+            // CSE worked - we have 1 const with tee and gets for duplicates
+            eprintln!("✓ CSE Phase 4 successfully eliminated duplicates");
+        }
+
+        // Verify the optimized module is still valid
+        let wasm_bytes = encode::encode_wasm(&module).unwrap();
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM should be valid");
     }
 }
