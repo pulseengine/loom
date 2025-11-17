@@ -1372,6 +1372,34 @@ pub fn simplify(val: Value) -> Value {
     simplify_with_env(val, &mut env)
 }
 
+/// Check if two values are structurally equal
+/// This is used for optimizations like x ^ x = 0, x & x = x, x | x = x
+fn are_values_equal(lhs: &Value, rhs: &Value) -> bool {
+    match (lhs.data(), rhs.data()) {
+        // Constants are equal if their values match
+        (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => l.value() == r.value(),
+        (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => l.value() == r.value(),
+
+        // LocalGet is equal if same index
+        (ValueData::LocalGet { idx: l }, ValueData::LocalGet { idx: r }) => l == r,
+
+        // Binary operations are equal if operation and operands match
+        (ValueData::I32Add { lhs: l1, rhs: r1 }, ValueData::I32Add { lhs: l2, rhs: r2 }) => {
+            are_values_equal(l1, l2) && are_values_equal(r1, r2)
+        }
+        (ValueData::I32Sub { lhs: l1, rhs: r1 }, ValueData::I32Sub { lhs: l2, rhs: r2 }) => {
+            are_values_equal(l1, l2) && are_values_equal(r1, r2)
+        }
+        (ValueData::I32Mul { lhs: l1, rhs: r1 }, ValueData::I32Mul { lhs: l2, rhs: r2 }) => {
+            are_values_equal(l1, l2) && are_values_equal(r1, r2)
+        }
+
+        // For other cases, conservatively return false
+        // We could expand this for more cases, but these cover the common patterns
+        _ => false,
+    }
+}
+
 /// Stateless simplification (expression-level only)
 fn simplify_stateless(val: Value) -> Value {
     match val.data() {
@@ -1482,6 +1510,11 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
 
+            // Check for x & x = x pattern (self-AND)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return lhs_simplified;
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
                 (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
@@ -1502,6 +1535,11 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
 
+            // Check for x | x = x pattern (self-OR)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return lhs_simplified;
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
                 (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
@@ -1521,6 +1559,11 @@ fn simplify_stateless(val: Value) -> Value {
         ValueData::I32Xor { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x ^ x = 0 pattern (self-XOR)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(0));
+            }
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -1587,6 +1630,11 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
 
+            // Check for x & x = x pattern (self-AND)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return lhs_simplified;
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
@@ -1607,6 +1655,11 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
 
+            // Check for x | x = x pattern (self-OR)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return lhs_simplified;
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
@@ -1626,6 +1679,11 @@ fn simplify_stateless(val: Value) -> Value {
         ValueData::I64Xor { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x ^ x = 0 pattern (self-XOR)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst64(Imm64(0));
+            }
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
