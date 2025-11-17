@@ -621,3 +621,234 @@ fn test_multiple_functions() {
         module.functions[1].instructions
     );
 }
+
+// ============================================================================
+// Self-Operation Algebraic Optimizations (New Features)
+// ============================================================================
+
+#[test]
+fn test_self_xor_i32() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (i32.xor (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x ^ x should become 0
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("0"),
+        "Expected i32.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_xor_i64() {
+    let input = r#"
+        (module
+            (func (param i64) (result i64)
+                (i64.xor (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x ^ x should become 0
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I64Const") && instructions_str.contains("0"),
+        "Expected i64.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_and_i32() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (i32.and (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x & x should become x
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    // Should just be local.get (no And operation)
+    assert!(
+        !instructions_str.contains("And"),
+        "Expected no And operation, got: {:?}",
+        module.functions[0].instructions
+    );
+    assert!(
+        instructions_str.contains("LocalGet"),
+        "Expected LocalGet, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_or_i64() {
+    let input = r#"
+        (module
+            (func (param i64) (result i64)
+                (i64.or (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x | x should become x
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    // Should just be local.get (no Or operation)
+    assert!(
+        !instructions_str.contains("Or"),
+        "Expected no Or operation, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_sub_i32() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (i32.sub (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x - x should become 0
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("0"),
+        "Expected i32.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_sub_i64() {
+    let input = r#"
+        (module
+            (func (param i64) (result i64)
+                (i64.sub (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x - x should become 0
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I64Const") && instructions_str.contains("0"),
+        "Expected i64.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_eq_i32() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (i32.eq (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x == x should become 1 (true)
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("1"),
+        "Expected i32.const 1, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_eq_i64() {
+    let input = r#"
+        (module
+            (func (param i64) (result i32)
+                (i64.eq (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x == x should become 1 (true)
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("1"),
+        "Expected i32.const 1, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_ne_i32() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (i32.ne (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x != x should become 0 (false)
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("0"),
+        "Expected i32.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_self_ne_i64() {
+    let input = r#"
+        (module
+            (func (param i64) (result i32)
+                (i64.ne (local.get 0) (local.get 0))
+            )
+        )
+    "#;
+
+    // x != x should become 0 (false)
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("I32Const") && instructions_str.contains("0"),
+        "Expected i32.const 0, got: {:?}",
+        module.functions[0].instructions
+    );
+}
