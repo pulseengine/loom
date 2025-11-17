@@ -22,3 +22,26 @@ rust_test(
         "@crates//:anyhow",
     ],
 )
+
+# WASM build target for wasm32-wasip2 (Issue #8)
+# Build with: bazel build //loom-cli:loom_wasm --platforms=@rules_rust//rust/platform:wasm
+rust_binary(
+    name = "loom_wasm",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = [
+        "//loom-core:loom_core",
+        "@crates//:clap",
+        "@crates//:anyhow",
+    ],
+    crate_type = "bin",
+    rustc_flags = [
+        "-C",
+        "opt-level=z",
+        "-C",
+        "lto=fat",
+        "-C",
+        "panic=abort",
+    ],
+    visibility = ["//visibility:public"],
+)
