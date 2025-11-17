@@ -86,6 +86,33 @@ impl Imm64 {
     }
 }
 
+/// Optional string for block/loop labels
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct OptionString(pub Option<String>);
+
+impl OptionString {
+    pub fn none() -> Self {
+        OptionString(None)
+    }
+
+    pub fn some(s: String) -> Self {
+        OptionString(Some(s))
+    }
+}
+
+/// List of instructions (placeholder for control flow bodies)
+/// In the actual implementation, this would reference the instruction vec
+/// For now, we use an empty placeholder since control flow optimization
+/// is handled in Rust passes rather than ISLE
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct InstructionList(pub Vec<u8>);
+
+impl InstructionList {
+    pub fn empty() -> Self {
+        InstructionList(Vec::new())
+    }
+}
+
 /// Value is a boxed pointer to ValueData
 /// This allows recursive term structures
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -959,6 +986,96 @@ pub fn nop() -> Value {
 /// Extract ValueData from Value (for ISLE pattern matching)
 pub fn value_data(v: &Value) -> Option<ValueData> {
     Some((*v.0).clone())
+}
+
+// ============================================================================
+// ISLE Control Flow Constructor Wrappers (Issue #12)
+// ============================================================================
+//
+// These wrappers adapt between ISLE's type system (which uses primitive types
+// like OptionString and InstructionList) and Rust's native types.
+// Since control flow optimization is primarily handled in Rust passes rather
+// than ISLE rules, these create placeholder structures.
+
+/// Block constructor for ISLE
+pub fn block_instr(label_opt: OptionString, block_type: BlockType, body: InstructionList) -> Value {
+    // Convert OptionString to Option<String>
+    let label = label_opt.0;
+    // For now, create empty body since control flow optimization is in Rust
+    Value(Box::new(ValueData::Block {
+        label,
+        block_type,
+        body: Vec::new(), // Placeholder - actual bodies handled in Rust
+    }))
+}
+
+/// Loop constructor for ISLE
+pub fn loop_instr(label_opt: OptionString, block_type: BlockType, body: InstructionList) -> Value {
+    let label = label_opt.0;
+    Value(Box::new(ValueData::Loop {
+        label,
+        block_type,
+        body: Vec::new(),
+    }))
+}
+
+/// If constructor for ISLE
+pub fn if_instr(cond: Value, block_type: BlockType, then_body: InstructionList, else_body: InstructionList) -> Value {
+    let label = None; // ISLE version doesn't include label
+    Value(Box::new(ValueData::If {
+        label,
+        block_type,
+        condition: cond,
+        then_body: Vec::new(),
+        else_body: Vec::new(),
+    }))
+}
+
+/// Branch constructor for ISLE
+pub fn br_instr(depth: u32) -> Value {
+    Value(Box::new(ValueData::Br {
+        depth,
+        value: None,
+    }))
+}
+
+/// Conditional branch constructor for ISLE
+pub fn br_if_instr(cond: Value, depth: u32) -> Value {
+    Value(Box::new(ValueData::BrIf {
+        depth,
+        condition: cond,
+        value: None,
+    }))
+}
+
+/// Call constructor for ISLE
+pub fn call_instr(func_idx: u32) -> Value {
+    Value(Box::new(ValueData::Call {
+        func_idx,
+        args: Vec::new(),
+    }))
+}
+
+/// Return constructor for ISLE
+pub fn return_instr() -> Value {
+    Value(Box::new(ValueData::Return {
+        values: Vec::new(),
+    }))
+}
+
+/// BlockType::Empty constructor
+pub fn block_type_empty() -> BlockType {
+    BlockType::Empty
+}
+
+/// BlockType::I32Result constructor
+pub fn block_type_i32() -> BlockType {
+    BlockType::Value(ValueType::I32)
+}
+
+/// BlockType::I64Result constructor
+pub fn block_type_i64() -> BlockType {
+    BlockType::Value(ValueType::I64)
 }
 
 // ============================================================================
