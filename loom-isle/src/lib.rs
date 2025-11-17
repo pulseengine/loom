@@ -1426,6 +1426,11 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
 
+            // Check for x - x = 0 pattern (self-subtraction)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(0));
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding: (i32.sub (i32.const A) (i32.const B)) → (i32.const (A-B))
                 (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
@@ -1478,6 +1483,11 @@ fn simplify_stateless(val: Value) -> Value {
         ValueData::I64Sub { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x - x = 0 pattern (self-subtraction)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst64(Imm64(0));
+            }
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
@@ -1745,10 +1755,16 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
 
-        // Comparison optimizations (i32) - constant folding only
+        // Comparison optimizations (i32)
         ValueData::I32Eq { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x == x = 1 pattern (self-equality always true)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(1));
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() == r.value() { 1 } else { 0 }))
@@ -1760,6 +1776,12 @@ fn simplify_stateless(val: Value) -> Value {
         ValueData::I32Ne { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x != x = 0 pattern (self-inequality always false)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(0));
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() != r.value() { 1 } else { 0 }))
@@ -1872,10 +1894,16 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
 
-        // Comparison optimizations (i64) - constant folding only
+        // Comparison optimizations (i64)
         ValueData::I64Eq { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x == x = 1 pattern (self-equality always true)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(1));
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() == r.value() { 1 } else { 0 }))
@@ -1887,6 +1915,12 @@ fn simplify_stateless(val: Value) -> Value {
         ValueData::I64Ne { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
+
+            // Check for x != x = 0 pattern (self-inequality always false)
+            if are_values_equal(&lhs_simplified, &rhs_simplified) {
+                return iconst32(Imm32(0));
+            }
+
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() != r.value() { 1 } else { 0 }))
