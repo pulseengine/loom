@@ -45,12 +45,11 @@ strip = true
 opt-level = 0
 debug = true
 
-# WASM profile commented out for Phase 1 Bazel build
-# Will be enabled in Phase 8
-# [profile.release-wasm]
-# inherits = "release"
-# opt-level = "z"
-# lto = true
-# codegen-units = 1
-# strip = true
-# panic = "abort"
+# WASM profile for wasm32-wasip2 builds (Issue #8)
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
