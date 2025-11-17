@@ -296,11 +296,20 @@ Z3 verification proves mathematically that optimizations preserve program semant
 
 ## 📚 Documentation
 
+### User Guides
 - **[Usage Guide](docs/USAGE_GUIDE.md)** - Complete CLI reference, examples, and best practices
 - **[Quick Reference](docs/QUICK_REFERENCE.md)** - Cheat sheet for common tasks
-- **[Formal Verification Guide](docs/FORMAL_VERIFICATION_GUIDE.md)** - Deep dive into Z3 verification
+- **[Performance Comparison](docs/PERFORMANCE_COMPARISON.md)** - LOOM vs wasm-opt benchmarks and analysis
+
+### Technical Documentation
+- **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into the 12-phase pipeline and implementation
+- **[Formal Verification Guide](docs/FORMAL_VERIFICATION_GUIDE.md)** - Z3 SMT verification internals
 - **[WASM Build Guide](docs/WASM_BUILD.md)** - Building LOOM to WebAssembly (wasm32-wasip2)
 - **[Implementation Details](docs/IMPLEMENTATION_ACHIEVEMENTS.md)** - Technical implementation notes
+
+### For Contributors
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to LOOM
+- **[Design Documents](docs/)** - Individual optimization pass designs (CSE, DCE, LICM, etc.)
 
 ## 🧪 Testing
 
