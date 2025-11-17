@@ -4094,6 +4094,56 @@ pub mod optimize {
                         continue;
                     }
 
+                    // Algebraic simplification: x * 0 → 0
+                    (Instruction::I32Const(0), Instruction::I32Mul) => {
+                        result.push(Instruction::I32Const(0));
+                        i += 2;
+                        continue;
+                    }
+
+                    // Algebraic simplification: x * 1 → x (identity)
+                    (Instruction::I32Const(1), Instruction::I32Mul) => {
+                        // Skip both, value stays on stack
+                        i += 2;
+                        continue;
+                    }
+
+                    // Algebraic simplification: x + 0 → x (identity)
+                    (Instruction::I32Const(0), Instruction::I32Add) => {
+                        // Skip both, value stays on stack
+                        i += 2;
+                        continue;
+                    }
+
+                    // Algebraic simplification: x - 0 → x (identity)
+                    (Instruction::I32Const(0), Instruction::I32Sub) => {
+                        // Skip both, value stays on stack
+                        i += 2;
+                        continue;
+                    }
+
+                    // Similar for I64
+                    (Instruction::I64Const(0), Instruction::I64Mul) => {
+                        result.push(Instruction::I64Const(0));
+                        i += 2;
+                        continue;
+                    }
+
+                    (Instruction::I64Const(1), Instruction::I64Mul) => {
+                        i += 2;
+                        continue;
+                    }
+
+                    (Instruction::I64Const(0), Instruction::I64Add) => {
+                        i += 2;
+                        continue;
+                    }
+
+                    (Instruction::I64Const(0), Instruction::I64Sub) => {
+                        i += 2;
+                        continue;
+                    }
+
                     // Bitwise trick: x & 0 → 0 (absorption)
                     (Instruction::I32Const(0), Instruction::I32And) => {
                         result.push(Instruction::I32Const(0));
@@ -4211,6 +4261,23 @@ pub mod optimize {
                         if idx1 == idx2 =>
                     {
                         result.push(Instruction::LocalGet(*idx1));
+                        i += 3;
+                        continue;
+                    }
+
+                    // Algebraic simplification: x - x → 0
+                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I32Sub)
+                        if idx1 == idx2 =>
+                    {
+                        result.push(Instruction::I32Const(0));
+                        i += 3;
+                        continue;
+                    }
+
+                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I64Sub)
+                        if idx1 == idx2 =>
+                    {
+                        result.push(Instruction::I64Const(0));
                         i += 3;
                         continue;
                     }
