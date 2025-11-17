@@ -543,13 +543,16 @@ fn test_no_optimizations_needed() {
     // Already optimal - should not break
     let mut module = parse::parse_wat(input).unwrap();
     let before = format!("{:?}", module.functions[0].instructions);
+    let before_len = before.len();
     optimize::optimize_module(&mut module).unwrap();
     let after = format!("{:?}", module.functions[0].instructions);
+    let after_len = after.len();
 
     // Should be unchanged or very similar
     assert!(
-        before == after || after.len() <= before.len() + 1,
-        "Should not make already-optimal code worse"
+        before == after || after_len <= before_len + 1,
+        "Should not make already-optimal code worse\nBefore (len={}): {}\nAfter  (len={}): {}",
+        before_len, before, after_len, after
     );
 }
 

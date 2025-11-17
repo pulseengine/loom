@@ -2778,17 +2778,46 @@ pub mod optimize {
         // Phase 1: Precompute (global constant propagation)
         precompute(module)?;
 
-        // Phase 2: Advanced instruction optimizations (strength reduction, bitwise tricks)
+        // Phase 2: ISLE-based optimizations (constant folding) - BEFORE CSE!
+        // Run this early so constant folding happens before CSE tries to cache things
+        for func in &mut module.functions {
+            // Track whether original had End instruction
+            let had_end = func.instructions.last() == Some(&Instruction::End);
+
+            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
+                if !terms.is_empty() {
+                    let mut env = LocalEnv::new();
+                    let optimized_terms: Vec<Value> = terms
+                        .into_iter()
+                        .map(|term| simplify_with_env(term, &mut env))
+                        .collect();
+                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&optimized_terms) {
+                        if !new_instrs.is_empty() {
+                            // Preserve End instruction behavior
+                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
+                                new_instrs.pop();
+                            }
+                            func.instructions = new_instrs;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Advanced instruction optimizations (strength reduction, bitwise tricks)
         optimize_advanced_instructions(module)?;
 
-        // Phase 3: Common Subexpression Elimination
+        // Phase 4: Common Subexpression Elimination
         eliminate_common_subexpressions(module)?;
 
-        // Phase 4: Function inlining
+        // Phase 5: Function inlining
         inline_functions(module)?;
 
-        // Phase 5: ISLE-based optimizations (constant folding)
+        // Phase 6: ISLE-based optimizations again (constant folding after inlining)
         for func in &mut module.functions {
+            // Track whether original had End instruction
+            let had_end = func.instructions.last() == Some(&Instruction::End);
+
             // Convert instructions to ISLE terms
             if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
                 if !terms.is_empty() {
@@ -2802,8 +2831,12 @@ pub mod optimize {
                         .collect();
 
                     // Convert back to instructions
-                    if let Ok(new_instrs) = super::terms::terms_to_instructions(&optimized_terms) {
+                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&optimized_terms) {
                         if !new_instrs.is_empty() {
+                            // Preserve End instruction behavior
+                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
+                                new_instrs.pop();
+                            }
                             func.instructions = new_instrs;
                         }
                     }
@@ -3631,13 +3664,15 @@ pub mod optimize {
                 }
             }
 
-            // Phase 2: Apply CSE transformations for constants (MVP)
+            // Phase 2: Apply CSE transformations (MVP)
             if !duplicates.is_empty() {
-                // Filter to only constants (safe, no side effects)
+                // DON'T cache simple constants - they're cheap and caching prevents constant folding
+                // Constant folding runs before CSE, so this shouldn't be needed, but skip anyway
                 let const_duplicates: Vec<_> = duplicates
                     .iter()
                     .filter(|(orig_pos, _dup_pos, _type)| {
-                        matches!(
+                        // Skip simple constants - they should be constant-folded before CSE runs
+                        !matches!(
                             func.instructions.get(*orig_pos),
                             Some(Instruction::I32Const(_)) | Some(Instruction::I64Const(_))
                         )
@@ -3645,7 +3680,7 @@ pub mod optimize {
                     .collect();
 
                 if !const_duplicates.is_empty() {
-                    // Allocate new locals for cached constants
+                    // Allocate new locals for cached expressions
                     let mut new_locals_needed = HashMap::new();
                     for (orig_pos, _dup_pos, value_type) in &const_duplicates {
                         new_locals_needed.insert(*orig_pos, *value_type);
