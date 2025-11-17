@@ -18,6 +18,23 @@
 ;; WebAssembly Value Types
 ;; ============================================================================
 
+;; Block type signature (for blocks, loops, if statements)
+(type BlockType (enum
+    ;; No result type
+    (Empty)
+    ;; Single result of i32 or i64
+    (I32Result)
+    (I64Result)
+))
+
+;; Optional string for block labels
+(type OptionString (primitive OptionString))
+
+;; List of instructions (for block bodies)
+;; ISLE doesn't have good support for recursive lists, so we use a primitive type
+;; that's handled in the Rust integration layer
+(type InstructionList (primitive InstructionList))
+
 ;; ValueData represents the actual value content
 ;; We use a separate type to allow for proper boxing in recursive structures
 (type ValueData (enum
@@ -124,6 +141,17 @@
     (I32Store (addr Value) (value Value) (offset u32) (align u32))
     (I64Load (addr Value) (offset u32) (align u32))
     (I64Store (addr Value) (value Value) (offset u32) (align u32))
+
+    ;; Control flow operations (Issue #12)
+    ;; Note: ISLE doesn't support nested lists well, so we use a workaround
+    ;; where body is represented as a primitive type handled in Rust
+    (Block (label_opt OptionString) (block_type BlockType) (body InstructionList))
+    (Loop (label_opt OptionString) (block_type BlockType) (body InstructionList))
+    (If (cond Value) (block_type BlockType) (then_body InstructionList) (else_body InstructionList))
+    (Br (depth u32))
+    (BrIf (cond Value) (depth u32))
+    (Call (func_idx u32))
+    (Return)
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -348,6 +376,38 @@
 (decl i64_store (Value Value u32 u32) Value)
 (extern constructor i64_store i64_store)
 
+;; Control flow constructors (Issue #12)
+(decl block_instr (OptionString BlockType InstructionList) Value)
+(extern constructor block_instr block_instr)
+
+(decl loop_instr (OptionString BlockType InstructionList) Value)
+(extern constructor loop_instr loop_instr)
+
+(decl if_instr (Value BlockType InstructionList InstructionList) Value)
+(extern constructor if_instr if_instr)
+
+(decl br_instr (u32) Value)
+(extern constructor br_instr br_instr)
+
+(decl br_if_instr (Value u32) Value)
+(extern constructor br_if_instr br_if_instr)
+
+(decl call_instr (u32) Value)
+(extern constructor call_instr call_instr)
+
+(decl return_instr () Value)
+(extern constructor return_instr return_instr)
+
+;; BlockType constructors
+(decl block_type_empty () BlockType)
+(extern constructor block_type_empty block_type_empty)
+
+(decl block_type_i32 () BlockType)
+(extern constructor block_type_i32 block_type_i32)
+
+(decl block_type_i64 () BlockType)
+(extern constructor block_type_i64 block_type_i64)
+
 ;; ============================================================================
 ;; Extractors
 ;; ============================================================================
@@ -477,3 +537,26 @@
 ;;   (I32Const val)       - matches i32.const variant
 ;;   (I32Add lhs rhs)     - matches i32.add variant
 ;;   (I64Const val)       - matches i64.const variant
+;;
+
+;; ============================================================================
+;; Control Flow Optimization Rules (Issue #12)
+;; ============================================================================
+;;
+;; Note: Control flow optimizations work with instruction lists (bodies of blocks,
+;; loops, if statements) which are not well-supported in ISLE pattern matching.
+;; The control flow types defined above enable representation, but the actual
+;; optimization rules are better implemented in Rust passes.
+;;
+;; Future ISLE-based control flow optimizations (when ISLE gains list support):
+;; - Constant condition folding: if (const 0) then A else B -> B
+;; - BrIf constant folding: br_if (const 0) -> nop; br_if (const 1) -> br
+;; - Empty block elimination: block {} -> nop
+;; - Block flattening: block { block { X } } -> block { X }
+;; - Dead code after unconditional br/return
+;;
+;; Implementation Note:
+;; Control flow optimizations require instruction list manipulation which
+;; is not well-supported in ISLE. The Rust optimization passes handle these
+;; cases more effectively. This ISLE representation enables future integration
+;; when ISLE gains better list support.
