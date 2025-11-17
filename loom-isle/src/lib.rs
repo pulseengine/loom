@@ -1020,7 +1020,12 @@ pub fn loop_instr(label_opt: OptionString, block_type: BlockType, body: Instruct
 }
 
 /// If constructor for ISLE
-pub fn if_instr(cond: Value, block_type: BlockType, then_body: InstructionList, else_body: InstructionList) -> Value {
+pub fn if_instr(
+    cond: Value,
+    block_type: BlockType,
+    then_body: InstructionList,
+    else_body: InstructionList,
+) -> Value {
     let label = None; // ISLE version doesn't include label
     Value(Box::new(ValueData::If {
         label,
@@ -1033,10 +1038,7 @@ pub fn if_instr(cond: Value, block_type: BlockType, then_body: InstructionList, 
 
 /// Branch constructor for ISLE
 pub fn br_instr(depth: u32) -> Value {
-    Value(Box::new(ValueData::Br {
-        depth,
-        value: None,
-    }))
+    Value(Box::new(ValueData::Br { depth, value: None }))
 }
 
 /// Conditional branch constructor for ISLE
@@ -1058,9 +1060,7 @@ pub fn call_instr(func_idx: u32) -> Value {
 
 /// Return constructor for ISLE
 pub fn return_instr() -> Value {
-    Value(Box::new(ValueData::Return {
-        values: Vec::new(),
-    }))
+    Value(Box::new(ValueData::Return { values: Vec::new() }))
 }
 
 /// BlockType::Empty constructor

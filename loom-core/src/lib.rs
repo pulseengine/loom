@@ -335,8 +335,7 @@ pub enum Instruction {
 pub mod parse {
 
     use super::{
-        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module,
-        ValueType,
+        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module, ValueType,
     };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
@@ -2907,7 +2906,9 @@ pub mod optimize {
                         .into_iter()
                         .map(|term| simplify_with_env(term, &mut env))
                         .collect();
-                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&optimized_terms) {
+                    if let Ok(mut new_instrs) =
+                        super::terms::terms_to_instructions(&optimized_terms)
+                    {
                         if !new_instrs.is_empty() {
                             // Preserve End instruction behavior
                             if !had_end && new_instrs.last() == Some(&Instruction::End) {
@@ -2947,7 +2948,9 @@ pub mod optimize {
                         .collect();
 
                     // Convert back to instructions
-                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&optimized_terms) {
+                    if let Ok(mut new_instrs) =
+                        super::terms::terms_to_instructions(&optimized_terms)
+                    {
                         if !new_instrs.is_empty() {
                             // Preserve End instruction behavior
                             if !had_end && new_instrs.last() == Some(&Instruction::End) {
@@ -3274,13 +3277,12 @@ pub mod optimize {
     fn contains_branches(instructions: &[Instruction]) -> bool {
         for instr in instructions {
             match instr {
-                Instruction::Br { .. }
-                | Instruction::BrIf { .. }
-                | Instruction::BrTable { .. } => return true,
+                Instruction::Br { .. } | Instruction::BrIf { .. } | Instruction::BrTable { .. } => {
+                    return true
+                }
 
                 // Recursively check nested structures
-                Instruction::Block { body, .. }
-                | Instruction::Loop { body, .. } => {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     if contains_branches(body) {
                         return true;
                     }
@@ -3979,8 +3981,8 @@ pub mod optimize {
     ///   (local.get $x) (local.get $y) (i32.add)
     ///   (local.get $x) (local.get $y) (i32.add)  ;; duplicate!
     pub fn eliminate_common_subexpressions_enhanced(module: &mut Module) -> Result<()> {
-        use std::collections::{HashMap, HashSet};
         use std::collections::hash_map::DefaultHasher;
+        use std::collections::HashMap;
         use std::hash::{Hash, Hasher};
 
         // Expression representation for CSE
@@ -3995,6 +3997,7 @@ pub mod optimize {
                 right: Box<Expr>,
                 commutative: bool,
             },
+            #[allow(dead_code)]
             Unary {
                 op: String,
                 operand: Box<Expr>,
@@ -4020,7 +4023,12 @@ pub mod optimize {
                         "local.get".hash(&mut hasher);
                         idx.hash(&mut hasher);
                     }
-                    Expr::Binary { op, left, right, commutative } => {
+                    Expr::Binary {
+                        op,
+                        left,
+                        right,
+                        commutative,
+                    } => {
                         op.hash(&mut hasher);
                         if *commutative {
                             // For commutative ops, sort operand hashes
@@ -4074,21 +4082,21 @@ pub mod optimize {
                         let expr = Expr::Const32(*v);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
-                        hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                        hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
                     }
                     Instruction::I64Const(v) => {
                         let expr = Expr::Const64(*v);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
-                        hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                        hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
                     }
                     Instruction::LocalGet(idx) => {
                         let expr = Expr::LocalGet(*idx);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
-                        hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                        hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
                     }
 
@@ -4097,7 +4105,11 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
-                            let op = if matches!(instr, Instruction::I32Add) { "i32.add" } else { "i64.add" };
+                            let op = if matches!(instr, Instruction::I32Add) {
+                                "i32.add"
+                            } else {
+                                "i64.add"
+                            };
                             let expr = Expr::Binary {
                                 op: op.to_string(),
                                 left: Box::new(left),
@@ -4106,7 +4118,7 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
-                            hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                            hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
                         } else {
                             stack.clear();
@@ -4118,7 +4130,11 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
-                            let op = if matches!(instr, Instruction::I32Mul) { "i32.mul" } else { "i64.mul" };
+                            let op = if matches!(instr, Instruction::I32Mul) {
+                                "i32.mul"
+                            } else {
+                                "i64.mul"
+                            };
                             let expr = Expr::Binary {
                                 op: op.to_string(),
                                 left: Box::new(left),
@@ -4127,7 +4143,7 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
-                            hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                            hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
                         } else {
                             stack.clear();
@@ -4135,9 +4151,12 @@ pub mod optimize {
                         }
                     }
 
-                    Instruction::I32And | Instruction::I64And |
-                    Instruction::I32Or | Instruction::I64Or |
-                    Instruction::I32Xor | Instruction::I64Xor => {
+                    Instruction::I32And
+                    | Instruction::I64And
+                    | Instruction::I32Or
+                    | Instruction::I64Or
+                    | Instruction::I32Xor
+                    | Instruction::I64Xor => {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
@@ -4158,7 +4177,7 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
-                            hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                            hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
                         } else {
                             stack.clear();
@@ -4170,7 +4189,11 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
-                            let op = if matches!(instr, Instruction::I32Sub) { "i32.sub" } else { "i64.sub" };
+                            let op = if matches!(instr, Instruction::I32Sub) {
+                                "i32.sub"
+                            } else {
+                                "i64.sub"
+                            };
                             let expr = Expr::Binary {
                                 op: op.to_string(),
                                 left: Box::new(left),
@@ -4179,7 +4202,7 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
-                            hash_to_positions.entry(hash).or_insert_with(Vec::new).push(pos);
+                            hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
                         } else {
                             stack.clear();
@@ -4493,68 +4516,84 @@ pub mod optimize {
             if i + 2 < instructions.len() {
                 match (&instructions[i], &instructions[i + 1], &instructions[i + 2]) {
                     // Bitwise trick: x ^ x → 0
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I32Xor)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I32Xor,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::I32Const(0));
                         i += 3;
                         continue;
                     }
 
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I64Xor)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I64Xor,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::I64Const(0));
                         i += 3;
                         continue;
                     }
 
                     // Bitwise trick: x & x → x
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I32And)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I32And,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::LocalGet(*idx1));
                         i += 3;
                         continue;
                     }
 
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I64And)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I64And,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::LocalGet(*idx1));
                         i += 3;
                         continue;
                     }
 
                     // Bitwise trick: x | x → x
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I32Or)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I32Or,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::LocalGet(*idx1));
                         i += 3;
                         continue;
                     }
 
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I64Or)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I64Or,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::LocalGet(*idx1));
                         i += 3;
                         continue;
                     }
 
                     // Algebraic simplification: x - x → 0
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I32Sub)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I32Sub,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::I32Const(0));
                         i += 3;
                         continue;
                     }
 
-                    (Instruction::LocalGet(idx1), Instruction::LocalGet(idx2), Instruction::I64Sub)
-                        if idx1 == idx2 =>
-                    {
+                    (
+                        Instruction::LocalGet(idx1),
+                        Instruction::LocalGet(idx2),
+                        Instruction::I64Sub,
+                    ) if idx1 == idx2 => {
                         result.push(Instruction::I64Const(0));
                         i += 3;
                         continue;
@@ -4679,7 +4718,8 @@ pub mod optimize {
 
         // Phase 3: Perform inlining
         // For each function, inline calls to candidate functions
-        let inline_set: std::collections::HashSet<u32> = inline_candidates.iter().copied().collect();
+        let inline_set: std::collections::HashSet<u32> =
+            inline_candidates.iter().copied().collect();
 
         // Clone functions to avoid borrow checker issues
         let all_functions = module.functions.clone();
@@ -4745,14 +4785,26 @@ pub mod optimize {
                 Instruction::Block { block_type, body } => {
                     result.push(Instruction::Block {
                         block_type: block_type.clone(),
-                        body: inline_calls_in_block(body, inline_set, all_functions, base_local_count, caller_locals),
+                        body: inline_calls_in_block(
+                            body,
+                            inline_set,
+                            all_functions,
+                            base_local_count,
+                            caller_locals,
+                        ),
                     });
                 }
 
                 Instruction::Loop { block_type, body } => {
                     result.push(Instruction::Loop {
                         block_type: block_type.clone(),
-                        body: inline_calls_in_block(body, inline_set, all_functions, base_local_count, caller_locals),
+                        body: inline_calls_in_block(
+                            body,
+                            inline_set,
+                            all_functions,
+                            base_local_count,
+                            caller_locals,
+                        ),
                     });
                 }
 
@@ -4763,8 +4815,20 @@ pub mod optimize {
                 } => {
                     result.push(Instruction::If {
                         block_type: block_type.clone(),
-                        then_body: inline_calls_in_block(then_body, inline_set, all_functions, base_local_count, caller_locals),
-                        else_body: inline_calls_in_block(else_body, inline_set, all_functions, base_local_count, caller_locals),
+                        then_body: inline_calls_in_block(
+                            then_body,
+                            inline_set,
+                            all_functions,
+                            base_local_count,
+                            caller_locals,
+                        ),
+                        else_body: inline_calls_in_block(
+                            else_body,
+                            inline_set,
+                            all_functions,
+                            base_local_count,
+                            caller_locals,
+                        ),
                     });
                 }
 
@@ -4829,11 +4893,14 @@ pub mod optimize {
         let mut count = instructions.len();
         for instr in instructions {
             match instr {
-                Instruction::Block { body, .. } |
-                Instruction::Loop { body, .. } => {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     count += count_instructions_recursive(body);
                 }
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count += count_instructions_recursive(then_body);
                     count += count_instructions_recursive(else_body);
                 }
@@ -4844,17 +4911,23 @@ pub mod optimize {
     }
 
     /// Count function calls recursively
-    fn count_calls_recursive(instructions: &[Instruction], call_counts: &mut std::collections::HashMap<u32, usize>) {
+    fn count_calls_recursive(
+        instructions: &[Instruction],
+        call_counts: &mut std::collections::HashMap<u32, usize>,
+    ) {
         for instr in instructions {
             match instr {
                 Instruction::Call(func_idx) => {
                     *call_counts.entry(*func_idx).or_insert(0) += 1;
                 }
-                Instruction::Block { body, .. } |
-                Instruction::Loop { body, .. } => {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     count_calls_recursive(body, call_counts);
                 }
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count_calls_recursive(then_body, call_counts);
                     count_calls_recursive(else_body, call_counts);
                 }
@@ -4881,15 +4954,9 @@ pub mod optimize {
             count_local_usage(&func.instructions, &mut usage);
 
             // Phase 2: Identify single-use locals
-            let single_use_locals: Vec<u32> = usage
+            let _single_use_locals: Vec<u32> = usage
                 .iter()
-                .filter_map(|(idx, count)| {
-                    if *count == 1 {
-                        Some(*idx)
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|(idx, count)| if *count == 1 { Some(*idx) } else { None })
                 .collect();
 
             // Phase 3: Flatten nested blocks
@@ -4910,13 +4977,19 @@ pub mod optimize {
     ) {
         for instr in instructions {
             match instr {
-                Instruction::LocalGet(idx) | Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
+                Instruction::LocalGet(idx)
+                | Instruction::LocalSet(idx)
+                | Instruction::LocalTee(idx) => {
                     *usage.entry(*idx).or_insert(0) += 1;
                 }
                 Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     count_local_usage(body, usage);
                 }
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count_local_usage(then_body, usage);
                     count_local_usage(else_body, usage);
                 }
@@ -4932,14 +5005,21 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 // Flatten nested empty blocks
-                Instruction::Block { block_type, body } if body.is_empty() => {
+                Instruction::Block {
+                    block_type: _,
+                    body,
+                } if body.is_empty() => {
                     // Skip empty blocks
                     continue;
                 }
 
                 // Flatten nested blocks with single block inside
                 Instruction::Block { block_type, body } if body.len() == 1 => {
-                    if let Some(Instruction::Block { block_type: inner_type, body: inner_body }) = body.first() {
+                    if let Some(Instruction::Block {
+                        block_type: inner_type,
+                        body: inner_body,
+                    }) = body.first()
+                    {
                         // If types match, flatten to single block
                         if block_type == inner_type {
                             result.push(Instruction::Block {
@@ -4975,7 +5055,11 @@ pub mod optimize {
                     });
                 }
 
-                Instruction::If { block_type, then_body, else_body } => {
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
                     result.push(Instruction::If {
                         block_type: block_type.clone(),
                         then_body: flatten_blocks(then_body),
@@ -4997,6 +5081,7 @@ pub mod optimize {
     /// Optimizes loops through:
     /// - Loop-Invariant Code Motion (LICM)
     /// - Loop unrolling for small known-count loops
+    ///
     /// Critical for numerical code performance.
     pub fn optimize_loops(module: &mut Module) -> Result<()> {
         use std::collections::HashSet;
@@ -5087,7 +5172,10 @@ pub mod optimize {
     }
 
     /// Check if an instruction is loop-invariant
-    fn is_loop_invariant(instr: &Instruction, modified_locals: &std::collections::HashSet<u32>) -> bool {
+    fn is_loop_invariant(
+        instr: &Instruction,
+        modified_locals: &std::collections::HashSet<u32>,
+    ) -> bool {
         match instr {
             // Constants are always invariant
             Instruction::I32Const(_) | Instruction::I64Const(_) => true,
@@ -5102,7 +5190,10 @@ pub mod optimize {
     }
 
     /// Identify which locals are modified in a block
-    fn identify_modified_locals(instructions: &[Instruction], modified: &mut std::collections::HashSet<u32>) {
+    fn identify_modified_locals(
+        instructions: &[Instruction],
+        modified: &mut std::collections::HashSet<u32>,
+    ) {
         for instr in instructions {
             match instr {
                 Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
@@ -5558,7 +5649,7 @@ mod tests {
         // Verify optimized instructions - should be just (i32.const 42)
         // Note: End instruction may be implicit and removed during optimization
         let func = &module.functions[0];
-        assert!(func.instructions.len() >= 1);
+        assert!(!func.instructions.is_empty());
         assert_eq!(func.instructions[0], Instruction::I32Const(42));
 
         // Should NOT contain the original add instruction
@@ -5581,7 +5672,7 @@ mod tests {
         // Verify the result matches our expectation
         // Note: End instruction may be implicit and removed during optimization
         let func = &module.functions[0];
-        assert!(func.instructions.len() >= 1);
+        assert!(!func.instructions.is_empty());
         assert_eq!(func.instructions[0], Instruction::I32Const(42));
 
         // Encode back to WASM and verify it's valid
@@ -5589,7 +5680,10 @@ mod tests {
 
         // Re-parse to verify validity
         let module2 = parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse optimized WASM");
-        eprintln!("DEBUG: module2.functions.len() = {}", module2.functions.len());
+        eprintln!(
+            "DEBUG: module2.functions.len() = {}",
+            module2.functions.len()
+        );
         eprintln!("DEBUG: module2.types.len() = {}", module2.types.len());
         assert_eq!(module2.functions.len(), 1);
         assert_eq!(
@@ -6873,8 +6967,14 @@ mod tests {
 
         // Should convert x * 4 to x << 2
         let func = &module.functions[0];
-        let has_shl = func.instructions.iter().any(|i| matches!(i, Instruction::I32Shl));
-        let has_mul = func.instructions.iter().any(|i| matches!(i, Instruction::I32Mul));
+        let has_shl = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Shl));
+        let has_mul = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Mul));
 
         assert!(has_shl, "Should have shift left instruction");
         assert!(!has_mul, "Should not have multiply instruction");
@@ -6895,8 +6995,14 @@ mod tests {
 
         // Should convert x / 8 to x >> 3
         let func = &module.functions[0];
-        let has_shr = func.instructions.iter().any(|i| matches!(i, Instruction::I32ShrU));
-        let has_div = func.instructions.iter().any(|i| matches!(i, Instruction::I32DivU));
+        let has_shr = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32ShrU));
+        let has_div = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32DivU));
 
         assert!(has_shr, "Should have shift right instruction");
         assert!(!has_div, "Should not have divide instruction");
@@ -6917,8 +7023,14 @@ mod tests {
 
         // Should convert x % 16 to x & 15
         let func = &module.functions[0];
-        let has_and = func.instructions.iter().any(|i| matches!(i, Instruction::I32And));
-        let has_rem = func.instructions.iter().any(|i| matches!(i, Instruction::I32RemU));
+        let has_and = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32And));
+        let has_rem = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32RemU));
 
         assert!(has_and, "Should have AND instruction");
         assert!(!has_rem, "Should not have remainder instruction");
@@ -6939,8 +7051,14 @@ mod tests {
 
         // Should convert x ^ x to 0
         let func = &module.functions[0];
-        let const_zero = func.instructions.iter().any(|i| matches!(i, Instruction::I32Const(0)));
-        let has_xor = func.instructions.iter().any(|i| matches!(i, Instruction::I32Xor));
+        let const_zero = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Const(0)));
+        let has_xor = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Xor));
 
         assert!(const_zero, "Should have constant 0");
         assert!(!has_xor, "Should not have XOR instruction");
@@ -6961,8 +7079,15 @@ mod tests {
 
         // Should convert x & x to x
         let func = &module.functions[0];
-        let local_get_count = func.instructions.iter().filter(|i| matches!(i, Instruction::LocalGet(_))).count();
-        let has_and = func.instructions.iter().any(|i| matches!(i, Instruction::I32And));
+        let local_get_count = func
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalGet(_)))
+            .count();
+        let has_and = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32And));
 
         assert_eq!(local_get_count, 1, "Should have only one local.get");
         assert!(!has_and, "Should not have AND instruction");
@@ -6983,8 +7108,15 @@ mod tests {
 
         // Should convert x | x to x
         let func = &module.functions[0];
-        let local_get_count = func.instructions.iter().filter(|i| matches!(i, Instruction::LocalGet(_))).count();
-        let has_or = func.instructions.iter().any(|i| matches!(i, Instruction::I32Or));
+        let local_get_count = func
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalGet(_)))
+            .count();
+        let has_or = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Or));
 
         assert_eq!(local_get_count, 1, "Should have only one local.get");
         assert!(!has_or, "Should not have OR instruction");
@@ -7006,8 +7138,15 @@ mod tests {
         // Should convert x & 0 to 0
         let func = &module.functions[0];
         // Should have just const 0
-        assert_eq!(func.instructions.len(), 1, "Should have only one instruction");
-        assert!(matches!(func.instructions[0], Instruction::I32Const(0)), "Should be const 0");
+        assert_eq!(
+            func.instructions.len(),
+            1,
+            "Should have only one instruction"
+        );
+        assert!(
+            matches!(func.instructions[0], Instruction::I32Const(0)),
+            "Should be const 0"
+        );
     }
 
     #[test]
@@ -7025,8 +7164,15 @@ mod tests {
 
         // Should convert x | 0xFFFFFFFF to 0xFFFFFFFF
         let func = &module.functions[0];
-        assert_eq!(func.instructions.len(), 1, "Should have only one instruction");
-        assert!(matches!(func.instructions[0], Instruction::I32Const(-1)), "Should be const -1");
+        assert_eq!(
+            func.instructions.len(),
+            1,
+            "Should have only one instruction"
+        );
+        assert!(
+            matches!(func.instructions[0], Instruction::I32Const(-1)),
+            "Should be const -1"
+        );
     }
 
     #[test]
@@ -7044,8 +7190,14 @@ mod tests {
 
         // Should convert x * 32 to x << 5
         let func = &module.functions[0];
-        let has_shl = func.instructions.iter().any(|i| matches!(i, Instruction::I64Shl));
-        let has_mul = func.instructions.iter().any(|i| matches!(i, Instruction::I64Mul));
+        let has_shl = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Shl));
+        let has_mul = func
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Mul));
 
         assert!(has_shl, "Should have i64 shift left instruction");
         assert!(!has_mul, "Should not have i64 multiply instruction");
@@ -7067,10 +7219,16 @@ mod tests {
         optimize::optimize_advanced_instructions(&mut module).unwrap();
 
         // Should optimize inside blocks too
-        let func = &module.functions[0];
+        let _func = &module.functions[0];
         let wat_output = encode::encode_wat(&module).unwrap();
 
-        assert!(wat_output.contains("i32.shl"), "Should have shift left in output");
-        assert!(!wat_output.contains("i32.mul"), "Should not have multiply in output");
+        assert!(
+            wat_output.contains("i32.shl"),
+            "Should have shift left in output"
+        );
+        assert!(
+            !wat_output.contains("i32.mul"),
+            "Should not have multiply in output"
+        );
     }
 }

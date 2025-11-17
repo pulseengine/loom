@@ -6,6 +6,7 @@
 use loom_core::{optimize, parse};
 
 /// Helper to test that WAT input optimizes to expected WAT output
+#[allow(dead_code)]
 fn assert_optimizes_to(input_wat: &str, expected_wat: &str) {
     let mut module = parse::parse_wat(input_wat).expect("Failed to parse input WAT");
     optimize::optimize_module(&mut module).expect("Optimization failed");
@@ -120,10 +121,14 @@ fn test_bitwise_xor_self() {
     optimize::optimize_module(&mut module).unwrap();
 
     let instructions = &module.functions[0].instructions;
-    let has_const_zero = instructions.iter().any(|i| {
-        matches!(i, loom_core::Instruction::I32Const(0))
-    });
-    assert!(has_const_zero, "Expected i32.const 0, got: {:?}", instructions);
+    let has_const_zero = instructions
+        .iter()
+        .any(|i| matches!(i, loom_core::Instruction::I32Const(0)));
+    assert!(
+        has_const_zero,
+        "Expected i32.const 0, got: {:?}",
+        instructions
+    );
 }
 
 #[test]
@@ -192,10 +197,14 @@ fn test_algebraic_mul_zero() {
     optimize::optimize_module(&mut module).unwrap();
 
     let instructions = &module.functions[0].instructions;
-    let has_const_zero = instructions.iter().any(|i| {
-        matches!(i, loom_core::Instruction::I32Const(0))
-    });
-    assert!(has_const_zero, "Expected constant 0, got: {:?}", instructions);
+    let has_const_zero = instructions
+        .iter()
+        .any(|i| matches!(i, loom_core::Instruction::I32Const(0)));
+    assert!(
+        has_const_zero,
+        "Expected constant 0, got: {:?}",
+        instructions
+    );
 }
 
 #[test]
@@ -244,10 +253,14 @@ fn test_cse_duplicate_constants() {
 
     // Should constant-fold to 84
     let instructions = &module.functions[0].instructions;
-    let has_84 = instructions.iter().any(|i| {
-        matches!(i, loom_core::Instruction::I32Const(84))
-    });
-    assert!(has_84, "Expected constant folding to 84, got: {:?}", instructions);
+    let has_84 = instructions
+        .iter()
+        .any(|i| matches!(i, loom_core::Instruction::I32Const(84)));
+    assert!(
+        has_84,
+        "Expected constant folding to 84, got: {:?}",
+        instructions
+    );
 }
 
 #[test]
@@ -272,9 +285,10 @@ fn test_cse_duplicate_computation() {
 
     // After CSE, should use local.tee to cache result
     let instructions = &module.functions[0].instructions;
-    let has_tee_or_fewer_ops = instructions.iter().any(|i| {
-        matches!(i, loom_core::Instruction::LocalTee(_))
-    }) || instructions.len() < 8; // Original has 8+ instructions
+    let has_tee_or_fewer_ops = instructions
+        .iter()
+        .any(|i| matches!(i, loom_core::Instruction::LocalTee(_)))
+        || instructions.len() < 8; // Original has 8+ instructions
 
     assert!(
         has_tee_or_fewer_ops,
@@ -309,9 +323,11 @@ fn test_inline_simple_function() {
 
     // After inlining, $main should have fewer Call instructions
     let main_func = &module.functions[1]; // $main is second function
-    let call_count = main_func.instructions.iter().filter(|i| {
-        matches!(i, loom_core::Instruction::Call(_))
-    }).count();
+    let call_count = main_func
+        .instructions
+        .iter()
+        .filter(|i| matches!(i, loom_core::Instruction::Call(_)))
+        .count();
 
     // Should have 0 or 1 call (depending on inlining threshold)
     assert!(
@@ -395,9 +411,10 @@ fn test_block_flattening() {
 
     let instructions = &module.functions[0].instructions;
     // Count number of Block instructions
-    let block_count = instructions.iter().filter(|i| {
-        matches!(i, loom_core::Instruction::Block { .. })
-    }).count();
+    let block_count = instructions
+        .iter()
+        .filter(|i| matches!(i, loom_core::Instruction::Block { .. }))
+        .count();
 
     // Should have fewer blocks after flattening
     assert!(
@@ -506,8 +523,16 @@ fn test_optimization_preserves_semantics() {
     );
 
     // Should still have parameters
-    assert_eq!(optimized.functions[0].signature.params.len(), 2, "Should preserve parameters");
-    assert_eq!(optimized.functions[0].signature.results.len(), 1, "Should preserve results");
+    assert_eq!(
+        optimized.functions[0].signature.params.len(),
+        2,
+        "Should preserve parameters"
+    );
+    assert_eq!(
+        optimized.functions[0].signature.results.len(),
+        1,
+        "Should preserve results"
+    );
 }
 
 // ============================================================================
@@ -552,7 +577,10 @@ fn test_no_optimizations_needed() {
     assert!(
         before == after || after_len <= before_len + 1,
         "Should not make already-optimal code worse\nBefore (len={}): {}\nAfter  (len={}): {}",
-        before_len, before, after_len, after
+        before_len,
+        before,
+        after_len,
+        after
     );
 }
 
