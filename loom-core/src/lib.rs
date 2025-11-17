@@ -2775,8 +2775,21 @@ pub mod optimize {
     pub fn optimize_module(module: &mut Module) -> Result<()> {
         use loom_isle::{simplify_with_env, LocalEnv};
 
+        // Phase 1: Precompute (global constant propagation)
+        precompute(module)?;
+
+        // Phase 2: Advanced instruction optimizations (strength reduction, bitwise tricks)
+        optimize_advanced_instructions(module)?;
+
+        // Phase 3: Common Subexpression Elimination
+        eliminate_common_subexpressions(module)?;
+
+        // Phase 4: Function inlining
+        inline_functions(module)?;
+
+        // Phase 5: ISLE-based optimizations (constant folding)
         for func in &mut module.functions {
-            // Convert instructions to ISLE terms (including local variables now!)
+            // Convert instructions to ISLE terms
             if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
                 if !terms.is_empty() {
                     // Create environment for dataflow analysis
@@ -2797,6 +2810,27 @@ pub mod optimize {
                 }
             }
         }
+
+        // Phase 6: Code folding (block flattening)
+        fold_code(module)?;
+
+        // Phase 7: Loop optimizations (LICM)
+        optimize_loops(module)?;
+
+        // Phase 8: Branch simplification
+        simplify_branches(module)?;
+
+        // Phase 9: Dead code elimination
+        eliminate_dead_code(module)?;
+
+        // Phase 10: Block merging
+        merge_blocks(module)?;
+
+        // Phase 11: Vacuum (cleanup empty blocks)
+        vacuum(module)?;
+
+        // Phase 12: Simplify locals (remove unused locals)
+        simplify_locals(module)?;
 
         Ok(())
     }
