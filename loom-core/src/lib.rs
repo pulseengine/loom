@@ -4903,6 +4903,12 @@ pub mod optimize {
 
 /// Component Model Support (Phase 9)
 ///
+/// Formal verification module using Z3 SMT solver
+///
+/// This module provides translation validation to prove that optimizations
+/// preserve program semantics. Only available with the "verification" feature.
+pub mod verify;
+
 /// This module provides full support for WebAssembly Components.
 /// LOOM extracts core modules, optimizes them, and reconstructs the component.
 pub mod component {
