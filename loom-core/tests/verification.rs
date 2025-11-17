@@ -112,6 +112,7 @@ fn prop_optimization_produces_valid_wasm() {
             memories: vec![],
             globals: vec![],
             types: vec![],
+            exports: vec![],
         };
 
         // Apply optimization

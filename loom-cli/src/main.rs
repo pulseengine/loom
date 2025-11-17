@@ -607,6 +607,7 @@ mod tests {
             memories: vec![],
             globals: vec![],
             types: vec![],
+            exports: vec![],
         };
 
         let count = count_instructions(&module);
@@ -638,6 +639,7 @@ mod tests {
             memories: vec![],
             globals: vec![],
             types: vec![],
+            exports: vec![],
         };
 
         let count = count_constant_folds(&module);
