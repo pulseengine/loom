@@ -154,7 +154,7 @@ fn optimize_command(
             println!("📦 Attempting component optimization...");
 
             // Use component optimization
-            match loom_core::component::optimize_component(&input_bytes) {
+            match loom_core::optimize_component(&input_bytes) {
                 Ok((optimized_bytes, stats)) => {
                     println!("\n📊 Component Optimization Results");
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
