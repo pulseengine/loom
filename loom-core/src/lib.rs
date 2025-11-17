@@ -21,6 +21,30 @@ pub struct Module {
     pub globals: Vec<Global>,
     /// Function types (for reconstruction)
     pub types: Vec<FunctionSignature>,
+    /// Exported items (functions, globals, memories)
+    pub exports: Vec<Export>,
+}
+
+/// Export definition
+#[derive(Debug, Clone)]
+pub struct Export {
+    /// Export name
+    pub name: String,
+    /// What is being exported
+    pub kind: ExportKind,
+}
+
+/// Type of exported item
+#[derive(Debug, Clone)]
+pub enum ExportKind {
+    /// Function export
+    Func(u32),
+    /// Memory export
+    Memory(u32),
+    /// Global export
+    Global(u32),
+    /// Table export
+    Table(u32),
 }
 
 /// Memory definition
@@ -59,7 +83,7 @@ pub struct Function {
 }
 
 /// Function signature
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSignature {
     /// Parameter types
     pub params: Vec<ValueType>,
@@ -310,7 +334,10 @@ pub enum Instruction {
 /// Module parsing functionality: Parse WebAssembly modules into LOOM's internal representation
 pub mod parse {
 
-    use super::{BlockType, Function, FunctionSignature, Instruction, Module, ValueType};
+    use super::{
+        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module,
+        ValueType,
+    };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
 
@@ -323,6 +350,7 @@ pub mod parse {
         let mut memories = Vec::new();
         let mut globals = Vec::new();
         let mut function_signatures = Vec::new();
+        let mut exports = Vec::new();
 
         for payload in Parser::new(0).parse_all(bytes) {
             let payload = payload.context("Failed to parse WebAssembly payload")?;
@@ -425,6 +453,23 @@ pub mod parse {
                         instructions,
                     });
                 }
+                Payload::ExportSection(reader) => {
+                    // Capture export declarations
+                    for export in reader.clone() {
+                        let export = export?;
+                        let kind = match export.kind {
+                            wasmparser::ExternalKind::Func => ExportKind::Func(export.index),
+                            wasmparser::ExternalKind::Memory => ExportKind::Memory(export.index),
+                            wasmparser::ExternalKind::Global => ExportKind::Global(export.index),
+                            wasmparser::ExternalKind::Table => ExportKind::Table(export.index),
+                            _ => continue, // Skip unsupported export kinds
+                        };
+                        exports.push(Export {
+                            name: export.name.to_string(),
+                            kind,
+                        });
+                    }
+                }
                 _ => {
                     // Ignore other sections for now
                 }
@@ -439,6 +484,7 @@ pub mod parse {
             memories,                   // Phase 14: Preserve memory declarations
             globals,                    // Phase 14: Preserve global declarations
             types: function_signatures, // Phase 14: Preserve type information
+            exports,                    // Preserve export declarations
         })
     }
 
@@ -794,12 +840,12 @@ pub mod parse {
 /// Module encoding functionality: Encode LOOM's internal representation back to WebAssembly
 pub mod encode {
 
-    use super::{BlockType, Instruction, Module, ValueType};
+    use super::{BlockType, ExportKind, Instruction, Module, ValueType};
     use anyhow::{Context, Result};
     use wasm_encoder::{
-        CodeSection, ConstExpr, Function as EncoderFunction, FunctionSection, GlobalSection,
-        GlobalType, Instruction as EncoderInstruction, MemorySection, MemoryType, TypeSection,
-        ValType,
+        CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
+        Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType,
+        Instruction as EncoderInstruction, MemorySection, MemoryType, TypeSection, ValType,
     };
 
     /// Helper function to encode a constant expression (for global initializers)
@@ -839,29 +885,26 @@ pub mod encode {
     pub fn encode_wasm(module: &Module) -> Result<Vec<u8>> {
         let mut wasm_module = wasm_encoder::Module::new();
 
-        // Build type section
+        // Build type section from deduplicated types
         let mut types = TypeSection::new();
-        for func in &module.functions {
-            let params: Vec<ValType> = func
-                .signature
-                .params
-                .iter()
-                .map(|t| convert_to_valtype(*t))
-                .collect();
-            let results: Vec<ValType> = func
-                .signature
-                .results
-                .iter()
-                .map(|t| convert_to_valtype(*t))
-                .collect();
+        for ty in &module.types {
+            let params: Vec<ValType> = ty.params.iter().map(|t| convert_to_valtype(*t)).collect();
+            let results: Vec<ValType> = ty.results.iter().map(|t| convert_to_valtype(*t)).collect();
             types.ty().function(params, results);
         }
         wasm_module.section(&types);
 
         // Build function section (references to types)
+        // Map each function to its type index
         let mut functions = FunctionSection::new();
-        for i in 0..module.functions.len() {
-            functions.function(i as u32);
+        for func in &module.functions {
+            // Find the type index for this function's signature
+            let type_idx = module
+                .types
+                .iter()
+                .position(|t| t == &func.signature)
+                .expect("Function signature not found in types") as u32;
+            functions.function(type_idx);
         }
         wasm_module.section(&functions);
 
@@ -896,6 +939,28 @@ pub mod encode {
                 globals.global(global_type, &init_expr);
             }
             wasm_module.section(&globals);
+        }
+
+        // Build export section
+        if !module.exports.is_empty() {
+            let mut exports = ExportSection::new();
+            for export in &module.exports {
+                match &export.kind {
+                    ExportKind::Func(idx) => {
+                        exports.export(&export.name, EncoderExportKind::Func, *idx);
+                    }
+                    ExportKind::Memory(idx) => {
+                        exports.export(&export.name, EncoderExportKind::Memory, *idx);
+                    }
+                    ExportKind::Global(idx) => {
+                        exports.export(&export.name, EncoderExportKind::Global, *idx);
+                    }
+                    ExportKind::Table(idx) => {
+                        exports.export(&export.name, EncoderExportKind::Table, *idx);
+                    }
+                }
+            }
+            wasm_module.section(&exports);
         }
 
         // Build code section (function bodies)
