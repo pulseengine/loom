@@ -26,13 +26,13 @@ use z3::ast::{Ast, BV};
 #[cfg(feature = "verification")]
 use z3::{Config, Context, SatResult, Solver};
 
-#[cfg(feature = "verification")]
-use crate::{Function, Instruction, Module};
 #[cfg(not(feature = "verification"))]
 use crate::Module;
-use anyhow::{anyhow, Result};
+#[cfg(feature = "verification")]
+use crate::{Function, Instruction, Module};
 #[cfg(feature = "verification")]
 use anyhow::Context as AnyhowContext;
+use anyhow::{anyhow, Result};
 
 /// Verify that an optimization preserves program semantics
 ///
@@ -72,7 +72,9 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
     // Verify each function pair
     for (orig_func, opt_func) in original.functions.iter().zip(optimized.functions.iter()) {
         // Check signatures match
-        if orig_func.params != opt_func.params || orig_func.results != opt_func.results {
+        if orig_func.signature.params != opt_func.signature.params
+            || orig_func.signature.results != opt_func.signature.results
+        {
             return Ok(false);
         }
 
@@ -99,7 +101,9 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
                 return Ok(false);
             }
             SatResult::Unknown => {
-                return Err(anyhow!("SMT solver returned unknown (timeout or too complex)"));
+                return Err(anyhow!(
+                    "SMT solver returned unknown (timeout or too complex)"
+                ));
             }
         }
     }
@@ -117,7 +121,7 @@ fn encode_function_to_smt<'ctx>(ctx: &'ctx Context, func: &Function) -> Result<B
     let mut locals: Vec<BV<'ctx>> = Vec::new();
 
     // Initialize parameters as symbolic inputs
-    for (idx, param_type) in func.params.iter().enumerate() {
+    for (idx, param_type) in func.signature.params.iter().enumerate() {
         let width = match param_type {
             crate::ValueType::I32 => 32,
             crate::ValueType::I64 => 64,
@@ -131,8 +135,8 @@ fn encode_function_to_smt<'ctx>(ctx: &'ctx Context, func: &Function) -> Result<B
     }
 
     // Initialize local variables to zero
-    for (idx, local_type) in func.locals.iter().enumerate() {
-        let width = match local_type {
+    for local_type in func.locals.iter() {
+        let width = match local_type.1 {
             crate::ValueType::I32 => 32,
             crate::ValueType::I64 => 64,
             crate::ValueType::F32 | crate::ValueType::F64 => {
@@ -341,7 +345,10 @@ fn encode_function_to_smt<'ctx>(ctx: &'ctx Context, func: &Function) -> Result<B
 
             _ => {
                 // Unsupported instruction for verification
-                return Err(anyhow!("Unsupported instruction for verification: {:?}", instr));
+                return Err(anyhow!(
+                    "Unsupported instruction for verification: {:?}",
+                    instr
+                ));
             }
         }
     }
@@ -365,7 +372,7 @@ pub fn verify_optimization(_original: &Module, _optimized: &Module) -> Result<bo
 #[cfg(all(test, feature = "verification"))]
 mod tests {
     use super::*;
-    use crate::{optimize, parse};
+    use crate::parse;
 
     #[test]
     fn test_verify_constant_folding() {
@@ -428,7 +435,10 @@ mod tests {
         // Verify equivalence
         let result = verify_optimization(&original, &optimized);
         assert!(result.is_ok(), "Verification failed: {:?}", result);
-        assert!(result.unwrap(), "Strength reduction should preserve semantics");
+        assert!(
+            result.unwrap(),
+            "Strength reduction should preserve semantics"
+        );
     }
 
     #[test]

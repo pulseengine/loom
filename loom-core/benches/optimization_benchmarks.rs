@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use loom_core::{optimize, parse};
 
 /// Benchmark constant folding performance
@@ -10,7 +10,9 @@ fn bench_constant_folding(c: &mut Criterion) {
     let mut group = c.benchmark_group("constant_folding");
 
     let inputs = vec![
-        ("simple", r#"
+        (
+            "simple",
+            r#"
             (module
                 (func (result i32)
                     i32.const 10
@@ -18,8 +20,11 @@ fn bench_constant_folding(c: &mut Criterion) {
                     i32.add
                 )
             )
-        "#),
-        ("nested", r#"
+        "#,
+        ),
+        (
+            "nested",
+            r#"
             (module
                 (func (result i32)
                     i32.const 5
@@ -31,8 +36,11 @@ fn bench_constant_folding(c: &mut Criterion) {
                     i32.add
                 )
             )
-        "#),
-        ("complex", r#"
+        "#,
+        ),
+        (
+            "complex",
+            r#"
             (module
                 (func (result i32)
                     i32.const 100
@@ -46,7 +54,8 @@ fn bench_constant_folding(c: &mut Criterion) {
                     i32.div_u
                 )
             )
-        "#),
+        "#,
+        ),
     ];
 
     for (name, wat) in inputs {
@@ -66,7 +75,9 @@ fn bench_strength_reduction(c: &mut Criterion) {
     let mut group = c.benchmark_group("strength_reduction");
 
     let inputs = vec![
-        ("mul_by_4", r#"
+        (
+            "mul_by_4",
+            r#"
             (module
                 (func (param i32) (result i32)
                     local.get 0
@@ -74,8 +85,11 @@ fn bench_strength_reduction(c: &mut Criterion) {
                     i32.mul
                 )
             )
-        "#),
-        ("mul_by_8", r#"
+        "#,
+        ),
+        (
+            "mul_by_8",
+            r#"
             (module
                 (func (param i32) (result i32)
                     local.get 0
@@ -83,8 +97,11 @@ fn bench_strength_reduction(c: &mut Criterion) {
                     i32.mul
                 )
             )
-        "#),
-        ("div_by_16", r#"
+        "#,
+        ),
+        (
+            "div_by_16",
+            r#"
             (module
                 (func (param i32) (result i32)
                     local.get 0
@@ -92,8 +109,11 @@ fn bench_strength_reduction(c: &mut Criterion) {
                     i32.div_u
                 )
             )
-        "#),
-        ("rem_by_32", r#"
+        "#,
+        ),
+        (
+            "rem_by_32",
+            r#"
             (module
                 (func (param i32) (result i32)
                     local.get 0
@@ -101,7 +121,8 @@ fn bench_strength_reduction(c: &mut Criterion) {
                     i32.rem_u
                 )
             )
-        "#),
+        "#,
+        ),
     ];
 
     for (name, wat) in inputs {
@@ -121,7 +142,9 @@ fn bench_cse(c: &mut Criterion) {
     let mut group = c.benchmark_group("cse");
 
     let inputs = vec![
-        ("duplicate_const", r#"
+        (
+            "duplicate_const",
+            r#"
             (module
                 (func (result i32)
                     i32.const 42
@@ -131,8 +154,11 @@ fn bench_cse(c: &mut Criterion) {
                     i32.add
                 )
             )
-        "#),
-        ("duplicate_computation", r#"
+        "#,
+        ),
+        (
+            "duplicate_computation",
+            r#"
             (module
                 (func (param i32) (result i32)
                     local.get 0
@@ -144,7 +170,8 @@ fn bench_cse(c: &mut Criterion) {
                     i32.add
                 )
             )
-        "#),
+        "#,
+        ),
     ];
 
     for (name, wat) in inputs {
@@ -164,7 +191,9 @@ fn bench_function_inlining(c: &mut Criterion) {
     let mut group = c.benchmark_group("function_inlining");
 
     let inputs = vec![
-        ("simple_inline", r#"
+        (
+            "simple_inline",
+            r#"
             (module
                 (func $helper (param i32) (result i32)
                     local.get 0
@@ -176,8 +205,11 @@ fn bench_function_inlining(c: &mut Criterion) {
                     call $helper
                 )
             )
-        "#),
-        ("multiple_calls", r#"
+        "#,
+        ),
+        (
+            "multiple_calls",
+            r#"
             (module
                 (func $helper (param i32) (result i32)
                     local.get 0
@@ -191,7 +223,8 @@ fn bench_function_inlining(c: &mut Criterion) {
                     i32.add
                 )
             )
-        "#),
+        "#,
+        ),
     ];
 
     for (name, wat) in inputs {
@@ -302,9 +335,7 @@ fn bench_parser(c: &mut Criterion) {
     "#;
 
     group.bench_function("parse_simple", |b| {
-        b.iter(|| {
-            parse::parse_wat(black_box(simple)).unwrap()
-        });
+        b.iter(|| parse::parse_wat(black_box(simple)).unwrap());
     });
 
     group.finish();
@@ -325,9 +356,7 @@ fn bench_encoder(c: &mut Criterion) {
     let module = parse::parse_wat(simple).unwrap();
 
     group.bench_function("encode_simple", |b| {
-        b.iter(|| {
-            loom_core::encode::encode_wasm(black_box(&module)).unwrap()
-        });
+        b.iter(|| loom_core::encode::encode_wasm(black_box(&module)).unwrap());
     });
 
     group.finish();
