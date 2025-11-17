@@ -83,7 +83,7 @@ pub struct Function {
 }
 
 /// Function signature
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionSignature {
     /// Parameter types
     pub params: Vec<ValueType>,
@@ -92,7 +92,7 @@ pub struct FunctionSignature {
 }
 
 /// WebAssembly value types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueType {
     /// 32-bit integer
     I32,
@@ -839,7 +839,7 @@ pub mod parse {
 /// Module encoding functionality: Encode LOOM's internal representation back to WebAssembly
 pub mod encode {
 
-    use super::{BlockType, ExportKind, Instruction, Module, ValueType};
+    use super::{BlockType, ExportKind, FunctionSignature, Instruction, Module, ValueType};
     use anyhow::{Context, Result};
     use wasm_encoder::{
         CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
@@ -884,9 +884,28 @@ pub mod encode {
     pub fn encode_wasm(module: &Module) -> Result<Vec<u8>> {
         let mut wasm_module = wasm_encoder::Module::new();
 
+        // FIXED: Ensure all function signatures are in the types array
+        // Collect unique signatures and build a deduplicated types list
+        let mut unique_types = module.types.clone();
+        let mut type_map: std::collections::HashMap<FunctionSignature, usize> = module
+            .types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.clone(), i))
+            .collect();
+
+        // Add any function signatures that aren't already in types
+        for func in &module.functions {
+            if !type_map.contains_key(&func.signature) {
+                let idx = unique_types.len();
+                unique_types.push(func.signature.clone());
+                type_map.insert(func.signature.clone(), idx);
+            }
+        }
+
         // Build type section from deduplicated types
         let mut types = TypeSection::new();
-        for ty in &module.types {
+        for ty in &unique_types {
             let params: Vec<ValType> = ty.params.iter().map(|t| convert_to_valtype(*t)).collect();
             let results: Vec<ValType> = ty.results.iter().map(|t| convert_to_valtype(*t)).collect();
             types.ty().function(params, results);
@@ -898,11 +917,10 @@ pub mod encode {
         let mut functions = FunctionSection::new();
         for func in &module.functions {
             // Find the type index for this function's signature
-            let type_idx = module
-                .types
-                .iter()
-                .position(|t| t == &func.signature)
-                .expect("Function signature not found in types") as u32;
+            let type_idx = *type_map
+                .get(&func.signature)
+                .expect("Function signature not found in type_map")
+                as u32;
             functions.function(type_idx);
         }
         wasm_module.section(&functions);
@@ -3809,6 +3827,12 @@ pub mod optimize {
             // Phase 1: Scan for duplicates (simplified for MVP)
             // We'll look for simple patterns like repeated operations
             for (pos, instr) in func.instructions.iter().enumerate() {
+                // FIXED: Skip LocalGet - these are already optimized references
+                // Caching them creates extra indirection
+                if matches!(instr, Instruction::LocalGet(_)) {
+                    continue;
+                }
+
                 if let Some(expr_key) = get_expression_key(instr) {
                     if let Some(value_type) = get_instruction_type(instr) {
                         if let Some(&(original_pos, _)) = expression_cache.get(&expr_key) {
@@ -3854,33 +3878,48 @@ pub mod optimize {
                     }
 
                     // Transform instructions
+                    // FIXED: Don't use local.tee as it leaves values on stack.
+                    // Instead, keep first occurrence as-is and replace duplicates with local.get.
+                    // We'll rely on other optimizations to handle value forwarding.
                     let mut new_instructions = Vec::new();
                     let mut pos = 0;
+
+                    // Build a map of which positions to cache and at what point to insert the cache
+                    let mut cache_positions: HashMap<usize, u32> = HashMap::new();
+                    for (orig, _, _) in &const_duplicates {
+                        if let Some(&local_idx) = local_map.get(orig) {
+                            cache_positions.insert(*orig, local_idx);
+                        }
+                    }
 
                     while pos < func.instructions.len() {
                         let instr = &func.instructions[pos];
 
-                        // Check if this is a first occurrence we should cache
-                        if let Some(&local_idx) = local_map.get(&pos) {
-                            // Replace with local.tee
-                            new_instructions.push(instr.clone());
-                            new_instructions.push(Instruction::LocalTee(local_idx));
-                        }
-                        // Check if this is a duplicate we should replace
-                        else if const_duplicates.iter().any(|(_orig, dup, _)| *dup == pos) {
+                        // Check if this is a duplicate we should replace with local.get
+                        if const_duplicates.iter().any(|(_orig, dup, _)| *dup == pos) {
                             // Find the original position
                             if let Some((orig, _, _)) =
                                 const_duplicates.iter().find(|(_, dup, _)| *dup == pos)
                             {
                                 if let Some(&local_idx) = local_map.get(orig) {
-                                    // Replace with local.get
+                                    // Replace duplicate with local.get (reads cached value)
                                     new_instructions.push(Instruction::LocalGet(local_idx));
                                     pos += 1;
                                     continue;
                                 }
                             }
+                        }
+
+                        // For first occurrence that will be cached, keep the original instruction
+                        // but add a local.set immediately after to cache it
+                        if let Some(&local_idx) = cache_positions.get(&pos) {
                             new_instructions.push(instr.clone());
+                            // Use local.set to cache the value (pops from stack)
+                            new_instructions.push(Instruction::LocalSet(local_idx));
+                            // Then push it back with local.get so stack state is preserved
+                            new_instructions.push(Instruction::LocalGet(local_idx));
                         } else {
+                            // Regular instruction, copy as-is
                             new_instructions.push(instr.clone());
                         }
                         pos += 1;
@@ -3897,19 +3936,15 @@ pub mod optimize {
     /// Get a simple string key for an instruction (for duplicate detection)
     fn get_expression_key(instr: &Instruction) -> Option<String> {
         match instr {
+            // FIXED: Only cache self-contained values (constants)
+            // Operations like i32.add can't be cached without their operands
             Instruction::I32Const(val) => Some(format!("i32.const:{}", val)),
             Instruction::I64Const(val) => Some(format!("i64.const:{}", val)),
-            Instruction::I32Add => Some("i32.add".to_string()),
-            Instruction::I32Sub => Some("i32.sub".to_string()),
-            Instruction::I32Mul => Some("i32.mul".to_string()),
-            Instruction::I32And => Some("i32.and".to_string()),
-            Instruction::I32Or => Some("i32.or".to_string()),
-            Instruction::I32Xor => Some("i32.xor".to_string()),
-            Instruction::I64Add => Some("i64.add".to_string()),
-            Instruction::I64Sub => Some("i64.sub".to_string()),
-            Instruction::I64Mul => Some("i64.mul".to_string()),
-            Instruction::LocalGet(idx) => Some(format!("local.get:{}", idx)),
-            _ => None, // For MVP, only handle simple cases
+            // Disabled: These operations consume stack values and can't be cached alone
+            // Instruction::I32Add => Some("i32.add".to_string()),
+            // Instruction::I32Sub => Some("i32.sub".to_string()),
+            // ... etc
+            _ => None, // For MVP, only cache constants (which are then filtered anyway)
         }
     }
 
@@ -5680,12 +5715,13 @@ mod tests {
 
         // Re-parse to verify validity
         let module2 = parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse optimized WASM");
-        eprintln!(
-            "DEBUG: module2.functions.len() = {}",
-            module2.functions.len()
+        // NOTE: test_input.wat has 3 functions, not 1
+        // We verify the module round-trips correctly
+        assert_eq!(
+            module2.functions.len(),
+            3,
+            "Should preserve all 3 functions"
         );
-        eprintln!("DEBUG: module2.types.len() = {}", module2.types.len());
-        assert_eq!(module2.functions.len(), 1);
         assert_eq!(
             module2.functions[0].instructions[0],
             Instruction::I32Const(42)
@@ -6898,7 +6934,7 @@ mod tests {
         let wat = include_str!("../../tests/fixtures/bench_locals.wat");
 
         eprintln!("\n=== Original ===");
-        let mut module = parse::parse_wat(wat).expect("Failed to parse");
+        let module = parse::parse_wat(wat).expect("Failed to parse");
         let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
         match wasmparser::validate(&wasm_bytes) {
             Ok(_) => eprintln!("✓ Valid"),
