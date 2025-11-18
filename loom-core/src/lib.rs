@@ -3053,7 +3053,8 @@ pub mod optimize {
         vacuum(module)?;
 
         // Phase 11.5: Coalesce locals (register allocation)
-        coalesce_locals(module)?;
+        // TEMPORARILY DISABLED to test if encoder bugs are unrelated
+        // coalesce_locals(module)?;
 
         // Phase 12: Simplify locals (remove unused locals)
         simplify_locals(module)?;
@@ -3790,6 +3791,16 @@ pub mod optimize {
 
             // Step 3: Graph coloring (greedy algorithm)
             let coloring = color_interference_graph(&interference_graph);
+
+            // Step 3.5: Skip coalescing if there are dead locals (not in coloring map)
+            // Dead locals need to be eliminated by SimplifyLocals first
+            let param_count = func.signature.params.len() as u32;
+            let all_locals_in_map =
+                (param_count..total_locals as u32).all(|idx| coloring.contains_key(&idx));
+
+            if !all_locals_in_map {
+                continue; // Skip this function - has dead stores
+            }
 
             // Step 4: Remap locals if we achieved any coalescing
             let max_color = coloring.values().max().copied().unwrap_or(0);
