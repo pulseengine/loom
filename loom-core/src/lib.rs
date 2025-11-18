@@ -2958,114 +2958,10 @@ pub mod optimize {
 
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
-    pub fn optimize_module(module: &mut Module) -> Result<()> {
-        // use loom_isle::{simplify_with_env, LocalEnv}; // Unused with ISLE disabled
-
-        // Phase 1: Precompute (global constant propagation)
-        precompute(module)?;
-
-        // Phase 2: ISLE-based optimizations (constant folding) - BEFORE CSE!
-        // TEMPORARILY DISABLED - Testing if ISLE term conversion is buggy
-        // Run this early so constant folding happens before CSE tries to cache things
-        /*
-        for func in &mut module.functions {
-            // Track whether original had End instruction
-            let had_end = func.instructions.last() == Some(&Instruction::End);
-
-            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
-                if !terms.is_empty() {
-                    let mut env = LocalEnv::new();
-                    let optimized_terms: Vec<Value> = terms
-                        .into_iter()
-                        .map(|term| simplify_with_env(term, &mut env))
-                        .collect();
-                    if let Ok(mut new_instrs) =
-                        super::terms::terms_to_instructions(&optimized_terms)
-                    {
-                        if !new_instrs.is_empty() {
-                            // Preserve End instruction behavior
-                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
-                                new_instrs.pop();
-                            }
-                            func.instructions = new_instrs;
-                        }
-                    }
-                }
-            }
-        }
-        */
-
-        // Phase 3: Advanced instruction optimizations (strength reduction, bitwise tricks)
-        optimize_advanced_instructions(module)?;
-
-        // Phase 4: Common Subexpression Elimination
-        eliminate_common_subexpressions(module)?;
-
-        // Phase 5: Function inlining
-        inline_functions(module)?;
-
-        // Phase 6: ISLE-based optimizations again (constant folding after inlining)
-        // TEMPORARILY DISABLED - Testing if ISLE term conversion is buggy
-        /*
-        for func in &mut module.functions {
-            // Track whether original had End instruction
-            let had_end = func.instructions.last() == Some(&Instruction::End);
-
-            // Convert instructions to ISLE terms
-            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
-                if !terms.is_empty() {
-                    // Create environment for dataflow analysis
-                    let mut env = LocalEnv::new();
-
-                    // Apply ISLE optimizations with dataflow awareness
-                    let optimized_terms: Vec<Value> = terms
-                        .into_iter()
-                        .map(|term| simplify_with_env(term, &mut env))
-                        .collect();
-
-                    // Convert back to instructions
-                    if let Ok(mut new_instrs) =
-                        super::terms::terms_to_instructions(&optimized_terms)
-                    {
-                        if !new_instrs.is_empty() {
-                            // Preserve End instruction behavior
-                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
-                                new_instrs.pop();
-                            }
-                            func.instructions = new_instrs;
-                        }
-                    }
-                }
-            }
-        }
-        */
-
-        // Phase 6: Code folding (block flattening)
-        // fold_code(module)?;
-
-        // Phase 7: Loop optimizations (LICM)
-        // TEMPORARILY DISABLED - Buggy loop invariant hoisting
-        // See ENCODER_BUG_ANALYSIS.md for details
-        // optimize_loops(module)?;
-
-        // Phase 8: Branch simplification
-        // simplify_branches(module)?;
-
-        // Phase 9: Dead code elimination
-        // eliminate_dead_code(module)?;
-
-        // Phase 10: Block merging
-        // merge_blocks(module)?;
-
-        // Phase 11: Vacuum (cleanup empty blocks)
-        // vacuum(module)?;
-
-        // Phase 11.5: Coalesce locals (register allocation)
-        // TEMPORARILY DISABLED to test if encoder bugs are unrelated
-        // coalesce_locals(module)?;
-
-        // Phase 12: Simplify locals (remove unused locals)
-        simplify_locals(module)?;
+    pub fn optimize_module(_module: &mut Module) -> Result<()> {
+        // NOTE: All optimizations are now called from the CLI
+        // This function is kept for API compatibility but does nothing
+        // See loom-cli/src/main.rs lines 237-246 for the actual optimization pipeline
 
         Ok(())
     }
@@ -3514,8 +3410,15 @@ pub mod optimize {
 
         // Single instruction block - check type compatibility
         if body.len() == 1 {
+            // CRITICAL: Never unwrap blocks containing loops!
+            // Loops often have br_if instructions targeting the outer block.
+            // Unwrapping the block breaks these branch targets.
+            if matches!(body[0], Instruction::Loop { .. }) {
+                return false;
+            }
+
             match block_type {
-                // Empty block type - can unwrap anything
+                // Empty block type - can unwrap most things (but not loops, checked above)
                 BlockType::Empty => true,
 
                 // Block expects a value - check if instruction produces one
@@ -3534,7 +3437,6 @@ pub mod optimize {
                             | Instruction::I64Mul
                             | Instruction::LocalGet(_)
                             | Instruction::Block { .. }
-                            | Instruction::Loop { .. }
                             | Instruction::If { .. }
                     )
                 }
