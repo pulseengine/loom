@@ -41,7 +41,7 @@
 //! ```
 
 use anyhow::{anyhow, Context, Result};
-use wasm_encoder::{ComponentSectionId, RawSection};
+use wasm_encoder::{Component, ComponentSectionId, RawSection};
 use wasmparser::{Encoding, Parser, Payload};
 
 /// Statistics about component optimization
@@ -208,76 +208,175 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
 
 /// Reconstruct a component with optimized core modules
 ///
-/// This is the core of Phase 1. We parse the original component and rebuild it
-/// section by section, replacing core modules with optimized versions while
-/// preserving all other sections and maintaining index space consistency.
+/// **Phase 1.5: Full Section Preservation**
+///
+/// This function rebuilds the entire component structure section by section,
+/// replacing core modules with optimized versions while preserving all other
+/// sections verbatim. This ensures the component's interface and structure
+/// remain exactly the same, only with optimized code.
+///
+/// Sections preserved:
+/// - Custom sections (names, producers, etc.)
+/// - Type sections (component types)
+/// - Import/Export sections
+/// - Instance sections
+/// - Alias sections
+/// - Canonical sections (lift/lower)
+/// - Start section
+///
+/// Only ModuleSection contents are replaced with optimized bytes.
 fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Result<Vec<u8>> {
-    // For single-module components without complex structure,
-    // we can use a simplified approach
-    let is_simple = is_simple_component(original_bytes)?;
-
-    if is_simple && modules.len() == 1 {
-        return reconstruct_simple_component(original_bytes, modules);
-    }
-
-    // For complex components with multiple modules or nested components,
-    // we need full section-by-section reconstruction
-    // This is Phase 1.5 work - for now, use simple reconstruction
-    reconstruct_simple_component(original_bytes, modules)
-}
-
-/// Check if a component has a simple structure (single module, simple exports)
-fn is_simple_component(bytes: &[u8]) -> Result<bool> {
+    let mut component = Component::new();
     let parser = Parser::new(0);
-    let mut module_count = 0;
-    let mut has_complex_sections = false;
+    let mut module_index = 0;
 
-    for payload in parser.parse_all(bytes) {
-        match payload? {
-            Payload::ModuleSection { .. } => module_count += 1,
-            Payload::ComponentSection { .. } => has_complex_sections = true,
-            Payload::ComponentInstanceSection { .. } => has_complex_sections = true,
-            _ => {}
+    // Iterate through all sections and reconstruct them
+    for payload in parser.parse_all(original_bytes) {
+        let payload = payload.context("Failed to parse component during reconstruction")?;
+
+        match payload {
+            // Version/header handled automatically
+            Payload::Version { .. } => {}
+
+            // Replace module sections with optimized modules
+            Payload::ModuleSection {
+                unchecked_range, ..
+            } => {
+                if module_index < modules.len() {
+                    // Get optimized or original module bytes
+                    let module_bytes = modules[module_index]
+                        .optimized_bytes
+                        .as_ref()
+                        .unwrap_or(&modules[module_index].original_bytes);
+
+                    // Add as raw section
+                    let section = RawSection {
+                        id: ComponentSectionId::CoreModule.into(),
+                        data: module_bytes,
+                    };
+                    component.section(&section);
+
+                    module_index += 1;
+                } else {
+                    // Shouldn't happen, but preserve original if it does
+                    let original_module =
+                        &original_bytes[unchecked_range.start..unchecked_range.end];
+                    let section = RawSection {
+                        id: ComponentSectionId::CoreModule.into(),
+                        data: original_module,
+                    };
+                    component.section(&section);
+                }
+            }
+
+            // Preserve all other component sections as raw bytes
+            Payload::CustomSection(custom) => {
+                // Custom sections (id=0 for core, component uses different encoding)
+                let section = RawSection {
+                    id: ComponentSectionId::CoreCustom.into(),
+                    data: custom.data(),
+                };
+                component.section(&section);
+            }
+
+            Payload::CoreTypeSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::CoreType.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentTypeSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::Type.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentImportSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::Import.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentExportSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::Export.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentCanonicalSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::CanonicalFunction.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::InstanceSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::CoreInstance.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentInstanceSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::Instance.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentAliasSection(range) => {
+                let section = RawSection {
+                    id: ComponentSectionId::Alias.into(),
+                    data: &original_bytes[range.range().start..range.range().end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentStartSection { start: _, range } => {
+                let section = RawSection {
+                    id: ComponentSectionId::Start.into(),
+                    data: &original_bytes[range.start..range.end],
+                };
+                component.section(&section);
+            }
+
+            Payload::ComponentSection {
+                unchecked_range, ..
+            } => {
+                // Nested component
+                let section = RawSection {
+                    id: ComponentSectionId::Component.into(),
+                    data: &original_bytes[unchecked_range.start..unchecked_range.end],
+                };
+                component.section(&section);
+            }
+
+            // Skip payloads that don't need preservation
+            // These are internal parser events, not actual sections to write
+            Payload::End(_) => {}
+            Payload::CodeSectionStart { .. } => {}
+            Payload::CodeSectionEntry(_) => {}
+            Payload::UnknownSection { .. } => {}
+
+            // Silently skip other payload types that are parser events
+            _ => {
+                // Most payload types are parser events that don't correspond
+                // to sections we need to write. We've handled all the important
+                // component sections above.
+            }
         }
     }
-
-    Ok(module_count == 1 && !has_complex_sections)
-}
-
-/// Reconstruct a simple component (single module, basic structure)
-///
-/// For simple components created with `wasm-tools component new`,
-/// we use ComponentBuilder to create a new component with the optimized module.
-fn reconstruct_simple_component(_original_bytes: &[u8], modules: &[CoreModule]) -> Result<Vec<u8>> {
-    if modules.len() != 1 {
-        return Err(anyhow!(
-            "Simple reconstruction requires exactly one module, found {}",
-            modules.len()
-        ));
-    }
-
-    // Get the optimized module bytes
-    let module_bytes = modules[0]
-        .optimized_bytes
-        .as_ref()
-        .unwrap_or(&modules[0].original_bytes);
-
-    // For Phase 1 MVP, we use Component to create a minimal component
-    // This works for simple single-module components created by wasm-tools component new
-    let mut component = wasm_encoder::Component::new();
-
-    // Add the core module section as a raw section
-    // ComponentSectionId::CoreModule = 1
-    let module_section = RawSection {
-        id: ComponentSectionId::CoreModule.into(),
-        data: module_bytes,
-    };
-    component.section(&module_section);
-
-    // For now, we only reconstruct the core module
-    // Full section preservation will be added in Phase 1.5
-    // Most simple components only have: module + instance + type + alias + canon + export
-    // These will be reconstructed in the next iteration
 
     Ok(component.finish())
 }
