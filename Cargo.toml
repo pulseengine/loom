@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "loom-core",
     "loom-cli",
-    "loom-isle",
+    "loom-isle", "loom-testing",
 ]
 
 [workspace.package]
