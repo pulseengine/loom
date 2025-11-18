@@ -3,7 +3,7 @@
 //! Tests for WebAssembly Component Model support.
 //! LOOM is the first optimizer to support the Component Model.
 
-use loom_core::{optimize_component, ComponentStats};
+use loom_core::{analyze_component_structure, optimize_component, ComponentStats};
 
 #[test]
 fn test_simple_component_optimization() {
@@ -110,4 +110,35 @@ fn is_component(bytes: &[u8]) -> bool {
     }
     // Magic number + version + layer check
     &bytes[0..4] == b"\0asm" && bytes[4] == 0x0d && bytes[6] == 0x01
+}
+
+#[test]
+fn test_component_analysis() {
+    // Phase 2: Test component structure analysis
+    let component_bytes = std::fs::read("tests/component_fixtures/simple.component.wasm")
+        .expect("Failed to read test component");
+
+    // Analyze component structure
+    let analysis = analyze_component_structure(&component_bytes).expect("Analysis failed");
+
+    println!("Component Analysis:");
+    println!("  Core modules: {}", analysis.core_module_count);
+    println!("  Component types: {}", analysis.component_type_count);
+    println!("  Imports: {}", analysis.import_count);
+    println!("  Exports: {}", analysis.export_count);
+    println!(
+        "  Canonical functions: {}",
+        analysis.canonical_function_count
+    );
+    println!("  Instances: {}", analysis.instance_count);
+    println!("  Aliases: {}", analysis.alias_count);
+    println!("  Nested components: {}", analysis.nested_component_count);
+
+    // Verify expected structure for simple component
+    assert_eq!(analysis.core_module_count, 1, "Should have 1 core module");
+    assert!(analysis.export_count > 0, "Should have exports");
+    assert!(
+        analysis.canonical_function_count > 0,
+        "Should have canonical functions"
+    );
 }
