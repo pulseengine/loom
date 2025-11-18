@@ -3038,7 +3038,9 @@ pub mod optimize {
         fold_code(module)?;
 
         // Phase 7: Loop optimizations (LICM)
-        optimize_loops(module)?;
+        // TEMPORARILY DISABLED - Buggy loop invariant hoisting
+        // See ENCODER_BUG_ANALYSIS.md for details
+        // optimize_loops(module)?;
 
         // Phase 8: Branch simplification
         simplify_branches(module)?;
