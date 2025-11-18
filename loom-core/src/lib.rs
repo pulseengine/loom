@@ -5492,7 +5492,9 @@ pub mod verify;
 pub mod component_optimizer;
 
 /// Re-export component optimization API
-pub use component_optimizer::{optimize_component, ComponentStats};
+pub use component_optimizer::{
+    analyze_component_structure, optimize_component, ComponentAnalysis, ComponentStats,
+};
 
 #[cfg(test)]
 mod tests {
