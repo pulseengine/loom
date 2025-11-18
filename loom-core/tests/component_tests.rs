@@ -142,3 +142,59 @@ fn test_component_analysis() {
         "Should have canonical functions"
     );
 }
+
+#[test]
+fn test_calculator_component_optimization() {
+    // Test with a more complex component (4 exported functions)
+    let component_bytes = std::fs::read("tests/component_fixtures/calc.component.wasm")
+        .expect("Failed to read calculator component");
+
+    println!("Original component size: {} bytes", component_bytes.len());
+
+    // Optimize
+    let (optimized, stats) = optimize_component(&component_bytes).expect("Optimization failed");
+
+    println!("Optimized component size: {} bytes", optimized.len());
+    println!("Overall reduction: {:.1}%", stats.reduction_percentage());
+    println!(
+        "Module reduction: {:.1}%",
+        stats.module_reduction_percentage()
+    );
+
+    // Verify optimization occurred
+    assert!(
+        optimized.len() < component_bytes.len(),
+        "Should optimize calculator component"
+    );
+    assert!(
+        stats.reduction_percentage() > 0.0,
+        "Should have measurable reduction"
+    );
+
+    // Verify it's still a valid component
+    wasmparser::validate(&optimized).expect("Optimized component should be valid");
+    assert!(
+        is_component(&optimized),
+        "Output should still be a component"
+    );
+
+    // Analyze the structure
+    let analysis = analyze_component_structure(&optimized)
+        .expect("Should be able to analyze optimized component");
+
+    // Should preserve structure
+    assert_eq!(
+        analysis.core_module_count, 1,
+        "Should still have 1 core module"
+    );
+    assert!(analysis.export_count > 0, "Should have exports");
+    assert!(
+        analysis.canonical_function_count > 0,
+        "Should have canonical functions"
+    );
+
+    println!(
+        "Calculator component structure: {} modules, {} exports, {} canonical functions",
+        analysis.core_module_count, analysis.export_count, analysis.canonical_function_count
+    );
+}
