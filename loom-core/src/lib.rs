@@ -2953,19 +2953,21 @@ pub mod terms {
 /// ```
 pub mod optimize {
 
-    use super::{BlockType, Instruction, Module, Value};
+    use super::{BlockType, Instruction, Module}; // Value unused with ISLE disabled
     use anyhow::Result;
 
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
-        use loom_isle::{simplify_with_env, LocalEnv};
+        // use loom_isle::{simplify_with_env, LocalEnv}; // Unused with ISLE disabled
 
         // Phase 1: Precompute (global constant propagation)
         precompute(module)?;
 
         // Phase 2: ISLE-based optimizations (constant folding) - BEFORE CSE!
+        // TEMPORARILY DISABLED - Testing if ISLE term conversion is buggy
         // Run this early so constant folding happens before CSE tries to cache things
+        /*
         for func in &mut module.functions {
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
@@ -2991,6 +2993,7 @@ pub mod optimize {
                 }
             }
         }
+        */
 
         // Phase 3: Advanced instruction optimizations (strength reduction, bitwise tricks)
         optimize_advanced_instructions(module)?;
@@ -3002,6 +3005,8 @@ pub mod optimize {
         inline_functions(module)?;
 
         // Phase 6: ISLE-based optimizations again (constant folding after inlining)
+        // TEMPORARILY DISABLED - Testing if ISLE term conversion is buggy
+        /*
         for func in &mut module.functions {
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
@@ -3033,9 +3038,10 @@ pub mod optimize {
                 }
             }
         }
+        */
 
         // Phase 6: Code folding (block flattening)
-        fold_code(module)?;
+        // fold_code(module)?;
 
         // Phase 7: Loop optimizations (LICM)
         // TEMPORARILY DISABLED - Buggy loop invariant hoisting
@@ -3043,16 +3049,16 @@ pub mod optimize {
         // optimize_loops(module)?;
 
         // Phase 8: Branch simplification
-        simplify_branches(module)?;
+        // simplify_branches(module)?;
 
         // Phase 9: Dead code elimination
-        eliminate_dead_code(module)?;
+        // eliminate_dead_code(module)?;
 
         // Phase 10: Block merging
-        merge_blocks(module)?;
+        // merge_blocks(module)?;
 
         // Phase 11: Vacuum (cleanup empty blocks)
-        vacuum(module)?;
+        // vacuum(module)?;
 
         // Phase 11.5: Coalesce locals (register allocation)
         // TEMPORARILY DISABLED to test if encoder bugs are unrelated
