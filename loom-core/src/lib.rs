@@ -3740,13 +3740,16 @@ pub mod optimize {
     /// - 2-5% binary size reduction on typical code
     /// - Reduces unnecessary local variable writes
     /// - Enables further optimizations (dead code elimination)
-    fn eliminate_redundant_sets(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
+    fn eliminate_redundant_sets(
+        instructions: &[Instruction],
+        changed: &mut bool,
+    ) -> Vec<Instruction> {
         use std::collections::HashMap;
 
         #[derive(Debug, Clone)]
         struct SetInfo {
             result_idx: usize,
-            value_idx: usize,  // Index of instruction that produces the value
+            value_idx: usize, // Index of instruction that produces the value
             has_intervening_get: bool,
         }
 
@@ -3773,14 +3776,21 @@ pub mod optimize {
                         }
 
                         // The value for this set is produced by the previous instruction
-                        let value_idx = if result.is_empty() { 0 } else { result.len() - 1 };
+                        let value_idx = if result.is_empty() {
+                            0
+                        } else {
+                            result.len() - 1
+                        };
                         let result_idx = result.len();
                         result.push(instr.clone());
-                        last_sets.insert(*idx, SetInfo {
-                            result_idx,
-                            value_idx,
-                            has_intervening_get: false,
-                        });
+                        last_sets.insert(
+                            *idx,
+                            SetInfo {
+                                result_idx,
+                                value_idx,
+                                has_intervening_get: false,
+                            },
+                        );
                     }
 
                     Instruction::LocalGet(idx) => {
@@ -3803,14 +3813,21 @@ pub mod optimize {
                         }
 
                         // Tee also takes a value from the stack
-                        let value_idx = if result.is_empty() { 0 } else { result.len() - 1 };
+                        let value_idx = if result.is_empty() {
+                            0
+                        } else {
+                            result.len() - 1
+                        };
                         let result_idx = result.len();
                         result.push(instr.clone());
-                        last_sets.insert(*idx, SetInfo {
-                            result_idx,
-                            value_idx,
-                            has_intervening_get: true, // Tee returns value
-                        });
+                        last_sets.insert(
+                            *idx,
+                            SetInfo {
+                                result_idx,
+                                value_idx,
+                                has_intervening_get: true, // Tee returns value
+                            },
+                        );
                     }
 
                     // Recursively process control flow structures
@@ -3875,8 +3892,10 @@ pub mod optimize {
                             set_info.value_idx = usize::MAX;
                         }
 
-                        let processed_then = process_instructions(then_body, changed, &mut then_sets);
-                        let processed_else = process_instructions(else_body, changed, &mut else_sets);
+                        let processed_then =
+                            process_instructions(then_body, changed, &mut then_sets);
+                        let processed_else =
+                            process_instructions(else_body, changed, &mut else_sets);
 
                         // Conservative: if either branch reads, consider it read
                         for (idx, then_info) in then_sets {
@@ -4178,8 +4197,6 @@ pub mod optimize {
     }
 
     fn hoist_loop_invariants(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
-        use std::collections::HashSet;
-
         let mut result = Vec::new();
 
         for instr in instructions {
@@ -4189,7 +4206,8 @@ pub mod optimize {
                     let modified_locals = find_modified_locals(body);
 
                     // Find loop-invariant instructions that can be hoisted
-                    let (hoisted, remaining_body) = extract_invariants(body, &modified_locals, changed);
+                    let (hoisted, remaining_body) =
+                        extract_invariants(body, &modified_locals, changed);
 
                     // Add hoisted instructions before the loop
                     result.extend(hoisted);
@@ -4313,8 +4331,8 @@ pub mod optimize {
             // Pure arithmetic operations are invariant
             I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or
             | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Clz | I32Ctz | I32Popcnt | I64Add
-            | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64And | I64Or
-            | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Clz | I64Ctz | I64Popcnt => true,
+            | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64And | I64Or | I64Xor
+            | I64Shl | I64ShrS | I64ShrU | I64Clz | I64Ctz | I64Popcnt => true,
 
             // Comparison operations are invariant
             I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS
@@ -4328,7 +4346,6 @@ pub mod optimize {
             _ => false,
         }
     }
-
 
     /// CoalesceLocals - Register Allocation (Phase 12.5)
     ///
