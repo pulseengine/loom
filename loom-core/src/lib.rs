@@ -2958,10 +2958,50 @@ pub mod optimize {
 
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
-    pub fn optimize_module(_module: &mut Module) -> Result<()> {
-        // NOTE: All optimizations are now called from the CLI
-        // This function is kept for API compatibility but does nothing
-        // See loom-cli/src/main.rs lines 237-246 for the actual optimization pipeline
+    pub fn optimize_module(module: &mut Module) -> Result<()> {
+        // For backwards compatibility, this function applies the core optimizations
+        // The full optimization pipeline is in loom-cli/src/main.rs lines 237-246
+
+        // Apply constant folding first
+        constant_folding(module)?;
+
+        // Apply advanced instruction optimizations (strength reduction, bitwise tricks)
+        optimize_advanced_instructions(module)?;
+
+        Ok(())
+    }
+
+    /// Apply ISLE-based constant folding optimization
+    /// This uses ISLE pattern matching rules to fold constants (e.g., i32.const 100 + i32.const 200 → i32.const 300)
+    pub fn constant_folding(module: &mut Module) -> Result<()> {
+        use loom_isle::{simplify_with_env, LocalEnv};
+        use super::Value;
+
+        for func in &mut module.functions {
+            // Track whether original had End instruction
+            let had_end = func.instructions.last() == Some(&Instruction::End);
+
+            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
+                if !terms.is_empty() {
+                    let mut env = LocalEnv::new();
+                    let optimized_terms: Vec<Value> = terms
+                        .into_iter()
+                        .map(|term| simplify_with_env(term, &mut env))
+                        .collect();
+                    if let Ok(mut new_instrs) =
+                        super::terms::terms_to_instructions(&optimized_terms)
+                    {
+                        if !new_instrs.is_empty() {
+                            // Preserve End instruction behavior
+                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
+                                new_instrs.pop();
+                            }
+                            func.instructions = new_instrs;
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
