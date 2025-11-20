@@ -859,8 +859,8 @@ pub mod encode {
             return Ok(match expected_type {
                 ValueType::I32 => ConstExpr::i32_const(0),
                 ValueType::I64 => ConstExpr::i64_const(0),
-                ValueType::F32 => ConstExpr::f32_const(0.0),
-                ValueType::F64 => ConstExpr::f64_const(0.0),
+                ValueType::F32 => ConstExpr::f32_const(0.0.into()),
+                ValueType::F64 => ConstExpr::f64_const(0.0.into()),
             });
         }
 
@@ -873,8 +873,8 @@ pub mod encode {
                 Ok(match expected_type {
                     ValueType::I32 => ConstExpr::i32_const(0),
                     ValueType::I64 => ConstExpr::i64_const(0),
-                    ValueType::F32 => ConstExpr::f32_const(0.0),
-                    ValueType::F64 => ConstExpr::f64_const(0.0),
+                    ValueType::F32 => ConstExpr::f32_const(0.0.into()),
+                    ValueType::F64 => ConstExpr::f64_const(0.0.into()),
                 })
             }
         }

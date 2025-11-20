@@ -16,11 +16,11 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # WebAssembly parsing and encoding
-wasmparser = { version = "0.219", features = ["component-model"] }
-wasm-encoder = { version = "0.219", features = ["component-model"] }
-wasmprinter = "0.219"
-wat = "1.219"
-wit-component = "0.219"
+wasmparser = { version = "0.241", features = ["component-model"] }
+wasm-encoder = { version = "0.241", features = ["component-model"] }
+wasmprinter = "0.241"
+wat = "1.241"
+wit-component = "0.241"
 
 # ISLE compiler and runtime
 cranelift-isle = "0.113"
@@ -53,3 +53,4 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
