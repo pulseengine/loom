@@ -1141,7 +1141,11 @@ fn test_code_folding_simple_tail_merge() {
         let mut count = instrs.len();
         for instr in instrs {
             match instr {
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count += count_total_instrs(then_body);
                     count += count_total_instrs(else_body);
                 }
@@ -1243,7 +1247,11 @@ fn test_code_folding_no_false_positive() {
         let mut count = instrs.len();
         for instr in instrs {
             match instr {
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     count += count_total_instrs(then_body);
                     count += count_total_instrs(else_body);
                 }
@@ -1342,9 +1350,8 @@ fn test_licm_simple_hoist() {
         0
     }
 
-    let loop_size_before = count_loop_body_instrs(
-        &parse::parse_wat(input).unwrap().functions[0].instructions,
-    );
+    let loop_size_before =
+        count_loop_body_instrs(&parse::parse_wat(input).unwrap().functions[0].instructions);
     let loop_size_after = count_loop_body_instrs(&module.functions[0].instructions);
 
     // Loop body should be smaller after hoisting
@@ -1376,14 +1383,12 @@ fn test_licm_no_hoist_modified_local() {
 
     // Should not hoist anything since $sum is modified in the loop
     let mut module = parse::parse_wat(input).unwrap();
-    let before = format!("{:?}", module.functions[0].instructions);
     optimize::loop_invariant_code_motion(&mut module).unwrap();
-    let after = format!("{:?}", module.functions[0].instructions);
 
     // Instructions should remain the same (no hoisting of non-invariant code)
     // We just ensure it doesn't crash
     assert!(
-        !after.is_empty(),
+        !module.functions[0].instructions.is_empty(),
         "LICM should not crash on non-invariant code"
     );
 }
