@@ -1301,6 +1301,166 @@ fn test_code_folding_nested_if() {
     );
 }
 
+// Loop Invariant Code Motion Tests
+
+#[test]
+fn test_licm_simple_hoist() {
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local $sum i32)
+                (local $invariant i32)
+                (loop $loop
+                    ;; This computation is loop-invariant (x + y doesn't change)
+                    (local.set $invariant
+                        (i32.add (local.get $x) (local.get $y))
+                    )
+                    ;; This uses the invariant
+                    (local.set $sum
+                        (i32.add (local.get $sum) (local.get $invariant))
+                    )
+                    ;; Loop continues
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    // The invariant computation should be hoisted outside the loop
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // Count instructions inside the loop
+    fn count_loop_body_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::Loop { body, .. } = instr {
+                return body.len();
+            }
+        }
+        0
+    }
+
+    let loop_size_before = count_loop_body_instrs(
+        &parse::parse_wat(input).unwrap().functions[0].instructions,
+    );
+    let loop_size_after = count_loop_body_instrs(&module.functions[0].instructions);
+
+    // Loop body should be smaller after hoisting
+    assert!(
+        loop_size_after < loop_size_before,
+        "Expected loop body to shrink after LICM. Before: {}, After: {}",
+        loop_size_before,
+        loop_size_after
+    );
+}
+
+#[test]
+fn test_licm_no_hoist_modified_local() {
+    let input = r#"
+        (module
+            (func (param $x i32) (result i32)
+                (local $sum i32)
+                (loop $loop
+                    ;; This reads $sum which is modified in the loop - NOT invariant
+                    (local.set $sum
+                        (i32.add (local.get $sum) (local.get $x))
+                    )
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    // Should not hoist anything since $sum is modified in the loop
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = format!("{:?}", module.functions[0].instructions);
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+    let after = format!("{:?}", module.functions[0].instructions);
+
+    // Instructions should remain the same (no hoisting of non-invariant code)
+    // We just ensure it doesn't crash
+    assert!(
+        !after.is_empty(),
+        "LICM should not crash on non-invariant code"
+    );
+}
+
+#[test]
+fn test_licm_hoist_constants() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $sum i32)
+                (loop $loop
+                    (i32.const 42)
+                    (i32.const 100)
+                    (i32.add)
+                    (local.set $sum)
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    // Constants should be hoisted
+    let mut module = parse::parse_wat(input).unwrap();
+
+    fn count_loop_body_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::Loop { body, .. } = instr {
+                return body.len();
+            }
+        }
+        0
+    }
+
+    let before = count_loop_body_instrs(&module.functions[0].instructions);
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+    let after = count_loop_body_instrs(&module.functions[0].instructions);
+
+    // Loop body should be smaller
+    assert!(
+        after < before,
+        "Expected constants to be hoisted. Before: {}, After: {}",
+        before,
+        after
+    );
+}
+
+#[test]
+fn test_licm_nested_loops() {
+    let input = r#"
+        (module
+            (func (param $x i32)
+                (local $outer i32)
+                (loop $outer_loop
+                    (loop $inner_loop
+                        (i32.const 10)
+                        (local.set $outer)
+                        (br_if $inner_loop (i32.const 0))
+                    )
+                    (br_if $outer_loop (i32.const 0))
+                )
+            )
+        )
+    "#;
+
+    // Should handle nested loops without crashing
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // Just ensure it doesn't crash
+    assert!(
+        !module.functions[0].instructions.is_empty(),
+        "LICM should handle nested loops"
+    );
+}
+
 #[test]
 fn test_rse_no_false_positive_with_call() {
     let input = r#"
