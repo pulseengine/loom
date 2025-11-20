@@ -2974,8 +2974,8 @@ pub mod optimize {
     /// Apply ISLE-based constant folding optimization
     /// This uses ISLE pattern matching rules to fold constants (e.g., i32.const 100 + i32.const 200 → i32.const 300)
     pub fn constant_folding(module: &mut Module) -> Result<()> {
-        use loom_isle::{simplify_with_env, LocalEnv};
         use super::Value;
+        use loom_isle::{simplify_with_env, LocalEnv};
 
         for func in &mut module.functions {
             // Track whether original had End instruction

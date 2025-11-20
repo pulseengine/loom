@@ -456,15 +456,16 @@ mod tests {
     i32.add
   )
 )"#;
-        let input_path = "/tmp/test_cli_input.wat";
-        let output_path = "/tmp/test_cli_output.wasm";
+        let temp_dir = std::env::temp_dir();
+        let input_path = temp_dir.join("test_cli_input.wat");
+        let output_path = temp_dir.join("test_cli_output.wasm");
 
-        fs::write(input_path, input_wat).unwrap();
+        fs::write(&input_path, input_wat).unwrap();
 
         // Run optimization
         let result = optimize_command(
-            input_path.to_string(),
-            Some(output_path.to_string()),
+            input_path.to_string_lossy().to_string(),
+            Some(output_path.to_string_lossy().to_string()),
             false,
             false,
             false,
@@ -473,14 +474,11 @@ mod tests {
         assert!(result.is_ok(), "Optimization should succeed");
 
         // Check output exists
-        assert!(
-            std::path::Path::new(output_path).exists(),
-            "Output file should exist"
-        );
+        assert!(output_path.exists(), "Output file should exist");
 
         // Clean up
-        let _ = fs::remove_file(input_path);
-        let _ = fs::remove_file(output_path);
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
     }
 
     #[test]
@@ -493,14 +491,15 @@ mod tests {
     i32.add
   )
 )"#;
-        let input_path = "/tmp/test_cli_stats_input.wat";
-        let output_path = "/tmp/test_cli_stats_output.wasm";
+        let temp_dir = std::env::temp_dir();
+        let input_path = temp_dir.join("test_cli_stats_input.wat");
+        let output_path = temp_dir.join("test_cli_stats_output.wasm");
 
-        fs::write(input_path, input_wat).unwrap();
+        fs::write(&input_path, input_wat).unwrap();
 
         let result = optimize_command(
-            input_path.to_string(),
-            Some(output_path.to_string()),
+            input_path.to_string_lossy().to_string(),
+            Some(output_path.to_string_lossy().to_string()),
             false,
             true, // Enable stats
             false,
@@ -509,8 +508,8 @@ mod tests {
         assert!(result.is_ok(), "Optimization with stats should succeed");
 
         // Clean up
-        let _ = fs::remove_file(input_path);
-        let _ = fs::remove_file(output_path);
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
     }
 
     #[test]
@@ -523,14 +522,15 @@ mod tests {
     i32.add
   )
 )"#;
-        let input_path = "/tmp/test_cli_verify_input.wat";
-        let output_path = "/tmp/test_cli_verify_output.wasm";
+        let temp_dir = std::env::temp_dir();
+        let input_path = temp_dir.join("test_cli_verify_input.wat");
+        let output_path = temp_dir.join("test_cli_verify_output.wasm");
 
-        fs::write(input_path, input_wat).unwrap();
+        fs::write(&input_path, input_wat).unwrap();
 
         let result = optimize_command(
-            input_path.to_string(),
-            Some(output_path.to_string()),
+            input_path.to_string_lossy().to_string(),
+            Some(output_path.to_string_lossy().to_string()),
             false,
             false,
             true, // Enable verification
@@ -542,8 +542,8 @@ mod tests {
         );
 
         // Clean up
-        let _ = fs::remove_file(input_path);
-        let _ = fs::remove_file(output_path);
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
     }
 
     #[test]
@@ -556,14 +556,15 @@ mod tests {
     i32.add
   )
 )"#;
-        let input_path = "/tmp/test_cli_wat_output_input.wat";
-        let output_path = "/tmp/test_cli_wat_output_output.wat";
+        let temp_dir = std::env::temp_dir();
+        let input_path = temp_dir.join("test_cli_wat_output_input.wat");
+        let output_path = temp_dir.join("test_cli_wat_output_output.wat");
 
-        fs::write(input_path, input_wat).unwrap();
+        fs::write(&input_path, input_wat).unwrap();
 
         let result = optimize_command(
-            input_path.to_string(),
-            Some(output_path.to_string()),
+            input_path.to_string_lossy().to_string(),
+            Some(output_path.to_string_lossy().to_string()),
             true, // WAT output
             false,
             false,
@@ -575,15 +576,15 @@ mod tests {
         );
 
         // Check that output is valid WAT
-        let output_content = fs::read_to_string(output_path).unwrap();
+        let output_content = fs::read_to_string(&output_path).unwrap();
         assert!(
             output_content.contains("i32.const 300"),
             "WAT should contain optimized constant 300"
         );
 
         // Clean up
-        let _ = fs::remove_file(input_path);
-        let _ = fs::remove_file(output_path);
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&output_path);
     }
 
     #[test]
