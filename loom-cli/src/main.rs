@@ -235,7 +235,7 @@ fn optimize_command(
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
     loom_core::optimize::precompute(&mut module).context("Precompute failed")?;
-    loom_core::optimize::optimize_module(&mut module).context("Optimization failed")?;
+    loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
     loom_core::optimize::eliminate_common_subexpressions(&mut module).context("CSE failed")?;
     loom_core::optimize::optimize_advanced_instructions(&mut module)
         .context("Advanced instruction optimization failed")?;
