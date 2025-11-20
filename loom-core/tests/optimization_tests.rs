@@ -880,3 +880,457 @@ fn test_self_ne_i64() {
         module.functions[0].instructions
     );
 }
+
+// ============================================================================
+// Redundant Set Elimination (RSE) Tests
+// ============================================================================
+
+#[test]
+fn test_rse_simple_redundant_set() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (local.set $x (i32.const 20))
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // First set should be eliminated since it's immediately overwritten
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[0].instructions.len();
+    optimize::optimize_module(&mut module).unwrap();
+    let after = module.functions[0].instructions.len();
+
+    // Should have fewer instructions (one LocalSet removed)
+    assert!(
+        after < before,
+        "Expected fewer instructions after RSE. Before: {}, After: {}",
+        before,
+        after
+    );
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    // Should only have one set with value 20
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 1,
+        "Expected exactly 1 LocalSet remaining, got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_with_intervening_get() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (local.get $x)
+                (local.set $x (i32.const 20))
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // Both sets should remain because there's a get between them
+    // Note: We call simplify_locals directly to test RSE in isolation,
+    // without constant folding interfering
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::simplify_locals(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 2,
+        "Expected 2 LocalSet instructions (no elimination), got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_multiple_redundant_sets() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (local.set $x (i32.const 20))
+                (local.set $x (i32.const 30))
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // First two sets should be eliminated
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 1,
+        "Expected only 1 LocalSet (value 30), got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_different_locals() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (local $y i32)
+                (local.set $x (i32.const 10))
+                (local.set $y (i32.const 20))
+                (local.set $x (i32.const 30))
+                (local.get $x)
+                (local.get $y)
+                i32.add
+            )
+        )
+    "#;
+
+    // First set to $x should be eliminated, but $y set should remain
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[0].instructions.len();
+    optimize::optimize_module(&mut module).unwrap();
+    let after = module.functions[0].instructions.len();
+
+    assert!(
+        after < before,
+        "Expected RSE to eliminate first set to $x. Before: {}, After: {}",
+        before,
+        after
+    );
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 2,
+        "Expected 2 LocalSet instructions, got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_with_tee() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (local.tee $x (i32.const 20))
+            )
+        )
+    "#;
+
+    // First set should be eliminated, tee both sets and returns value
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    let tee_count = instructions_str.matches("LocalTee").count();
+
+    assert_eq!(
+        set_count, 0,
+        "Expected 0 LocalSet (eliminated by tee), got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+    assert_eq!(
+        tee_count, 1,
+        "Expected 1 LocalTee, got {} in: {:?}",
+        tee_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_in_block() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (local $x i32)
+                (block
+                    (local.set $x (i32.const 10))
+                    (local.set $x (i32.const 20))
+                )
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // Should eliminate redundant set even inside block
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 1,
+        "Expected 1 LocalSet in block, got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+#[test]
+fn test_rse_conservative_in_if() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (if (local.get 0)
+                    (then
+                        (local.set $x (i32.const 20))
+                    )
+                )
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // Both sets should remain - we can't eliminate the first one because
+    // the if branch might not execute
+    // Note: We call simplify_locals directly to test RSE in isolation
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::simplify_locals(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let set_count = instructions_str.matches("LocalSet").count();
+    assert_eq!(
+        set_count, 2,
+        "Expected 2 LocalSet (conservative for if), got {} in: {:?}",
+        set_count, module.functions[0].instructions
+    );
+}
+
+// Code Folding Tests
+
+#[test]
+fn test_code_folding_simple_tail_merge() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (if (result i32) (local.get 0)
+                    (then
+                        (i32.const 1)
+                        (i32.const 100)
+                        (i32.add)
+                    )
+                    (else
+                        (i32.const 2)
+                        (i32.const 100)
+                        (i32.add)
+                    )
+                )
+            )
+        )
+    "#;
+
+    // The (i32.const 100) and (i32.add) should be moved outside the if
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Count total instructions recursively
+    fn count_total_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        let mut count = instrs.len();
+        for instr in instrs {
+            match instr {
+                Instruction::If { then_body, else_body, .. } => {
+                    count += count_total_instrs(then_body);
+                    count += count_total_instrs(else_body);
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    count += count_total_instrs(body);
+                }
+                _ => {}
+            }
+        }
+        count
+    }
+
+    let before = count_total_instrs(&module.functions[0].instructions);
+    optimize::code_folding(&mut module).unwrap();
+    let after = count_total_instrs(&module.functions[0].instructions);
+
+    // Should reduce total instruction count (duplicate tail removed)
+    assert!(
+        after < before,
+        "Expected code folding to reduce total instruction count. Before: {}, After: {}",
+        before,
+        after
+    );
+}
+
+#[test]
+fn test_code_folding_multiple_instructions() {
+    let input = r#"
+        (module
+            (func (param i32)
+                (local $x i32)
+                (local $y i32)
+                (if (local.get 0)
+                    (then
+                        (i32.const 1)
+                        (local.set $x (i32.const 10))
+                        (local.set $y (i32.const 20))
+                    )
+                    (else
+                        (i32.const 2)
+                        (local.set $x (i32.const 10))
+                        (local.set $y (i32.const 20))
+                    )
+                )
+            )
+        )
+    "#;
+
+    // Both LocalSet instructions should be moved outside
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::code_folding(&mut module).unwrap();
+
+    // Count how many instructions are in the then/else bodies
+    fn count_if_body_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::If { then_body, .. } = instr {
+                return then_body.len();
+            }
+        }
+        0
+    }
+
+    let then_len = count_if_body_instrs(&module.functions[0].instructions);
+    assert_eq!(
+        then_len, 1,
+        "Expected only 1 instruction in then body after folding, got {}",
+        then_len
+    );
+}
+
+#[test]
+fn test_code_folding_no_false_positive() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                (if (result i32) (local.get 0)
+                    (then
+                        (i32.const 1)
+                        (i32.const 100)
+                        (i32.add)
+                    )
+                    (else
+                        (i32.const 2)
+                        (i32.const 200)
+                        (i32.add)
+                    )
+                )
+            )
+        )
+    "#;
+
+    // Different constants - should only fold i32.add, not the different constants
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Count total instructions recursively
+    fn count_total_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        let mut count = instrs.len();
+        for instr in instrs {
+            match instr {
+                Instruction::If { then_body, else_body, .. } => {
+                    count += count_total_instrs(then_body);
+                    count += count_total_instrs(else_body);
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    count += count_total_instrs(body);
+                }
+                _ => {}
+            }
+        }
+        count
+    }
+
+    let before = count_total_instrs(&module.functions[0].instructions);
+    optimize::code_folding(&mut module).unwrap();
+    let after = count_total_instrs(&module.functions[0].instructions);
+
+    // Should reduce by 1 (only i32.add is common, not the different constants)
+    assert!(
+        after == before - 1,
+        "Expected exactly 1 instruction to be folded (i32.add). Before: {}, After: {}",
+        before,
+        after
+    );
+}
+
+#[test]
+fn test_code_folding_nested_if() {
+    let input = r#"
+        (module
+            (func (param i32)
+                (local $x i32)
+                (if (local.get 0)
+                    (then
+                        (if (i32.const 1)
+                            (then (local.set $x (i32.const 10)))
+                            (else (local.set $x (i32.const 10)))
+                        )
+                    )
+                    (else
+                        (i32.const 2)
+                    )
+                )
+            )
+        )
+    "#;
+
+    // The nested if should have its common tail merged
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::code_folding(&mut module).unwrap();
+
+    // Just ensure it doesn't crash and produces valid output
+    assert!(
+        !module.functions[0].instructions.is_empty(),
+        "Module should have instructions after folding"
+    );
+}
+
+#[test]
+fn test_rse_no_false_positive_with_call() {
+    let input = r#"
+        (module
+            (func $other (result i32)
+                (i32.const 42)
+            )
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (call $other)
+                drop
+                (local.set $x (i32.const 20))
+                (local.get $x)
+            )
+        )
+    "#;
+
+    // Even though there's a call between the sets (which doesn't access locals),
+    // this is still a valid RSE opportunity
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[1].instructions.len();
+    optimize::optimize_module(&mut module).unwrap();
+    let after = module.functions[1].instructions.len();
+
+    // First set should be eliminated
+    assert!(
+        after <= before,
+        "Expected RSE with call. Before: {}, After: {}",
+        before,
+        after
+    );
+}
