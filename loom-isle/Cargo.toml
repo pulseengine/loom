@@ -9,6 +9,8 @@ rust-version.workspace = true
 description = "ISLE definitions and generated code for LOOM WebAssembly optimizer"
 
 [dependencies]
+# Re-export from loom-shared for backward compatibility
+loom-shared = { path = "../loom-shared" }
 
 [build-dependencies]
 cranelift-isle = { workspace = true }

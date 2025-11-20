@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "loom-shared",
     "loom-core",
     "loom-cli",
-    "loom-isle", "loom-testing",
+    "loom-isle",
+    "loom-testing",
 ]
 
 [workspace.package]

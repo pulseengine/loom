@@ -1,46 +1,35 @@
 [package]
-name = "loom-core"
+name = "loom-shared"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Core library for LOOM WebAssembly optimizer"
+description = "Shared WebAssembly optimization definitions for Loom and Synth"
 
 [dependencies]
-# WebAssembly
+# WebAssembly parsing and encoding
 wasmparser = { workspace = true }
 wasm-encoder = { workspace = true }
 wasmprinter = { workspace = true }
 wat = { workspace = true }
 wit-component = { workspace = true }
 
-# Shared ISLE definitions (canonical source)
-loom-shared = { path = "../loom-shared" }
-
-# ISLE generated code (re-exports from loom-shared)
-loom-isle = { path = "../loom-isle" }
-
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
-[dev-dependencies]
-proptest = { workspace = true }
-criterion = "0.5"
+# Z3 verification (optional, feature-gated for Synth/Loom Pro)
+z3 = { version = "0.12", optional = true }
+
+[build-dependencies]
+cranelift-isle = { workspace = true }
 
 [features]
-# Verification support with Z3 SMT solver
+default = []
 verification = ["z3"]
 
-[dependencies.z3]
-version = "0.12"
-optional = true
-
 [lib]
+name = "loom_shared"
 path = "src/lib.rs"
-
-[[bench]]
-name = "optimization_benchmarks"
-harness = false
