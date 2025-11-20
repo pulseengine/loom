@@ -1466,6 +1466,176 @@ fn test_licm_nested_loops() {
     );
 }
 
+// Remove Unused Branches Tests
+
+#[test]
+fn test_remove_dead_code_after_return() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (return (i32.const 42))
+                (i32.const 100)
+                (i32.const 200)
+                (i32.add)
+            )
+        )
+    "#;
+
+    // Code after return should be removed
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[0].instructions.len();
+    optimize::remove_unused_branches(&mut module).unwrap();
+    let after = module.functions[0].instructions.len();
+
+    assert!(
+        after < before,
+        "Expected dead code after return to be removed. Before: {}, After: {}",
+        before,
+        after
+    );
+
+    // Should only have return and its value
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    assert!(
+        instructions_str.contains("Return"),
+        "Should still have return instruction"
+    );
+}
+
+#[test]
+fn test_remove_dead_code_after_unreachable() {
+    let input = r#"
+        (module
+            (func
+                (unreachable)
+                (i32.const 100)
+                (drop)
+            )
+        )
+    "#;
+
+    // Code after unreachable should be removed
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[0].instructions.len();
+    optimize::remove_unused_branches(&mut module).unwrap();
+    let after = module.functions[0].instructions.len();
+
+    assert!(
+        after < before,
+        "Expected dead code after unreachable to be removed. Before: {}, After: {}",
+        before,
+        after
+    );
+}
+
+#[test]
+fn test_dead_code_in_blocks() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (block (result i32)
+                    (return (i32.const 42))
+                    (i32.const 100)
+                )
+            )
+        )
+    "#;
+
+    // Dead code in blocks should be removed
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::remove_unused_branches(&mut module).unwrap();
+
+    // Just ensure it doesn't crash and produces valid output
+    assert!(
+        !module.functions[0].instructions.is_empty(),
+        "Should have instructions after cleanup"
+    );
+}
+
+// Optimize Added Constants Tests
+
+#[test]
+fn test_merge_constant_adds_i32() {
+    let input = r#"
+        (module
+            (func (param $x i32) (result i32)
+                (local.get $x)
+                (i32.const 5)
+                (i32.add)
+                (i32.const 10)
+                (i32.add)
+            )
+        )
+    "#;
+
+    // Should merge 5 + 10 into 15
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_added_constants(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+
+    // Count how many i32.add instructions remain
+    let add_count = instructions_str.matches("I32Add").count();
+    assert_eq!(
+        add_count, 1,
+        "Expected only 1 I32Add after merging constants, got {}",
+        add_count
+    );
+}
+
+#[test]
+fn test_fold_constant_add() {
+    let input = r#"
+        (module
+            (func (result i32)
+                (i32.const 100)
+                (i32.const 200)
+                (i32.add)
+            )
+        )
+    "#;
+
+    // Should fold into single constant 300
+    let mut module = parse::parse_wat(input).unwrap();
+    let before = module.functions[0].instructions.len();
+    optimize::optimize_added_constants(&mut module).unwrap();
+    let after = module.functions[0].instructions.len();
+
+    assert!(
+        after < before,
+        "Expected constants to be folded. Before: {}, After: {}",
+        before,
+        after
+    );
+}
+
+#[test]
+fn test_merge_constant_adds_i64() {
+    let input = r#"
+        (module
+            (func (param $x i64) (result i64)
+                (local.get $x)
+                (i64.const 100)
+                (i64.add)
+                (i64.const 200)
+                (i64.add)
+            )
+        )
+    "#;
+
+    // Should merge i64 constants
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_added_constants(&mut module).unwrap();
+
+    let instructions_str = format!("{:?}", module.functions[0].instructions);
+    let add_count = instructions_str.matches("I64Add").count();
+    assert_eq!(
+        add_count, 1,
+        "Expected only 1 I64Add after merging constants, got {}",
+        add_count
+    );
+}
+
 #[test]
 fn test_rse_no_false_positive_with_call() {
     let input = r#"
