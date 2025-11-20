@@ -2977,6 +2977,12 @@ pub mod optimize {
         // Apply loop invariant code motion
         loop_invariant_code_motion(module)?;
 
+        // Remove unused branches and dead code
+        remove_unused_branches(module)?;
+
+        // Optimize added constants
+        optimize_added_constants(module)?;
+
         Ok(())
     }
 
@@ -4345,6 +4351,238 @@ pub mod optimize {
             // Everything else is NOT invariant (side effects, control flow, memory access, etc.)
             _ => false,
         }
+    }
+
+    /// Remove Unused Branches
+    ///
+    /// Eliminates dead code and unreachable branches. This optimization:
+    /// - Removes code after return/unreachable instructions
+    /// - Eliminates unreachable br instructions
+    /// - Simplifies control flow
+    ///
+    /// Example:
+    /// ```wasm
+    /// (block $label
+    ///     (return (i32.const 42))
+    ///     (br $label)              ;; Unreachable - removed
+    ///     (i32.const 100)          ;; Dead code - removed
+    /// )
+    /// ```
+    ///
+    /// Benefits:
+    /// - Smaller code size
+    /// - Cleaner control flow
+    /// - Expected: 1-2% binary size reduction
+    pub fn remove_unused_branches(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            let mut changed = true;
+            let mut iterations = 0;
+            const MAX_ITERATIONS: usize = 3;
+
+            while changed && iterations < MAX_ITERATIONS {
+                changed = false;
+                iterations += 1;
+
+                func.instructions = remove_dead_code(&func.instructions, &mut changed);
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_dead_code(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
+        let mut result = Vec::new();
+        let mut unreachable = false;
+
+        for instr in instructions {
+            // Skip instructions after unreachable/return
+            if unreachable {
+                *changed = true;
+                continue;
+            }
+
+            match instr {
+                // These instructions make subsequent code unreachable
+                Instruction::Return | Instruction::Unreachable => {
+                    result.push(instr.clone());
+                    unreachable = true;
+                }
+
+                // Recursively process nested blocks
+                Instruction::Block { block_type, body } => {
+                    let cleaned_body = remove_dead_code(body, changed);
+                    result.push(Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: cleaned_body,
+                    });
+                }
+
+                Instruction::Loop { block_type, body } => {
+                    let cleaned_body = remove_dead_code(body, changed);
+                    result.push(Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: cleaned_body,
+                    });
+                }
+
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    let cleaned_then = remove_dead_code(then_body, changed);
+                    let cleaned_else = remove_dead_code(else_body, changed);
+                    result.push(Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: cleaned_then,
+                        else_body: cleaned_else,
+                    });
+                }
+
+                _ => {
+                    result.push(instr.clone());
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Optimize Added Constants
+    ///
+    /// Merges consecutive constant additions into single operations.
+    /// This is inspired by Binaryen's optimize-added-constants pass.
+    ///
+    /// Example:
+    /// ```wasm
+    /// (i32.add (local.get $x) (i32.const 5))
+    /// (i32.add (i32.const 10))
+    /// ```
+    ///
+    /// Optimizes to:
+    /// ```wasm
+    /// (i32.add (local.get $x) (i32.const 15))
+    /// ```
+    ///
+    /// Benefits:
+    /// - Fewer instructions
+    /// - Simpler constant handling
+    /// - Expected: 1-2% code size reduction
+    pub fn optimize_added_constants(module: &mut Module) -> Result<()> {
+        for func in &mut module.functions {
+            let mut changed = true;
+            let mut iterations = 0;
+            const MAX_ITERATIONS: usize = 3;
+
+            while changed && iterations < MAX_ITERATIONS {
+                changed = false;
+                iterations += 1;
+
+                func.instructions = merge_constant_adds(&func.instructions, &mut changed);
+            }
+        }
+        Ok(())
+    }
+
+    fn merge_constant_adds(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
+        use Instruction::*;
+
+        let mut result = Vec::new();
+        let mut i = 0;
+
+        while i < instructions.len() {
+            // Look for pattern: value, i32.const X, i32.add, i32.const Y, i32.add
+            if i + 4 < instructions.len() {
+                if let (I32Const(x), I32Add, I32Const(y), I32Add) = (
+                    &instructions[i + 1],
+                    &instructions[i + 2],
+                    &instructions[i + 3],
+                    &instructions[i + 4],
+                ) {
+                    // Merge: (value + X) + Y => value + (X + Y)
+                    result.push(instructions[i].clone());
+                    result.push(I32Const(x.wrapping_add(*y)));
+                    result.push(I32Add);
+                    *changed = true;
+                    i += 5;
+                    continue;
+                }
+            }
+
+            // Look for pattern: i32.const X, i32.const Y, i32.add
+            if i + 2 < instructions.len() {
+                if let (I32Const(x), I32Const(y), I32Add) =
+                    (&instructions[i], &instructions[i + 1], &instructions[i + 2])
+                {
+                    // Fold constants
+                    result.push(I32Const(x.wrapping_add(*y)));
+                    *changed = true;
+                    i += 3;
+                    continue;
+                }
+            }
+
+            // Look for similar patterns with i64
+            if i + 4 < instructions.len() {
+                if let (I64Const(x), I64Add, I64Const(y), I64Add) = (
+                    &instructions[i + 1],
+                    &instructions[i + 2],
+                    &instructions[i + 3],
+                    &instructions[i + 4],
+                ) {
+                    result.push(instructions[i].clone());
+                    result.push(I64Const(x.wrapping_add(*y)));
+                    result.push(I64Add);
+                    *changed = true;
+                    i += 5;
+                    continue;
+                }
+            }
+
+            if i + 2 < instructions.len() {
+                if let (I64Const(x), I64Const(y), I64Add) =
+                    (&instructions[i], &instructions[i + 1], &instructions[i + 2])
+                {
+                    result.push(I64Const(x.wrapping_add(*y)));
+                    *changed = true;
+                    i += 3;
+                    continue;
+                }
+            }
+
+            // Recursively process nested structures
+            match &instructions[i] {
+                Block { block_type, body } => {
+                    result.push(Block {
+                        block_type: block_type.clone(),
+                        body: merge_constant_adds(body, changed),
+                    });
+                }
+                Loop { block_type, body } => {
+                    result.push(Loop {
+                        block_type: block_type.clone(),
+                        body: merge_constant_adds(body, changed),
+                    });
+                }
+                If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    result.push(If {
+                        block_type: block_type.clone(),
+                        then_body: merge_constant_adds(then_body, changed),
+                        else_body: merge_constant_adds(else_body, changed),
+                    });
+                }
+                _ => {
+                    result.push(instructions[i].clone());
+                }
+            }
+
+            i += 1;
+        }
+
+        result
     }
 
     /// CoalesceLocals - Register Allocation (Phase 12.5)
