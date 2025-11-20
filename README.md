@@ -32,6 +32,25 @@ A high-performance WebAssembly optimizer with formal verification support, featu
 - Comprehensive benchmarking with Criterion
 - Full WAT and WASM format support
 
+## 🏛️ Architecture
+
+Loom is built with a modular architecture featuring a shared foundation:
+
+- **loom-shared**: Core ISLE definitions and WebAssembly IR (stable API)
+- **loom-core**: Optimization pipeline implementation
+- **loom-cli**: Command-line interface and tooling
+- **loom-testing**: Differential testing framework
+
+The `loom-shared` crate provides a stable, reusable foundation that other WebAssembly tools can build upon. It contains:
+- ISLE term definitions for all WebAssembly instructions
+- Module IR (Module, Function, Instruction types)
+- WASM parsing and encoding utilities
+- Z3 verification infrastructure (optional)
+
+This architecture enables both rapid prototyping in Loom and potential use in safety-critical applications through derived tools.
+
+📖 See [LOOM_SYNTH_ARCHITECTURE.md](LOOM_SYNTH_ARCHITECTURE.md) for detailed architecture documentation.
+
 ## 📦 Quick Start
 
 ### Installation
