@@ -35,7 +35,8 @@
       "Bash(wasm-tools parse:*)",
       "Bash(1 wasm-tools print /tmp/bench_locals_debug.wasm)",
       "Bash(xargs curl -s)",
-      "Bash(wasm-tools print:*)"
+      "Bash(wasm-tools print:*)",
+      "Bash(cargo clippy:*)"
     ],
     "deny": [],
     "ask": []
