@@ -5017,194 +5017,291 @@ pub mod optimize {
     /// - `optimize_advanced_instructions()` (algebraic simplifications, strength reduction)
     /// - Self-operation optimizations (x-x→0, x^x→0, etc.)
     pub fn eliminate_common_subexpressions(module: &mut Module) -> Result<()> {
-        use super::ValueType;
         use std::collections::HashMap;
 
         for func in &mut module.functions {
-            // Track expressions we've seen and their positions
-            let mut expression_cache: HashMap<String, (usize, ValueType)> = HashMap::new();
-            let mut duplicates: Vec<(usize, usize, ValueType)> = Vec::new(); // (original_pos, dup_pos, type)
-            let _next_temp_local = func.signature.params.len() as u32
-                + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+            // Phase 1: Find all expression patterns (binary ops with 3-instruction sequences)
+            let patterns = find_expression_patterns(&func.instructions);
 
-            // Phase 1: Scan for duplicates (simplified for MVP)
-            // We'll look for simple patterns like repeated operations
-            for (pos, instr) in func.instructions.iter().enumerate() {
-                // FIXED: Skip LocalGet - these are already optimized references
-                // Caching them creates extra indirection
-                if matches!(instr, Instruction::LocalGet(_)) {
-                    continue;
-                }
+            // Phase 2: Group patterns by hash to find duplicates
+            let mut pattern_map: HashMap<String, Vec<usize>> = HashMap::new();
+            for (idx, pattern) in patterns.iter().enumerate() {
+                pattern_map
+                    .entry(pattern.hash.clone())
+                    .or_default()
+                    .push(idx);
+            }
 
-                if let Some(expr_key) = get_expression_key(instr) {
-                    if let Some(value_type) = get_instruction_type(instr) {
-                        if let Some(&(original_pos, _)) = expression_cache.get(&expr_key) {
-                            // Found a duplicate!
-                            duplicates.push((original_pos, pos, value_type));
-                        } else {
-                            expression_cache.insert(expr_key, (pos, value_type));
-                        }
-                    }
+            // Collect duplicates: patterns with same hash
+            let mut duplicates: Vec<(usize, Vec<usize>)> = Vec::new(); // (first_idx, [dup_idx...])
+            for indices in pattern_map.values() {
+                if indices.len() > 1 {
+                    duplicates.push((indices[0], indices[1..].to_vec()));
                 }
             }
 
-            // Phase 2: Apply CSE transformations (MVP)
-            if !duplicates.is_empty() {
-                // DON'T cache simple constants - they're cheap and caching prevents constant folding
-                // Constant folding runs before CSE, so this shouldn't be needed, but skip anyway
-                let const_duplicates: Vec<_> = duplicates
-                    .iter()
-                    .filter(|(orig_pos, _dup_pos, _type)| {
-                        // Skip simple constants - they should be constant-folded before CSE runs
-                        !matches!(
-                            func.instructions.get(*orig_pos),
-                            Some(Instruction::I32Const(_)) | Some(Instruction::I64Const(_))
-                        )
+            if duplicates.is_empty() {
+                continue;
+            }
+
+            // Phase 3: Safety check - filter out unsafe duplicates
+            let safe_duplicates: Vec<_> = duplicates
+                .into_iter()
+                .filter(|(first_idx, dup_indices)| {
+                    let first_pattern = &patterns[*first_idx];
+                    dup_indices.iter().all(|&dup_idx| {
+                        let dup_pattern = &patterns[dup_idx];
+                        is_safe_to_cse(first_pattern, dup_pattern, &func.instructions)
                     })
-                    .collect();
+                })
+                .collect();
 
-                if !const_duplicates.is_empty() {
-                    // Allocate new locals for cached expressions
-                    let mut new_locals_needed = HashMap::new();
-                    for (orig_pos, _dup_pos, value_type) in &const_duplicates {
-                        new_locals_needed.insert(*orig_pos, *value_type);
-                    }
-
-                    // Add new locals to function
-                    let base_local_idx = func.signature.params.len() as u32
-                        + func.locals.iter().map(|(count, _)| count).sum::<u32>();
-
-                    let mut local_map: HashMap<usize, u32> = HashMap::new();
-                    for (idx, (orig_pos, value_type)) in new_locals_needed.iter().enumerate() {
-                        local_map.insert(*orig_pos, base_local_idx + idx as u32);
-                        func.locals.push((1, *value_type));
-                    }
-
-                    // Transform instructions
-                    // FIXED: Don't use local.tee as it leaves values on stack.
-                    // Instead, keep first occurrence as-is and replace duplicates with local.get.
-                    // We'll rely on other optimizations to handle value forwarding.
-                    let mut new_instructions = Vec::new();
-                    let mut pos = 0;
-
-                    // Build a map of which positions to cache and at what point to insert the cache
-                    let mut cache_positions: HashMap<usize, u32> = HashMap::new();
-                    for (orig, _, _) in &const_duplicates {
-                        if let Some(&local_idx) = local_map.get(orig) {
-                            cache_positions.insert(*orig, local_idx);
-                        }
-                    }
-
-                    while pos < func.instructions.len() {
-                        let instr = &func.instructions[pos];
-
-                        // Check if this is a duplicate we should replace with local.get
-                        if const_duplicates.iter().any(|(_orig, dup, _)| *dup == pos) {
-                            // Find the original position
-                            if let Some((orig, _, _)) =
-                                const_duplicates.iter().find(|(_, dup, _)| *dup == pos)
-                            {
-                                if let Some(&local_idx) = local_map.get(orig) {
-                                    // Replace duplicate with local.get (reads cached value)
-                                    new_instructions.push(Instruction::LocalGet(local_idx));
-                                    pos += 1;
-                                    continue;
-                                }
-                            }
-                        }
-
-                        // For first occurrence that will be cached, keep the original instruction
-                        // but add a local.set immediately after to cache it
-                        if let Some(&local_idx) = cache_positions.get(&pos) {
-                            new_instructions.push(instr.clone());
-                            // Use local.set to cache the value (pops from stack)
-                            new_instructions.push(Instruction::LocalSet(local_idx));
-                            // Then push it back with local.get so stack state is preserved
-                            new_instructions.push(Instruction::LocalGet(local_idx));
-                        } else {
-                            // Regular instruction, copy as-is
-                            new_instructions.push(instr.clone());
-                        }
-                        pos += 1;
-                    }
-
-                    func.instructions = new_instructions;
-                }
+            if safe_duplicates.is_empty() {
+                continue;
             }
+
+            // Phase 4: Apply CSE transformations
+            apply_cse_transformations(func, &patterns, &safe_duplicates);
         }
 
         Ok(())
     }
 
-    /// Get a simple string key for an instruction (for duplicate detection)
-    fn get_expression_key(instr: &Instruction) -> Option<String> {
-        match instr {
-            // FIXED: Only cache self-contained values (constants)
-            // Operations like i32.add can't be cached without their operands
-            Instruction::I32Const(val) => Some(format!("i32.const:{}", val)),
-            Instruction::I64Const(val) => Some(format!("i64.const:{}", val)),
-            // Disabled: These operations consume stack values and can't be cached alone
-            // Instruction::I32Add => Some("i32.add".to_string()),
-            // Instruction::I32Sub => Some("i32.sub".to_string()),
-            // ... etc
-            _ => None, // For MVP, only cache constants (which are then filtered anyway)
-        }
+    /// Expression pattern found in instruction stream
+    #[derive(Debug, Clone)]
+    struct ExpressionPattern {
+        start_pos: usize,
+        end_pos: usize,
+        hash: String,
+        result_type: super::ValueType,
+        referenced_locals: Vec<u32>,
     }
 
-    /// Get the result type of an instruction
-    fn get_instruction_type(instr: &Instruction) -> Option<super::ValueType> {
-        use super::ValueType;
-        match instr {
-            Instruction::I32Const(_)
-            | Instruction::I32Add
-            | Instruction::I32Sub
-            | Instruction::I32Mul
-            | Instruction::I32And
-            | Instruction::I32Or
-            | Instruction::I32Xor
-            | Instruction::I32Eqz
-            | Instruction::I32Eq
-            | Instruction::I32Ne
-            | Instruction::I32LtS
-            | Instruction::I32LtU
-            | Instruction::I32GtS
-            | Instruction::I32GtU
-            | Instruction::I32LeS
-            | Instruction::I32LeU
-            | Instruction::I32GeS
-            | Instruction::I32GeU
-            | Instruction::I32Clz
-            | Instruction::I32Ctz
-            | Instruction::I32Popcnt
-            | Instruction::I32Shl
-            | Instruction::I32ShrS
-            | Instruction::I32ShrU => Some(ValueType::I32),
-            Instruction::I64Const(_)
-            | Instruction::I64Add
-            | Instruction::I64Sub
-            | Instruction::I64Mul
-            | Instruction::I64And
-            | Instruction::I64Or
-            | Instruction::I64Xor
-            | Instruction::I64Eqz
-            | Instruction::I64Eq
-            | Instruction::I64Ne
-            | Instruction::I64LtS
-            | Instruction::I64LtU
-            | Instruction::I64GtS
-            | Instruction::I64GtU
-            | Instruction::I64LeS
-            | Instruction::I64LeU
-            | Instruction::I64GeS
-            | Instruction::I64GeU
-            | Instruction::I64Clz
-            | Instruction::I64Ctz
-            | Instruction::I64Popcnt
-            | Instruction::I64Shl
-            | Instruction::I64ShrS
-            | Instruction::I64ShrU => Some(ValueType::I64),
-            _ => None,
+    /// Find all expression patterns in instruction stream
+    fn find_expression_patterns(instructions: &[Instruction]) -> Vec<ExpressionPattern> {
+        let mut patterns = Vec::new();
+
+        // Pattern: Binary operations (3 instructions)
+        // operand1 (local.get/const), operand2 (local.get/const), binop
+        for i in 2..instructions.len() {
+            if let Some(pattern) = match_binary_pattern(
+                instructions.get(i - 2),
+                instructions.get(i - 1),
+                instructions.get(i),
+            ) {
+                patterns.push(ExpressionPattern {
+                    start_pos: i - 2,
+                    end_pos: i,
+                    hash: pattern.0,
+                    result_type: pattern.1,
+                    referenced_locals: pattern.2,
+                });
+            }
         }
+
+        patterns
+    }
+
+    /// Try to match a 3-instruction binary operation pattern
+    /// Returns (hash, result_type, referenced_locals)
+    fn match_binary_pattern(
+        instr1: Option<&Instruction>,
+        instr2: Option<&Instruction>,
+        instr3: Option<&Instruction>,
+    ) -> Option<(String, super::ValueType, Vec<u32>)> {
+        use super::ValueType;
+
+        let (op1, op1_locals) = match instr1? {
+            Instruction::LocalGet(idx) => (format!("local.get:{}", idx), vec![*idx]),
+            Instruction::I32Const(val) => (format!("i32.const:{}", val), vec![]),
+            Instruction::I64Const(val) => (format!("i64.const:{}", val), vec![]),
+            _ => return None,
+        };
+
+        let (op2, op2_locals) = match instr2? {
+            Instruction::LocalGet(idx) => (format!("local.get:{}", idx), vec![*idx]),
+            Instruction::I32Const(val) => (format!("i32.const:{}", val), vec![]),
+            Instruction::I64Const(val) => (format!("i64.const:{}", val), vec![]),
+            _ => return None,
+        };
+
+        let (binop, result_type) = match instr3? {
+            Instruction::I32Add => ("i32.add", ValueType::I32),
+            Instruction::I32Sub => ("i32.sub", ValueType::I32),
+            Instruction::I32Mul => ("i32.mul", ValueType::I32),
+            Instruction::I32And => ("i32.and", ValueType::I32),
+            Instruction::I32Or => ("i32.or", ValueType::I32),
+            Instruction::I32Xor => ("i32.xor", ValueType::I32),
+            Instruction::I64Add => ("i64.add", ValueType::I64),
+            Instruction::I64Sub => ("i64.sub", ValueType::I64),
+            Instruction::I64Mul => ("i64.mul", ValueType::I64),
+            Instruction::I64And => ("i64.and", ValueType::I64),
+            Instruction::I64Or => ("i64.or", ValueType::I64),
+            Instruction::I64Xor => ("i64.xor", ValueType::I64),
+            _ => return None,
+        };
+
+        let hash = format!("({}, {}, {})", op1, op2, binop);
+        let mut locals = op1_locals;
+        locals.extend(op2_locals);
+
+        Some((hash, result_type, locals))
+    }
+
+    /// Check if it's safe to CSE between two pattern occurrences
+    fn is_safe_to_cse(
+        first: &ExpressionPattern,
+        second: &ExpressionPattern,
+        instructions: &[Instruction],
+    ) -> bool {
+        // Conservative safety checks
+        let start = first.end_pos + 1;
+        let end = second.start_pos;
+
+        if start > end {
+            return false;
+        }
+
+        // Adjacent patterns are safe (no instructions between them)
+        if start == end {
+            return true;
+        }
+
+        // Check for invalidating instructions between first and second occurrence
+        for instr in &instructions[start..end] {
+            match instr {
+                // Control flow invalidates CSE (leaves basic block)
+                Instruction::Block { .. }
+                | Instruction::Loop { .. }
+                | Instruction::If { .. }
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. }
+                | Instruction::Call(_)
+                | Instruction::CallIndirect { .. }
+                | Instruction::Return => return false,
+
+                // Local modifications invalidate if they reference our locals
+                Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
+                    if first.referenced_locals.contains(idx) {
+                        return false;
+                    }
+                }
+
+                // Memory operations are conservatively rejected for now
+                Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::I32Store { .. }
+                | Instruction::I64Store { .. } => return false,
+
+                _ => {}
+            }
+        }
+
+        true
+    }
+
+    /// Apply CSE transformations to a function
+    fn apply_cse_transformations(
+        func: &mut super::Function,
+        patterns: &[ExpressionPattern],
+        safe_duplicates: &[(usize, Vec<usize>)],
+    ) {
+        use std::collections::HashMap;
+
+        // Build maps for transformation
+        let mut positions_to_cache: HashMap<usize, (usize, usize, super::ValueType)> =
+            HashMap::new(); // pattern_idx -> (start, end, type)
+        let mut _positions_to_replace: HashMap<usize, u32> = HashMap::new(); // pattern_idx -> local_idx
+
+        // Allocate locals for each unique first occurrence
+        let base_local_idx = func.signature.params.len() as u32
+            + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+
+        for (local_offset, (first_idx, dup_indices)) in safe_duplicates.iter().enumerate() {
+            let pattern = &patterns[*first_idx];
+            positions_to_cache.insert(
+                *first_idx,
+                (pattern.start_pos, pattern.end_pos, pattern.result_type),
+            );
+
+            let local_idx = base_local_idx + local_offset as u32;
+            func.locals.push((1, pattern.result_type));
+
+            // Map all duplicate occurrences to this local
+            for &dup_idx in dup_indices {
+                _positions_to_replace.insert(dup_idx, local_idx);
+            }
+        }
+
+        // Track which instruction positions are part of patterns to transform
+        let mut instruction_map: HashMap<usize, TransformAction> = HashMap::new();
+
+        for (pattern_idx, (_start, end, _type)) in &positions_to_cache {
+            // Find the local_idx for this pattern
+            if let Some((_, dup_indices)) = safe_duplicates
+                .iter()
+                .find(|(first, _)| first == pattern_idx)
+            {
+                let local_offset = safe_duplicates
+                    .iter()
+                    .position(|(first, _)| first == pattern_idx)
+                    .unwrap();
+                let local_idx = base_local_idx + local_offset as u32;
+
+                instruction_map.insert(*end, TransformAction::AddTee(local_idx));
+
+                // Mark duplicate patterns for replacement
+                for &dup_idx in dup_indices {
+                    let dup_pattern = &patterns[dup_idx];
+                    instruction_map.insert(
+                        dup_pattern.start_pos,
+                        TransformAction::ReplacePattern(dup_pattern.end_pos, local_idx),
+                    );
+                }
+            }
+        }
+
+        // Apply transformations
+        let mut new_instructions = Vec::new();
+        let mut skip_until: Option<usize> = None;
+
+        for (pos, instr) in func.instructions.iter().enumerate() {
+            // Check if we should skip (part of replaced pattern)
+            if let Some(skip_pos) = skip_until {
+                if pos <= skip_pos {
+                    continue;
+                } else {
+                    skip_until = None;
+                }
+            }
+
+            // Check for transformation actions
+            if let Some(action) = instruction_map.get(&pos) {
+                match action {
+                    TransformAction::AddTee(local_idx) => {
+                        // Keep instruction and add tee
+                        new_instructions.push(instr.clone());
+                        new_instructions.push(Instruction::LocalTee(*local_idx));
+                    }
+                    TransformAction::ReplacePattern(end_pos, local_idx) => {
+                        // Replace entire pattern with local.get
+                        new_instructions.push(Instruction::LocalGet(*local_idx));
+                        skip_until = Some(*end_pos);
+                    }
+                }
+            } else {
+                new_instructions.push(instr.clone());
+            }
+        }
+
+        func.instructions = new_instructions;
+    }
+
+    #[derive(Debug)]
+    enum TransformAction {
+        AddTee(u32),
+        ReplacePattern(usize, u32),
     }
 
     /// Enhanced Common Subexpression Elimination (Issue #19 - Full Implementation)
