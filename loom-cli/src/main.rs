@@ -234,6 +234,9 @@ fn optimize_command(
     // Apply optimizations
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
+    // Function inlining should run early to expose more optimization opportunities
+    loom_core::optimize::inline_functions(&mut module).context("Function inlining failed")?;
+
     loom_core::optimize::precompute(&mut module).context("Precompute failed")?;
     loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
     loom_core::optimize::eliminate_common_subexpressions(&mut module).context("CSE failed")?;
