@@ -17,11 +17,13 @@ pub struct Module {
     pub functions: Vec<Function>,
     /// Memory definitions (Phase 14: Metadata Preservation)
     pub memories: Vec<Memory>,
+    /// Table definitions (Phase 23: Component Model Support)
+    pub tables: Vec<Table>,
     /// Global variables
     pub globals: Vec<Global>,
     /// Function types (for reconstruction)
     pub types: Vec<FunctionSignature>,
-    /// Exported items (functions, globals, memories)
+    /// Exported items (functions, globals, memories, tables)
     pub exports: Vec<Export>,
 }
 
@@ -56,6 +58,26 @@ pub struct Memory {
     pub max: Option<u32>,
     /// Shared memory flag
     pub shared: bool,
+}
+
+/// Table definition (Phase 23: Component Model Support)
+#[derive(Debug, Clone)]
+pub struct Table {
+    /// Element type (e.g., funcref, externref)
+    pub element_type: RefType,
+    /// Minimum size
+    pub min: u32,
+    /// Maximum size (optional)
+    pub max: Option<u32>,
+}
+
+/// Reference types for tables
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefType {
+    /// Function reference
+    FuncRef,
+    /// External reference
+    ExternRef,
 }
 
 /// Global variable
@@ -347,6 +369,7 @@ pub mod parse {
         let mut types = Vec::new();
         let mut function_type_indices = Vec::new();
         let mut memories = Vec::new();
+        let mut tables = Vec::new();
         let mut globals = Vec::new();
         let mut function_signatures = Vec::new();
         let mut exports = Vec::new();
@@ -383,6 +406,22 @@ pub mod parse {
                             min: memory.initial as u32,
                             max: memory.maximum.map(|m| m as u32),
                             shared: memory.shared,
+                        });
+                    }
+                }
+                Payload::TableSection(reader) => {
+                    // Phase 23: Capture table declarations for Component Model support
+                    for table in reader.clone() {
+                        let table = table?;
+                        let element_type = match table.ty.element_type {
+                            wasmparser::RefType::FUNCREF => super::RefType::FuncRef,
+                            wasmparser::RefType::EXTERNREF => super::RefType::ExternRef,
+                            _ => super::RefType::FuncRef, // Default to funcref for other types
+                        };
+                        tables.push(super::Table {
+                            element_type,
+                            min: table.ty.initial as u32,
+                            max: table.ty.maximum.map(|m| m as u32),
                         });
                     }
                 }
@@ -481,6 +520,7 @@ pub mod parse {
         Ok(Module {
             functions,
             memories,                   // Phase 14: Preserve memory declarations
+            tables,                     // Phase 23: Preserve table declarations for Component Model
             globals,                    // Phase 14: Preserve global declarations
             types: function_signatures, // Phase 14: Preserve type information
             exports,                    // Preserve export declarations
@@ -839,7 +879,9 @@ pub mod parse {
 /// Module encoding functionality: Encode LOOM's internal representation back to WebAssembly
 pub mod encode {
 
-    use super::{BlockType, ExportKind, FunctionSignature, Instruction, Module, ValueType};
+    use super::{
+        BlockType, ExportKind, FunctionSignature, Instruction, Module, RefType, ValueType,
+    };
     use anyhow::{Context, Result};
     use wasm_encoder::{
         CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
@@ -924,6 +966,28 @@ pub mod encode {
             functions.function(type_idx);
         }
         wasm_module.section(&functions);
+
+        // Phase 23: Build table section for Component Model support
+        // IMPORTANT: Must come before memory section per WASM spec ordering
+        if !module.tables.is_empty() {
+            let mut tables = wasm_encoder::TableSection::new();
+            for table in &module.tables {
+                let ref_type = match table.element_type {
+                    RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
+                    RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
+                };
+                let table_type = wasm_encoder::TableType {
+                    element_type: ref_type,
+                    minimum: table.min as u64,
+                    maximum: table.max.map(|m| m as u64),
+                    table64: false,
+                    shared: false,
+                };
+                // Tables don't have initializers in the basic form, use default
+                tables.table(table_type);
+            }
+            wasm_module.section(&tables);
+        }
 
         // Phase 14: Build memory section
         if !module.memories.is_empty() {
