@@ -41,6 +41,13 @@ enum Commands {
         /// Run verification after optimization
         #[arg(long)]
         verify: bool,
+
+        /// Select specific optimization passes (comma-separated)
+        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals
+        /// Example: --passes inline,constant-folding,dce
+        /// Default: all passes
+        #[arg(long, value_delimiter = ',')]
+        passes: Option<Vec<String>>,
     },
 
     /// Verify ISLE optimization rules
@@ -126,6 +133,7 @@ fn optimize_command(
     output_wat: bool,
     show_stats: bool,
     run_verify: bool,
+    passes: Option<Vec<String>>,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -234,19 +242,72 @@ fn optimize_command(
     // Apply optimizations
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
-    // Function inlining should run early to expose more optimization opportunities
-    loom_core::optimize::inline_functions(&mut module).context("Function inlining failed")?;
 
-    loom_core::optimize::precompute(&mut module).context("Precompute failed")?;
-    loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
-    loom_core::optimize::eliminate_common_subexpressions(&mut module).context("CSE failed")?;
-    loom_core::optimize::optimize_advanced_instructions(&mut module)
-        .context("Advanced instruction optimization failed")?;
-    loom_core::optimize::simplify_branches(&mut module).context("Branch simplification failed")?;
-    loom_core::optimize::eliminate_dead_code(&mut module).context("DCE failed")?;
-    loom_core::optimize::merge_blocks(&mut module).context("Block merging failed")?;
-    loom_core::optimize::vacuum(&mut module).context("Vacuum cleanup failed")?;
-    loom_core::optimize::simplify_locals(&mut module).context("SimplifyLocals failed")?;
+    // Determine which passes to run
+    let enabled_passes = passes
+        .as_ref()
+        .map(|p| p.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
+
+    // Helper to check if a pass is enabled
+    let should_run = |pass_name: &str| -> bool {
+        enabled_passes
+            .as_ref()
+            .map_or(true, |passes| passes.contains(&pass_name))
+    };
+
+    // Run selected passes in optimal order
+    if should_run("inline") {
+        println!("  Running: inline");
+        loom_core::optimize::inline_functions(&mut module).context("Function inlining failed")?;
+    }
+
+    if should_run("precompute") {
+        println!("  Running: precompute");
+        loom_core::optimize::precompute(&mut module).context("Precompute failed")?;
+    }
+
+    if should_run("constant-folding") {
+        println!("  Running: constant-folding");
+        loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
+    }
+
+    if should_run("cse") {
+        println!("  Running: cse");
+        loom_core::optimize::eliminate_common_subexpressions(&mut module).context("CSE failed")?;
+    }
+
+    if should_run("advanced") {
+        println!("  Running: advanced");
+        loom_core::optimize::optimize_advanced_instructions(&mut module)
+            .context("Advanced instruction optimization failed")?;
+    }
+
+    if should_run("branches") {
+        println!("  Running: branches");
+        loom_core::optimize::simplify_branches(&mut module)
+            .context("Branch simplification failed")?;
+    }
+
+    if should_run("dce") {
+        println!("  Running: dce");
+        loom_core::optimize::eliminate_dead_code(&mut module).context("DCE failed")?;
+    }
+
+    if should_run("merge-blocks") {
+        println!("  Running: merge-blocks");
+        loom_core::optimize::merge_blocks(&mut module).context("Block merging failed")?;
+    }
+
+    if should_run("vacuum") {
+        println!("  Running: vacuum");
+        loom_core::optimize::vacuum(&mut module).context("Vacuum cleanup failed")?;
+    }
+
+    if should_run("simplify-locals") {
+        println!("  Running: simplify-locals");
+        loom_core::optimize::simplify_locals(&mut module).context("SimplifyLocals failed")?;
+    }
+
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
     println!("✓ Optimized in {} ms", stats.optimization_time_ms);
 
@@ -399,8 +460,9 @@ fn main() -> Result<()> {
             wat,
             stats,
             verify,
+            passes,
         }) => {
-            optimize_command(input, output, wat, stats, verify)?;
+            optimize_command(input, output, wat, stats, verify, passes)?;
         }
 
         Some(Commands::Verify { isle_file }) => {
@@ -472,6 +534,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -506,6 +569,7 @@ mod tests {
             false,
             true, // Enable stats
             false,
+            None,
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -537,6 +601,7 @@ mod tests {
             false,
             false,
             true, // Enable verification
+            None,
         );
 
         assert!(
@@ -571,6 +636,7 @@ mod tests {
             true, // WAT output
             false,
             false,
+            None,
         );
 
         assert!(
