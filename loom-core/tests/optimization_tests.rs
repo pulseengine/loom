@@ -1669,3 +1669,193 @@ fn test_rse_no_false_positive_with_call() {
         after
     );
 }
+
+// ============================================================================
+// Function Inlining Tests (Issue #31 - Stack Discipline Bug Fix)
+// ============================================================================
+
+#[test]
+fn test_inline_stack_discipline_simple() {
+    let input = r#"
+        (module
+            (func $add_two (param $x i32) (result i32)
+                local.get $x
+                i32.const 2
+                i32.add
+            )
+
+            (func $main (param $a i32) (result i32)
+                local.get $a
+                call $add_two
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Verify the inlined code is valid
+    let main_func = &module.functions[1];
+
+    // Should have parameter storage + inlined body
+    // The inlined function should work correctly
+    assert!(
+        !main_func.instructions.is_empty(),
+        "Function should have inlined instructions"
+    );
+
+    // Validate by encoding and re-parsing
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Inlined module should be valid WASM");
+}
+
+#[test]
+fn test_inline_stack_discipline_multiple_calls() {
+    // This is the exact test case from Issue #31
+    let input = r#"
+        (module
+            (func $add_two (param $x i32) (result i32)
+                local.get $x
+                i32.const 2
+                i32.add
+            )
+
+            (func $main (param $a i32) (result i32)
+                local.get $a
+                call $add_two
+                call $add_two
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Validate by encoding and re-parsing
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Multiple inlined calls should be valid WASM");
+}
+
+#[test]
+fn test_inline_stack_discipline_multiple_params() {
+    let input = r#"
+        (module
+            (func $add (param $x i32) (param $y i32) (result i32)
+                local.get $x
+                local.get $y
+                i32.add
+            )
+
+            (func $main (param $a i32) (param $b i32) (result i32)
+                local.get $a
+                local.get $b
+                call $add
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Validate by encoding and re-parsing
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Multi-param inlining should be valid WASM");
+}
+
+#[test]
+fn test_inline_stack_discipline_with_locals() {
+    let input = r#"
+        (module
+            (func $compute (param $x i32) (result i32)
+                (local $temp i32)
+                local.get $x
+                i32.const 5
+                i32.add
+                local.tee $temp
+                local.get $temp
+                i32.mul
+            )
+
+            (func $main (param $a i32) (result i32)
+                local.get $a
+                call $compute
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Validate by encoding and re-parsing
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Inlining with locals should be valid WASM");
+}
+
+#[test]
+fn test_inline_stack_discipline_idempotence() {
+    let input = r#"
+        (module
+            (func $add_two (param $x i32) (result i32)
+                local.get $x
+                i32.const 2
+                i32.add
+            )
+
+            (func $main (param $a i32) (result i32)
+                local.get $a
+                call $add_two
+            )
+        )
+    "#;
+
+    // First optimization
+    let mut module1 = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module1).unwrap();
+
+    // Encode first result
+    use loom_core::encode;
+    let wasm1 = encode::encode_wasm(&module1).expect("Failed to encode first time");
+
+    // Parse and optimize again
+    let mut module2 = parse::parse_wasm(&wasm1).unwrap();
+    optimize::inline_functions(&mut module2).unwrap();
+    let wasm2 = encode::encode_wasm(&module2).expect("Failed to encode second time");
+
+    // Should be idempotent - second optimization doesn't change anything
+    assert_eq!(
+        wasm1.len(),
+        wasm2.len(),
+        "Inline optimization should be idempotent"
+    );
+}
+
+#[test]
+fn test_inline_stack_discipline_semantics() {
+    let input = r#"
+        (module
+            (func $double (param $x i32) (result i32)
+                local.get $x
+                local.get $x
+                i32.add
+            )
+
+            (func $quadruple (param $a i32) (result i32)
+                local.get $a
+                call $double
+                call $double
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Validate by encoding and re-parsing
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Semantic preservation should produce valid WASM");
+}

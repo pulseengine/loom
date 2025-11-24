@@ -6318,22 +6318,36 @@ pub mod optimize {
                         let current_local_count = base_local_count
                             + caller_locals.iter().map(|(count, _)| count).sum::<u32>();
 
-                        // Add callee's locals to caller (with remapping)
+                        // Step 1: Allocate temporary locals for the callee's parameters
+                        // We need to pop arguments from the stack and store them in locals
+                        let param_start_idx = current_local_count;
+                        let param_count = callee.signature.params.len() as u32;
+
+                        // Add parameter locals to caller (one local per parameter)
+                        for param_type in &callee.signature.params {
+                            caller_locals.push((1, *param_type));
+                        }
+
+                        // Step 2: Generate instructions to store arguments from stack to locals
+                        // Arguments are on the stack in order: arg0, arg1, ..., argN (top)
+                        // We need to store them in reverse order (argN first, then argN-1, etc.)
+                        for i in (0..param_count).rev() {
+                            result.push(Instruction::LocalSet(param_start_idx + i));
+                        }
+
+                        // Step 3: Add callee's locals to caller (with remapping)
+                        let callee_locals_start = param_start_idx + param_count;
                         for (count, typ) in &callee.locals {
                             caller_locals.push((*count, *typ));
                         }
 
-                        // Clone and remap callee's instructions
-                        // For MVP: just copy the body without parameter substitution
-                        // Full implementation would need to:
-                        // - Track parameters on stack
-                        // - Replace LocalGet(param_i) with the stack values
-                        // - Handle Return by branching to end
-
+                        // Step 4: Clone and remap callee's instructions
+                        // Replace parameter references with our temporary locals
                         let inlined_body = remap_locals_in_block(
                             &callee.instructions,
-                            current_local_count,
-                            callee.signature.params.len() as u32,
+                            callee_locals_start,
+                            param_count,
+                            param_start_idx,
                         );
 
                         result.extend(inlined_body);
@@ -6404,15 +6418,33 @@ pub mod optimize {
     }
 
     /// Remap local indices in inlined code to avoid conflicts
+    ///
+    /// Parameters:
+    /// - instructions: The callee's instructions to remap
+    /// - offset: The offset for remapping the callee's locals (non-parameter locals)
+    /// - param_count: Number of parameters in the callee
+    /// - param_start_idx: The starting index in the caller where we stored parameters
     fn remap_locals_in_block(
         instructions: &[Instruction],
         offset: u32,
         param_count: u32,
+        param_start_idx: u32,
     ) -> Vec<Instruction> {
         instructions
             .iter()
             .map(|instr| match instr {
-                // Remap local operations (skip parameters)
+                // Remap parameter accesses to our temporary parameter locals
+                Instruction::LocalGet(idx) if *idx < param_count => {
+                    Instruction::LocalGet(param_start_idx + idx)
+                }
+                Instruction::LocalSet(idx) if *idx < param_count => {
+                    Instruction::LocalSet(param_start_idx + idx)
+                }
+                Instruction::LocalTee(idx) if *idx < param_count => {
+                    Instruction::LocalTee(param_start_idx + idx)
+                }
+
+                // Remap the callee's local variables (non-parameters)
                 Instruction::LocalGet(idx) if *idx >= param_count => {
                     Instruction::LocalGet(idx + offset - param_count)
                 }
@@ -6426,12 +6458,12 @@ pub mod optimize {
                 // Recursively remap in control flow
                 Instruction::Block { block_type, body } => Instruction::Block {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count),
+                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
                 },
 
                 Instruction::Loop { block_type, body } => Instruction::Loop {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count),
+                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
                 },
 
                 Instruction::If {
@@ -6440,8 +6472,18 @@ pub mod optimize {
                     else_body,
                 } => Instruction::If {
                     block_type: block_type.clone(),
-                    then_body: remap_locals_in_block(then_body, offset, param_count),
-                    else_body: remap_locals_in_block(else_body, offset, param_count),
+                    then_body: remap_locals_in_block(
+                        then_body,
+                        offset,
+                        param_count,
+                        param_start_idx,
+                    ),
+                    else_body: remap_locals_in_block(
+                        else_body,
+                        offset,
+                        param_count,
+                        param_start_idx,
+                    ),
                 },
 
                 // Keep everything else unchanged
