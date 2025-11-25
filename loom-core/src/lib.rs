@@ -29,10 +29,12 @@ pub struct Module {
     pub imports: Vec<Import>,
     /// Data segments (memory initialization)
     pub data_segments: Vec<DataSegment>,
-    /// Element segments (table initialization)
-    pub element_segments: Vec<ElementSegment>,
+    /// Element section raw bytes (passed through unchanged)
+    pub element_section_bytes: Option<Vec<u8>>,
     /// Start function index (optional)
     pub start_function: Option<u32>,
+    /// Custom sections raw bytes (passed through unchanged)
+    pub custom_sections: Vec<(String, Vec<u8>)>,
 }
 
 /// Export definition
@@ -137,16 +139,11 @@ pub struct DataSegment {
 }
 
 /// Element segment (table initialization)
+/// We store raw bytes to avoid dealing with complex element section APIs
 #[derive(Debug, Clone)]
 pub struct ElementSegment {
-    /// Table index
-    pub table_index: u32,
-    /// Offset expression
-    pub offset: Vec<Instruction>,
-    /// Function indices
-    pub functions: Vec<u32>,
-    /// Passive element segment
-    pub passive: bool,
+    /// Raw element segment bytes (to be passed through unchanged)
+    pub raw_bytes: Vec<u8>,
 }
 
 /// Internal representation of a WebAssembly function
@@ -434,8 +431,9 @@ pub mod parse {
         let mut exports = Vec::new();
         let mut imports = Vec::new();
         let mut data_segments = Vec::new();
-        let mut element_segments = Vec::new();
+        let mut element_section_bytes = None;
         let mut start_function = None;
+        let mut custom_sections = Vec::new();
 
         for payload in Parser::new(0).parse_all(bytes) {
             let payload = payload.context("Failed to parse WebAssembly payload")?;
@@ -646,13 +644,21 @@ pub mod parse {
                         }
                     }
                 }
-                Payload::ElementSection(_reader) => {
-                    // TODO: Implement element section parsing properly
-                    // For now, skip element segments - they're used for indirect calls via tables
-                    // Most modules don't use element segments, so skipping for now
+                Payload::ElementSection(reader) => {
+                    // Store raw element section bytes to pass through unchanged
+                    let range = reader.range();
+                    element_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                }
+                Payload::CustomSection(reader) => {
+                    // Store raw custom section bytes to pass through unchanged
+                    let range = reader.range();
+                    custom_sections.push((
+                        reader.name().to_string(),
+                        bytes[range.start..range.end].to_vec(),
+                    ));
                 }
                 _ => {
-                    // Ignore other sections (e.g., Custom sections)
+                    // Ignore other payloads (e.g., End, Version, etc.)
                 }
             }
 
@@ -678,8 +684,9 @@ pub mod parse {
             exports,                    // Preserve export declarations
             imports,                    // Preserve import declarations
             data_segments,              // Preserve data segments
-            element_segments,           // Preserve element segments
+            element_section_bytes,      // Preserve element section as raw bytes
             start_function,             // Preserve start function
+            custom_sections,            // Preserve custom sections as raw bytes
         })
     }
 
@@ -1036,14 +1043,15 @@ pub mod parse {
 pub mod encode {
 
     use super::{
-        BlockType, DataSegment, ElementSegment, ExportKind, FunctionSignature, ImportKind,
-        Instruction, Module, RefType, ValueType,
+        BlockType, DataSegment, ExportKind, FunctionSignature, ImportKind, Instruction, Module,
+        RefType, ValueType,
     };
     use anyhow::{Context, Result};
     use wasm_encoder::{
-        CodeSection, ConstExpr, DataSection, EntityType, ExportKind as EncoderExportKind,
-        ExportSection, Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType,
-        ImportSection, Instruction as EncoderInstruction, MemorySection, MemoryType, TableType,
+        CodeSection, ConstExpr, CustomSection, DataSection, EntityType,
+        ExportKind as EncoderExportKind, ExportSection, Function as EncoderFunction,
+        FunctionSection, GlobalSection, GlobalType, ImportSection,
+        Instruction as EncoderInstruction, MemorySection, MemoryType, RawSection, TableType,
         TypeSection, ValType,
     };
 
@@ -1252,8 +1260,13 @@ pub mod encode {
         }
 
         // Build element section (table initialization)
-        // TODO: Implement element section encoding properly
-        // Skipped for now since we're not parsing element segments either
+        // Pass through raw element section bytes unchanged
+        if let Some(element_bytes) = &module.element_section_bytes {
+            wasm_module.section(&RawSection {
+                id: 9, // Element section ID
+                data: element_bytes,
+            });
+        }
 
         // Build code section (function bodies)
         let mut code = CodeSection::new();
@@ -1588,6 +1601,15 @@ pub mod encode {
                 }
             }
             wasm_module.section(&data);
+        }
+
+        // Build custom sections (names, debug info, etc.)
+        // Pass through raw custom section bytes unchanged
+        for (name, bytes) in &module.custom_sections {
+            wasm_module.section(&CustomSection {
+                name: name.into(),
+                data: bytes.into(),
+            });
         }
 
         Ok(wasm_module.finish())
