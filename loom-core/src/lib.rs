@@ -17,12 +17,24 @@ pub struct Module {
     pub functions: Vec<Function>,
     /// Memory definitions (Phase 14: Metadata Preservation)
     pub memories: Vec<Memory>,
+    /// Table definitions (Phase 23: Component Model Support)
+    pub tables: Vec<Table>,
     /// Global variables
     pub globals: Vec<Global>,
     /// Function types (for reconstruction)
     pub types: Vec<FunctionSignature>,
-    /// Exported items (functions, globals, memories)
+    /// Exported items (functions, globals, memories, tables)
     pub exports: Vec<Export>,
+    /// Imported items (functions, globals, memories, tables)
+    pub imports: Vec<Import>,
+    /// Data segments (memory initialization)
+    pub data_segments: Vec<DataSegment>,
+    /// Element section raw bytes (passed through unchanged)
+    pub element_section_bytes: Option<Vec<u8>>,
+    /// Start function index (optional)
+    pub start_function: Option<u32>,
+    /// Custom sections raw bytes (passed through unchanged)
+    pub custom_sections: Vec<(String, Vec<u8>)>,
 }
 
 /// Export definition
@@ -47,6 +59,30 @@ pub enum ExportKind {
     Table(u32),
 }
 
+/// Import definition
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Module name
+    pub module: String,
+    /// Field name
+    pub name: String,
+    /// What is being imported
+    pub kind: ImportKind,
+}
+
+/// Type of imported item
+#[derive(Debug, Clone)]
+pub enum ImportKind {
+    /// Function import with type index
+    Func(u32),
+    /// Memory import
+    Memory(Memory),
+    /// Global import
+    Global { value_type: ValueType, mutable: bool },
+    /// Table import
+    Table(Table),
+}
+
 /// Memory definition
 #[derive(Debug, Clone)]
 pub struct Memory {
@@ -58,6 +94,26 @@ pub struct Memory {
     pub shared: bool,
 }
 
+/// Table definition (Phase 23: Component Model Support)
+#[derive(Debug, Clone)]
+pub struct Table {
+    /// Element type (e.g., funcref, externref)
+    pub element_type: RefType,
+    /// Minimum size
+    pub min: u32,
+    /// Maximum size (optional)
+    pub max: Option<u32>,
+}
+
+/// Reference types for tables
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefType {
+    /// Function reference
+    FuncRef,
+    /// External reference
+    ExternRef,
+}
+
 /// Global variable
 #[derive(Debug, Clone)]
 pub struct Global {
@@ -67,6 +123,27 @@ pub struct Global {
     pub mutable: bool,
     /// Initializer expression (Phase 18: Precompute)
     pub init: Vec<Instruction>,
+}
+
+/// Data segment (memory initialization)
+#[derive(Debug, Clone)]
+pub struct DataSegment {
+    /// Memory index
+    pub memory_index: u32,
+    /// Offset expression
+    pub offset: Vec<Instruction>,
+    /// Data bytes
+    pub data: Vec<u8>,
+    /// Passive data segment (no memory index or offset)
+    pub passive: bool,
+}
+
+/// Element segment (table initialization)
+/// We store raw bytes to avoid dealing with complex element section APIs
+#[derive(Debug, Clone)]
+pub struct ElementSegment {
+    /// Raw element segment bytes (to be passed through unchanged)
+    pub raw_bytes: Vec<u8>,
 }
 
 /// Internal representation of a WebAssembly function
@@ -335,7 +412,8 @@ pub enum Instruction {
 pub mod parse {
 
     use super::{
-        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module, ValueType,
+        BlockType, DataSegment, ElementSegment, Export, ExportKind, Function, FunctionSignature,
+        Import, ImportKind, Instruction, Memory, Module, Table, ValueType,
     };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
@@ -347,9 +425,15 @@ pub mod parse {
         let mut types = Vec::new();
         let mut function_type_indices = Vec::new();
         let mut memories = Vec::new();
+        let mut tables = Vec::new();
         let mut globals = Vec::new();
         let mut function_signatures = Vec::new();
         let mut exports = Vec::new();
+        let mut imports = Vec::new();
+        let mut data_segments = Vec::new();
+        let mut element_section_bytes = None;
+        let mut start_function = None;
+        let mut custom_sections = Vec::new();
 
         for payload in Parser::new(0).parse_all(bytes) {
             let payload = payload.context("Failed to parse WebAssembly payload")?;
@@ -370,6 +454,48 @@ pub mod parse {
                         }
                     }
                 }
+                Payload::ImportSection(reader) => {
+                    // Capture imports (functions, globals, memories, tables)
+                    for import in reader.clone() {
+                        let import = import?;
+                        let kind = match import.ty {
+                            wasmparser::TypeRef::Func(type_idx) => {
+                                ImportKind::Func(type_idx)
+                            }
+                            wasmparser::TypeRef::Memory(mem_type) => {
+                                ImportKind::Memory(Memory {
+                                    min: mem_type.initial as u32,
+                                    max: mem_type.maximum.map(|m| m as u32),
+                                    shared: mem_type.shared,
+                                })
+                            }
+                            wasmparser::TypeRef::Global(global_type) => {
+                                ImportKind::Global {
+                                    value_type: convert_valtype(global_type.content_type),
+                                    mutable: global_type.mutable,
+                                }
+                            }
+                            wasmparser::TypeRef::Table(table_type) => {
+                                let element_type = match table_type.element_type {
+                                    wasmparser::RefType::FUNCREF => super::RefType::FuncRef,
+                                    wasmparser::RefType::EXTERNREF => super::RefType::ExternRef,
+                                    _ => super::RefType::FuncRef,
+                                };
+                                ImportKind::Table(Table {
+                                    element_type,
+                                    min: table_type.initial as u32,
+                                    max: table_type.maximum.map(|m| m as u32),
+                                })
+                            }
+                            _ => continue, // Skip unsupported import kinds
+                        };
+                        imports.push(Import {
+                            module: import.module.to_string(),
+                            name: import.name.to_string(),
+                            kind,
+                        });
+                    }
+                }
                 Payload::FunctionSection(reader) => {
                     for type_idx in reader.clone() {
                         function_type_indices.push(type_idx?);
@@ -383,6 +509,22 @@ pub mod parse {
                             min: memory.initial as u32,
                             max: memory.maximum.map(|m| m as u32),
                             shared: memory.shared,
+                        });
+                    }
+                }
+                Payload::TableSection(reader) => {
+                    // Phase 23: Capture table declarations for Component Model support
+                    for table in reader.clone() {
+                        let table = table?;
+                        let element_type = match table.ty.element_type {
+                            wasmparser::RefType::FUNCREF => super::RefType::FuncRef,
+                            wasmparser::RefType::EXTERNREF => super::RefType::ExternRef,
+                            _ => super::RefType::FuncRef, // Default to funcref for other types
+                        };
+                        tables.push(super::Table {
+                            element_type,
+                            min: table.ty.initial as u32,
+                            max: table.ty.maximum.map(|m| m as u32),
                         });
                     }
                 }
@@ -469,8 +611,54 @@ pub mod parse {
                         });
                     }
                 }
+                Payload::StartSection { func, .. } => {
+                    // Capture start function
+                    start_function = Some(*func);
+                }
+                Payload::DataSection(reader) => {
+                    // Capture data segments (memory initialization)
+                    for data in reader.clone() {
+                        let data = data?;
+                        match data.kind {
+                            wasmparser::DataKind::Active {
+                                memory_index,
+                                offset_expr,
+                            } => {
+                                let mut offset_reader = offset_expr.get_operators_reader();
+                                let (offset_instructions, _) = parse_instructions(&mut offset_reader)?;
+                                data_segments.push(super::DataSegment {
+                                    memory_index,
+                                    offset: offset_instructions,
+                                    data: data.data.to_vec(),
+                                    passive: false,
+                                });
+                            }
+                            wasmparser::DataKind::Passive => {
+                                data_segments.push(super::DataSegment {
+                                    memory_index: 0,
+                                    offset: vec![],
+                                    data: data.data.to_vec(),
+                                    passive: true,
+                                });
+                            }
+                        }
+                    }
+                }
+                Payload::ElementSection(reader) => {
+                    // Store raw element section bytes to pass through unchanged
+                    let range = reader.range();
+                    element_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                }
+                Payload::CustomSection(reader) => {
+                    // Store raw custom section bytes to pass through unchanged
+                    let range = reader.range();
+                    custom_sections.push((
+                        reader.name().to_string(),
+                        bytes[range.start..range.end].to_vec(),
+                    ));
+                }
                 _ => {
-                    // Ignore other sections for now
+                    // Ignore other payloads (e.g., End, Version, etc.)
                 }
             }
 
@@ -478,12 +666,27 @@ pub mod parse {
             validator.payload(&payload).context("Validation failed")?;
         }
 
+        // Convert all types from wasmparser::FuncType to FunctionSignature
+        let all_types: Vec<FunctionSignature> = types
+            .iter()
+            .map(|func_type| FunctionSignature {
+                params: func_type.params().iter().map(|t| convert_valtype(*t)).collect(),
+                results: func_type.results().iter().map(|t| convert_valtype(*t)).collect(),
+            })
+            .collect();
+
         Ok(Module {
             functions,
             memories,                   // Phase 14: Preserve memory declarations
+            tables,                     // Phase 23: Preserve table declarations for Component Model
             globals,                    // Phase 14: Preserve global declarations
-            types: function_signatures, // Phase 14: Preserve type information
+            types: all_types,           // Preserve ALL types from TypeSection
             exports,                    // Preserve export declarations
+            imports,                    // Preserve import declarations
+            data_segments,              // Preserve data segments
+            element_section_bytes,      // Preserve element section as raw bytes
+            start_function,             // Preserve start function
+            custom_sections,            // Preserve custom sections as raw bytes
         })
     }
 
@@ -839,12 +1042,17 @@ pub mod parse {
 /// Module encoding functionality: Encode LOOM's internal representation back to WebAssembly
 pub mod encode {
 
-    use super::{BlockType, ExportKind, FunctionSignature, Instruction, Module, ValueType};
+    use super::{
+        BlockType, DataSegment, ExportKind, FunctionSignature, ImportKind, Instruction, Module,
+        RefType, ValueType,
+    };
     use anyhow::{Context, Result};
     use wasm_encoder::{
-        CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
-        Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType,
-        Instruction as EncoderInstruction, MemorySection, MemoryType, TypeSection, ValType,
+        CodeSection, ConstExpr, CustomSection, DataSection, EntityType,
+        ExportKind as EncoderExportKind, ExportSection, Function as EncoderFunction,
+        FunctionSection, GlobalSection, GlobalType, ImportSection,
+        Instruction as EncoderInstruction, MemorySection, MemoryType, RawSection, TableType,
+        TypeSection, ValType,
     };
 
     /// Helper function to encode a constant expression (for global initializers)
@@ -912,6 +1120,48 @@ pub mod encode {
         }
         wasm_module.section(&types);
 
+        // Build import section
+        if !module.imports.is_empty() {
+            let mut imports = ImportSection::new();
+            for import in &module.imports {
+                let entity_type = match &import.kind {
+                    ImportKind::Func(type_idx) => EntityType::Function(*type_idx),
+                    ImportKind::Memory(mem) => {
+                        EntityType::Memory(MemoryType {
+                            minimum: mem.min as u64,
+                            maximum: mem.max.map(|m| m as u64),
+                            memory64: false,
+                            shared: mem.shared,
+                            page_size_log2: None,
+                        })
+                    }
+                    ImportKind::Global {
+                        value_type,
+                        mutable,
+                    } => EntityType::Global(GlobalType {
+                        val_type: convert_to_valtype(*value_type),
+                        mutable: *mutable,
+                        shared: false,
+                    }),
+                    ImportKind::Table(table) => {
+                        let ref_type = match table.element_type {
+                            RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
+                            RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
+                        };
+                        EntityType::Table(TableType {
+                            element_type: ref_type,
+                            minimum: table.min as u64,
+                            maximum: table.max.map(|m| m as u64),
+                            table64: false,
+                            shared: false,
+                        })
+                    }
+                };
+                imports.import(&import.module, &import.name, entity_type);
+            }
+            wasm_module.section(&imports);
+        }
+
         // Build function section (references to types)
         // Map each function to its type index
         let mut functions = FunctionSection::new();
@@ -924,6 +1174,28 @@ pub mod encode {
             functions.function(type_idx);
         }
         wasm_module.section(&functions);
+
+        // Phase 23: Build table section for Component Model support
+        // IMPORTANT: Must come before memory section per WASM spec ordering
+        if !module.tables.is_empty() {
+            let mut tables = wasm_encoder::TableSection::new();
+            for table in &module.tables {
+                let ref_type = match table.element_type {
+                    RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
+                    RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
+                };
+                let table_type = wasm_encoder::TableType {
+                    element_type: ref_type,
+                    minimum: table.min as u64,
+                    maximum: table.max.map(|m| m as u64),
+                    table64: false,
+                    shared: false,
+                };
+                // Tables don't have initializers in the basic form, use default
+                tables.table(table_type);
+            }
+            wasm_module.section(&tables);
+        }
 
         // Phase 14: Build memory section
         if !module.memories.is_empty() {
@@ -978,6 +1250,22 @@ pub mod encode {
                 }
             }
             wasm_module.section(&exports);
+        }
+
+        // Build start section
+        if let Some(start_func_idx) = module.start_function {
+            wasm_module.section(&wasm_encoder::StartSection {
+                function_index: start_func_idx,
+            });
+        }
+
+        // Build element section (table initialization)
+        // Pass through raw element section bytes unchanged
+        if let Some(element_bytes) = &module.element_section_bytes {
+            wasm_module.section(&RawSection {
+                id: 9, // Element section ID
+                data: element_bytes,
+            });
         }
 
         // Build code section (function bodies)
@@ -1299,7 +1587,51 @@ pub mod encode {
         }
         wasm_module.section(&code);
 
+        // Build data section (memory initialization)
+        if !module.data_segments.is_empty() {
+            let mut data = DataSection::new();
+            for segment in &module.data_segments {
+                if segment.passive {
+                    // Passive data segment
+                    data.passive(segment.data.iter().copied());
+                } else {
+                    // Active data segment
+                    let offset_expr = encode_const_expr_for_offset(&segment.offset)?;
+                    data.active(segment.memory_index, &offset_expr, segment.data.iter().copied());
+                }
+            }
+            wasm_module.section(&data);
+        }
+
+        // Build custom sections (names, debug info, etc.)
+        // Pass through raw custom section bytes unchanged
+        for (name, bytes) in &module.custom_sections {
+            wasm_module.section(&CustomSection {
+                name: name.into(),
+                data: bytes.into(),
+            });
+        }
+
         Ok(wasm_module.finish())
+    }
+
+    /// Helper function to encode offset expressions for data/element segments
+    fn encode_const_expr_for_offset(instructions: &[Instruction]) -> Result<ConstExpr> {
+        // Offset expressions should be simple constant expressions
+        if instructions.is_empty() {
+            return Ok(ConstExpr::i32_const(0));
+        }
+
+        if instructions.len() == 1 {
+            match &instructions[0] {
+                Instruction::I32Const(val) => return Ok(ConstExpr::i32_const(*val)),
+                Instruction::I64Const(val) => return Ok(ConstExpr::i64_const(*val)),
+                _ => {}
+            }
+        }
+
+        // Fallback to zero for complex expressions
+        Ok(ConstExpr::i32_const(0))
     }
 
     /// Encode to WebAssembly text format (WAT)
@@ -5017,194 +5349,291 @@ pub mod optimize {
     /// - `optimize_advanced_instructions()` (algebraic simplifications, strength reduction)
     /// - Self-operation optimizations (x-x→0, x^x→0, etc.)
     pub fn eliminate_common_subexpressions(module: &mut Module) -> Result<()> {
-        use super::ValueType;
         use std::collections::HashMap;
 
         for func in &mut module.functions {
-            // Track expressions we've seen and their positions
-            let mut expression_cache: HashMap<String, (usize, ValueType)> = HashMap::new();
-            let mut duplicates: Vec<(usize, usize, ValueType)> = Vec::new(); // (original_pos, dup_pos, type)
-            let _next_temp_local = func.signature.params.len() as u32
-                + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+            // Phase 1: Find all expression patterns (binary ops with 3-instruction sequences)
+            let patterns = find_expression_patterns(&func.instructions);
 
-            // Phase 1: Scan for duplicates (simplified for MVP)
-            // We'll look for simple patterns like repeated operations
-            for (pos, instr) in func.instructions.iter().enumerate() {
-                // FIXED: Skip LocalGet - these are already optimized references
-                // Caching them creates extra indirection
-                if matches!(instr, Instruction::LocalGet(_)) {
-                    continue;
-                }
+            // Phase 2: Group patterns by hash to find duplicates
+            let mut pattern_map: HashMap<String, Vec<usize>> = HashMap::new();
+            for (idx, pattern) in patterns.iter().enumerate() {
+                pattern_map
+                    .entry(pattern.hash.clone())
+                    .or_default()
+                    .push(idx);
+            }
 
-                if let Some(expr_key) = get_expression_key(instr) {
-                    if let Some(value_type) = get_instruction_type(instr) {
-                        if let Some(&(original_pos, _)) = expression_cache.get(&expr_key) {
-                            // Found a duplicate!
-                            duplicates.push((original_pos, pos, value_type));
-                        } else {
-                            expression_cache.insert(expr_key, (pos, value_type));
-                        }
-                    }
+            // Collect duplicates: patterns with same hash
+            let mut duplicates: Vec<(usize, Vec<usize>)> = Vec::new(); // (first_idx, [dup_idx...])
+            for indices in pattern_map.values() {
+                if indices.len() > 1 {
+                    duplicates.push((indices[0], indices[1..].to_vec()));
                 }
             }
 
-            // Phase 2: Apply CSE transformations (MVP)
-            if !duplicates.is_empty() {
-                // DON'T cache simple constants - they're cheap and caching prevents constant folding
-                // Constant folding runs before CSE, so this shouldn't be needed, but skip anyway
-                let const_duplicates: Vec<_> = duplicates
-                    .iter()
-                    .filter(|(orig_pos, _dup_pos, _type)| {
-                        // Skip simple constants - they should be constant-folded before CSE runs
-                        !matches!(
-                            func.instructions.get(*orig_pos),
-                            Some(Instruction::I32Const(_)) | Some(Instruction::I64Const(_))
-                        )
+            if duplicates.is_empty() {
+                continue;
+            }
+
+            // Phase 3: Safety check - filter out unsafe duplicates
+            let safe_duplicates: Vec<_> = duplicates
+                .into_iter()
+                .filter(|(first_idx, dup_indices)| {
+                    let first_pattern = &patterns[*first_idx];
+                    dup_indices.iter().all(|&dup_idx| {
+                        let dup_pattern = &patterns[dup_idx];
+                        is_safe_to_cse(first_pattern, dup_pattern, &func.instructions)
                     })
-                    .collect();
+                })
+                .collect();
 
-                if !const_duplicates.is_empty() {
-                    // Allocate new locals for cached expressions
-                    let mut new_locals_needed = HashMap::new();
-                    for (orig_pos, _dup_pos, value_type) in &const_duplicates {
-                        new_locals_needed.insert(*orig_pos, *value_type);
-                    }
-
-                    // Add new locals to function
-                    let base_local_idx = func.signature.params.len() as u32
-                        + func.locals.iter().map(|(count, _)| count).sum::<u32>();
-
-                    let mut local_map: HashMap<usize, u32> = HashMap::new();
-                    for (idx, (orig_pos, value_type)) in new_locals_needed.iter().enumerate() {
-                        local_map.insert(*orig_pos, base_local_idx + idx as u32);
-                        func.locals.push((1, *value_type));
-                    }
-
-                    // Transform instructions
-                    // FIXED: Don't use local.tee as it leaves values on stack.
-                    // Instead, keep first occurrence as-is and replace duplicates with local.get.
-                    // We'll rely on other optimizations to handle value forwarding.
-                    let mut new_instructions = Vec::new();
-                    let mut pos = 0;
-
-                    // Build a map of which positions to cache and at what point to insert the cache
-                    let mut cache_positions: HashMap<usize, u32> = HashMap::new();
-                    for (orig, _, _) in &const_duplicates {
-                        if let Some(&local_idx) = local_map.get(orig) {
-                            cache_positions.insert(*orig, local_idx);
-                        }
-                    }
-
-                    while pos < func.instructions.len() {
-                        let instr = &func.instructions[pos];
-
-                        // Check if this is a duplicate we should replace with local.get
-                        if const_duplicates.iter().any(|(_orig, dup, _)| *dup == pos) {
-                            // Find the original position
-                            if let Some((orig, _, _)) =
-                                const_duplicates.iter().find(|(_, dup, _)| *dup == pos)
-                            {
-                                if let Some(&local_idx) = local_map.get(orig) {
-                                    // Replace duplicate with local.get (reads cached value)
-                                    new_instructions.push(Instruction::LocalGet(local_idx));
-                                    pos += 1;
-                                    continue;
-                                }
-                            }
-                        }
-
-                        // For first occurrence that will be cached, keep the original instruction
-                        // but add a local.set immediately after to cache it
-                        if let Some(&local_idx) = cache_positions.get(&pos) {
-                            new_instructions.push(instr.clone());
-                            // Use local.set to cache the value (pops from stack)
-                            new_instructions.push(Instruction::LocalSet(local_idx));
-                            // Then push it back with local.get so stack state is preserved
-                            new_instructions.push(Instruction::LocalGet(local_idx));
-                        } else {
-                            // Regular instruction, copy as-is
-                            new_instructions.push(instr.clone());
-                        }
-                        pos += 1;
-                    }
-
-                    func.instructions = new_instructions;
-                }
+            if safe_duplicates.is_empty() {
+                continue;
             }
+
+            // Phase 4: Apply CSE transformations
+            apply_cse_transformations(func, &patterns, &safe_duplicates);
         }
 
         Ok(())
     }
 
-    /// Get a simple string key for an instruction (for duplicate detection)
-    fn get_expression_key(instr: &Instruction) -> Option<String> {
-        match instr {
-            // FIXED: Only cache self-contained values (constants)
-            // Operations like i32.add can't be cached without their operands
-            Instruction::I32Const(val) => Some(format!("i32.const:{}", val)),
-            Instruction::I64Const(val) => Some(format!("i64.const:{}", val)),
-            // Disabled: These operations consume stack values and can't be cached alone
-            // Instruction::I32Add => Some("i32.add".to_string()),
-            // Instruction::I32Sub => Some("i32.sub".to_string()),
-            // ... etc
-            _ => None, // For MVP, only cache constants (which are then filtered anyway)
-        }
+    /// Expression pattern found in instruction stream
+    #[derive(Debug, Clone)]
+    struct ExpressionPattern {
+        start_pos: usize,
+        end_pos: usize,
+        hash: String,
+        result_type: super::ValueType,
+        referenced_locals: Vec<u32>,
     }
 
-    /// Get the result type of an instruction
-    fn get_instruction_type(instr: &Instruction) -> Option<super::ValueType> {
-        use super::ValueType;
-        match instr {
-            Instruction::I32Const(_)
-            | Instruction::I32Add
-            | Instruction::I32Sub
-            | Instruction::I32Mul
-            | Instruction::I32And
-            | Instruction::I32Or
-            | Instruction::I32Xor
-            | Instruction::I32Eqz
-            | Instruction::I32Eq
-            | Instruction::I32Ne
-            | Instruction::I32LtS
-            | Instruction::I32LtU
-            | Instruction::I32GtS
-            | Instruction::I32GtU
-            | Instruction::I32LeS
-            | Instruction::I32LeU
-            | Instruction::I32GeS
-            | Instruction::I32GeU
-            | Instruction::I32Clz
-            | Instruction::I32Ctz
-            | Instruction::I32Popcnt
-            | Instruction::I32Shl
-            | Instruction::I32ShrS
-            | Instruction::I32ShrU => Some(ValueType::I32),
-            Instruction::I64Const(_)
-            | Instruction::I64Add
-            | Instruction::I64Sub
-            | Instruction::I64Mul
-            | Instruction::I64And
-            | Instruction::I64Or
-            | Instruction::I64Xor
-            | Instruction::I64Eqz
-            | Instruction::I64Eq
-            | Instruction::I64Ne
-            | Instruction::I64LtS
-            | Instruction::I64LtU
-            | Instruction::I64GtS
-            | Instruction::I64GtU
-            | Instruction::I64LeS
-            | Instruction::I64LeU
-            | Instruction::I64GeS
-            | Instruction::I64GeU
-            | Instruction::I64Clz
-            | Instruction::I64Ctz
-            | Instruction::I64Popcnt
-            | Instruction::I64Shl
-            | Instruction::I64ShrS
-            | Instruction::I64ShrU => Some(ValueType::I64),
-            _ => None,
+    /// Find all expression patterns in instruction stream
+    fn find_expression_patterns(instructions: &[Instruction]) -> Vec<ExpressionPattern> {
+        let mut patterns = Vec::new();
+
+        // Pattern: Binary operations (3 instructions)
+        // operand1 (local.get/const), operand2 (local.get/const), binop
+        for i in 2..instructions.len() {
+            if let Some(pattern) = match_binary_pattern(
+                instructions.get(i - 2),
+                instructions.get(i - 1),
+                instructions.get(i),
+            ) {
+                patterns.push(ExpressionPattern {
+                    start_pos: i - 2,
+                    end_pos: i,
+                    hash: pattern.0,
+                    result_type: pattern.1,
+                    referenced_locals: pattern.2,
+                });
+            }
         }
+
+        patterns
+    }
+
+    /// Try to match a 3-instruction binary operation pattern
+    /// Returns (hash, result_type, referenced_locals)
+    fn match_binary_pattern(
+        instr1: Option<&Instruction>,
+        instr2: Option<&Instruction>,
+        instr3: Option<&Instruction>,
+    ) -> Option<(String, super::ValueType, Vec<u32>)> {
+        use super::ValueType;
+
+        let (op1, op1_locals) = match instr1? {
+            Instruction::LocalGet(idx) => (format!("local.get:{}", idx), vec![*idx]),
+            Instruction::I32Const(val) => (format!("i32.const:{}", val), vec![]),
+            Instruction::I64Const(val) => (format!("i64.const:{}", val), vec![]),
+            _ => return None,
+        };
+
+        let (op2, op2_locals) = match instr2? {
+            Instruction::LocalGet(idx) => (format!("local.get:{}", idx), vec![*idx]),
+            Instruction::I32Const(val) => (format!("i32.const:{}", val), vec![]),
+            Instruction::I64Const(val) => (format!("i64.const:{}", val), vec![]),
+            _ => return None,
+        };
+
+        let (binop, result_type) = match instr3? {
+            Instruction::I32Add => ("i32.add", ValueType::I32),
+            Instruction::I32Sub => ("i32.sub", ValueType::I32),
+            Instruction::I32Mul => ("i32.mul", ValueType::I32),
+            Instruction::I32And => ("i32.and", ValueType::I32),
+            Instruction::I32Or => ("i32.or", ValueType::I32),
+            Instruction::I32Xor => ("i32.xor", ValueType::I32),
+            Instruction::I64Add => ("i64.add", ValueType::I64),
+            Instruction::I64Sub => ("i64.sub", ValueType::I64),
+            Instruction::I64Mul => ("i64.mul", ValueType::I64),
+            Instruction::I64And => ("i64.and", ValueType::I64),
+            Instruction::I64Or => ("i64.or", ValueType::I64),
+            Instruction::I64Xor => ("i64.xor", ValueType::I64),
+            _ => return None,
+        };
+
+        let hash = format!("({}, {}, {})", op1, op2, binop);
+        let mut locals = op1_locals;
+        locals.extend(op2_locals);
+
+        Some((hash, result_type, locals))
+    }
+
+    /// Check if it's safe to CSE between two pattern occurrences
+    fn is_safe_to_cse(
+        first: &ExpressionPattern,
+        second: &ExpressionPattern,
+        instructions: &[Instruction],
+    ) -> bool {
+        // Conservative safety checks
+        let start = first.end_pos + 1;
+        let end = second.start_pos;
+
+        if start > end {
+            return false;
+        }
+
+        // Adjacent patterns are safe (no instructions between them)
+        if start == end {
+            return true;
+        }
+
+        // Check for invalidating instructions between first and second occurrence
+        for instr in &instructions[start..end] {
+            match instr {
+                // Control flow invalidates CSE (leaves basic block)
+                Instruction::Block { .. }
+                | Instruction::Loop { .. }
+                | Instruction::If { .. }
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. }
+                | Instruction::Call(_)
+                | Instruction::CallIndirect { .. }
+                | Instruction::Return => return false,
+
+                // Local modifications invalidate if they reference our locals
+                Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
+                    if first.referenced_locals.contains(idx) {
+                        return false;
+                    }
+                }
+
+                // Memory operations are conservatively rejected for now
+                Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::I32Store { .. }
+                | Instruction::I64Store { .. } => return false,
+
+                _ => {}
+            }
+        }
+
+        true
+    }
+
+    /// Apply CSE transformations to a function
+    fn apply_cse_transformations(
+        func: &mut super::Function,
+        patterns: &[ExpressionPattern],
+        safe_duplicates: &[(usize, Vec<usize>)],
+    ) {
+        use std::collections::HashMap;
+
+        // Build maps for transformation
+        let mut positions_to_cache: HashMap<usize, (usize, usize, super::ValueType)> =
+            HashMap::new(); // pattern_idx -> (start, end, type)
+        let mut _positions_to_replace: HashMap<usize, u32> = HashMap::new(); // pattern_idx -> local_idx
+
+        // Allocate locals for each unique first occurrence
+        let base_local_idx = func.signature.params.len() as u32
+            + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+
+        for (local_offset, (first_idx, dup_indices)) in safe_duplicates.iter().enumerate() {
+            let pattern = &patterns[*first_idx];
+            positions_to_cache.insert(
+                *first_idx,
+                (pattern.start_pos, pattern.end_pos, pattern.result_type),
+            );
+
+            let local_idx = base_local_idx + local_offset as u32;
+            func.locals.push((1, pattern.result_type));
+
+            // Map all duplicate occurrences to this local
+            for &dup_idx in dup_indices {
+                _positions_to_replace.insert(dup_idx, local_idx);
+            }
+        }
+
+        // Track which instruction positions are part of patterns to transform
+        let mut instruction_map: HashMap<usize, TransformAction> = HashMap::new();
+
+        for (pattern_idx, (_start, end, _type)) in &positions_to_cache {
+            // Find the local_idx for this pattern
+            if let Some((_, dup_indices)) = safe_duplicates
+                .iter()
+                .find(|(first, _)| first == pattern_idx)
+            {
+                let local_offset = safe_duplicates
+                    .iter()
+                    .position(|(first, _)| first == pattern_idx)
+                    .unwrap();
+                let local_idx = base_local_idx + local_offset as u32;
+
+                instruction_map.insert(*end, TransformAction::AddTee(local_idx));
+
+                // Mark duplicate patterns for replacement
+                for &dup_idx in dup_indices {
+                    let dup_pattern = &patterns[dup_idx];
+                    instruction_map.insert(
+                        dup_pattern.start_pos,
+                        TransformAction::ReplacePattern(dup_pattern.end_pos, local_idx),
+                    );
+                }
+            }
+        }
+
+        // Apply transformations
+        let mut new_instructions = Vec::new();
+        let mut skip_until: Option<usize> = None;
+
+        for (pos, instr) in func.instructions.iter().enumerate() {
+            // Check if we should skip (part of replaced pattern)
+            if let Some(skip_pos) = skip_until {
+                if pos <= skip_pos {
+                    continue;
+                } else {
+                    skip_until = None;
+                }
+            }
+
+            // Check for transformation actions
+            if let Some(action) = instruction_map.get(&pos) {
+                match action {
+                    TransformAction::AddTee(local_idx) => {
+                        // Keep instruction and add tee
+                        new_instructions.push(instr.clone());
+                        new_instructions.push(Instruction::LocalTee(*local_idx));
+                    }
+                    TransformAction::ReplacePattern(end_pos, local_idx) => {
+                        // Replace entire pattern with local.get
+                        new_instructions.push(Instruction::LocalGet(*local_idx));
+                        skip_until = Some(*end_pos);
+                    }
+                }
+            } else {
+                new_instructions.push(instr.clone());
+            }
+        }
+
+        func.instructions = new_instructions;
+    }
+
+    #[derive(Debug)]
+    enum TransformAction {
+        AddTee(u32),
+        ReplacePattern(usize, u32),
     }
 
     /// Enhanced Common Subexpression Elimination (Issue #19 - Full Implementation)
@@ -6157,22 +6586,36 @@ pub mod optimize {
                         let current_local_count = base_local_count
                             + caller_locals.iter().map(|(count, _)| count).sum::<u32>();
 
-                        // Add callee's locals to caller (with remapping)
+                        // Step 1: Allocate temporary locals for the callee's parameters
+                        // We need to pop arguments from the stack and store them in locals
+                        let param_start_idx = current_local_count;
+                        let param_count = callee.signature.params.len() as u32;
+
+                        // Add parameter locals to caller (one local per parameter)
+                        for param_type in &callee.signature.params {
+                            caller_locals.push((1, *param_type));
+                        }
+
+                        // Step 2: Generate instructions to store arguments from stack to locals
+                        // Arguments are on the stack in order: arg0, arg1, ..., argN (top)
+                        // We need to store them in reverse order (argN first, then argN-1, etc.)
+                        for i in (0..param_count).rev() {
+                            result.push(Instruction::LocalSet(param_start_idx + i));
+                        }
+
+                        // Step 3: Add callee's locals to caller (with remapping)
+                        let callee_locals_start = param_start_idx + param_count;
                         for (count, typ) in &callee.locals {
                             caller_locals.push((*count, *typ));
                         }
 
-                        // Clone and remap callee's instructions
-                        // For MVP: just copy the body without parameter substitution
-                        // Full implementation would need to:
-                        // - Track parameters on stack
-                        // - Replace LocalGet(param_i) with the stack values
-                        // - Handle Return by branching to end
-
+                        // Step 4: Clone and remap callee's instructions
+                        // Replace parameter references with our temporary locals
                         let inlined_body = remap_locals_in_block(
                             &callee.instructions,
-                            current_local_count,
-                            callee.signature.params.len() as u32,
+                            callee_locals_start,
+                            param_count,
+                            param_start_idx,
                         );
 
                         result.extend(inlined_body);
@@ -6243,15 +6686,33 @@ pub mod optimize {
     }
 
     /// Remap local indices in inlined code to avoid conflicts
+    ///
+    /// Parameters:
+    /// - instructions: The callee's instructions to remap
+    /// - offset: The offset for remapping the callee's locals (non-parameter locals)
+    /// - param_count: Number of parameters in the callee
+    /// - param_start_idx: The starting index in the caller where we stored parameters
     fn remap_locals_in_block(
         instructions: &[Instruction],
         offset: u32,
         param_count: u32,
+        param_start_idx: u32,
     ) -> Vec<Instruction> {
         instructions
             .iter()
             .map(|instr| match instr {
-                // Remap local operations (skip parameters)
+                // Remap parameter accesses to our temporary parameter locals
+                Instruction::LocalGet(idx) if *idx < param_count => {
+                    Instruction::LocalGet(param_start_idx + idx)
+                }
+                Instruction::LocalSet(idx) if *idx < param_count => {
+                    Instruction::LocalSet(param_start_idx + idx)
+                }
+                Instruction::LocalTee(idx) if *idx < param_count => {
+                    Instruction::LocalTee(param_start_idx + idx)
+                }
+
+                // Remap the callee's local variables (non-parameters)
                 Instruction::LocalGet(idx) if *idx >= param_count => {
                     Instruction::LocalGet(idx + offset - param_count)
                 }
@@ -6265,12 +6726,12 @@ pub mod optimize {
                 // Recursively remap in control flow
                 Instruction::Block { block_type, body } => Instruction::Block {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count),
+                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
                 },
 
                 Instruction::Loop { block_type, body } => Instruction::Loop {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count),
+                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
                 },
 
                 Instruction::If {
@@ -6279,8 +6740,18 @@ pub mod optimize {
                     else_body,
                 } => Instruction::If {
                     block_type: block_type.clone(),
-                    then_body: remap_locals_in_block(then_body, offset, param_count),
-                    else_body: remap_locals_in_block(else_body, offset, param_count),
+                    then_body: remap_locals_in_block(
+                        then_body,
+                        offset,
+                        param_count,
+                        param_start_idx,
+                    ),
+                    else_body: remap_locals_in_block(
+                        else_body,
+                        offset,
+                        param_count,
+                        param_start_idx,
+                    ),
                 },
 
                 // Keep everything else unchanged
