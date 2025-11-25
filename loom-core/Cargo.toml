@@ -29,6 +29,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = "0.5"
+wasm-smith = "0.241"
+arbitrary = "1.3"
 
 [features]
 # Verification support with Z3 SMT solver
