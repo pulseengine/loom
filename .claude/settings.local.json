@@ -55,7 +55,9 @@
       "Bash(for i in 1 2 3 4)",
       "Bash(do echo \"=== Testing Module $i ===\" ls -lh /tmp/loom_module_$i.wasm)",
       "Bash(true if wasm-tools validate /tmp/loom_module_$i_opt.wasm)",
-      "Bash(then echo '✅ Module $i: Optimization successful' else echo '❌ Module $i: Optimization FAILED' wasm-tools validate /tmp/loom_module_$i_opt.wasm)"
+      "Bash(then echo '✅ Module $i: Optimization successful' else echo '❌ Module $i: Optimization FAILED' wasm-tools validate /tmp/loom_module_$i_opt.wasm)",
+      "Bash(cargo check:*)",
+      "Bash(cargo doc:*)"
     ],
     "deny": [],
     "ask": []
