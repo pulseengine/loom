@@ -273,7 +273,8 @@ fn optimize_command(
 
     if should_run("cse") {
         println!("  Running: cse");
-        loom_core::optimize::eliminate_common_subexpressions(&mut module).context("CSE failed")?;
+        loom_core::optimize::eliminate_common_subexpressions_enhanced(&mut module)
+            .context("CSE failed")?;
     }
 
     if should_run("advanced") {
