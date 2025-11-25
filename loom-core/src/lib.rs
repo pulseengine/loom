@@ -25,6 +25,8 @@ pub struct Module {
     pub types: Vec<FunctionSignature>,
     /// Exported items (functions, globals, memories, tables)
     pub exports: Vec<Export>,
+    /// Imported items (functions, globals, memories, tables)
+    pub imports: Vec<Import>,
 }
 
 /// Export definition
@@ -47,6 +49,30 @@ pub enum ExportKind {
     Global(u32),
     /// Table export
     Table(u32),
+}
+
+/// Import definition
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Module name
+    pub module: String,
+    /// Field name
+    pub name: String,
+    /// What is being imported
+    pub kind: ImportKind,
+}
+
+/// Type of imported item
+#[derive(Debug, Clone)]
+pub enum ImportKind {
+    /// Function import with type index
+    Func(u32),
+    /// Memory import
+    Memory(Memory),
+    /// Global import
+    Global { value_type: ValueType, mutable: bool },
+    /// Table import
+    Table(Table),
 }
 
 /// Memory definition
@@ -357,7 +383,8 @@ pub enum Instruction {
 pub mod parse {
 
     use super::{
-        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module, ValueType,
+        BlockType, Export, ExportKind, Function, FunctionSignature, Import, ImportKind,
+        Instruction, Memory, Module, Table, ValueType,
     };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
@@ -373,6 +400,7 @@ pub mod parse {
         let mut globals = Vec::new();
         let mut function_signatures = Vec::new();
         let mut exports = Vec::new();
+        let mut imports = Vec::new();
 
         for payload in Parser::new(0).parse_all(bytes) {
             let payload = payload.context("Failed to parse WebAssembly payload")?;
@@ -391,6 +419,48 @@ pub mod parse {
                                 }
                             }
                         }
+                    }
+                }
+                Payload::ImportSection(reader) => {
+                    // Capture imports (functions, globals, memories, tables)
+                    for import in reader.clone() {
+                        let import = import?;
+                        let kind = match import.ty {
+                            wasmparser::TypeRef::Func(type_idx) => {
+                                ImportKind::Func(type_idx)
+                            }
+                            wasmparser::TypeRef::Memory(mem_type) => {
+                                ImportKind::Memory(Memory {
+                                    min: mem_type.initial as u32,
+                                    max: mem_type.maximum.map(|m| m as u32),
+                                    shared: mem_type.shared,
+                                })
+                            }
+                            wasmparser::TypeRef::Global(global_type) => {
+                                ImportKind::Global {
+                                    value_type: convert_valtype(global_type.content_type),
+                                    mutable: global_type.mutable,
+                                }
+                            }
+                            wasmparser::TypeRef::Table(table_type) => {
+                                let element_type = match table_type.element_type {
+                                    wasmparser::RefType::FUNCREF => super::RefType::FuncRef,
+                                    wasmparser::RefType::EXTERNREF => super::RefType::ExternRef,
+                                    _ => super::RefType::FuncRef,
+                                };
+                                ImportKind::Table(Table {
+                                    element_type,
+                                    min: table_type.initial as u32,
+                                    max: table_type.maximum.map(|m| m as u32),
+                                })
+                            }
+                            _ => continue, // Skip unsupported import kinds
+                        };
+                        imports.push(Import {
+                            module: import.module.to_string(),
+                            name: import.name.to_string(),
+                            kind,
+                        });
                     }
                 }
                 Payload::FunctionSection(reader) => {
@@ -517,13 +587,23 @@ pub mod parse {
             validator.payload(&payload).context("Validation failed")?;
         }
 
+        // Convert all types from wasmparser::FuncType to FunctionSignature
+        let all_types: Vec<FunctionSignature> = types
+            .iter()
+            .map(|func_type| FunctionSignature {
+                params: func_type.params().iter().map(|t| convert_valtype(*t)).collect(),
+                results: func_type.results().iter().map(|t| convert_valtype(*t)).collect(),
+            })
+            .collect();
+
         Ok(Module {
             functions,
             memories,                   // Phase 14: Preserve memory declarations
             tables,                     // Phase 23: Preserve table declarations for Component Model
             globals,                    // Phase 14: Preserve global declarations
-            types: function_signatures, // Phase 14: Preserve type information
+            types: all_types,           // Preserve ALL types from TypeSection
             exports,                    // Preserve export declarations
+            imports,                    // Preserve import declarations
         })
     }
 
@@ -880,13 +960,15 @@ pub mod parse {
 pub mod encode {
 
     use super::{
-        BlockType, ExportKind, FunctionSignature, Instruction, Module, RefType, ValueType,
+        BlockType, ExportKind, FunctionSignature, ImportKind, Instruction, Module, RefType,
+        ValueType,
     };
     use anyhow::{Context, Result};
     use wasm_encoder::{
-        CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
-        Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType,
-        Instruction as EncoderInstruction, MemorySection, MemoryType, TypeSection, ValType,
+        CodeSection, ConstExpr, EntityType, ExportKind as EncoderExportKind, ExportSection,
+        Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType, ImportSection,
+        Instruction as EncoderInstruction, MemorySection, MemoryType, TableType, TypeSection,
+        ValType,
     };
 
     /// Helper function to encode a constant expression (for global initializers)
@@ -953,6 +1035,48 @@ pub mod encode {
             types.ty().function(params, results);
         }
         wasm_module.section(&types);
+
+        // Build import section
+        if !module.imports.is_empty() {
+            let mut imports = ImportSection::new();
+            for import in &module.imports {
+                let entity_type = match &import.kind {
+                    ImportKind::Func(type_idx) => EntityType::Function(*type_idx),
+                    ImportKind::Memory(mem) => {
+                        EntityType::Memory(MemoryType {
+                            minimum: mem.min as u64,
+                            maximum: mem.max.map(|m| m as u64),
+                            memory64: false,
+                            shared: mem.shared,
+                            page_size_log2: None,
+                        })
+                    }
+                    ImportKind::Global {
+                        value_type,
+                        mutable,
+                    } => EntityType::Global(GlobalType {
+                        val_type: convert_to_valtype(*value_type),
+                        mutable: *mutable,
+                        shared: false,
+                    }),
+                    ImportKind::Table(table) => {
+                        let ref_type = match table.element_type {
+                            RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
+                            RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
+                        };
+                        EntityType::Table(TableType {
+                            element_type: ref_type,
+                            minimum: table.min as u64,
+                            maximum: table.max.map(|m| m as u64),
+                            table64: false,
+                            shared: false,
+                        })
+                    }
+                };
+                imports.import(&import.module, &import.name, entity_type);
+            }
+            wasm_module.section(&imports);
+        }
 
         // Build function section (references to types)
         // Map each function to its type index
