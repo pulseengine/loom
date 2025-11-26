@@ -740,7 +740,8 @@ pub mod parse {
         let mut bytes = vec![opcode];
         // Encode align as LEB128
         let mut align_buf = [0u8; 10];
-        let align_len = leb128::write::unsigned(&mut &mut align_buf[..], memarg.align.into()).unwrap();
+        let align_len =
+            leb128::write::unsigned(&mut &mut align_buf[..], memarg.align.into()).unwrap();
         bytes.extend_from_slice(&align_buf[..align_len]);
         // Encode offset as LEB128
         let mut offset_buf = [0u8; 10];
@@ -1090,24 +1091,24 @@ pub mod parse {
                             bytes
                         }
                         Operator::MemoryCopy { dst_mem, src_mem } => {
-                            let mut bytes = vec![0xfc, 0x0a];  // 0xfc is bulk memory prefix, 0x0a is memory.copy
+                            let mut bytes = vec![0xfc, 0x0a]; // 0xfc is bulk memory prefix, 0x0a is memory.copy
                             bytes.push(*dst_mem as u8);
                             bytes.push(*src_mem as u8);
                             bytes
                         }
                         Operator::MemoryFill { mem } => {
-                            let mut bytes = vec![0xfc, 0x0b];  // 0xfc prefix, 0x0b is memory.fill
+                            let mut bytes = vec![0xfc, 0x0b]; // 0xfc prefix, 0x0b is memory.fill
                             bytes.push(*mem as u8);
                             bytes
                         }
                         Operator::MemoryInit { data_index, mem } => {
-                            let mut bytes = vec![0xfc, 0x08];  // 0xfc prefix, 0x08 is memory.init
+                            let mut bytes = vec![0xfc, 0x08]; // 0xfc prefix, 0x08 is memory.init
                             bytes.push(*data_index as u8);
                             bytes.push(*mem as u8);
                             bytes
                         }
                         Operator::DataDrop { data_index } => {
-                            let mut bytes = vec![0xfc, 0x09];  // 0xfc prefix, 0x09 is data.drop
+                            let mut bytes = vec![0xfc, 0x09]; // 0xfc prefix, 0x09 is data.drop
                             bytes.push(*data_index as u8);
                             bytes
                         }
@@ -3464,8 +3465,15 @@ pub mod terms {
 /// ```
 pub mod optimize {
 
-    use super::{BlockType, Instruction, Module}; // Value unused with ISLE disabled
+    use super::{BlockType, Function, Instruction, Module}; // Value unused with ISLE disabled
     use anyhow::Result;
+
+    /// Helper: Check if a function contains Unknown instructions (optimization barrier)
+    fn has_unknown_instructions(func: &Function) -> bool {
+        func.instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Unknown(_)))
+    }
 
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
@@ -3504,6 +3512,12 @@ pub mod optimize {
         use loom_isle::{simplify_with_env, LocalEnv};
 
         for func in &mut module.functions {
+            // Skip optimization for functions with Unknown instructions
+            // These act as optimization barriers since we can't reason about their behavior
+            if has_unknown_instructions(func) {
+                continue;
+            }
+
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
 
@@ -6193,6 +6207,9 @@ pub mod optimize {
     /// instruction sequences in stack-based form.
     pub fn optimize_advanced_instructions(module: &mut Module) -> Result<()> {
         for func in &mut module.functions {
+            if has_unknown_instructions(func) {
+                continue;
+            }
             func.instructions = optimize_instructions_in_block(&func.instructions);
         }
         Ok(())
