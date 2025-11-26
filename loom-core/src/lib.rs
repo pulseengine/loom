@@ -1082,6 +1082,60 @@ pub mod parse {
                         // Stack operations
                         Operator::Drop => vec![0x1a],
 
+                        // Float operations (f32)
+                        Operator::F32Const { value } => {
+                            let mut bytes = vec![0x43]; // f32.const opcode
+                            bytes.extend_from_slice(&value.bits().to_le_bytes());
+                            bytes
+                        }
+                        Operator::F32Add => vec![0x92],
+                        Operator::F32Sub => vec![0x93],
+                        Operator::F32Mul => vec![0x94],
+                        Operator::F32Div => vec![0x95],
+                        Operator::F32Min => vec![0x96],
+                        Operator::F32Max => vec![0x97],
+                        Operator::F32Copysign => vec![0x98],
+                        Operator::F32Abs => vec![0x8b],
+                        Operator::F32Neg => vec![0x8c],
+                        Operator::F32Ceil => vec![0x8d],
+                        Operator::F32Floor => vec![0x8e],
+                        Operator::F32Trunc => vec![0x8f],
+                        Operator::F32Nearest => vec![0x90],
+                        Operator::F32Sqrt => vec![0x91],
+                        Operator::F32Eq => vec![0x5b],
+                        Operator::F32Ne => vec![0x5c],
+                        Operator::F32Lt => vec![0x5d],
+                        Operator::F32Gt => vec![0x5e],
+                        Operator::F32Le => vec![0x5f],
+                        Operator::F32Ge => vec![0x60],
+
+                        // Float operations (f64)
+                        Operator::F64Const { value } => {
+                            let mut bytes = vec![0x44]; // f64.const opcode
+                            bytes.extend_from_slice(&value.bits().to_le_bytes());
+                            bytes
+                        }
+                        Operator::F64Add => vec![0xa0],
+                        Operator::F64Sub => vec![0xa1],
+                        Operator::F64Mul => vec![0xa2],
+                        Operator::F64Div => vec![0xa3],
+                        Operator::F64Min => vec![0xa4],
+                        Operator::F64Max => vec![0xa5],
+                        Operator::F64Copysign => vec![0xa6],
+                        Operator::F64Abs => vec![0x99],
+                        Operator::F64Neg => vec![0x9a],
+                        Operator::F64Ceil => vec![0x9b],
+                        Operator::F64Floor => vec![0x9c],
+                        Operator::F64Trunc => vec![0x9d],
+                        Operator::F64Nearest => vec![0x9e],
+                        Operator::F64Sqrt => vec![0x9f],
+                        Operator::F64Eq => vec![0x61],
+                        Operator::F64Ne => vec![0x62],
+                        Operator::F64Lt => vec![0x63],
+                        Operator::F64Gt => vec![0x64],
+                        Operator::F64Le => vec![0x65],
+                        Operator::F64Ge => vec![0x66],
+
                         // Memory operations
                         Operator::MemorySize { mem, .. } => {
                             let mut bytes = vec![0x3f];
