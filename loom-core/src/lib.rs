@@ -1079,6 +1079,12 @@ pub mod parse {
                         Operator::F32ReinterpretI32 => vec![0xbe],
                         Operator::F64ReinterpretI64 => vec![0xbf],
 
+                        // Rotate operations
+                        Operator::I32Rotl => vec![0x77],
+                        Operator::I32Rotr => vec![0x78],
+                        Operator::I64Rotl => vec![0x89],
+                        Operator::I64Rotr => vec![0x8a],
+
                         // Stack operations
                         Operator::Drop => vec![0x1a],
 
