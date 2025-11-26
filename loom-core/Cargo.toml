@@ -26,6 +26,9 @@ loom-isle = { path = "../loom-isle" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
+# LEB128 encoding
+leb128 = "0.2"
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = "0.5"
