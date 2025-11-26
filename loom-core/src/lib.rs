@@ -1079,6 +1079,9 @@ pub mod parse {
                         Operator::F32ReinterpretI32 => vec![0xbe],
                         Operator::F64ReinterpretI64 => vec![0xbf],
 
+                        // Stack operations
+                        Operator::Drop => vec![0x1a],
+
                         // Memory operations
                         Operator::MemorySize { mem, .. } => {
                             let mut bytes = vec![0x3f];
