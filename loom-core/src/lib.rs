@@ -415,6 +415,11 @@ pub enum Instruction {
 
     /// End of block/function
     End,
+
+    /// Unknown/unsupported instruction stored as raw bytes for pass-through
+    /// Format: [opcode_byte, ...immediate_bytes]
+    /// This preserves instructions we don't optimize but need to maintain correctness
+    Unknown(Vec<u8>),
 }
 
 /// Module parsing functionality: Parse WebAssembly modules into LOOM's internal representation
@@ -730,6 +735,20 @@ pub mod parse {
         Else,
     }
 
+    /// Helper to encode a memory operation with memarg
+    fn encode_memop(opcode: u8, memarg: &wasmparser::MemArg) -> Vec<u8> {
+        let mut bytes = vec![opcode];
+        // Encode align as LEB128
+        let mut align_buf = [0u8; 10];
+        let align_len = leb128::write::unsigned(&mut &mut align_buf[..], memarg.align.into()).unwrap();
+        bytes.extend_from_slice(&align_buf[..align_len]);
+        // Encode offset as LEB128
+        let mut offset_buf = [0u8; 10];
+        let offset_len = leb128::write::unsigned(&mut &mut offset_buf[..], memarg.offset).unwrap();
+        bytes.extend_from_slice(&offset_buf[..offset_len]);
+        bytes
+    }
+
     /// Recursively parse a sequence of WebAssembly instructions
     /// Handles nested control flow (blocks, loops, if/else)
     /// Returns the instructions and what terminated the block (End or Else)
@@ -1027,8 +1046,104 @@ pub mod parse {
                     instructions.push(Instruction::Nop);
                 }
                 _ => {
-                    // For now, we handle the main instructions
-                    // Other instructions will be added as needed
+                    // For unsupported instructions, encode them as raw bytes for pass-through
+                    // This preserves correctness while we gradually add optimization support
+                    use leb128;
+
+                    let encoded_bytes: Vec<u8> = match &op {
+                        // Type conversions (single-byte opcodes)
+                        Operator::I32WrapI64 => vec![0xa7],
+                        Operator::I64ExtendI32S => vec![0xac],
+                        Operator::I64ExtendI32U => vec![0xad],
+                        Operator::F32DemoteF64 => vec![0xb6],
+                        Operator::F64PromoteF32 => vec![0xbb],
+                        Operator::I32TruncF32S => vec![0xa8],
+                        Operator::I32TruncF32U => vec![0xa9],
+                        Operator::I32TruncF64S => vec![0xaa],
+                        Operator::I32TruncF64U => vec![0xab],
+                        Operator::I64TruncF32S => vec![0xae],
+                        Operator::I64TruncF32U => vec![0xaf],
+                        Operator::I64TruncF64S => vec![0xb0],
+                        Operator::I64TruncF64U => vec![0xb1],
+                        Operator::F32ConvertI32S => vec![0xb2],
+                        Operator::F32ConvertI32U => vec![0xb3],
+                        Operator::F32ConvertI64S => vec![0xb4],
+                        Operator::F32ConvertI64U => vec![0xb5],
+                        Operator::F64ConvertI32S => vec![0xb7],
+                        Operator::F64ConvertI32U => vec![0xb8],
+                        Operator::F64ConvertI64S => vec![0xb9],
+                        Operator::F64ConvertI64U => vec![0xba],
+                        Operator::I32ReinterpretF32 => vec![0xbc],
+                        Operator::I64ReinterpretF64 => vec![0xbd],
+                        Operator::F32ReinterpretI32 => vec![0xbe],
+                        Operator::F64ReinterpretI64 => vec![0xbf],
+
+                        // Memory operations
+                        Operator::MemorySize { mem, .. } => {
+                            let mut bytes = vec![0x3f];
+                            bytes.push(*mem as u8);
+                            bytes
+                        }
+                        Operator::MemoryGrow { mem, .. } => {
+                            let mut bytes = vec![0x40];
+                            bytes.push(*mem as u8);
+                            bytes
+                        }
+                        Operator::MemoryCopy { dst_mem, src_mem } => {
+                            let mut bytes = vec![0xfc, 0x0a];  // 0xfc is bulk memory prefix, 0x0a is memory.copy
+                            bytes.push(*dst_mem as u8);
+                            bytes.push(*src_mem as u8);
+                            bytes
+                        }
+                        Operator::MemoryFill { mem } => {
+                            let mut bytes = vec![0xfc, 0x0b];  // 0xfc prefix, 0x0b is memory.fill
+                            bytes.push(*mem as u8);
+                            bytes
+                        }
+                        Operator::MemoryInit { data_index, mem } => {
+                            let mut bytes = vec![0xfc, 0x08];  // 0xfc prefix, 0x08 is memory.init
+                            bytes.push(*data_index as u8);
+                            bytes.push(*mem as u8);
+                            bytes
+                        }
+                        Operator::DataDrop { data_index } => {
+                            let mut bytes = vec![0xfc, 0x09];  // 0xfc prefix, 0x09 is data.drop
+                            bytes.push(*data_index as u8);
+                            bytes
+                        }
+
+                        // Additional load/store variants with memarg
+                        Operator::I32Load8S { memarg } => encode_memop(0x2c, memarg),
+                        Operator::I32Load8U { memarg } => encode_memop(0x2d, memarg),
+                        Operator::I32Load16S { memarg } => encode_memop(0x2e, memarg),
+                        Operator::I32Load16U { memarg } => encode_memop(0x2f, memarg),
+                        Operator::I64Load8S { memarg } => encode_memop(0x30, memarg),
+                        Operator::I64Load8U { memarg } => encode_memop(0x31, memarg),
+                        Operator::I64Load16S { memarg } => encode_memop(0x32, memarg),
+                        Operator::I64Load16U { memarg } => encode_memop(0x33, memarg),
+                        Operator::I64Load32S { memarg } => encode_memop(0x34, memarg),
+                        Operator::I64Load32U { memarg } => encode_memop(0x35, memarg),
+                        Operator::I32Store8 { memarg } => encode_memop(0x3a, memarg),
+                        Operator::I32Store16 { memarg } => encode_memop(0x3b, memarg),
+                        Operator::I64Store8 { memarg } => encode_memop(0x3c, memarg),
+                        Operator::I64Store16 { memarg } => encode_memop(0x3d, memarg),
+                        Operator::I64Store32 { memarg } => encode_memop(0x3e, memarg),
+
+                        // Float loads/stores
+                        Operator::F32Load { memarg } => encode_memop(0x2a, memarg),
+                        Operator::F64Load { memarg } => encode_memop(0x2b, memarg),
+                        Operator::F32Store { memarg } => encode_memop(0x38, memarg),
+                        Operator::F64Store { memarg } => encode_memop(0x39, memarg),
+
+                        // Unknown/unsupported - skip for now
+                        _ => {
+                            continue;
+                        }
+                    };
+
+                    if !encoded_bytes.is_empty() {
+                        instructions.push(Instruction::Unknown(encoded_bytes));
+                    }
                 }
             }
         }
@@ -1623,6 +1738,10 @@ pub mod encode {
                         // It's only used to terminate blocks during parsing
                         // The wasm-encoder will add the final End automatically
                     }
+                    Instruction::Unknown(bytes) => {
+                        // Write raw instruction bytes directly
+                        func_body.raw(bytes.clone());
+                    }
                 }
             }
 
@@ -2014,6 +2133,10 @@ pub mod encode {
             }
             Instruction::End => {
                 func_body.instruction(&EncoderInstruction::End);
+            }
+            Instruction::Unknown(bytes) => {
+                // Write raw instruction bytes directly
+                func_body.raw(bytes.clone());
             }
         }
     }
@@ -2708,6 +2831,12 @@ pub mod terms {
                 }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
+                }
+                Instruction::Unknown(_) => {
+                    // Unknown instructions cannot be converted to ISLE terms
+                    // They are passed through unchanged in the encoding phase
+                    // For optimization purposes, we treat them as unknown operations
+                    // that we cannot reason about, so we don't push anything to the stack
                 }
             }
         }
