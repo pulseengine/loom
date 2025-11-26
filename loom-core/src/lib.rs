@@ -1088,6 +1088,30 @@ pub mod parse {
                         // Stack operations
                         Operator::Drop => vec![0x1a],
 
+                        // Global operations
+                        Operator::GlobalGet { global_index } => {
+                            let mut bytes = vec![0x23]; // global.get opcode
+                            let mut idx_buf = [0u8; 10];
+                            let idx_len = leb128::write::unsigned(
+                                &mut &mut idx_buf[..],
+                                *global_index as u64,
+                            )
+                            .unwrap();
+                            bytes.extend_from_slice(&idx_buf[..idx_len]);
+                            bytes
+                        }
+                        Operator::GlobalSet { global_index } => {
+                            let mut bytes = vec![0x24]; // global.set opcode
+                            let mut idx_buf = [0u8; 10];
+                            let idx_len = leb128::write::unsigned(
+                                &mut &mut idx_buf[..],
+                                *global_index as u64,
+                            )
+                            .unwrap();
+                            bytes.extend_from_slice(&idx_buf[..idx_len]);
+                            bytes
+                        }
+
                         // Float operations (f32)
                         Operator::F32Const { value } => {
                             let mut bytes = vec![0x43]; // f32.const opcode
