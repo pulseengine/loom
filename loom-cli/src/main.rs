@@ -681,6 +681,13 @@ mod tests {
             globals: vec![],
             types: vec![],
             exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
         };
 
         let count = count_instructions(&module);
@@ -714,6 +721,13 @@ mod tests {
             globals: vec![],
             types: vec![],
             exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
         };
 
         let count = count_constant_folds(&module);

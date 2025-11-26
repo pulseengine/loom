@@ -25,6 +25,20 @@ pub struct Module {
     pub types: Vec<FunctionSignature>,
     /// Exported items (functions, globals, memories, tables)
     pub exports: Vec<Export>,
+    /// Imported items (functions, globals, memories, tables)
+    pub imports: Vec<Import>,
+    /// Data segments (memory initialization)
+    pub data_segments: Vec<DataSegment>,
+    /// Element section raw bytes (passed through unchanged)
+    pub element_section_bytes: Option<Vec<u8>>,
+    /// Start function index (optional)
+    pub start_function: Option<u32>,
+    /// Custom sections raw bytes (passed through unchanged)
+    pub custom_sections: Vec<(String, Vec<u8>)>,
+    /// Type section raw bytes (passed through for GC types, reference types, etc.)
+    pub type_section_bytes: Option<Vec<u8>>,
+    /// Global section raw bytes (passed through for reference types, etc.)
+    pub global_section_bytes: Option<Vec<u8>>,
 }
 
 /// Export definition
@@ -49,15 +63,44 @@ pub enum ExportKind {
     Table(u32),
 }
 
+/// Import definition
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Module name
+    pub module: String,
+    /// Field name
+    pub name: String,
+    /// What is being imported
+    pub kind: ImportKind,
+}
+
+/// Type of imported item
+#[derive(Debug, Clone)]
+pub enum ImportKind {
+    /// Function import with type index
+    Func(u32),
+    /// Memory import
+    Memory(Memory),
+    /// Global import
+    Global {
+        value_type: ValueType,
+        mutable: bool,
+    },
+    /// Table import
+    Table(Table),
+}
+
 /// Memory definition
 #[derive(Debug, Clone)]
 pub struct Memory {
     /// Minimum pages
-    pub min: u32,
+    pub min: u64,
     /// Maximum pages (optional)
-    pub max: Option<u32>,
+    pub max: Option<u64>,
     /// Shared memory flag
     pub shared: bool,
+    /// Memory64 flag (true for 64-bit addressing)
+    pub memory64: bool,
 }
 
 /// Table definition (Phase 23: Component Model Support)
@@ -89,6 +132,27 @@ pub struct Global {
     pub mutable: bool,
     /// Initializer expression (Phase 18: Precompute)
     pub init: Vec<Instruction>,
+}
+
+/// Data segment (memory initialization)
+#[derive(Debug, Clone)]
+pub struct DataSegment {
+    /// Memory index
+    pub memory_index: u32,
+    /// Offset expression
+    pub offset: Vec<Instruction>,
+    /// Data bytes
+    pub data: Vec<u8>,
+    /// Passive data segment (no memory index or offset)
+    pub passive: bool,
+}
+
+/// Element segment (table initialization)
+/// We store raw bytes to avoid dealing with complex element section APIs
+#[derive(Debug, Clone)]
+pub struct ElementSegment {
+    /// Raw element segment bytes (to be passed through unchanged)
+    pub raw_bytes: Vec<u8>,
 }
 
 /// Internal representation of a WebAssembly function
@@ -357,7 +421,8 @@ pub enum Instruction {
 pub mod parse {
 
     use super::{
-        BlockType, Export, ExportKind, Function, FunctionSignature, Instruction, Module, ValueType,
+        BlockType, DataSegment, ElementSegment, Export, ExportKind, Function, FunctionSignature,
+        Import, ImportKind, Instruction, Memory, Module, Table, ValueType,
     };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
@@ -373,12 +438,24 @@ pub mod parse {
         let mut globals = Vec::new();
         let mut function_signatures = Vec::new();
         let mut exports = Vec::new();
+        let mut imports = Vec::new();
+        let mut data_segments = Vec::new();
+        let mut element_section_bytes = None;
+        let mut start_function = None;
+        let mut custom_sections = Vec::new();
+        let mut type_section_bytes = None;
+        let mut global_section_bytes = None;
 
         for payload in Parser::new(0).parse_all(bytes) {
             let payload = payload.context("Failed to parse WebAssembly payload")?;
 
             match &payload {
                 Payload::TypeSection(reader) => {
+                    // Store raw type section bytes to pass through unchanged
+                    let range = reader.range();
+                    type_section_bytes = Some(bytes[range.start..range.end].to_vec());
+
+                    // Still extract function types for optimizer's use
                     for rec_group in reader.clone() {
                         let rec_group = rec_group?;
                         for sub_type in rec_group.into_types() {
@@ -387,10 +464,47 @@ pub mod parse {
                                     types.push(func_type);
                                 }
                                 _ => {
-                                    // Ignore non-function types for Phase 2
+                                    // Non-function types will be preserved via raw bytes
                                 }
                             }
                         }
+                    }
+                }
+                Payload::ImportSection(reader) => {
+                    // Capture imports (functions, globals, memories, tables)
+                    for import in reader.clone() {
+                        let import = import?;
+                        let kind = match import.ty {
+                            wasmparser::TypeRef::Func(type_idx) => ImportKind::Func(type_idx),
+                            wasmparser::TypeRef::Memory(mem_type) => ImportKind::Memory(Memory {
+                                min: mem_type.initial,
+                                max: mem_type.maximum,
+                                shared: mem_type.shared,
+                                memory64: mem_type.memory64,
+                            }),
+                            wasmparser::TypeRef::Global(global_type) => ImportKind::Global {
+                                value_type: convert_valtype(global_type.content_type),
+                                mutable: global_type.mutable,
+                            },
+                            wasmparser::TypeRef::Table(table_type) => {
+                                let element_type = match table_type.element_type {
+                                    wasmparser::RefType::FUNCREF => super::RefType::FuncRef,
+                                    wasmparser::RefType::EXTERNREF => super::RefType::ExternRef,
+                                    _ => super::RefType::FuncRef,
+                                };
+                                ImportKind::Table(Table {
+                                    element_type,
+                                    min: table_type.initial as u32,
+                                    max: table_type.maximum.map(|m| m as u32),
+                                })
+                            }
+                            _ => continue, // Skip unsupported import kinds
+                        };
+                        imports.push(Import {
+                            module: import.module.to_string(),
+                            name: import.name.to_string(),
+                            kind,
+                        });
                     }
                 }
                 Payload::FunctionSection(reader) => {
@@ -403,9 +517,10 @@ pub mod parse {
                     for memory in reader.clone() {
                         let memory = memory?;
                         memories.push(super::Memory {
-                            min: memory.initial as u32,
-                            max: memory.maximum.map(|m| m as u32),
+                            min: memory.initial,
+                            max: memory.maximum,
                             shared: memory.shared,
+                            memory64: memory.memory64,
                         });
                     }
                 }
@@ -426,20 +541,30 @@ pub mod parse {
                     }
                 }
                 Payload::GlobalSection(reader) => {
-                    // Phase 14: Capture global variable declarations
-                    // Phase 18: Also capture initializer expressions for precompute
+                    // Store raw global section bytes to pass through unchanged
+                    let range = reader.range();
+                    global_section_bytes = Some(bytes[range.start..range.end].to_vec());
+
+                    // Still extract basic globals for optimizer's use
                     for global in reader.clone() {
                         let global = global?;
 
-                        // Parse the initializer expression
-                        let mut init_reader = global.init_expr.get_operators_reader();
-                        let (init_instructions, _) = parse_instructions(&mut init_reader)?;
+                        // Only parse if it's a basic value type
+                        if let ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64 =
+                            global.ty.content_type
+                        {
+                            // Parse the initializer expression
+                            let mut init_reader = global.init_expr.get_operators_reader();
+                            let (init_instructions, _) = parse_instructions(&mut init_reader)?;
 
-                        globals.push(super::Global {
-                            value_type: convert_valtype(global.ty.content_type),
-                            mutable: global.ty.mutable,
-                            init: init_instructions,
-                        });
+                            globals.push(super::Global {
+                                value_type: convert_valtype(global.ty.content_type),
+                                mutable: global.ty.mutable,
+                                init: init_instructions,
+                            });
+                        } else {
+                            // Reference type global - will be preserved via raw bytes
+                        }
                     }
                 }
                 Payload::CodeSectionEntry(body) => {
@@ -508,8 +633,55 @@ pub mod parse {
                         });
                     }
                 }
+                Payload::StartSection { func, .. } => {
+                    // Capture start function
+                    start_function = Some(*func);
+                }
+                Payload::DataSection(reader) => {
+                    // Capture data segments (memory initialization)
+                    for data in reader.clone() {
+                        let data = data?;
+                        match data.kind {
+                            wasmparser::DataKind::Active {
+                                memory_index,
+                                offset_expr,
+                            } => {
+                                let mut offset_reader = offset_expr.get_operators_reader();
+                                let (offset_instructions, _) =
+                                    parse_instructions(&mut offset_reader)?;
+                                data_segments.push(super::DataSegment {
+                                    memory_index,
+                                    offset: offset_instructions,
+                                    data: data.data.to_vec(),
+                                    passive: false,
+                                });
+                            }
+                            wasmparser::DataKind::Passive => {
+                                data_segments.push(super::DataSegment {
+                                    memory_index: 0,
+                                    offset: vec![],
+                                    data: data.data.to_vec(),
+                                    passive: true,
+                                });
+                            }
+                        }
+                    }
+                }
+                Payload::ElementSection(reader) => {
+                    // Store raw element section bytes to pass through unchanged
+                    let range = reader.range();
+                    element_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                }
+                Payload::CustomSection(reader) => {
+                    // Store raw custom section bytes to pass through unchanged
+                    let range = reader.range();
+                    custom_sections.push((
+                        reader.name().to_string(),
+                        bytes[range.start..range.end].to_vec(),
+                    ));
+                }
                 _ => {
-                    // Ignore other sections for now
+                    // Ignore other payloads (e.g., End, Version, etc.)
                 }
             }
 
@@ -517,13 +689,37 @@ pub mod parse {
             validator.payload(&payload).context("Validation failed")?;
         }
 
+        // Convert all types from wasmparser::FuncType to FunctionSignature
+        let all_types: Vec<FunctionSignature> = types
+            .iter()
+            .map(|func_type| FunctionSignature {
+                params: func_type
+                    .params()
+                    .iter()
+                    .map(|t| convert_valtype(*t))
+                    .collect(),
+                results: func_type
+                    .results()
+                    .iter()
+                    .map(|t| convert_valtype(*t))
+                    .collect(),
+            })
+            .collect();
+
         Ok(Module {
             functions,
-            memories,                   // Phase 14: Preserve memory declarations
-            tables,                     // Phase 23: Preserve table declarations for Component Model
-            globals,                    // Phase 14: Preserve global declarations
-            types: function_signatures, // Phase 14: Preserve type information
-            exports,                    // Preserve export declarations
+            memories,              // Phase 14: Preserve memory declarations
+            tables,                // Phase 23: Preserve table declarations for Component Model
+            globals,               // Phase 14: Preserve global declarations
+            types: all_types,      // Preserve ALL types from TypeSection
+            exports,               // Preserve export declarations
+            imports,               // Preserve import declarations
+            data_segments,         // Preserve data segments
+            element_section_bytes, // Preserve element section as raw bytes
+            start_function,        // Preserve start function
+            custom_sections,       // Preserve custom sections as raw bytes
+            type_section_bytes,    // Preserve type section as raw bytes
+            global_section_bytes,  // Preserve global section as raw bytes
         })
     }
 
@@ -880,13 +1076,16 @@ pub mod parse {
 pub mod encode {
 
     use super::{
-        BlockType, ExportKind, FunctionSignature, Instruction, Module, RefType, ValueType,
+        BlockType, DataSegment, ExportKind, FunctionSignature, ImportKind, Instruction, Module,
+        RefType, ValueType,
     };
     use anyhow::{Context, Result};
     use wasm_encoder::{
-        CodeSection, ConstExpr, ExportKind as EncoderExportKind, ExportSection,
-        Function as EncoderFunction, FunctionSection, GlobalSection, GlobalType,
-        Instruction as EncoderInstruction, MemorySection, MemoryType, TypeSection, ValType,
+        CodeSection, ConstExpr, CustomSection, DataSection, EntityType,
+        ExportKind as EncoderExportKind, ExportSection, Function as EncoderFunction,
+        FunctionSection, GlobalSection, GlobalType, ImportSection,
+        Instruction as EncoderInstruction, MemorySection, MemoryType, RawSection, TableType,
+        TypeSection, ValType,
     };
 
     /// Helper function to encode a constant expression (for global initializers)
@@ -945,14 +1144,64 @@ pub mod encode {
             }
         }
 
-        // Build type section from deduplicated types
-        let mut types = TypeSection::new();
-        for ty in &unique_types {
-            let params: Vec<ValType> = ty.params.iter().map(|t| convert_to_valtype(*t)).collect();
-            let results: Vec<ValType> = ty.results.iter().map(|t| convert_to_valtype(*t)).collect();
-            types.ty().function(params, results);
+        // Build type section - use raw bytes if available (preserves GC types, etc.)
+        if let Some(type_bytes) = &module.type_section_bytes {
+            wasm_module.section(&RawSection {
+                id: 1, // Type section ID
+                data: type_bytes,
+            });
+        } else {
+            // Fallback: build from function types only
+            let mut types = TypeSection::new();
+            for ty in &unique_types {
+                let params: Vec<ValType> =
+                    ty.params.iter().map(|t| convert_to_valtype(*t)).collect();
+                let results: Vec<ValType> =
+                    ty.results.iter().map(|t| convert_to_valtype(*t)).collect();
+                types.ty().function(params, results);
+            }
+            wasm_module.section(&types);
         }
-        wasm_module.section(&types);
+
+        // Build import section
+        if !module.imports.is_empty() {
+            let mut imports = ImportSection::new();
+            for import in &module.imports {
+                let entity_type = match &import.kind {
+                    ImportKind::Func(type_idx) => EntityType::Function(*type_idx),
+                    ImportKind::Memory(mem) => EntityType::Memory(MemoryType {
+                        minimum: mem.min,
+                        maximum: mem.max,
+                        memory64: mem.memory64,
+                        shared: mem.shared,
+                        page_size_log2: None,
+                    }),
+                    ImportKind::Global {
+                        value_type,
+                        mutable,
+                    } => EntityType::Global(GlobalType {
+                        val_type: convert_to_valtype(*value_type),
+                        mutable: *mutable,
+                        shared: false,
+                    }),
+                    ImportKind::Table(table) => {
+                        let ref_type = match table.element_type {
+                            RefType::FuncRef => wasm_encoder::RefType::FUNCREF,
+                            RefType::ExternRef => wasm_encoder::RefType::EXTERNREF,
+                        };
+                        EntityType::Table(TableType {
+                            element_type: ref_type,
+                            minimum: table.min as u64,
+                            maximum: table.max.map(|m| m as u64),
+                            table64: false,
+                            shared: false,
+                        })
+                    }
+                };
+                imports.import(&import.module, &import.name, entity_type);
+            }
+            wasm_module.section(&imports);
+        }
 
         // Build function section (references to types)
         // Map each function to its type index
@@ -994,9 +1243,9 @@ pub mod encode {
             let mut memories = MemorySection::new();
             for memory in &module.memories {
                 let memory_type = MemoryType {
-                    minimum: memory.min as u64,
-                    maximum: memory.max.map(|m| m as u64),
-                    memory64: false,
+                    minimum: memory.min,
+                    maximum: memory.max,
+                    memory64: memory.memory64,
                     shared: memory.shared,
                     page_size_log2: None,
                 };
@@ -1005,9 +1254,14 @@ pub mod encode {
             wasm_module.section(&memories);
         }
 
-        // Phase 14: Build global section
-        // Phase 18: Encode actual initializer expressions
-        if !module.globals.is_empty() {
+        // Phase 14: Build global section - use raw bytes if available
+        if let Some(global_bytes) = &module.global_section_bytes {
+            wasm_module.section(&RawSection {
+                id: 6, // Global section ID
+                data: global_bytes,
+            });
+        } else if !module.globals.is_empty() {
+            // Fallback: encode basic globals
             let mut globals = GlobalSection::new();
             for global in &module.globals {
                 let global_type = GlobalType {
@@ -1042,6 +1296,22 @@ pub mod encode {
                 }
             }
             wasm_module.section(&exports);
+        }
+
+        // Build start section
+        if let Some(start_func_idx) = module.start_function {
+            wasm_module.section(&wasm_encoder::StartSection {
+                function_index: start_func_idx,
+            });
+        }
+
+        // Build element section (table initialization)
+        // Pass through raw element section bytes unchanged
+        if let Some(element_bytes) = &module.element_section_bytes {
+            wasm_module.section(&RawSection {
+                id: 9, // Element section ID
+                data: element_bytes,
+            });
         }
 
         // Build code section (function bodies)
@@ -1363,7 +1633,55 @@ pub mod encode {
         }
         wasm_module.section(&code);
 
+        // Build data section (memory initialization)
+        if !module.data_segments.is_empty() {
+            let mut data = DataSection::new();
+            for segment in &module.data_segments {
+                if segment.passive {
+                    // Passive data segment
+                    data.passive(segment.data.iter().copied());
+                } else {
+                    // Active data segment
+                    let offset_expr = encode_const_expr_for_offset(&segment.offset)?;
+                    data.active(
+                        segment.memory_index,
+                        &offset_expr,
+                        segment.data.iter().copied(),
+                    );
+                }
+            }
+            wasm_module.section(&data);
+        }
+
+        // Build custom sections (names, debug info, etc.)
+        // Pass through raw custom section bytes unchanged
+        for (name, bytes) in &module.custom_sections {
+            wasm_module.section(&CustomSection {
+                name: name.into(),
+                data: bytes.into(),
+            });
+        }
+
         Ok(wasm_module.finish())
+    }
+
+    /// Helper function to encode offset expressions for data/element segments
+    fn encode_const_expr_for_offset(instructions: &[Instruction]) -> Result<ConstExpr> {
+        // Offset expressions should be simple constant expressions
+        if instructions.is_empty() {
+            return Ok(ConstExpr::i32_const(0));
+        }
+
+        if instructions.len() == 1 {
+            match &instructions[0] {
+                Instruction::I32Const(val) => return Ok(ConstExpr::i32_const(*val)),
+                Instruction::I64Const(val) => return Ok(ConstExpr::i64_const(*val)),
+                _ => {}
+            }
+        }
+
+        // Fallback to zero for complex expressions
+        Ok(ConstExpr::i32_const(0))
     }
 
     /// Encode to WebAssembly text format (WAT)

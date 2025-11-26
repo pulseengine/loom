@@ -114,6 +114,13 @@ fn prop_optimization_produces_valid_wasm() {
             globals: vec![],
             types: vec![],
             exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
         };
 
         // Apply optimization
