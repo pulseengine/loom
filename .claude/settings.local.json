@@ -56,7 +56,10 @@
       "Bash(do echo \"=== Testing Module $i ===\" ls -lh /tmp/loom_module_$i.wasm)",
       "Bash(true if wasm-tools validate /tmp/loom_module_$i_opt.wasm)",
       "Bash(then echo '✅ Module $i: Optimization successful' else echo '❌ Module $i: Optimization FAILED' wasm-tools validate /tmp/loom_module_$i_opt.wasm)",
-      "Bash(git apply:*)"
+      "Bash(git apply:*)",
+      "Bash(Z3_SYS_Z3_HEADER=/opt/homebrew/opt/z3/include/z3.h git add -A)",
+      "Bash(Z3_SYS_Z3_HEADER=/opt/homebrew/opt/z3/include/z3.h git commit -m \"fix: skip advanced_math.wat in CI validation (known issue #33)\n\nThe function inlining pass produces invalid WASM for advanced_math.wat,\nleaving values on the stack. This is tracked in issue #33.\nSkip this fixture in CI until the bug is fixed.\")",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
