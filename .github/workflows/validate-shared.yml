@@ -195,7 +195,7 @@ jobs:
 
       - name: Verify documentation exists
         run: |
-          if [ ! -f LOOM_SYNTH_ARCHITECTURE.md ]; then
+          if [ ! -f docs/analysis/LOOM_SYNTH_ARCHITECTURE.md ]; then
             echo "❌ Architecture documentation missing!"
             exit 1
           fi
