@@ -253,7 +253,7 @@ fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Resul
     let mut result = Vec::new();
     let parser = Parser::new(0);
     let mut module_index = 0;
-    let mut last_pos = 0;
+    let mut last_pos;
 
     // Copy magic number and version (first 8 bytes: \0asm + version)
     result.extend_from_slice(&original_bytes[0..8]);
