@@ -30,9 +30,18 @@ docs/source/_generated/
 *~
 .DS_Store
 
-# Test artifacts
+# Test artifacts (except test fixtures)
 *.wasm
+!tests/**/*.wasm
+!loom-core/tests/**/*.wasm
 *.wat
+!tests/**/*.wat
+!loom-core/tests/**/*.wat
+
+# Root directory artifacts
+/*.wasm
+/*.wat
+/*.txt
 
 # Temporary files
 *.tmp
