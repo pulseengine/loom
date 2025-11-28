@@ -83,7 +83,9 @@ pub enum ImportKind {
     Memory(Memory),
     /// Global import
     Global {
+        /// The type of value stored in the global
         value_type: ValueType,
+        /// Whether the global is mutable
         mutable: bool,
     },
     /// Table import
@@ -426,8 +428,8 @@ pub enum Instruction {
 pub mod parse {
 
     use super::{
-        BlockType, DataSegment, ElementSegment, Export, ExportKind, Function, FunctionSignature,
-        Import, ImportKind, Instruction, Memory, Module, Table, ValueType,
+        BlockType, Export, ExportKind, Function, FunctionSignature, Import, ImportKind,
+        Instruction, Memory, Module, Table, ValueType,
     };
     use anyhow::{anyhow, Context, Result};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
@@ -1279,8 +1281,8 @@ pub mod parse {
 pub mod encode {
 
     use super::{
-        BlockType, DataSegment, ExportKind, FunctionSignature, ImportKind, Instruction, Module,
-        RefType, ValueType,
+        BlockType, ExportKind, FunctionSignature, ImportKind, Instruction, Module, RefType,
+        ValueType,
     };
     use anyhow::{Context, Result};
     use wasm_encoder::{
@@ -1863,6 +1865,12 @@ pub mod encode {
         // Build custom sections (names, debug info, etc.)
         // Pass through raw custom section bytes unchanged
         for (name, bytes) in &module.custom_sections {
+            // Skip "producers" section - wasm-encoder adds its own automatically
+            // Including both would cause idempotence issues (section grows on each encode)
+            if name == "producers" {
+                continue;
+            }
+
             wasm_module.section(&CustomSection {
                 name: name.into(),
                 data: bytes.into(),

@@ -41,7 +41,6 @@
 //! ```
 
 use anyhow::{anyhow, Context, Result};
-use wasm_encoder::{Component, ComponentSectionId, RawSection};
 use wasmparser::{Encoding, Parser, Payload};
 
 /// Statistics about component optimization
@@ -200,7 +199,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     wasmparser::validate(module_bytes).context("Input module validation failed")?;
 
     // Parse the module
-    let mut module = crate::parse::parse_wasm(module_bytes)?;
+    let module = crate::parse::parse_wasm(module_bytes)?;
 
     // TODO: Component module optimization requires full IR support for all instructions
     // Currently, many instructions (global.get, global.set, select, etc.) are parsed
