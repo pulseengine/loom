@@ -2974,8 +2974,9 @@ pub mod terms {
             term_to_instructions_recursive(term, &mut instructions)?;
         }
 
-        // Add End instruction
-        instructions.push(Instruction::End);
+        // NOTE: Do NOT add End instruction here.
+        // The encoder (line 1836) adds the final End for function bodies.
+        // End should not appear in instruction lists (see encoder comment at line 1823-1826).
 
         Ok(instructions)
     }
@@ -6974,22 +6975,20 @@ mod tests {
         let instructions =
             terms::terms_to_instructions(&[term]).expect("Failed to convert to instructions");
 
-        // Should generate: i32.const 10, i32.const 32, i32.add, end
-        assert_eq!(instructions.len(), 4);
+        // Should generate: i32.const 10, i32.const 32, i32.add (no End - encoder adds it)
+        assert_eq!(instructions.len(), 3);
         assert_eq!(instructions[0], Instruction::I32Const(10));
         assert_eq!(instructions[1], Instruction::I32Const(32));
         assert_eq!(instructions[2], Instruction::I32Add);
-        assert_eq!(instructions[3], Instruction::End);
     }
 
     #[test]
     fn test_term_round_trip() {
-        // Start with instructions
+        // Start with instructions (no End - it's added by encoder)
         let original_instructions = vec![
             Instruction::I32Const(10),
             Instruction::I32Const(32),
             Instruction::I32Add,
-            Instruction::End,
         ];
 
         // Convert to terms
@@ -7000,12 +6999,11 @@ mod tests {
         let result_instructions =
             terms::terms_to_instructions(&terms).expect("Failed to convert back to instructions");
 
-        // Should match original (modulo the End instruction placement)
-        assert_eq!(result_instructions.len(), 4);
+        // Should match original
+        assert_eq!(result_instructions.len(), 3);
         assert_eq!(result_instructions[0], Instruction::I32Const(10));
         assert_eq!(result_instructions[1], Instruction::I32Const(32));
         assert_eq!(result_instructions[2], Instruction::I32Add);
-        assert_eq!(result_instructions[3], Instruction::End);
     }
 
     #[test]
@@ -8616,15 +8614,11 @@ mod tests {
 
         // Should convert x & 0 to 0
         let func = &module.functions[0];
-        // Should have just const 0 + End
-        assert_eq!(func.instructions.len(), 2, "Should have const 0 and End");
+        // Should have just const 0 (no End - encoder adds it)
+        assert_eq!(func.instructions.len(), 1, "Should have const 0");
         assert!(
             matches!(func.instructions[0], Instruction::I32Const(0)),
             "Should be const 0"
-        );
-        assert!(
-            matches!(func.instructions[1], Instruction::End),
-            "Should have End instruction"
         );
     }
 
@@ -8643,14 +8637,10 @@ mod tests {
 
         // Should convert x | 0xFFFFFFFF to 0xFFFFFFFF
         let func = &module.functions[0];
-        assert_eq!(func.instructions.len(), 2, "Should have const -1 and End");
+        assert_eq!(func.instructions.len(), 1, "Should have const -1");
         assert!(
             matches!(func.instructions[0], Instruction::I32Const(-1)),
             "Should be const -1"
-        );
-        assert!(
-            matches!(func.instructions[1], Instruction::End),
-            "Should have End instruction"
         );
     }
 

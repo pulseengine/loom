@@ -7,8 +7,14 @@ fn main() {
     // Get the output directory
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    // Define ISLE source files
-    let isle_files = vec![PathBuf::from("isle/wasm_terms.isle")];
+    // Define ISLE source files in order
+    // Order matters: types → constructors → rules
+    let isle_files = vec![
+        PathBuf::from("isle/types.isle"),
+        PathBuf::from("isle/constructors.isle"),
+        // PathBuf::from("isle/rules/constant_folding.isle"), // TODO: ISLE compiler panics with if-let on enum variants
+        PathBuf::from("isle/rules/default.isle"),
+    ];
 
     // Tell cargo to rerun if any ISLE file changes
     for file in &isle_files {

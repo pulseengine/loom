@@ -1,0 +1,265 @@
+;; LOOM - ISLE Constructor and Extractor Declarations
+;; This file contains all constructor and extractor declarations
+
+;; ============================================================================
+;; Value Constructors (i32)
+;; ============================================================================
+
+(decl iconst32 (Imm32) Value)
+(extern constructor iconst32 iconst32)
+
+(decl iadd32 (Value Value) Value)
+(extern constructor iadd32 iadd32)
+
+(decl isub32 (Value Value) Value)
+(extern constructor isub32 isub32)
+
+(decl imul32 (Value Value) Value)
+(extern constructor imul32 imul32)
+
+(decl idivs32 (Value Value) Value)
+(extern constructor idivs32 idivs32)
+
+(decl idivu32 (Value Value) Value)
+(extern constructor idivu32 idivu32)
+
+(decl irems32 (Value Value) Value)
+(extern constructor irems32 irems32)
+
+(decl iremu32 (Value Value) Value)
+(extern constructor iremu32 iremu32)
+
+(decl iand32 (Value Value) Value)
+(extern constructor iand32 iand32)
+
+(decl ior32 (Value Value) Value)
+(extern constructor ior32 ior32)
+
+(decl ixor32 (Value Value) Value)
+(extern constructor ixor32 ixor32)
+
+(decl ishl32 (Value Value) Value)
+(extern constructor ishl32 ishl32)
+
+(decl ishrs32 (Value Value) Value)
+(extern constructor ishrs32 ishrs32)
+
+(decl ishru32 (Value Value) Value)
+(extern constructor ishru32 ishru32)
+
+(decl irotl32 (Value Value) Value)
+(extern constructor irotl32 irotl32)
+
+(decl irotr32 (Value Value) Value)
+(extern constructor irotr32 irotr32)
+
+(decl ieqz32 (Value) Value)
+(extern constructor ieqz32 ieqz32)
+
+(decl iclz32 (Value) Value)
+(extern constructor iclz32 iclz32)
+
+(decl ictz32 (Value) Value)
+(extern constructor ictz32 ictz32)
+
+(decl ipopcnt32 (Value) Value)
+(extern constructor ipopcnt32 ipopcnt32)
+
+;; ============================================================================
+;; Value Constructors (i64)
+;; ============================================================================
+
+(decl iconst64 (Imm64) Value)
+(extern constructor iconst64 iconst64)
+
+(decl iadd64 (Value Value) Value)
+(extern constructor iadd64 iadd64)
+
+(decl isub64 (Value Value) Value)
+(extern constructor isub64 isub64)
+
+(decl imul64 (Value Value) Value)
+(extern constructor imul64 imul64)
+
+(decl idivs64 (Value Value) Value)
+(extern constructor idivs64 idivs64)
+
+(decl idivu64 (Value Value) Value)
+(extern constructor idivu64 idivu64)
+
+(decl irems64 (Value Value) Value)
+(extern constructor irems64 irems64)
+
+(decl iremu64 (Value Value) Value)
+(extern constructor iremu64 iremu64)
+
+(decl iand64 (Value Value) Value)
+(extern constructor iand64 iand64)
+
+(decl ior64 (Value Value) Value)
+(extern constructor ior64 ior64)
+
+(decl ixor64 (Value Value) Value)
+(extern constructor ixor64 ixor64)
+
+(decl ishl64 (Value Value) Value)
+(extern constructor ishl64 ishl64)
+
+(decl ishrs64 (Value Value) Value)
+(extern constructor ishrs64 ishrs64)
+
+(decl ishru64 (Value Value) Value)
+(extern constructor ishru64 ishru64)
+
+(decl irotl64 (Value Value) Value)
+(extern constructor irotl64 irotl64)
+
+(decl irotr64 (Value Value) Value)
+(extern constructor irotr64 irotr64)
+
+(decl ieqz64 (Value) Value)
+(extern constructor ieqz64 ieqz64)
+
+(decl iclz64 (Value) Value)
+(extern constructor iclz64 iclz64)
+
+(decl ictz64 (Value) Value)
+(extern constructor ictz64 ictz64)
+
+(decl ipopcnt64 (Value) Value)
+(extern constructor ipopcnt64 ipopcnt64)
+
+;; ============================================================================
+;; Other Constructors
+;; ============================================================================
+
+(decl select_instr (Value Value Value) Value)
+(extern constructor select_instr select_instr)
+
+(decl local_get (u32) Value)
+(extern constructor local_get local_get)
+
+(decl local_set (u32 Value) Value)
+(extern constructor local_set local_set)
+
+(decl local_tee (u32 Value) Value)
+(extern constructor local_tee local_tee)
+
+(decl i32_load (Value u32 u32) Value)
+(extern constructor i32_load i32_load)
+
+(decl i32_store (Value Value u32 u32) Value)
+(extern constructor i32_store i32_store)
+
+(decl i64_load (Value u32 u32) Value)
+(extern constructor i64_load i64_load)
+
+(decl i64_store (Value Value u32 u32) Value)
+(extern constructor i64_store i64_store)
+
+;; ============================================================================
+;; Extractors
+;; ============================================================================
+
+;; Extract ValueData from a Value
+;; This is a pure infallible extractor - every Value has a ValueData
+(decl pure value_data (Value) ValueData)
+(extern extractor infallible value_data value_data)
+
+;; Helper extractors for matching constants
+;; Extract the immediate value if this Value is a constant
+
+;; Extract i32 constant value
+(decl pure i32_const (Value) Imm32)
+(extern extractor i32_const i32_const)
+
+;; Extract i64 constant value
+(decl pure i64_const (Value) Imm64)
+(extern extractor i64_const i64_const)
+
+;; ============================================================================
+;; Helper Functions
+;; ============================================================================
+
+;; i32 immediate arithmetic
+(decl pure imm32_add (Imm32 Imm32) Imm32)
+(extern constructor imm32_add imm32_add)
+
+(decl pure imm32_sub (Imm32 Imm32) Imm32)
+(extern constructor imm32_sub imm32_sub)
+
+(decl pure imm32_mul (Imm32 Imm32) Imm32)
+(extern constructor imm32_mul imm32_mul)
+
+(decl pure imm32_and (Imm32 Imm32) Imm32)
+(extern constructor imm32_and imm32_and)
+
+(decl pure imm32_or (Imm32 Imm32) Imm32)
+(extern constructor imm32_or imm32_or)
+
+(decl pure imm32_xor (Imm32 Imm32) Imm32)
+(extern constructor imm32_xor imm32_xor)
+
+(decl pure imm32_shl (Imm32 Imm32) Imm32)
+(extern constructor imm32_shl imm32_shl)
+
+(decl pure imm32_shr_s (Imm32 Imm32) Imm32)
+(extern constructor imm32_shr_s imm32_shr_s)
+
+(decl pure imm32_shr_u (Imm32 Imm32) Imm32)
+(extern constructor imm32_shr_u imm32_shr_u)
+
+;; i64 immediate arithmetic
+(decl pure imm64_add (Imm64 Imm64) Imm64)
+(extern constructor imm64_add imm64_add)
+
+(decl pure imm64_sub (Imm64 Imm64) Imm64)
+(extern constructor imm64_sub imm64_sub)
+
+(decl pure imm64_mul (Imm64 Imm64) Imm64)
+(extern constructor imm64_mul imm64_mul)
+
+(decl pure imm64_and (Imm64 Imm64) Imm64)
+(extern constructor imm64_and imm64_and)
+
+(decl pure imm64_or (Imm64 Imm64) Imm64)
+(extern constructor imm64_or imm64_or)
+
+(decl pure imm64_xor (Imm64 Imm64) Imm64)
+(extern constructor imm64_xor imm64_xor)
+
+(decl pure imm64_shl (Imm64 Imm64) Imm64)
+(extern constructor imm64_shl imm64_shl)
+
+(decl pure imm64_shr_s (Imm64 Imm64) Imm64)
+(extern constructor imm64_shr_s imm64_shr_s)
+
+(decl pure imm64_shr_u (Imm64 Imm64) Imm64)
+(extern constructor imm64_shr_u imm64_shr_u)
+
+;; Power-of-2 helpers
+(decl pure is_power_of_two_i32 (Imm32) Imm32)
+(extern extractor is_power_of_two_i32 is_power_of_two_i32)
+
+(decl pure is_power_of_two_i64 (Imm64) Imm64)
+(extern extractor is_power_of_two_i64 is_power_of_two_i64)
+
+(decl pure log2_i32 (Imm32) Imm32)
+(extern constructor log2_i32 log2_i32)
+
+(decl pure log2_i64 (Imm64) Imm64)
+(extern constructor log2_i64 log2_i64)
+
+(decl pure imm32_sub_1 (Imm32) Imm32)
+(extern constructor imm32_sub_1 imm32_sub_1)
+
+(decl pure imm64_sub_1 (Imm64) Imm64)
+(extern constructor imm64_sub_1 imm64_sub_1)
+
+;; ============================================================================
+;; Optimization Entry Point
+;; ============================================================================
+
+;; Simplify - entry point for optimization
+;; Takes a Value and returns an optimized Value
+(decl simplify (Value) Value)
