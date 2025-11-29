@@ -680,12 +680,9 @@ pub mod parse {
                     element_section_bytes = Some(bytes[range.start..range.end].to_vec());
                 }
                 Payload::CustomSection(reader) => {
-                    // Store raw custom section bytes to pass through unchanged
-                    let range = reader.range();
-                    custom_sections.push((
-                        reader.name().to_string(),
-                        bytes[range.start..range.end].to_vec(),
-                    ));
+                    // Store custom section data (without the name field)
+                    // The encoder will add the name field when re-encoding
+                    custom_sections.push((reader.name().to_string(), reader.data().to_vec()));
                 }
                 _ => {
                     // Ignore other payloads (e.g., End, Version, etc.)
@@ -6806,53 +6803,64 @@ pub mod optimize {
     pub fn inline_functions(module: &mut Module) -> Result<()> {
         use std::collections::HashMap;
 
-        // Phase 1: Build call graph and analyze functions
-        let mut call_counts: HashMap<u32, usize> = HashMap::new();
-        let mut function_sizes: HashMap<u32, usize> = HashMap::new();
+        // Run inlining to fixed point to ensure idempotence
+        // Keep inlining until no more candidates are found
+        loop {
+            // Phase 1: Build call graph and analyze functions
+            let mut call_counts: HashMap<u32, usize> = HashMap::new();
+            let mut function_sizes: HashMap<u32, usize> = HashMap::new();
 
-        // Calculate function sizes (instruction count)
-        for (idx, func) in module.functions.iter().enumerate() {
-            let size = count_instructions_recursive(&func.instructions);
-            function_sizes.insert(idx as u32, size);
-        }
+            // Calculate function sizes (instruction count)
+            for (idx, func) in module.functions.iter().enumerate() {
+                let size = count_instructions_recursive(&func.instructions);
+                function_sizes.insert(idx as u32, size);
+            }
 
-        // Count call sites for each function
-        for func in &module.functions {
-            count_calls_recursive(&func.instructions, &mut call_counts);
-        }
+            // Count call sites for each function
+            for func in &module.functions {
+                count_calls_recursive(&func.instructions, &mut call_counts);
+            }
 
-        // Phase 2: Identify inlining candidates
-        let mut inline_candidates = Vec::new();
-        for (func_idx, &call_count) in &call_counts {
-            let size = function_sizes.get(func_idx).copied().unwrap_or(0);
+            // Phase 2: Identify inlining candidates
+            let mut inline_candidates = Vec::new();
+            for (func_idx, &call_count) in &call_counts {
+                let size = function_sizes.get(func_idx).copied().unwrap_or(0);
 
-            // Heuristic: inline if:
-            // 1. Single call site, OR
-            // 2. Small function (< 10 instructions)
-            if call_count == 1 || size < 10 {
-                // Don't inline large functions even if single call site
-                if size < 50 {
-                    inline_candidates.push(*func_idx);
+                // Heuristic: inline if:
+                // 1. Single call site, OR
+                // 2. Small function (< 10 instructions)
+                if call_count == 1 || size < 10 {
+                    // Don't inline large functions even if single call site
+                    if size < 50 {
+                        inline_candidates.push(*func_idx);
+                    }
                 }
             }
-        }
 
-        // Phase 3: Perform inlining
-        // For each function, inline calls to candidate functions
-        let inline_set: std::collections::HashSet<u32> =
-            inline_candidates.iter().copied().collect();
+            // Exit loop if no more inlining opportunities - this ensures idempotence
+            if inline_candidates.is_empty() {
+                break;
+            }
 
-        // Clone functions to avoid borrow checker issues
-        let all_functions = module.functions.clone();
+            // Phase 3: Perform inlining
+            // For each function, inline calls to candidate functions
+            let inline_set: std::collections::HashSet<u32> =
+                inline_candidates.iter().copied().collect();
 
-        for func in &mut module.functions {
-            func.instructions = inline_calls_in_block(
-                &func.instructions,
-                &inline_set,
-                &all_functions,
-                func.signature.params.len() as u32,
-                &mut func.locals,
-            );
+            // Clone functions to avoid borrow checker issues
+            let all_functions = module.functions.clone();
+
+            for func in &mut module.functions {
+                func.instructions = inline_calls_in_block(
+                    &func.instructions,
+                    &inline_set,
+                    &all_functions,
+                    func.signature.params.len() as u32,
+                    &mut func.locals,
+                );
+            }
+
+            // Continue to next iteration to check for more inlining opportunities
         }
 
         Ok(())
