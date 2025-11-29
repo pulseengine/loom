@@ -505,6 +505,35 @@
 (extern constructor imm64_shr_u imm64_shr_u)
 
 ;; ============================================================================
+;; Helper Predicates and Extractors
+;; ============================================================================
+
+;; Check if a 32-bit immediate is a power of 2
+(decl is_power_of_two_i32 (Imm32) Imm32)
+(extern extractor is_power_of_two_i32 is_power_of_two_i32)
+
+;; Check if a 64-bit immediate is a power of 2
+(decl is_power_of_two_i64 (Imm64) Imm64)
+(extern extractor is_power_of_two_i64 is_power_of_two_i64)
+
+;; Get log2 of a power-of-2 immediate (32-bit)
+;; Returns the log2 value as an Imm32
+(decl log2_i32 (Imm32) Imm32)
+(extern constructor log2_i32 log2_i32)
+
+;; Get log2 of a power-of-2 immediate (64-bit)
+;; Returns the log2 value as an Imm64
+(decl log2_i64 (Imm64) Imm64)
+(extern constructor log2_i64 log2_i64)
+
+;; Subtract 1 from an immediate (for computing masks)
+(decl imm32_sub_1 (Imm32) Imm32)
+(extern constructor imm32_sub_1 imm32_sub_1)
+
+(decl imm64_sub_1 (Imm64) Imm64)
+(extern constructor imm64_sub_1 imm64_sub_1)
+
+;; ============================================================================
 ;; Optimization Rules
 ;; ============================================================================
 
@@ -526,24 +555,24 @@
 (decl simplify (Value) Value)
 
 ;; ============================================================================
-;; Optimization Rules - Placeholder
+;; Optimization Rules
 ;; ============================================================================
-
-;; Note: Constant folding and algebraic simplifications are currently
-;; implemented as Rust-based peephole optimizations in optimize_advanced_instructions.
+;; Note: The actual optimization logic is implemented in Rust in the
+;; simplify_with_env function (loom-shared/src/lib.rs).
 ;;
-;; ISLE pattern matching for these optimizations requires:
-;; 1. Proper extractor usage to match ValueData variants from Value
-;; 2. Nested pattern matching to handle expressions like (I32Add (I32Const x) (I32Const y))
-;; 3. Complex extractor chains for multi-level patterns
+;; ISLE's current design makes it difficult to express complex patterns like:
+;; - Strength reduction (requires power-of-2 detection)
+;; - Algebraic simplification with extractors
+;; - Nested pattern matching on ValueData variants
 ;;
-;; The Rust implementation handles these cases more efficiently and is easier
-;; to maintain. Future ISLE rules could be added once proper extractors are
-;; set up for the Value/ValueData boxing pattern.
+;; The Rust implementation provides:
+;; - Pattern matching on ValueData enum
+;; - Constant folding (x + const, const * const, etc.)
+;; - Dataflow analysis (local variable propagation)
+;; - Memory redundancy elimination
 ;;
-;; Helper functions (imm32_add, imm32_shl, etc.) are defined above and ready
-;; for use when ISLE rules are implemented.
-
+;; Future work: Once ISLE gains better support for complex patterns,
+;; migrate the Rust optimization logic to ISLE rules.
 
 ;; Default case: return value unchanged if no rule applies
 (rule (simplify val) val)
