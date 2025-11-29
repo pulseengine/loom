@@ -4148,8 +4148,11 @@ pub mod optimize {
                 func.instructions =
                     simplify_instructions(&func.instructions, &usage, &equivalences, &mut changed);
 
-                // Eliminate redundant sets (new optimization)
-                func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
+                // TODO: Fix eliminate_redundant_sets - it incorrectly removes stack-producing instructions
+                // The bug is that it assumes value_idx is always result.len() - 1, but in stack-based
+                // WASM, the value could be produced by an instruction multiple positions back.
+                // Disabled until properly fixed.
+                // func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
             }
         }
         Ok(())
@@ -4363,6 +4366,7 @@ pub mod optimize {
     /// - 2-5% binary size reduction on typical code
     /// - Reduces unnecessary local variable writes
     /// - Enables further optimizations (dead code elimination)
+    #[allow(dead_code)] // Currently disabled due to bugs - see comment in simplify_locals
     fn eliminate_redundant_sets(
         instructions: &[Instruction],
         changed: &mut bool,
