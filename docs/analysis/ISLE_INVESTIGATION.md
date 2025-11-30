@@ -1,8 +1,14 @@
 # ISLE Integration Investigation
 
-## Summary
+## Executive Summary
 
 After extensive investigation, **ISLE cannot be used for LOOM's optimization rules** due to fundamental architectural mismatches.
+
+**IMPORTANT CLARIFICATION**: ISLE is **NOT** a formal verification tool. It's a pattern matching DSL for implementing optimizations. For actual formal verification, LOOM uses **Z3 SMT solver** (see docs/analysis/Z3_VERIFICATION_STATUS.md).
+
+## Summary
+
+ISLE is a term rewriting DSL, not a verification system. LOOM already has Z3-based formal verification that proves optimizations are semantically correct.
 
 ## What We Tried
 
@@ -100,6 +106,7 @@ This is:
 - ✅ **Debuggable** with standard Rust tooling
 - ✅ **Flexible** - can handle any pattern
 - ✅ **No external DSL** to learn
+- ✅ **Verified by Z3** - LOOM uses Z3 SMT solver to formally prove optimizations are correct
 
 ## What We Achieved
 
@@ -115,10 +122,23 @@ Despite ISLE not working for rules, we successfully:
 
 **Keep the manual Rust optimization code.** Do not attempt to migrate to ISLE.
 
-If formal verification is needed in the future:
-- Consider **SMT-based verification** (Z3, CVC5)
-- Consider **Coq/Lean proofs** for critical optimizations
-- ISLE is not a verification tool anyway - it's just a pattern matching DSL
+## Formal Verification Status
+
+**LOOM already has formal verification via Z3 SMT solver** (see docs/analysis/Z3_VERIFICATION_STATUS.md):
+
+✅ **What we have**:
+- Z3 translation validation in loom-core/src/verify.rs
+- Proves optimizations are semantically equivalent for all inputs
+- 4 passing verification tests
+- CLI integration with `--verify` flag
+- Working today with `--features verification`
+
+✅ **Currently verified operations**:
+- i32/i64 constants and arithmetic (add, sub, mul)
+- i32/i64 bitwise operations (and, or, xor, shl, shr)
+- Local variables (get, set, tee)
+
+❌ **Not a verification tool**: ISLE is just a pattern matching DSL, not a formal verification system
 
 ## Files Status
 
