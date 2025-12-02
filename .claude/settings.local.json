@@ -4,7 +4,12 @@
       "Bash(git log:*)",
       "Bash(cargo --list:*)",
       "WebFetch(domain:bytecodealliance.org)",
-      "mcp__fetch__imageFetch"
+      "mcp__fetch__imageFetch",
+      "Bash(gh issue list:*)",
+      "Bash(wasm-tools parse:*)",
+      "Bash(wasm-tools compile:*)",
+      "Bash(./target/release/loom optimize:*)",
+      "Bash(cargo build:*)"
     ],
     "deny": [],
     "ask": []
