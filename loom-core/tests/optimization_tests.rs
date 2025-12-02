@@ -1559,6 +1559,156 @@ fn test_dead_code_in_blocks() {
     );
 }
 
+#[test]
+fn test_dce_unused_local_assignment() {
+    let input = r#"
+        (module
+            (func $unused_local (result i32)
+                (local $unused i32)
+                (local.set $unused (i32.const 100))
+                (i32.const 42)
+            )
+        )
+    "#;
+
+    // Assignment to unused local should be processable
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::remove_unused_branches(&mut module).unwrap();
+
+    // Result should be valid
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_dce_dead_block() {
+    let input = r#"
+        (module
+            (func $dead_block (result i32)
+                (i32.const 42)
+                (return)
+                (i32.const 100)
+                (drop)
+            )
+        )
+    "#;
+
+    // Dead code after return should be removed
+    let mut module = parse::parse_wat(input).unwrap();
+    let before_len = module.functions[0].instructions.len();
+    optimize::remove_unused_branches(&mut module).unwrap();
+    let after_len = module.functions[0].instructions.len();
+
+    // Should have removed dead code
+    assert!(after_len < before_len, "Should have removed dead instructions");
+
+    // Should still be valid
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_dce_unreachable_branch() {
+    let input = r#"
+        (module
+            (func $unreachable_branch (param $cond i32) (result i32)
+                (local.get $cond)
+                (if (then
+                    (return (i32.const 1))
+                ))
+                (i32.const 2)
+            )
+        )
+    "#;
+
+    // This should not crash and properly handle branching
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::remove_unused_branches(&mut module).unwrap();
+
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_dce_multiple_returns_in_nested_blocks() {
+    let input = r#"
+        (module
+            (func $multiple_returns (result i32)
+                (block $b1
+                    (block $b2
+                        (return (i32.const 10))
+                        (i32.const 20)
+                        (drop)
+                    )
+                    (i32.const 30)
+                    (drop)
+                )
+                (i32.const 40)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::remove_unused_branches(&mut module).unwrap();
+
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_dce_with_drop_operations() {
+    let input = r#"
+        (module
+            (func $const_drop (result i32)
+                (i32.const 100)
+                (drop)
+                (i32.const 42)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Run DCE - should not crash and produce valid output
+    optimize::remove_unused_branches(&mut module).unwrap();
+    optimize::eliminate_dead_code(&mut module).unwrap();
+
+    // Should produce valid WASM
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_dce_in_nested_blocks() {
+    let input = r#"
+        (module
+            (func $nested_dead (result i32)
+                (block $b1
+                    (block $b2
+                        (i32.const 100)
+                        (return)
+                        (i32.const 200)
+                        (drop)
+                    )
+                )
+                (i32.const 42)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::remove_unused_branches(&mut module).unwrap();
+
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
 // Optimize Added Constants Tests
 
 #[test]
