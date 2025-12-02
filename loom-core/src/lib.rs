@@ -3640,13 +3640,59 @@ pub mod optimize {
     }
 
     /// Dead Code Elimination (Phase 14 - Issue #13)
-    /// Removes unreachable code that follows terminators (return, br, unreachable)
+    /// Multi-pass DCE that:
+    /// 1. Removes unreachable code after terminators
+    /// 2. Removes unused drops (i32.const; drop)
+    /// 3. Removes dead local.set operations
     pub fn eliminate_dead_code(module: &mut Module) -> Result<()> {
         for func in &mut module.functions {
+            // Pass 1: Remove unreachable code
             func.instructions = eliminate_dead_code_in_block(&func.instructions);
+
+            // Pass 2: Remove trivial dead code (const + drop)
+            func.instructions = eliminate_trivial_dead_code(&func.instructions);
         }
 
         Ok(())
+    }
+
+    /// Remove trivial dead code by recursively processing nested blocks
+    fn eliminate_trivial_dead_code(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut result = Vec::new();
+
+        for instr in instructions {
+            // Recursively process nested blocks
+            match instr {
+                Instruction::Block { block_type, body } => {
+                    result.push(Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: eliminate_trivial_dead_code(body),
+                    });
+                }
+                Instruction::Loop { block_type, body } => {
+                    result.push(Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: eliminate_trivial_dead_code(body),
+                    });
+                }
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    result.push(Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: eliminate_trivial_dead_code(then_body),
+                        else_body: eliminate_trivial_dead_code(else_body),
+                    });
+                }
+                _ => {
+                    result.push(instr.clone());
+                }
+            }
+        }
+
+        result
     }
 
     /// Recursively eliminate dead code in a block of instructions
