@@ -4,15 +4,16 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-20%2F20%20passing-success)](tests/)
 
-A high-performance WebAssembly optimizer with formal verification support, featuring a comprehensive 12-phase optimization pipeline built with ISLE (Instruction Selection and Lowering Engine) and Z3 SMT solver integration.
+A high-performance WebAssembly optimizer with formal verification support. LOOM combines expression-level optimizations with Z3 SMT-based verification to ensure correctness.
 
 ## ✨ Features
 
-### 🚀 Comprehensive Optimization Pipeline
-- **12 optimization phases** including constant folding, strength reduction, CSE, inlining, LICM, and DCE
-- **Declarative rules** using ISLE DSL for maintainable optimizations
-- **Stateful dataflow analysis** tracking locals and memory state
-- **Idempotent optimizations** - safe to run multiple times
+### 🚀 Expression-Level Optimization Pipeline
+- **Constant folding** - Compile-time evaluation of expressions
+- **Strength reduction** - Replace expensive ops with cheaper ones (`x * 8` → `x << 3`)
+- **Function inlining** - Inline small functions to expose cross-function optimizations
+- **Stateful dataflow analysis** - Track locals and memory state across optimizations
+- **Idempotent passes** - Safe to run multiple times without degradation
 
 ### 🔬 Formal Verification
 - **Z3 SMT-based verification** proves optimization correctness via translation validation
@@ -101,22 +102,16 @@ Optimization time: 0 ms
 ✅ Optimization complete!
 ```
 
-## 🏗️ 12-Phase Optimization Pipeline
+## 🏗️ Core Optimization Passes
 
-| Phase | Optimization | Example | Impact |
-|-------|-------------|---------|--------|
-| 1 | **Precompute** | Global constant propagation | Enables folding |
-| 2 | **ISLE Folding** | `10 + 20` → `30` | Compile-time evaluation |
-| 3 | **Strength Reduction** | `x * 8` → `x << 3` | 2-3x speedup |
-| 4 | **CSE** | Cache duplicate computations | Reduces redundancy |
-| 5 | **Function Inlining** | Inline small functions | Call overhead removal |
-| 6 | **ISLE (Post-inline)** | Fold exposed constants | Cross-function optimization |
-| 7 | **Code Folding** | Flatten blocks | Control flow simplification |
-| 8 | **LICM** | Hoist loop invariants | Loop speedup |
-| 9 | **Branch Simplify** | Simplify conditionals | Fewer branches |
-| 10 | **DCE** | Remove unreachable code | Code cleanup |
-| 11 | **Block Merge** | Merge consecutive blocks | Reduce overhead |
-| 12 | **Vacuum & Locals** | Remove unused variables | Final cleanup |
+| Pass | Status | Example | Impact |
+|------|--------|---------|--------|
+| **Constant Folding** | ✅ | `10 + 20` → `30` | Enables other opts |
+| **Strength Reduction** | ✅ | `x * 8` → `x << 3` | 2-3x speedup |
+| **Function Inlining** | ✅ | Inline small functions | Exposes optimizations |
+| **Local Optimization** | ✅ | Dead local removal | Reduces overhead |
+
+**Roadmap**: See [Issue #23](https://github.com/pulseengine/loom/issues/23) for planned optimizations (DCE, control flow, CSE, LICM) and timeline to wasm-opt feature parity.
 
 ## 📊 Benchmark Results
 
