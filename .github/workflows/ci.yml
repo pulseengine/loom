@@ -149,3 +149,50 @@ jobs:
         with:
           name: loom-wasm
           path: target/wasm32-wasip2/release/loom.wasm
+
+  self-optimization:
+    name: Self-Optimization Test
+    runs-on: ubuntu-latest
+    needs: [build, wasm-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-tools
+        run: cargo install wasm-tools
+      - name: Download LOOM binary
+        uses: actions/download-artifact@v4
+        with:
+          name: loom-ubuntu-latest
+          path: ./loom-bin
+      - name: Download LOOM WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: loom-wasm
+          path: ./loom-wasm
+      - name: Make binary executable
+        run: chmod +x ./loom-bin/loom
+      - name: Test self-optimization
+        run: |
+          echo "Testing LOOM self-optimization (dogfooding)..."
+          INPUT="./loom-wasm/loom.wasm"
+          OUTPUT="/tmp/loom-optimized.wasm"
+
+          # Verify input is valid
+          wasm-tools validate "$INPUT" || { echo "Input validation failed"; exit 1; }
+
+          # Optimize LOOM with itself
+          ./loom-bin/loom optimize "$INPUT" -o "$OUTPUT" --stats || { echo "Optimization failed"; exit 1; }
+
+          # Verify output is valid
+          wasm-tools validate "$OUTPUT" || { echo "Output validation failed"; exit 1; }
+
+          # Calculate size reduction
+          INPUT_SIZE=$(stat -f%z "$INPUT" 2>/dev/null || stat -c%s "$INPUT")
+          OUTPUT_SIZE=$(stat -f%z "$OUTPUT" 2>/dev/null || stat -c%s "$OUTPUT")
+          REDUCTION=$((100 * (INPUT_SIZE - OUTPUT_SIZE) / INPUT_SIZE))
+
+          echo "✅ Self-optimization successful!"
+          echo "   Input:  $INPUT_SIZE bytes"
+          echo "   Output: $OUTPUT_SIZE bytes"
+          echo "   Reduction: $REDUCTION%"
