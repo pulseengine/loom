@@ -9,24 +9,16 @@
 ;; ============================================================================
 
 ;; i32.add constant folding: (i32.const x) + (i32.const y) → i32.const (x+y)
-(rule (simplify val)
-      (if-let (ValueData.I32Add lhs rhs) (value_data val))
-      (if-let x (i32_const lhs))
-      (if-let y (i32_const rhs))
+;; Cranelift-style: pattern match directly on constructors with nested extractors
+(rule (simplify (iadd32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_add x y)))
 
 ;; i32.sub constant folding
-(rule (simplify val)
-      (if-let (ValueData.I32Sub lhs rhs) (value_data val))
-      (if-let x (i32_const lhs))
-      (if-let y (i32_const rhs))
+(rule (simplify (isub32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_sub x y)))
 
 ;; i32.mul constant folding
-(rule (simplify val)
-      (if-let (ValueData.I32Mul lhs rhs) (value_data val))
-      (if-let x (i32_const lhs))
-      (if-let y (i32_const rhs))
+(rule (simplify (imul32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_mul x y)))
 
 ;; ============================================================================

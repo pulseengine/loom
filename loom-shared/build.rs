@@ -12,7 +12,7 @@ fn main() {
     let isle_files = vec![
         PathBuf::from("isle/types.isle"),
         PathBuf::from("isle/constructors.isle"),
-        // PathBuf::from("isle/rules/constant_folding.isle"), // TODO: ISLE compiler panics with if-let on enum variants
+        // PathBuf::from("isle/rules/constant_folding.isle"), // TODO: ISLE compiler panic - needs deeper investigation
         PathBuf::from("isle/rules/default.isle"),
     ];
 

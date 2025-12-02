@@ -529,9 +529,25 @@ pub fn iconst32(val: Imm32) -> Value {
     Value(Box::new(ValueData::I32Const { val }))
 }
 
+/// Extract i32.const value (extractor for pattern matching)
+pub fn iconst32_extract(val: &Value) -> Option<Imm32> {
+    match val.0.as_ref() {
+        ValueData::I32Const { val } => Some(*val),
+        _ => None,
+    }
+}
+
 /// Construct an i32.add operation
 pub fn iadd32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Add { lhs, rhs }))
+}
+
+/// Extract i32.add operands (extractor for pattern matching)
+pub fn iadd32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Add { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 /// Construct an i32.sub operation
@@ -539,9 +555,25 @@ pub fn isub32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Sub { lhs, rhs }))
 }
 
+/// Extract i32.sub operands (extractor for pattern matching)
+pub fn isub32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Sub { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
+}
+
 /// Construct an i32.mul operation
 pub fn imul32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Mul { lhs, rhs }))
+}
+
+/// Extract i32.mul operands (extractor for pattern matching)
+pub fn imul32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Mul { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 /// Construct an i64.const value
