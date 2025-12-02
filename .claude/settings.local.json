@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(cargo --list:*)",
+      "WebFetch(domain:bytecodealliance.org)",
+      "mcp__fetch__imageFetch"
     ],
     "deny": [],
     "ask": []

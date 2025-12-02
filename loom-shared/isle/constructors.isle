@@ -7,15 +7,19 @@
 
 (decl iconst32 (Imm32) Value)
 (extern constructor iconst32 iconst32)
+(extern extractor iconst32 iconst32_extract)
 
 (decl iadd32 (Value Value) Value)
 (extern constructor iadd32 iadd32)
+(extern extractor iadd32 iadd32_extract)
 
 (decl isub32 (Value Value) Value)
 (extern constructor isub32 isub32)
+(extern extractor isub32 isub32_extract)
 
 (decl imul32 (Value Value) Value)
 (extern constructor imul32 imul32)
+(extern extractor imul32 imul32_extract)
 
 (decl idivs32 (Value Value) Value)
 (extern constructor idivs32 idivs32)
