@@ -9,7 +9,8 @@
       "Bash(wasm-tools parse:*)",
       "Bash(wasm-tools compile:*)",
       "Bash(./target/release/loom optimize:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(gh issue view:*)"
     ],
     "deny": [],
     "ask": []

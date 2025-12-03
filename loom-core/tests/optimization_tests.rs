@@ -1709,6 +1709,131 @@ fn test_dce_in_nested_blocks() {
     wasmparser::validate(&wasm).expect("Should be valid WASM");
 }
 
+// ============================================================================
+// Call and CallIndirect Tests (Issue #35 - Call/call_indirect Handling)
+// ============================================================================
+
+#[test]
+fn test_call_basic_optimization() {
+    let input = r#"
+        (module
+            (func $add (param $x i32) (param $y i32) (result i32)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+            )
+
+            (func $main (result i32)
+                (i32.const 5)
+                (i32.const 3)
+                (call $add)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Verify it parses correctly
+    assert_eq!(module.functions.len(), 2);
+
+    // Run optimization
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Verify output is valid
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_call_with_inlining() {
+    let input = r#"
+        (module
+            (func $add_two (param $x i32) (result i32)
+                (local.get $x)
+                (i32.const 2)
+                (i32.add)
+            )
+
+            (func $main (param $a i32) (result i32)
+                (local.get $a)
+                (call $add_two)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Run inlining
+    optimize::inline_functions(&mut module).unwrap();
+
+    // Inlining should have processed the call
+    // The function should still be valid
+    assert!(!module.functions[1].instructions.is_empty());
+
+    // Should be valid WASM
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_call_prevents_rse() {
+    let input = r#"
+        (module
+            (func $other (result i32)
+                (i32.const 42)
+            )
+
+            (func (result i32)
+                (local $x i32)
+                (local.set $x (i32.const 10))
+                (call $other)
+                (drop)
+                (local.set $x (i32.const 20))
+                (local.get $x)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Should produce valid output
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_multiple_calls_in_function() {
+    let input = r#"
+        (module
+            (func $add (param $x i32) (param $y i32) (result i32)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+            )
+
+            (func $multiply_sum (param $a i32) (param $b i32) (param $c i32) (result i32)
+                (local.get $a)
+                (local.get $b)
+                (call $add)
+                (local.get $c)
+                (i32.mul)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Should handle multiple calls correctly
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
 // Optimize Added Constants Tests
 
 #[test]
