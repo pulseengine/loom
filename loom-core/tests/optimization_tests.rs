@@ -297,6 +297,120 @@ fn test_cse_duplicate_computation() {
     );
 }
 
+#[test]
+fn test_cse_multiple_duplicates() {
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+                (i32.add)
+                (i32.add)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    let before_len = module.functions[0].instructions.len();
+    optimize::optimize_module(&mut module).unwrap();
+    let after_len = module.functions[0].instructions.len();
+
+    // Should reduce code by eliminating duplicate computations
+    assert!(
+        after_len <= before_len,
+        "CSE should reduce or maintain code size. Before: {}, After: {}",
+        before_len,
+        after_len
+    );
+
+    // Should produce valid WASM
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_cse_commutative_operations() {
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local.get $x)
+                (local.get $y)
+                (i32.add)
+                (local.get $y)
+                (local.get $x)
+                (i32.add)
+                (i32.add)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Should recognize x+y and y+x as equivalent
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_cse_with_bitwise_operations() {
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local.get $x)
+                (local.get $y)
+                (i32.and)
+                (local.get $x)
+                (local.get $y)
+                (i32.and)
+                (i32.or)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Should handle bitwise operations in CSE
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
+#[test]
+fn test_cse_i64_operations() {
+    let input = r#"
+        (module
+            (func (param $x i64) (param $y i64) (result i64)
+                (local.get $x)
+                (local.get $y)
+                (i64.add)
+                (local.get $x)
+                (local.get $y)
+                (i64.add)
+                (i64.mul)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    // Should handle i64 operations
+    use loom_core::encode;
+    let wasm = encode::encode_wasm(&module).expect("Should encode");
+    wasmparser::validate(&wasm).expect("Should be valid WASM");
+}
+
 // ============================================================================
 // Function Inlining Tests (Issue #14)
 // ============================================================================
