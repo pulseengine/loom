@@ -119,26 +119,83 @@ impl ComponentExecutor {
             let payload = payload.context("Failed to parse component payload")?;
 
             match payload {
-                Payload::CoreTypeSection(_reader) => {
-                    // Count type definitions
+                Payload::CoreTypeSection(reader) => {
+                    for ty in reader {
+                        let _ = ty.context("Failed to read core type")?;
+                    }
                 }
-                Payload::ComponentTypeSection(_reader) => {
-                    // Count component type definitions
+                Payload::ComponentTypeSection(reader) => {
+                    for ty in reader {
+                        let _ = ty.context("Failed to read component type")?;
+                    }
+                }
+                Payload::ComponentInstanceSection(reader) => {
+                    for instance in reader {
+                        let _ = instance.context("Failed to read component instance")?;
+                    }
+                }
+                Payload::ComponentExportSection(reader) => {
+                    for export in reader {
+                        let export = export.context("Failed to read component export")?;
+                        canonical_functions.push(CanonicalFunctionInfo {
+                            name: export.name.0.to_string(),
+                            param_count: 0,
+                            return_count: 1,
+                            preserved: true,
+                        });
+                    }
+                }
+                Payload::ImportSection(reader) => {
+                    for import in reader {
+                        let import = import.context("Failed to read import")?;
+                        canonical_functions.push(CanonicalFunctionInfo {
+                            name: format!("import_{}", import.name),
+                            param_count: 0,
+                            return_count: 0,
+                            preserved: true,
+                        });
+                    }
                 }
                 _ => {}
             }
         }
 
-        // For now, we count canonical functions conservatively
-        // A real implementation would parse the component metadata section
-        canonical_functions.push(CanonicalFunctionInfo {
-            name: "canonical_0".to_string(),
-            param_count: 0,
-            return_count: 1,
-            preserved: true,
-        });
+        // If no canonical functions were found via exports, provide a conservative estimate
+        if canonical_functions.is_empty() {
+            canonical_functions.push(CanonicalFunctionInfo {
+                name: "canonical_0".to_string(),
+                param_count: 0,
+                return_count: 1,
+                preserved: true,
+            });
+        }
 
         Ok(canonical_functions)
+    }
+
+    /// Check if canonical functions are preserved between two components
+    pub fn check_canonical_preservation(&self, original: &[u8], optimized: &[u8]) -> Result<bool> {
+        let original_canonicals = self
+            .analyze_canonical_functions(original)
+            .unwrap_or_default();
+        let optimized_canonicals = self
+            .analyze_canonical_functions(optimized)
+            .unwrap_or_default();
+
+        if original_canonicals.len() != optimized_canonicals.len() {
+            return Ok(false);
+        }
+
+        for (orig, opt) in original_canonicals.iter().zip(optimized_canonicals.iter()) {
+            if orig.name != opt.name {
+                return Ok(false);
+            }
+            if orig.param_count != opt.param_count || orig.return_count != opt.return_count {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Verify component optimization preserves structure
@@ -182,6 +239,10 @@ impl ComponentExecutor {
             .analyze_canonical_functions(optimized)
             .unwrap_or_default();
 
+        let canonical_preserved = self
+            .check_canonical_preservation(original, optimized)
+            .unwrap_or(false);
+
         if original_canonicals.len() != optimized_canonicals.len() {
             issues.push(format!(
                 "Canonical function count changed: {} → {}",
@@ -190,11 +251,16 @@ impl ComponentExecutor {
             ));
         }
 
+        if !canonical_preserved {
+            issues.push("Canonical functions not preserved".to_string());
+        }
+
         let verification_passed = issues.is_empty()
             && original_result.loads_successfully
             && optimized_result.loads_successfully
             && original_result.structure_preserved
-            && optimized_result.structure_preserved;
+            && optimized_result.structure_preserved
+            && canonical_preserved;
 
         Ok(VerificationReport {
             verification_passed,
@@ -202,6 +268,7 @@ impl ComponentExecutor {
             optimized_exports: optimized_result.export_count,
             original_canonical_functions: original_canonicals.len(),
             optimized_canonical_functions: optimized_canonicals.len(),
+            canonical_functions_preserved: canonical_preserved,
             issues,
         })
     }
@@ -220,6 +287,8 @@ pub struct VerificationReport {
     pub original_canonical_functions: usize,
     /// Number of canonical functions in optimized
     pub optimized_canonical_functions: usize,
+    /// Whether canonical functions were preserved
+    pub canonical_functions_preserved: bool,
     /// Issues found during verification
     pub issues: Vec<String>,
 }

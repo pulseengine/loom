@@ -204,3 +204,60 @@ fn test_calculator_component_execution_verification() {
         "Calculator exports should be preserved"
     );
 }
+
+#[test]
+fn test_canonical_function_preservation() {
+    let executor = ComponentExecutor::new().expect("Failed to create executor");
+
+    let component_bytes = std::fs::read("tests/component_fixtures/simple.component.wasm")
+        .expect("Failed to read test component");
+
+    // Optimize the component
+    let (optimized, _stats) = optimize_component(&component_bytes).expect("Optimization failed");
+
+    // Check canonical preservation directly
+    let preserved = executor
+        .check_canonical_preservation(&component_bytes, &optimized)
+        .expect("Preservation check failed");
+
+    println!("Canonical functions preserved: {}", preserved);
+    assert!(
+        preserved,
+        "Canonical functions should be preserved after optimization"
+    );
+}
+
+#[test]
+fn test_verification_report_includes_canonical_status() {
+    let executor = ComponentExecutor::new().expect("Failed to create executor");
+
+    let component_bytes = std::fs::read("tests/component_fixtures/simple.component.wasm")
+        .expect("Failed to read test component");
+
+    // Optimize the component
+    let (optimized, _stats) = optimize_component(&component_bytes).expect("Optimization failed");
+
+    // Get verification report
+    let report = executor
+        .verify_component_optimization(&component_bytes, &optimized)
+        .expect("Verification failed");
+
+    println!(
+        "Verification report canonical_functions_preserved: {}",
+        report.canonical_functions_preserved
+    );
+
+    // Check that report includes canonical preservation status
+    assert!(
+        report.canonical_functions_preserved,
+        "Report should indicate canonical functions are preserved"
+    );
+
+    // Overall verification should pass if canonical functions are preserved
+    if report.canonical_functions_preserved && report.original_exports == report.optimized_exports {
+        assert!(
+            report.verification_passed,
+            "Verification should pass when exports and canonicals are preserved"
+        );
+    }
+}
