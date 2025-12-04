@@ -6929,10 +6929,23 @@ pub mod verify;
 /// See `component_optimizer` module for implementation details.
 pub mod component_optimizer;
 
+/// WebAssembly Component Model execution verification
+///
+/// Provides runtime verification of component model correctness after optimization.
+/// Uses wasmtime to instantiate and execute components, verifying that:
+/// - Component structure is preserved
+/// - Exports remain callable with correct signatures
+/// - Canonical functions operate correctly
+/// - No validation errors occur after optimization
+pub mod component_executor;
+
 /// Re-export component optimization API
 pub use component_optimizer::{
     analyze_component_structure, optimize_component, ComponentAnalysis, ComponentStats,
 };
+
+/// Re-export component executor API
+pub use component_executor::{CanonicalFunctionInfo, ComponentExecutor, ExecutionResult};
 
 #[cfg(test)]
 mod tests {
