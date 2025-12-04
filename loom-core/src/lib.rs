@@ -233,6 +233,10 @@ pub enum Instruction {
     I32ShrU,
     /// i64.const
     I64Const(i64),
+    /// f32.const
+    F32Const(u32),
+    /// f64.const
+    F64Const(u64),
     /// i64.add
     I64Add,
     /// i64.sub
@@ -793,6 +797,12 @@ pub mod parse {
                 Operator::I64Const { value } => {
                     instructions.push(Instruction::I64Const(value));
                 }
+                Operator::F32Const { value } => {
+                    instructions.push(Instruction::F32Const(value.bits()));
+                }
+                Operator::F64Const { value } => {
+                    instructions.push(Instruction::F64Const(value.bits()));
+                }
                 Operator::I64Add => {
                     instructions.push(Instruction::I64Add);
                 }
@@ -1310,9 +1320,16 @@ pub mod encode {
         match &instructions[0] {
             Instruction::I32Const(val) => Ok(ConstExpr::i32_const(*val)),
             Instruction::I64Const(val) => Ok(ConstExpr::i64_const(*val)),
-            // TODO: Add F32Const and F64Const to Instruction enum
+            Instruction::F32Const(bits) => {
+                let f32_val = f32::from_bits(*bits);
+                Ok(ConstExpr::f32_const(f32_val.into()))
+            }
+            Instruction::F64Const(bits) => {
+                let f64_val = f64::from_bits(*bits);
+                Ok(ConstExpr::f64_const(f64_val.into()))
+            }
             _ => {
-                // Fallback to zero for unsupported expressions (including floats)
+                // Fallback to zero for unsupported expressions
                 Ok(match expected_type {
                     ValueType::I32 => ConstExpr::i32_const(0),
                     ValueType::I64 => ConstExpr::i64_const(0),
@@ -1562,6 +1579,14 @@ pub mod encode {
                     }
                     Instruction::I64Const(value) => {
                         func_body.instruction(&EncoderInstruction::I64Const(*value));
+                    }
+                    Instruction::F32Const(bits) => {
+                        let f32_val = f32::from_bits(*bits);
+                        func_body.instruction(&EncoderInstruction::F32Const(f32_val.into()));
+                    }
+                    Instruction::F64Const(bits) => {
+                        let f64_val = f64::from_bits(*bits);
+                        func_body.instruction(&EncoderInstruction::F64Const(f64_val.into()));
                     }
                     Instruction::I64Add => {
                         func_body.instruction(&EncoderInstruction::I64Add);
@@ -1970,6 +1995,14 @@ pub mod encode {
             }
             Instruction::I64Const(value) => {
                 func_body.instruction(&EncoderInstruction::I64Const(*value));
+            }
+            Instruction::F32Const(bits) => {
+                let f32_val = f32::from_bits(*bits);
+                func_body.instruction(&EncoderInstruction::F32Const(f32_val.into()));
+            }
+            Instruction::F64Const(bits) => {
+                let f64_val = f64::from_bits(*bits);
+                func_body.instruction(&EncoderInstruction::F64Const(f64_val.into()));
             }
             Instruction::I64Add => {
                 func_body.instruction(&EncoderInstruction::I64Add);
@@ -2921,6 +2954,16 @@ pub mod terms {
                     // Global instructions not yet supported in ISLE term conversion
                     // For now, treat as nop (will be handled by precompute pass)
                     stack.push(nop());
+                }
+                Instruction::F32Const(_bits) => {
+                    // Float constants cannot be directly optimized in ISLE terms
+                    // They are passed through unchanged during optimization
+                    // We don't push anything to stack as we don't support float operations yet
+                }
+                Instruction::F64Const(_bits) => {
+                    // Float constants cannot be directly optimized in ISLE terms
+                    // They are passed through unchanged during optimization
+                    // We don't push anything to stack as we don't support float operations yet
                 }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
