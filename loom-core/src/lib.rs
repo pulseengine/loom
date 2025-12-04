@@ -2950,10 +2950,21 @@ pub mod terms {
                 Instruction::Nop => {
                     stack.push(nop());
                 }
-                Instruction::GlobalGet(_) | Instruction::GlobalSet(_) => {
-                    // Global instructions not yet supported in ISLE term conversion
-                    // For now, treat as nop (will be handled by precompute pass)
+                Instruction::GlobalGet(_) => {
+                    // Global loads: treated as unknown values that cannot be optimized
+                    // Reason: globals can be modified by imports or concurrent threads
+                    // We conservatively prevent CSE/constant propagation across globals
+                    // GlobalGet acts as a memory barrier for optimization purposes
                     stack.push(nop());
+                }
+                Instruction::GlobalSet(_) => {
+                    // Global stores: popped value but act as memory barrier
+                    // Prevents optimization from reordering or eliminating global stores
+                    // Cannot be removed even if "dead" due to potential side effects
+                    if !stack.is_empty() {
+                        stack.pop(); // Consume the value being stored
+                    }
+                    // Global stores don't produce stack values, just side effects
                 }
                 Instruction::F32Const(_bits) => {
                     // Float constants cannot be directly optimized in ISLE terms

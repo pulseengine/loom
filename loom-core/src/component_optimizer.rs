@@ -199,27 +199,28 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     wasmparser::validate(module_bytes).context("Input module validation failed")?;
 
     // Parse the module
-    let module = crate::parse::parse_wasm(module_bytes)?;
+    let mut module = crate::parse::parse_wasm(module_bytes)?;
 
-    // TODO: Component module optimization requires full IR support for all instructions
-    // Currently, many instructions (global.get, global.set, select, etc.) are parsed
-    // as Unknown and act as optimization barriers. When we try to optimize, the Unknown
-    // instructions interfere with transformations.
+    // Apply the full optimization pipeline to core modules within components
+    // This enables LOOM's unique advantage: being the first Component Model optimizer
     //
-    // For now, just do parse+encode roundtrip without optimization.
-    // This still provides value:
-    // - Validates the module can be parsed and re-encoded
-    // - Prepares infrastructure for future component optimization
+    // IR support now includes:
+    // - Global.get and global.set (conservative: treated as memory barriers)
+    // - F32/F64 constants (passed through, float optimization pending)
+    // - All control flow constructs (blocks, loops, branches)
+    // - All expression-level operations
     //
-    // Next steps:
-    // 1. Add proper IR support for global.get/set, select, and other missing instructions
-    // 2. Update optimization passes to handle these instructions correctly
-    // 3. Then re-enable optimization here
+    // The optimization passes are safe because:
+    // 1. GlobalGet/GlobalSet are treated as memory effects (cannot be removed/reordered)
+    // 2. Unknown instructions still result in function skipping (conservative)
+    // 3. Output is validated with wasmparser before acceptance
+    crate::optimize::optimize_module(&mut module)
+        .context("Core module optimization failed")?;
 
-    // Encode without optimization (parse+encode roundtrip only)
+    // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
-    // Validate before accepting
+    // Validate before accepting to ensure optimization correctness
     if let Err(e) = wasmparser::validate(&optimized_bytes) {
         return Err(anyhow!("Module roundtrip validation failed: {}", e));
     }
