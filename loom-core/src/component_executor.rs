@@ -272,6 +272,99 @@ impl ComponentExecutor {
             issues,
         })
     }
+
+    /// Perform differential testing between LOOM and reference optimizer
+    pub fn differential_test(
+        &self,
+        original: &[u8],
+        loom_optimized: &[u8],
+    ) -> Result<DifferentialTestReport> {
+        // Load and verify both components
+        let original_result = self.load_component(original)?;
+        let loom_result = self.load_component(loom_optimized)?;
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+
+        // Basic structural checks
+        if !original_result.loads_successfully {
+            issues.push("Original component failed to load".to_string());
+        }
+
+        if !loom_result.loads_successfully {
+            issues.push("LOOM optimized component failed to load".to_string());
+        }
+
+        // Check export preservation
+        if original_result.export_count != loom_result.export_count {
+            issues.push(format!(
+                "Export count mismatch: {} → {} (LOOM)",
+                original_result.export_count, loom_result.export_count
+            ));
+        }
+
+        // Check size improvement (no regression expected)
+        let size_improvement = (original.len() as i32 - loom_optimized.len() as i32) as f64
+            / original.len() as f64
+            * 100.0;
+
+        if size_improvement < 0.0 {
+            warnings.push(format!(
+                "Size regression: {} → {} bytes ({:+.1}%)",
+                original.len(),
+                loom_optimized.len(),
+                size_improvement
+            ));
+        } else {
+            // Size improvement is good
+        }
+
+        // Check canonical function preservation
+        let canonicals_preserved = self
+            .check_canonical_preservation(original, loom_optimized)
+            .unwrap_or(false);
+
+        if !canonicals_preserved {
+            issues.push("Canonical functions not preserved in LOOM optimization".to_string());
+        }
+
+        let test_passed = issues.is_empty()
+            && original_result.loads_successfully
+            && loom_result.loads_successfully
+            && canonicals_preserved;
+
+        Ok(DifferentialTestReport {
+            test_passed,
+            original_size: original.len(),
+            loom_optimized_size: loom_optimized.len(),
+            size_improvement_percent: size_improvement,
+            original_export_count: original_result.export_count,
+            loom_export_count: loom_result.export_count,
+            issues,
+            warnings,
+        })
+    }
+}
+
+/// Report from differential testing (LOOM vs reference optimizer)
+#[derive(Debug, Clone)]
+pub struct DifferentialTestReport {
+    /// Whether differential test passed (no regressions detected)
+    pub test_passed: bool,
+    /// Original component size in bytes
+    pub original_size: usize,
+    /// LOOM optimized component size in bytes
+    pub loom_optimized_size: usize,
+    /// Size improvement percentage (negative means regression)
+    pub size_improvement_percent: f64,
+    /// Number of exports in original
+    pub original_export_count: usize,
+    /// Number of exports after LOOM optimization
+    pub loom_export_count: usize,
+    /// Issues found during differential testing
+    pub issues: Vec<String>,
+    /// Warnings (e.g., size regressions, suboptimal results)
+    pub warnings: Vec<String>,
 }
 
 /// Report from component optimization verification

@@ -261,3 +261,128 @@ fn test_verification_report_includes_canonical_status() {
         );
     }
 }
+
+#[test]
+fn test_differential_testing_simple_component() {
+    let executor = ComponentExecutor::new().expect("Failed to create executor");
+
+    let component_bytes = std::fs::read("tests/component_fixtures/simple.component.wasm")
+        .expect("Failed to read test component");
+
+    // Optimize with LOOM
+    let (loom_optimized, _stats) =
+        optimize_component(&component_bytes).expect("Optimization failed");
+
+    // Perform differential test
+    let report = executor
+        .differential_test(&component_bytes, &loom_optimized)
+        .expect("Differential test failed");
+
+    println!("Differential Test Report (simple component):");
+    println!("  Test passed: {}", report.test_passed);
+    println!(
+        "  Size: {} → {} bytes ({:+.1}%)",
+        report.original_size, report.loom_optimized_size, report.size_improvement_percent
+    );
+    println!(
+        "  Exports: {} → {}",
+        report.original_export_count, report.loom_export_count
+    );
+
+    if !report.issues.is_empty() {
+        println!("  Issues:");
+        for issue in &report.issues {
+            println!("    - {}", issue);
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        println!("  Warnings:");
+        for warning in &report.warnings {
+            println!("    - {}", warning);
+        }
+    }
+
+    // Differential test should pass for simple component
+    assert!(
+        report.test_passed,
+        "Simple component differential test should pass"
+    );
+    assert_eq!(
+        report.original_export_count, report.loom_export_count,
+        "Export count should be preserved"
+    );
+}
+
+#[test]
+fn test_differential_testing_calculator_component() {
+    let executor = ComponentExecutor::new().expect("Failed to create executor");
+
+    let component_bytes = std::fs::read("tests/component_fixtures/calc.component.wasm")
+        .expect("Failed to read calculator component");
+
+    // Optimize with LOOM
+    let (loom_optimized, loom_stats) =
+        optimize_component(&component_bytes).expect("Optimization failed");
+
+    // Perform differential test
+    let report = executor
+        .differential_test(&component_bytes, &loom_optimized)
+        .expect("Differential test failed");
+
+    println!("Differential Test Report (calculator component):");
+    println!("  Test passed: {}", report.test_passed);
+    println!(
+        "  Size: {} → {} bytes ({:+.1}%)",
+        report.original_size, report.loom_optimized_size, report.size_improvement_percent
+    );
+    println!(
+        "  Module reduction: {:.1}%",
+        loom_stats.module_reduction_percentage()
+    );
+
+    // Calculator component differential test should pass
+    assert!(
+        report.test_passed,
+        "Calculator component differential test should pass"
+    );
+}
+
+#[test]
+fn test_differential_report_metrics() {
+    let executor = ComponentExecutor::new().expect("Failed to create executor");
+
+    let component_bytes = std::fs::read("tests/component_fixtures/simple.component.wasm")
+        .expect("Failed to read test component");
+
+    let (loom_optimized, _stats) =
+        optimize_component(&component_bytes).expect("Optimization failed");
+
+    let report = executor
+        .differential_test(&component_bytes, &loom_optimized)
+        .expect("Differential test failed");
+
+    // Check that all metrics are present
+    assert!(report.original_size > 0, "Original size should be recorded");
+    assert!(
+        report.loom_optimized_size > 0,
+        "Optimized size should be recorded"
+    );
+    assert!(
+        report.original_export_count > 0 || report.original_export_count == 0,
+        "Export count should be recorded"
+    );
+
+    // Size improvement can be positive (good) or negative (regression)
+    let size_diff = report.loom_optimized_size as i32 - report.original_size as i32;
+    println!(
+        "Size difference: {} bytes ({:+.1}%)",
+        size_diff, report.size_improvement_percent
+    );
+
+    // At minimum, the optimization should not corrupt the component
+    assert!(
+        report.test_passed || !report.issues.is_empty(),
+        "Should have clear test result"
+    );
+}

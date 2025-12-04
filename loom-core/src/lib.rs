@@ -6946,7 +6946,8 @@ pub use component_optimizer::{
 
 /// Re-export component executor API
 pub use component_executor::{
-    CanonicalFunctionInfo, ComponentExecutor, ExecutionResult, VerificationReport,
+    CanonicalFunctionInfo, ComponentExecutor, DifferentialTestReport, ExecutionResult,
+    VerificationReport,
 };
 
 #[cfg(test)]
