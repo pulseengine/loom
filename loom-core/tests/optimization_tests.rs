@@ -1715,7 +1715,10 @@ fn test_dce_dead_block() {
     let after_len = module.functions[0].instructions.len();
 
     // Should have removed dead code
-    assert!(after_len < before_len, "Should have removed dead instructions");
+    assert!(
+        after_len < before_len,
+        "Should have removed dead instructions"
+    );
 
     // Should still be valid
     use loom_core::encode;
@@ -2255,4 +2258,275 @@ fn test_inline_stack_discipline_semantics() {
     use loom_core::encode;
     let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
     wasmparser::validate(&wasm_bytes).expect("Semantic preservation should produce valid WASM");
+}
+
+// ============================================================================
+// F32/F64 Constant Support Tests (Issue #34)
+// ============================================================================
+
+#[test]
+fn test_f32_const_parsing() {
+    let input = r#"
+        (module
+            (func $f32_example (result f32)
+                f32.const 3.14
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::Instruction;
+
+    // Verify F32Const instruction exists
+    let instructions = &module.functions[0].instructions;
+    let has_f32_const = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F32Const(_)));
+
+    assert!(
+        has_f32_const,
+        "Expected F32Const instruction, got: {:?}",
+        instructions
+    );
+}
+
+#[test]
+fn test_f64_const_parsing() {
+    let input = r#"
+        (module
+            (func $f64_example (result f64)
+                f64.const 2.71828
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::Instruction;
+
+    // Verify F64Const instruction exists
+    let instructions = &module.functions[0].instructions;
+    let has_f64_const = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F64Const(_)));
+
+    assert!(
+        has_f64_const,
+        "Expected F64Const instruction, got: {:?}",
+        instructions
+    );
+}
+
+#[test]
+fn test_f32_const_roundtrip() {
+    let input = r#"
+        (module
+            (func $f32_roundtrip (result f32)
+                f32.const 1.5
+            )
+        )
+    "#;
+
+    // Parse and encode back
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    // Validate WASM is well-formed
+    wasmparser::validate(&wasm_bytes).expect("F32Const should produce valid WASM");
+
+    // Re-parse and verify we get the same structure
+    let module2 = parse::parse_wasm(&wasm_bytes).unwrap();
+    use loom_core::Instruction;
+
+    let instructions = &module2.functions[0].instructions;
+    let has_f32_const = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F32Const(_)));
+
+    assert!(has_f32_const, "F32Const should survive roundtrip");
+}
+
+#[test]
+fn test_f64_const_roundtrip() {
+    let input = r#"
+        (module
+            (func $f64_roundtrip (result f64)
+                f64.const 2.71828
+            )
+        )
+    "#;
+
+    // Parse and encode back
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    // Validate WASM is well-formed
+    wasmparser::validate(&wasm_bytes).expect("F64Const should produce valid WASM");
+
+    // Re-parse and verify we get the same structure
+    let module2 = parse::parse_wasm(&wasm_bytes).unwrap();
+    use loom_core::Instruction;
+
+    let instructions = &module2.functions[0].instructions;
+    let has_f64_const = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F64Const(_)));
+
+    assert!(has_f64_const, "F64Const should survive roundtrip");
+}
+
+#[test]
+fn test_multiple_float_constants() {
+    let input = r#"
+        (module
+            (func $multiple_floats (result f64)
+                f32.const 1.0
+                f32.const 2.0
+                f64.const 3.5
+                f64.const 4.5
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::Instruction;
+
+    // Count float constants
+    let instructions = &module.functions[0].instructions;
+    let f32_count = instructions
+        .iter()
+        .filter(|i| matches!(i, Instruction::F32Const(_)))
+        .count();
+    let f64_count = instructions
+        .iter()
+        .filter(|i| matches!(i, Instruction::F64Const(_)))
+        .count();
+
+    assert_eq!(f32_count, 2, "Expected 2 F32Const instructions");
+    assert_eq!(f64_count, 2, "Expected 2 F64Const instructions");
+}
+
+#[test]
+fn test_float_constant_encoding_roundtrip() {
+    let input = r#"
+        (module
+            (func $test_floats (result f64)
+                f32.const 3.14159
+                f64.promote_f32
+                f64.const 1.41421
+                f64.add
+            )
+        )
+    "#;
+
+    // Parse, optimize, encode, and validate
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).expect("Optimization should succeed");
+
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Float constants should encode to valid WASM");
+
+    // Verify constants survive optimization and encoding
+    use loom_core::Instruction;
+    let instructions = &module.functions[0].instructions;
+    let has_floats = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F32Const(_) | Instruction::F64Const(_)));
+
+    assert!(has_floats, "Float constants should survive optimization");
+}
+
+#[test]
+fn test_f32_const_with_operations() {
+    let input = r#"
+        (module
+            (func $f32_ops (result f32)
+                f32.const 2.0
+                f32.const 3.0
+                f32.add
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    wasmparser::validate(&wasm_bytes).expect("F32Const with operations should be valid");
+}
+
+#[test]
+fn test_f64_const_with_operations() {
+    let input = r#"
+        (module
+            (func $f64_ops (result f64)
+                f64.const 1.5
+                f64.const 2.5
+                f64.mul
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    wasmparser::validate(&wasm_bytes).expect("F64Const with operations should be valid");
+}
+
+#[test]
+fn test_float_const_with_conditionals() {
+    let input = r#"
+        (module
+            (func $float_if (param f32) (result f32)
+                local.get 0
+                f32.const 5.0
+                f32.lt
+                if (result f32)
+                    f32.const 1.0
+                else
+                    f32.const 0.0
+                end
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    wasmparser::validate(&wasm_bytes).expect("Float constants in conditionals should be valid");
+}
+
+#[test]
+fn test_float_const_special_values() {
+    let input = r#"
+        (module
+            (func $special_floats (result f64)
+                f32.const 0.0
+                f64.promote_f32
+                f64.const 1e308
+                f64.add
+            )
+        )
+    "#;
+
+    let module = parse::parse_wat(input).unwrap();
+    use loom_core::encode;
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+
+    wasmparser::validate(&wasm_bytes).expect("Special float values should encode correctly");
+
+    // Verify roundtrip preserves structure
+    let module2 = parse::parse_wasm(&wasm_bytes).unwrap();
+    use loom_core::Instruction;
+
+    let instructions = &module2.functions[0].instructions;
+    let has_floats = instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::F32Const(_) | Instruction::F64Const(_)));
+
+    assert!(has_floats, "Special float values should survive roundtrip");
 }

@@ -147,6 +147,9 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
 | WASM Instruction | Z3 Encoding |
 |------------------|-------------|
 | `i32.const N` | `BV::from_i64(ctx, N, 32)` |
+| `i64.const N` | `BV::from_i64(ctx, N, 64)` |
+| `f32.const bits` | `BV::from_i64(ctx, bits as i64, 32)` |
+| `f64.const bits` | `BV::from_i64(ctx, bits as i64, 64)` |
 | `i32.add` | `lhs.bvadd(&rhs)` |
 | `i32.mul` | `lhs.bvmul(&rhs)` |
 | `i32.shl` | `lhs.bvshl(&rhs)` |
@@ -154,7 +157,7 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
 | `local.get` | `locals[idx].clone()` |
 | `local.set` | `locals[idx] = value` |
 
-**Coverage**: Currently supports ~20 instructions (integer arithmetic and bitwise).
+**Coverage**: Currently supports ~20 instructions (integer arithmetic, bitwise, and float constants as bit patterns).
 
 ### 3.2 Extending Z3 Coverage
 
@@ -725,11 +728,13 @@ fn fuzz_optimizer() {
 - Handle alignment and bounds checks
 - Test on functions with memory access
 
-**Week 4**: Floating point (optional)
-- Add f32/f64 constants
-- Add floating-point arithmetic
-- Handle NaN/infinity edge cases
-- Or: Explicitly exclude from verification scope
+**Week 4**: Floating point (in progress)
+- ✅ Add f32/f64 constants (completed)
+- ✅ Parser support for F32Const and F64Const (completed)
+- ✅ Encoder support for float constants (completed)
+- ⏳ Add floating-point arithmetic operations
+- ⏳ Handle NaN/infinity edge cases in optimization
+- ⏳ Extend Z3 verification for float operations
 
 **Deliverable**: Comprehensive Z3 verification for all LOOM optimizations
 

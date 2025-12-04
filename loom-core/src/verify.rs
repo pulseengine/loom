@@ -156,6 +156,16 @@ fn encode_function_to_smt<'ctx>(ctx: &'ctx Context, func: &Function) -> Result<B
             Instruction::I64Const(n) => {
                 stack.push(BV::from_i64(ctx, *n, 64));
             }
+            Instruction::F32Const(bits) => {
+                // Float constants are treated as bit patterns for now
+                // We don't perform floating-point arithmetic verification yet
+                stack.push(BV::from_i64(ctx, *bits as i64, 32));
+            }
+            Instruction::F64Const(bits) => {
+                // Float constants are treated as bit patterns for now
+                // We don't perform floating-point arithmetic verification yet
+                stack.push(BV::from_i64(ctx, *bits as i64, 64));
+            }
 
             // Arithmetic operations (i32)
             Instruction::I32Add => {
