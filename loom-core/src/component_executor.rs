@@ -92,14 +92,11 @@ impl ComponentExecutor {
         for payload in wasmparser::Parser::new(0).parse_all(component_bytes) {
             let payload = payload?;
 
-            match payload {
-                Payload::ExportSection(reader) => {
-                    for export in reader {
-                        let _ = export?;
-                        export_count += 1;
-                    }
+            if let Payload::ExportSection(reader) = payload {
+                for export in reader {
+                    let _ = export?;
+                    export_count += 1;
                 }
-                _ => {}
             }
         }
 
