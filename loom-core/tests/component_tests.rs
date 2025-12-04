@@ -245,8 +245,14 @@ fn test_component_with_globals_optimization() {
     let (optimized, stats) = optimize_component(&component_bytes).expect("Optimization failed");
 
     // Verify global handling didn't break anything
-    assert_eq!(stats.module_count, 1, "Calculator component has 1 core module");
-    assert_eq!(stats.modules_optimized, 1, "Should have optimized the module");
+    assert_eq!(
+        stats.module_count, 1,
+        "Calculator component has 1 core module"
+    );
+    assert_eq!(
+        stats.modules_optimized, 1,
+        "Should have optimized the module"
+    );
 
     // Verify output is valid
     wasmparser::validate(&optimized).expect("Optimized component should be valid");
@@ -268,15 +274,15 @@ fn test_component_roundtrip_preserves_functionality() {
         .expect("Failed to read test component");
 
     // Parse original to get structure
-    let original_analysis = analyze_component_structure(&component_bytes)
-        .expect("Should analyze original");
+    let original_analysis =
+        analyze_component_structure(&component_bytes).expect("Should analyze original");
 
     // Optimize
     let (optimized, _stats) = optimize_component(&component_bytes).expect("Optimization failed");
 
     // Parse optimized to get structure
-    let optimized_analysis = analyze_component_structure(&optimized)
-        .expect("Should analyze optimized");
+    let optimized_analysis =
+        analyze_component_structure(&optimized).expect("Should analyze optimized");
 
     // Component structure should be preserved
     assert_eq!(
@@ -289,7 +295,10 @@ fn test_component_roundtrip_preserves_functionality() {
     );
 
     // Exports should have the same names
-    assert!(optimized.len() > 0, "Optimized component should not be empty");
+    assert!(
+        optimized.len() > 0,
+        "Optimized component should not be empty"
+    );
 }
 
 #[test]
@@ -348,19 +357,32 @@ fn test_component_optimization_verifies_output() {
     let (optimized, stats) = optimize_component(&component_bytes).expect("Optimization failed");
 
     // Verify optimization completed
-    assert_eq!(stats.module_count, 1, "Should have identified 1 core module");
-    assert_eq!(stats.modules_optimized, 1, "All modules should be optimized");
+    assert_eq!(
+        stats.module_count, 1,
+        "Should have identified 1 core module"
+    );
+    assert_eq!(
+        stats.modules_optimized, 1,
+        "All modules should be optimized"
+    );
 
     // Verify output is valid
     wasmparser::validate(&optimized).expect("Optimized component should be valid");
 
     // Verify we got useful stats
-    assert!(stats.original_module_size > 0, "Should have original module sizes");
-    assert!(stats.optimized_module_size > 0, "Should have optimized module sizes");
+    assert!(
+        stats.original_module_size > 0,
+        "Should have original module sizes"
+    );
+    assert!(
+        stats.optimized_module_size > 0,
+        "Should have optimized module sizes"
+    );
 
     // With GlobalGet/GlobalSet support and full optimization pipeline,
     // we should see some reduction in the module size
-    let module_reduction = ((stats.original_module_size as f64 - stats.optimized_module_size as f64)
+    let module_reduction = ((stats.original_module_size as f64
+        - stats.optimized_module_size as f64)
         / stats.original_module_size as f64)
         * 100.0;
 

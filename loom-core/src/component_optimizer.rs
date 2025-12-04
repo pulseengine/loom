@@ -214,8 +214,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // 1. GlobalGet/GlobalSet are treated as memory effects (cannot be removed/reordered)
     // 2. Unknown instructions still result in function skipping (conservative)
     // 3. Output is validated with wasmparser before acceptance
-    crate::optimize::optimize_module(&mut module)
-        .context("Core module optimization failed")?;
+    crate::optimize::optimize_module(&mut module).context("Core module optimization failed")?;
 
     // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
