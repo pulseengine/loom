@@ -368,10 +368,8 @@ fn test_differential_report_metrics() {
         report.loom_optimized_size > 0,
         "Optimized size should be recorded"
     );
-    assert!(
-        report.original_export_count > 0 || report.original_export_count == 0,
-        "Export count should be recorded"
-    );
+    // Export count is a valid usize, always recordable
+    let _ = report.original_export_count;
 
     // Size improvement can be positive (good) or negative (regression)
     let size_diff = report.loom_optimized_size as i32 - report.original_size as i32;

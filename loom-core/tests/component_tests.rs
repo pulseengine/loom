@@ -296,7 +296,7 @@ fn test_component_roundtrip_preserves_functionality() {
 
     // Exports should have the same names
     assert!(
-        optimized.len() > 0,
+        !optimized.is_empty(),
         "Optimized component should not be empty"
     );
 }
