@@ -3749,6 +3749,16 @@ pub mod optimize {
         result
     }
 
+    /// Helper to check if an instruction sequence ends with a terminating instruction
+    fn ends_with_terminator(instructions: &[Instruction]) -> bool {
+        instructions.last().map_or(false, |last| {
+            matches!(
+                last,
+                Instruction::Return | Instruction::Br(_) | Instruction::Unreachable
+            )
+        })
+    }
+
     /// Recursively eliminate dead code in a block of instructions
     fn eliminate_dead_code_in_block(instructions: &[Instruction]) -> Vec<Instruction> {
         let mut result = Vec::new();
@@ -3765,9 +3775,32 @@ pub mod optimize {
                 // Recurse into nested control flow
                 Instruction::Block { block_type, body } => {
                     let clean_body = eliminate_dead_code_in_block(body);
+
+                    // If block expects results but body is unreachable, add unreachable to satisfy type
+                    let needs_unreachable = match block_type {
+                        BlockType::Value(_) => ends_with_terminator(&clean_body),
+                        BlockType::Func { results, .. } => {
+                            ends_with_terminator(&clean_body) && !results.is_empty()
+                        }
+                        BlockType::Empty => false,
+                    };
+
+                    let final_body = if needs_unreachable {
+                        let mut fixed = clean_body;
+                        if !fixed
+                            .last()
+                            .map_or(false, |i| matches!(i, Instruction::Unreachable))
+                        {
+                            fixed.push(Instruction::Unreachable);
+                        }
+                        fixed
+                    } else {
+                        clean_body
+                    };
+
                     Instruction::Block {
                         block_type: block_type.clone(),
-                        body: clean_body,
+                        body: final_body,
                     }
                 }
                 Instruction::Loop { block_type, body } => {
@@ -3794,15 +3827,28 @@ pub mod optimize {
                 _ => instr.clone(),
             };
 
-            result.push(processed_instr);
-
             // Check if this instruction makes following code unreachable
-            match instr {
+            match &processed_instr {
                 Instruction::Return => reachable = false,
                 Instruction::Br(_) => reachable = false,
                 Instruction::Unreachable => reachable = false,
+                // A block/loop/if with all paths terminating also makes following code unreachable
+                Instruction::Block { body, .. } if ends_with_terminator(body) => reachable = false,
+                Instruction::Loop { body, .. } if ends_with_terminator(body) => reachable = false,
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    // If both branches terminate, code after is unreachable
+                    if ends_with_terminator(then_body) && ends_with_terminator(else_body) {
+                        reachable = false;
+                    }
+                }
                 _ => {}
             }
+
+            result.push(processed_instr);
         }
 
         result
