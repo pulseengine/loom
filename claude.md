@@ -1,43 +1,79 @@
-# Claude Code Guidelines for LOOM
+# Development Notes
 
-## Commit Messages
+## Current Session Work
 
-Use conventional commits with concise formatting:
-- Type: feat, fix, refactor, docs, test, perf, chore
-- Scope: optional, e.g. (lib), (verify), (tests)
-- Subject: lowercase, present tense, max 50 chars
-- Body: only if needed, max 72 chars per line
-- NO Unicode/emojis
-- NO "Generated with Claude Code" footer
-- NO "Co-Authored-By" lines
-- Keep messages focused on actual changes, not verbose documentation
+### Completed
+1. ✅ Component Model Execution Verification
+   - Implemented ComponentExecutor for structural validation
+   - Added canonical function preservation checks
+   - Created differential testing framework
 
-Example:
-```
-feat(lib): add F32/F64 constant support
+2. ✅ CI Validation Pipeline
+   - Fixed "Validate WebAssembly Output" job
+   - Improved error reporting for fixture validation
+   - 28/29 test fixtures now pass validation
 
-Parser, encoder, and verification for floating-point constants.
-Adds 10 test cases covering parsing, roundtrip, and optimization.
-```
+3. ✅ Dead Code Elimination (DCE) Bug Fix
+   - Fixed type mismatch when removing unreachable code
+   - Blocks with result types now get `unreachable` instruction
+   - Terminators in blocks properly mark following code unreachable
 
-## Code Style
+### Known Issues (Need Investigation)
 
-- Follow Rust conventions and existing LOOM patterns
-- Add documentation only for public APIs
-- Avoid over-engineering: solve the current problem, not hypothetical ones
-- Use type-level proofs via Rust's type system
-- Verification via Z3 for optimizer correctness
+**Issue #?: Optimizer Stack Analysis Bugs**
 
-## Testing
+Two test fixtures fail WASM validation due to stack type mismatches:
+- `simplify_locals_test.wat` - func $nested_blocks
+- `vacuum_test.wat` - func $mixed_patterns
 
-- All changes must pass existing tests
-- Add tests for new functionality
-- Run full suite before committing: `cargo test`
-- Focus on semantics preservation
+**Problem Statement:**
+The simplify_locals and vacuum passes process nested blocks without validating stack balance. 
+Values get left on block stacks that expect empty types, or removed when needed.
 
-## PR Guidelines
+**Solution Approach (Research Needed):**
 
-- Keep changes focused and reviewable
-- Reference GitHub issues when applicable
-- Verify formal properties via Z3 if optimization-related
-- Test empirically with wasmtime/wasm-smith
+To solve properly, we need to implement a **stack analysis pass** that:
+1. Tracks how each instruction affects the value stack
+2. Validates block transformations preserve stack invariants
+3. Ensures all control flow paths produce correct stack types
+
+**Questions for Implementation:**
+- Should stack analysis be a separate pass that validates before/after optimization?
+- Should we add stack checks into each optimization pass?
+- Can we use Z3 SMT solver to verify stack properties are preserved?
+- What's the minimum viable stack analysis for correct optimization?
+
+**Recommended Research:**
+1. Study Binaryen's stack analysis approach
+2. Investigate WebAssembly validator's stack tracking
+3. Evaluate Z3 for stack property verification
+4. Check if we can extend ISLE rules for stack validation
+
+This is a foundational issue - fixing it properly will make all future optimizations more robust.
+
+## Proposed GitHub Issue
+
+**Title**: Implement stack analysis validation for optimizer passes
+
+**Description**:
+The optimizer's simplify_locals and vacuum passes create invalid WASM by not validating stack balance when processing nested blocks. This causes type mismatches in 2 test fixtures.
+
+**What needs to happen**:
+Implement a proper stack analysis framework that validates all optimization passes preserve the invariant that blocks/instructions have correct stack depth before and after transformation.
+
+**Why this matters**:
+- 28/29 test fixtures currently pass (DCE fix improved from 26/29)
+- Stack analysis is foundational - every optimizer pass depends on it
+- Enables use of Z3 for formal verification of stack properties
+
+**Suggested approach** (needs research):
+1. Add stack depth calculation to instruction analysis
+2. Create pre/post validation for block transformations
+3. Investigate if ISLE rules can encode stack properties
+4. Consider Z3 solver for stack property preservation proofs
+
+**Resources for research**:
+- Binaryen's stack analysis (C++)
+- WASM validator source code
+- Z3 arithmetic/bit-vector theories for stack modeling
+
