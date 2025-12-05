@@ -13,6 +13,7 @@ wasmparser = { workspace = true }
 tempfile = "3.8"
 glob = "0.3"
 which = "8.0"
+wasmtime = "17.0"
 
 [dev-dependencies]
 criterion = "0.5"

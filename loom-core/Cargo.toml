@@ -32,6 +32,7 @@ leb128 = "0.2"
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = "0.5"
+wasmtime = "17.0"
 
 [features]
 # Verification support with Z3 SMT solver
