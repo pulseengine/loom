@@ -3652,6 +3652,14 @@ pub mod optimize {
         // Optimize added constants
         optimize_added_constants(module)?;
 
+        // Phase 5: Validate stack properties after optimizations
+        #[cfg(feature = "verification")]
+        {
+            if let Err(e) = super::verify::validate_module_blocks(module) {
+                eprintln!("⚠ Stack validation warning: {}", e);
+            }
+        }
+
         Ok(())
     }
 
