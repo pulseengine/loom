@@ -10,6 +10,9 @@
 
 pub use loom_isle::{Imm32, Imm64, Value, ValueData};
 
+/// Stack analysis module: compositional stack type system
+pub mod stack;
+
 /// Internal representation of a WebAssembly module
 #[derive(Debug, Clone)]
 pub struct Module {
