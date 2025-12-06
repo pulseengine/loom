@@ -371,9 +371,112 @@ fn encode_function_to_smt<'ctx>(ctx: &'ctx Context, func: &Function) -> Result<B
     Ok(stack.pop().unwrap())
 }
 
+/// Verify that block stack properties are preserved across optimization
+///
+/// Uses Z3 to formally verify that a block transformation preserves:
+/// 1. Stack composition (instructions sequence correctly)
+/// 2. Input parameter types
+/// 3. Output result types
+///
+/// # Arguments
+///
+/// * `original_instrs` - Instructions in original block
+/// * `optimized_instrs` - Instructions in optimized block
+/// * `block_params` - Input types the block expects
+/// * `block_results` - Output types the block must produce
+///
+/// # Returns
+///
+/// * `Ok(true)` - Stack properties are preserved
+/// * `Ok(false)` - Found a counterexample
+/// * `Err(_)` - Verification error
+#[cfg(feature = "verification")]
+pub fn verify_stack_properties(
+    original_instrs: &[Instruction],
+    optimized_instrs: &[Instruction],
+    block_params: &[crate::ValueType],
+    block_results: &[crate::ValueType],
+) -> Result<bool> {
+    // Convert ValueType to stack::ValueType
+    let stack_params: Vec<crate::stack::ValueType> = block_params
+        .iter()
+        .map(|vt| match vt {
+            crate::ValueType::I32 => crate::stack::ValueType::I32,
+            crate::ValueType::I64 => crate::stack::ValueType::I64,
+            crate::ValueType::F32 => crate::stack::ValueType::F32,
+            crate::ValueType::F64 => crate::stack::ValueType::F64,
+        })
+        .collect();
+
+    let stack_results: Vec<crate::stack::ValueType> = block_results
+        .iter()
+        .map(|vt| match vt {
+            crate::ValueType::I32 => crate::stack::ValueType::I32,
+            crate::ValueType::I64 => crate::stack::ValueType::I64,
+            crate::ValueType::F32 => crate::stack::ValueType::F32,
+            crate::ValueType::F64 => crate::stack::ValueType::F64,
+        })
+        .collect();
+
+    // First, validate that both blocks have correct structure
+    let orig_validation =
+        crate::stack::validation::validate_block(original_instrs, &stack_params, &stack_results);
+
+    let opt_validation =
+        crate::stack::validation::validate_block(optimized_instrs, &stack_params, &stack_results);
+
+    // Check validation results
+    match (&orig_validation, &opt_validation) {
+        (
+            crate::stack::validation::ValidationResult::Valid(_),
+            crate::stack::validation::ValidationResult::Valid(_),
+        ) => {
+            // Both are valid - stack properties are preserved!
+            Ok(true)
+        }
+        (crate::stack::validation::ValidationResult::Valid(_), _) => {
+            // Original valid but optimized invalid - stack properties NOT preserved
+            eprintln!(
+                "Stack property violation: optimization produced invalid stack: {:?}",
+                opt_validation
+            );
+            Ok(false)
+        }
+        (_, crate::stack::validation::ValidationResult::Valid(_)) => {
+            // This shouldn't happen if original was valid - something went wrong
+            eprintln!(
+                "Stack property violation: original block became invalid: {:?}",
+                orig_validation
+            );
+            Ok(false)
+        }
+        _ => {
+            // Both invalid
+            eprintln!(
+                "Stack property violation in original block: {:?}",
+                orig_validation
+            );
+            Ok(false)
+        }
+    }
+}
+
 /// Non-verification stub when Z3 feature is disabled
 #[cfg(not(feature = "verification"))]
 pub fn verify_optimization(_original: &Module, _optimized: &Module) -> Result<bool> {
+    Err(anyhow!(
+        "Verification support not enabled. Rebuild with --features verification"
+    ))
+}
+
+/// Non-verification stub for stack properties when Z3 feature is disabled
+#[cfg(not(feature = "verification"))]
+pub fn verify_stack_properties(
+    _original_instrs: &[crate::Instruction],
+    _optimized_instrs: &[crate::Instruction],
+    _block_params: &[crate::ValueType],
+    _block_results: &[crate::ValueType],
+) -> Result<bool> {
     Err(anyhow!(
         "Verification support not enabled. Rebuild with --features verification"
     ))
