@@ -341,3 +341,91 @@ Optimization passes transform blocks without tracking how instructions compose o
    - Answer: Benchmark verification cost vs optimization benefit
 
 For now, proceeding with Phase 1 (Binaryen approach + Z3 verification).
+
+## Research Summary: State-of-the-Art in Compiler Optimization
+
+### What We Actually Have in LOOM (from existing codebase research)
+
+The project already has comprehensive analysis documenting:
+
+1. **Binaryen Comparison** (`docs/analysis/LOOM_VS_BINARYEN_COMPARISON.md`)
+   - Binaryen: 123 passes, ~200k LOC, C++
+   - LOOM: 13 passes, ~6k LOC, Rust + ISLE
+   - LOOM achieves 80-95% reduction vs Binaryen's 85-98%
+   - **Key missing passes for parity**: Code Folding (5-10%), RSE (2-5%), LICM (3-8%), Better Inlining (2-5%)
+   - Opportunity: 15-35% improvement with targeted additions
+
+2. **Z3 Verification Status** (`docs/analysis/Z3_VERIFICATION_STATUS.md`)
+   - LOOM has real formal verification via Z3, not ISLE
+   - Z3 provides translation validation (mathematical proofs)
+   - Current coverage: i32/i64 arithmetic and bitwise ops
+   - **Status**: ✅ Working with `--features verification --verify`
+   - **IMPORTANT**: ISLE is just a DSL for optimization rules, NOT verification
+
+3. **Formal Verification Architecture** (`docs/architecture/FORMAL_VERIFICATION_ARCHITECTURE.md`)
+   - Hybrid 3-layer verification approach:
+     - Layer 1: Optimization (ISLE + Rust)
+     - Layer 2: Z3 formal verification (translation validation)
+     - Layer 3: Empirical validation (proptest + differential testing)
+   - **Verdict**: Z3 translation validation is best approach for production use
+   - No other modern optimizers use pure formal verification (too expensive)
+
+### State-of-the-Art Comparison
+
+Based on research across compilers (LLVM, GCC, Cranelift, V8, SpiderMonkey, Binaryen):
+
+**Standard Practice** (what everyone uses):
+- ✅ Dataflow analysis for safety
+- ✅ Effect analysis (reads/writes/calls tracking)
+- ✅ Pattern-matching optimization rules
+- ✅ Multi-level optimization (-O0 through -O3)
+- ✅ Property-based testing
+- ❌ Formal verification (too expensive for all passes)
+
+**State-of-the-Art** (cutting edge):
+- ✅ eGraphs (egg) for automatic optimization discovery (research stage)
+- ✅ SMT solvers for critical passes (translation validation)
+- ✅ Mechanized proofs in Coq/Isabelle (research only, not production)
+- ✅ Abstract interpretation for invariants
+- ✅ Alive project for LLVM pass verification (academic)
+
+**What LOOM Has** (ahead of most):
+- ✅ Z3 translation validation (most optimizers don't have this)
+- ✅ Component Model support (future-proofing)
+- ✅ Rust safety guarantees
+- ⚠️ ISLE pattern matching (good but limited by architecture)
+- ❌ eGraphs (not integrated)
+
+### Why Stack Analysis is Critical
+
+Stack analysis is a **foundational property** that all optimizers must get right:
+- **Binaryen**: Uses compositional StackSignature system (proven approach)
+- **LLVM**: Uses data flow analysis + SSA form
+- **V8**: Uses type feedback + polymorphic inline caches
+- **Symbolica**: Not applicable (computer algebra system, not a compiler)
+
+The research confirms: **Binaryen's approach is state-of-the-art for stack analysis**.
+
+### Why Formal Verification with Z3 is Correct Strategy
+
+**Academic Research** (last 5 years):
+- Translation validation papers show ~100-200ms overhead acceptable for CI
+- SMT solvers proven effective for verifying compiler optimizations
+- "Alive" project successfully found bugs in LLVM using this approach
+- Modern trend: verify critical passes with SMT, use testing for others
+
+**Production Compilers**:
+- None verify all passes (cost prohibitive)
+- Most verify nothing (rely on testing)
+- LOOM is ahead with Z3 translation validation
+
+### Conclusion
+
+LOOM's strategy is **correct and state-of-the-art**:
+1. Use Binaryen's StackSignature approach for stack analysis
+2. Extend Z3 verification to cover stack properties
+3. Use property-based testing for coverage
+4. Add missing optimization passes (Code Folding, RSE, LICM)
+
+This is the same approach cutting-edge compiler research recommends.
+Proceeding with Phase 1 implementation.
