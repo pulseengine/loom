@@ -11,7 +11,8 @@
       "Bash(./target/release/loom optimize:*)",
       "Bash(cargo build:*)",
       "Bash(gh issue view:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(export Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h)"
     ],
     "deny": [],
     "ask": []
