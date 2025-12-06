@@ -461,9 +461,85 @@ pub fn verify_stack_properties(
     }
 }
 
-/// Non-verification stub when Z3 feature is disabled
+/// Validate all blocks in a module using stack analysis
+///
+/// Phase 5 Integration: Validates that all block structures in the module have
+/// correct stack compositions. This is called after optimization passes to ensure
+/// they preserve stack types.
+///
+/// # Arguments
+///
+/// * `module` - The module to validate
+///
+/// # Returns
+///
+/// * `Ok(true)` - All blocks have valid stack properties
+/// * `Ok(false)` - A block violates stack composition rules
+/// * `Err(_)` - Validation error
+#[cfg(feature = "verification")]
+pub fn validate_module_blocks(module: &Module) -> Result<bool> {
+    for func in &module.functions {
+        // Collect block parameters from function signature
+        let block_params: Vec<crate::ValueType> = func.signature.params.clone();
+        let block_results: Vec<crate::ValueType> = func.signature.results.clone();
+
+        // Validate function body blocks
+        if !validate_instruction_sequence(&func.instructions, &block_params, &block_results)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Helper to recursively validate instruction sequences within blocks
+#[cfg(feature = "verification")]
+fn validate_instruction_sequence(
+    instrs: &[crate::Instruction],
+    params: &[crate::ValueType],
+    results: &[crate::ValueType],
+) -> Result<bool> {
+    // Use our stack validation module to check composition
+    let stack_params: Vec<crate::stack::ValueType> = params
+        .iter()
+        .map(|vt| match vt {
+            crate::ValueType::I32 => crate::stack::ValueType::I32,
+            crate::ValueType::I64 => crate::stack::ValueType::I64,
+            crate::ValueType::F32 => crate::stack::ValueType::F32,
+            crate::ValueType::F64 => crate::stack::ValueType::F64,
+        })
+        .collect();
+
+    let stack_results: Vec<crate::stack::ValueType> = results
+        .iter()
+        .map(|vt| match vt {
+            crate::ValueType::I32 => crate::stack::ValueType::I32,
+            crate::ValueType::I64 => crate::stack::ValueType::I64,
+            crate::ValueType::F32 => crate::stack::ValueType::F32,
+            crate::ValueType::F64 => crate::stack::ValueType::F64,
+        })
+        .collect();
+
+    // Create a block validation context
+    let result = crate::stack::validation::validate_block(instrs, &stack_params, &stack_results);
+
+    match result {
+        crate::stack::validation::ValidationResult::Valid(_) => Ok(true),
+        crate::stack::validation::ValidationResult::StackMismatch { .. } => Ok(false),
+        crate::stack::validation::ValidationResult::MissingInput { .. } => Ok(false),
+        crate::stack::validation::ValidationResult::WrongOutput { .. } => Ok(false),
+    }
+}
+
 #[cfg(not(feature = "verification"))]
 pub fn verify_optimization(_original: &Module, _optimized: &Module) -> Result<bool> {
+    Err(anyhow!(
+        "Verification support not enabled. Rebuild with --features verification"
+    ))
+}
+
+/// Non-verification stub for module block validation when Z3 feature is disabled
+#[cfg(not(feature = "verification"))]
+pub fn validate_module_blocks(_module: &Module) -> Result<bool> {
     Err(anyhow!(
         "Verification support not enabled. Rebuild with --features verification"
     ))
