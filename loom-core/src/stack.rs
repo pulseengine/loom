@@ -245,6 +245,115 @@ impl fmt::Display for StackSignature {
     }
 }
 
+/// Block validation framework
+///
+/// Validates that block bodies satisfy their declared type signatures.
+/// This is critical for detecting stack mismatches before they reach the WASM validator.
+pub mod validation {
+    use super::*;
+
+    /// Represents the result of block validation
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum ValidationResult {
+        /// Block is valid: stack signature matches declaration
+        Valid(StackSignature),
+        /// Stack type mismatch at position
+        StackMismatch {
+            /// Position in instruction sequence where mismatch occurred
+            position: usize,
+            /// Expected signature at this point
+            expected: StackSignature,
+            /// Actual signature produced
+            actual: StackSignature,
+        },
+        /// Block requires specific input types not provided
+        MissingInput {
+            /// Types expected on input stack
+            expected_params: Vec<ValueType>,
+        },
+        /// Block produces wrong output type
+        WrongOutput {
+            /// Expected output type from block
+            expected_results: Vec<ValueType>,
+            /// Actual output produced
+            actual_results: Vec<ValueType>,
+        },
+    }
+
+    /// Validate a block body against its declared type
+    ///
+    /// Checks that the instruction sequence in a block:
+    /// 1. Consumes the correct input types
+    /// 2. Produces the correct output types
+    /// 3. Has valid instruction composition throughout
+    ///
+    /// # Arguments
+    ///
+    /// * `instructions` - The instruction sequence in the block body
+    /// * `block_params` - Input types this block expects
+    /// * `block_results` - Output types this block must produce
+    pub fn validate_block(
+        instructions: &[crate::Instruction],
+        block_params: &[ValueType],
+        block_results: &[ValueType],
+    ) -> ValidationResult {
+        // Start with the input signature
+        let mut current_sig =
+            StackSignature::new(block_params.to_vec(), vec![], SignatureKind::Fixed);
+
+        // Compose each instruction
+        for (pos, instr) in instructions.iter().enumerate() {
+            let instr_sig = super::effects::instruction_signature(instr);
+
+            // Check if this instruction composes with current state
+            if !current_sig.composes(&instr_sig) {
+                return ValidationResult::StackMismatch {
+                    position: pos,
+                    expected: current_sig.clone(),
+                    actual: instr_sig,
+                };
+            }
+
+            // Compose the signatures
+            current_sig = current_sig.compose(&instr_sig);
+        }
+
+        // Check that final stack matches block's declared results
+        if current_sig.results != block_results {
+            return ValidationResult::WrongOutput {
+                expected_results: block_results.to_vec(),
+                actual_results: current_sig.results,
+            };
+        }
+
+        ValidationResult::Valid(current_sig)
+    }
+
+    /// Validate a sequence of instructions without block context
+    ///
+    /// This is useful for validating instruction sequences in isolation,
+    /// without knowing the surrounding block type.
+    pub fn validate_instruction_sequence(instructions: &[crate::Instruction]) -> ValidationResult {
+        let mut current_sig = StackSignature::empty();
+
+        for (pos, instr) in instructions.iter().enumerate() {
+            let instr_sig = super::effects::instruction_signature(instr);
+
+            if !current_sig.composes(&instr_sig) {
+                return ValidationResult::StackMismatch {
+                    position: pos,
+                    expected: current_sig.clone(),
+                    actual: instr_sig,
+                };
+            }
+
+            current_sig = current_sig.compose(&instr_sig);
+        }
+
+        ValidationResult::Valid(current_sig)
+    }
+}
+
 /// Stack effect analysis for instructions
 ///
 /// Determines how each WebAssembly instruction affects the value stack.
@@ -589,5 +698,67 @@ mod tests {
         // Actually the add test needs a different approach
         // We'd need to manually handle the stack state tracking
         // For now this demonstrates the concept works for simple cases
+    }
+
+    #[test]
+    fn test_block_validation_valid() {
+        use crate::Instruction::*;
+
+        // Valid block: produces i32
+        let instrs = vec![I32Const(42)];
+        let result = validation::validate_block(&instrs, &[], &[ValueType::I32]);
+
+        match result {
+            validation::ValidationResult::Valid(sig) => {
+                assert_eq!(sig.results, vec![ValueType::I32]);
+            }
+            _ => panic!("Expected valid block, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_block_validation_wrong_output() {
+        use crate::Instruction::*;
+
+        // Block declares it produces i32, but actually produces i64
+        let instrs = vec![I64Const(42)];
+        let result = validation::validate_block(&instrs, &[], &[ValueType::I32]);
+
+        match result {
+            validation::ValidationResult::WrongOutput {
+                expected_results,
+                actual_results,
+            } => {
+                assert_eq!(expected_results, vec![ValueType::I32]);
+                assert_eq!(actual_results, vec![ValueType::I64]);
+            }
+            _ => panic!("Expected WrongOutput, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_block_validation_stack_mismatch() {
+        use crate::Instruction::*;
+
+        // Block with input params: [i32] -> [i32]
+        // But we try to add without providing 2 i32s on stack
+        let instrs = vec![I32Add]; // Needs [i32, i32] on stack
+        let result = validation::validate_block(&instrs, &[ValueType::I32], &[ValueType::I32]);
+
+        // This should fail because I32Add needs [i32, i32] but we only have [i32]
+        match result {
+            validation::ValidationResult::StackMismatch {
+                position,
+                expected,
+                actual,
+            } => {
+                assert_eq!(position, 0);
+                // expected signature should be [i32] -> [] (what we have)
+                // actual signature should be [i32, i32] -> [i32] (what add needs)
+                assert_eq!(expected.params, vec![ValueType::I32]);
+                assert_eq!(actual.params, vec![ValueType::I32, ValueType::I32]);
+            }
+            _ => panic!("Expected StackMismatch, got: {:?}", result),
+        }
     }
 }

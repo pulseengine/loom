@@ -3754,7 +3754,7 @@ pub mod optimize {
 
     /// Helper to check if an instruction sequence ends with a terminating instruction
     fn ends_with_terminator(instructions: &[Instruction]) -> bool {
-        instructions.last().map_or(false, |last| {
+        instructions.last().is_some_and(|last| {
             matches!(
                 last,
                 Instruction::Return | Instruction::Br(_) | Instruction::Unreachable
@@ -3792,7 +3792,7 @@ pub mod optimize {
                         let mut fixed = clean_body;
                         if !fixed
                             .last()
-                            .map_or(false, |i| matches!(i, Instruction::Unreachable))
+                            .is_some_and(|i| matches!(i, Instruction::Unreachable))
                         {
                             fixed.push(Instruction::Unreachable);
                         }
