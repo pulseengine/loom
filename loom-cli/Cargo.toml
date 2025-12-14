@@ -20,6 +20,8 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 
 [features]
+# Default features - verification enabled for production safety
+default = ["verification"]
 # Enable Z3-based formal verification
 verification = ["loom-core/verification"]
 

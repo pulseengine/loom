@@ -3,17 +3,25 @@
 //! This module provides infrastructure for comparing LOOM's optimization
 //! results against wasm-opt to validate correctness and identify gaps.
 
+pub mod emi;
+
+#[cfg(feature = "runtime")]
 use anyhow::{Context, Result};
+#[cfg(feature = "runtime")]
 use std::process::Command;
+#[cfg(feature = "runtime")]
 use tempfile::NamedTempFile;
+#[cfg(feature = "runtime")]
 use wasmtime::{Engine, Module};
 
 /// Differential tester comparing LOOM vs wasm-opt
+#[cfg(feature = "runtime")]
 pub struct DifferentialTester {
     loom_binary: String,
     wasm_opt_binary: String,
 }
 
+#[cfg(feature = "runtime")]
 impl DifferentialTester {
     /// Create a new differential tester
     ///
@@ -99,6 +107,7 @@ impl DifferentialTester {
 }
 
 /// Results of differential testing comparison
+#[cfg(feature = "runtime")]
 #[derive(Debug, Clone)]
 pub struct TestResult {
     pub input_size: usize,
@@ -112,6 +121,7 @@ pub struct TestResult {
     pub semantically_equivalent: Option<bool>,
 }
 
+#[cfg(feature = "runtime")]
 impl TestResult {
     /// Compare LOOM and wasm-opt outputs
     pub fn compare(input: &[u8], loom: &[u8], wasm_opt: &[u8]) -> Result<Self> {
@@ -228,7 +238,7 @@ impl TestResult {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime"))]
 mod tests {
     use super::*;
 
