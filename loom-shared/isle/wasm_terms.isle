@@ -152,6 +152,9 @@
     (BrIf (cond Value) (depth u32))
     (Call (func_idx u32))
     (Return)
+
+    ;; Drop instruction - discards the top stack value
+    (Drop (val Value))
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -397,6 +400,10 @@
 
 (decl return_instr () Value)
 (extern constructor return_instr return_instr)
+
+;; Drop instruction constructor - discards a value from stack
+(decl drop_instr (Value) Value)
+(extern constructor drop_instr drop_instr)
 
 ;; BlockType constructors
 (decl block_type_empty () BlockType)

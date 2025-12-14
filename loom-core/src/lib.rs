@@ -371,6 +371,301 @@ pub enum Instruction {
         align: u32,
     },
 
+    // Float arithmetic operations (f32)
+    /// f32.add
+    F32Add,
+    /// f32.sub
+    F32Sub,
+    /// f32.mul
+    F32Mul,
+    /// f32.div
+    F32Div,
+    /// f32.min
+    F32Min,
+    /// f32.max
+    F32Max,
+    /// f32.copysign
+    F32Copysign,
+    /// f32.abs
+    F32Abs,
+    /// f32.neg
+    F32Neg,
+    /// f32.ceil
+    F32Ceil,
+    /// f32.floor
+    F32Floor,
+    /// f32.trunc
+    F32Trunc,
+    /// f32.nearest
+    F32Nearest,
+    /// f32.sqrt
+    F32Sqrt,
+
+    // Float comparison operations (f32) - produce i32
+    /// f32.eq
+    F32Eq,
+    /// f32.ne
+    F32Ne,
+    /// f32.lt
+    F32Lt,
+    /// f32.gt
+    F32Gt,
+    /// f32.le
+    F32Le,
+    /// f32.ge
+    F32Ge,
+
+    // Float arithmetic operations (f64)
+    /// f64.add
+    F64Add,
+    /// f64.sub
+    F64Sub,
+    /// f64.mul
+    F64Mul,
+    /// f64.div
+    F64Div,
+    /// f64.min
+    F64Min,
+    /// f64.max
+    F64Max,
+    /// f64.copysign
+    F64Copysign,
+    /// f64.abs
+    F64Abs,
+    /// f64.neg
+    F64Neg,
+    /// f64.ceil
+    F64Ceil,
+    /// f64.floor
+    F64Floor,
+    /// f64.trunc
+    F64Trunc,
+    /// f64.nearest
+    F64Nearest,
+    /// f64.sqrt
+    F64Sqrt,
+
+    // Float comparison operations (f64) - produce i32
+    /// f64.eq
+    F64Eq,
+    /// f64.ne
+    F64Ne,
+    /// f64.lt
+    F64Lt,
+    /// f64.gt
+    F64Gt,
+    /// f64.le
+    F64Le,
+    /// f64.ge
+    F64Ge,
+
+    // Conversion operations
+    /// i32.trunc_f32_s
+    I32TruncF32S,
+    /// i32.trunc_f32_u
+    I32TruncF32U,
+    /// i32.trunc_f64_s
+    I32TruncF64S,
+    /// i32.trunc_f64_u
+    I32TruncF64U,
+    /// i64.trunc_f32_s
+    I64TruncF32S,
+    /// i64.trunc_f32_u
+    I64TruncF32U,
+    /// i64.trunc_f64_s
+    I64TruncF64S,
+    /// i64.trunc_f64_u
+    I64TruncF64U,
+    /// f32.convert_i32_s
+    F32ConvertI32S,
+    /// f32.convert_i32_u
+    F32ConvertI32U,
+    /// f32.convert_i64_s
+    F32ConvertI64S,
+    /// f32.convert_i64_u
+    F32ConvertI64U,
+    /// f64.convert_i32_s
+    F64ConvertI32S,
+    /// f64.convert_i32_u
+    F64ConvertI32U,
+    /// f64.convert_i64_s
+    F64ConvertI64S,
+    /// f64.convert_i64_u
+    F64ConvertI64U,
+    /// f32.demote_f64
+    F32DemoteF64,
+    /// f64.promote_f32
+    F64PromoteF32,
+
+    // Reinterpret operations (bit-cast)
+    /// i32.reinterpret_f32
+    I32ReinterpretF32,
+    /// i64.reinterpret_f64
+    I64ReinterpretF64,
+    /// f32.reinterpret_i32
+    F32ReinterpretI32,
+    /// f64.reinterpret_i64
+    F64ReinterpretI64,
+
+    // Integer extend operations
+    /// i64.extend_i32_s
+    I64ExtendI32S,
+    /// i64.extend_i32_u
+    I64ExtendI32U,
+    /// i32.wrap_i64
+    I32WrapI64,
+
+    // Additional memory operations
+    /// f32.load
+    F32Load {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// f32.store
+    F32Store {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// f64.load
+    F64Load {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// f64.store
+    F64Store {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.load8_s
+    I32Load8S {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.load8_u
+    I32Load8U {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.load16_s
+    I32Load16S {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.load16_u
+    I32Load16U {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load8_s
+    I64Load8S {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load8_u
+    I64Load8U {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load16_s
+    I64Load16S {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load16_u
+    I64Load16U {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load32_s
+    I64Load32S {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.load32_u
+    I64Load32U {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.store8
+    I32Store8 {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i32.store16
+    I32Store16 {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.store8
+    I64Store8 {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.store16
+    I64Store16 {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+    /// i64.store32
+    I64Store32 {
+        /// Memory offset
+        offset: u32,
+        /// Memory alignment
+        align: u32,
+    },
+
+    // Memory size/grow operations
+    /// memory.size
+    MemorySize(u32),
+    /// memory.grow
+    MemoryGrow(u32),
+
+    // Rotate operations
+    /// i32.rotl
+    I32Rotl,
+    /// i32.rotr
+    I32Rotr,
+    /// i64.rotl
+    I64Rotl,
+    /// i64.rotr
+    I64Rotr,
+
     // Control flow instructions (Phase 14)
     /// Block structured control
     Block {
@@ -421,6 +716,9 @@ pub enum Instruction {
     Unreachable,
     /// No operation
     Nop,
+
+    /// Drop instruction - pops and discards the top stack value
+    Drop,
 
     /// End of block/function
     End,
@@ -1058,192 +1356,205 @@ pub mod parse {
                 Operator::Nop => {
                     instructions.push(Instruction::Nop);
                 }
+                Operator::Drop => {
+                    instructions.push(Instruction::Drop);
+                }
+                // Float operations (f32)
+                Operator::F32Add => instructions.push(Instruction::F32Add),
+                Operator::F32Sub => instructions.push(Instruction::F32Sub),
+                Operator::F32Mul => instructions.push(Instruction::F32Mul),
+                Operator::F32Div => instructions.push(Instruction::F32Div),
+                Operator::F32Min => instructions.push(Instruction::F32Min),
+                Operator::F32Max => instructions.push(Instruction::F32Max),
+                Operator::F32Copysign => instructions.push(Instruction::F32Copysign),
+                Operator::F32Abs => instructions.push(Instruction::F32Abs),
+                Operator::F32Neg => instructions.push(Instruction::F32Neg),
+                Operator::F32Ceil => instructions.push(Instruction::F32Ceil),
+                Operator::F32Floor => instructions.push(Instruction::F32Floor),
+                Operator::F32Trunc => instructions.push(Instruction::F32Trunc),
+                Operator::F32Nearest => instructions.push(Instruction::F32Nearest),
+                Operator::F32Sqrt => instructions.push(Instruction::F32Sqrt),
+                Operator::F32Eq => instructions.push(Instruction::F32Eq),
+                Operator::F32Ne => instructions.push(Instruction::F32Ne),
+                Operator::F32Lt => instructions.push(Instruction::F32Lt),
+                Operator::F32Gt => instructions.push(Instruction::F32Gt),
+                Operator::F32Le => instructions.push(Instruction::F32Le),
+                Operator::F32Ge => instructions.push(Instruction::F32Ge),
+                // Float operations (f64)
+                Operator::F64Add => instructions.push(Instruction::F64Add),
+                Operator::F64Sub => instructions.push(Instruction::F64Sub),
+                Operator::F64Mul => instructions.push(Instruction::F64Mul),
+                Operator::F64Div => instructions.push(Instruction::F64Div),
+                Operator::F64Min => instructions.push(Instruction::F64Min),
+                Operator::F64Max => instructions.push(Instruction::F64Max),
+                Operator::F64Copysign => instructions.push(Instruction::F64Copysign),
+                Operator::F64Abs => instructions.push(Instruction::F64Abs),
+                Operator::F64Neg => instructions.push(Instruction::F64Neg),
+                Operator::F64Ceil => instructions.push(Instruction::F64Ceil),
+                Operator::F64Floor => instructions.push(Instruction::F64Floor),
+                Operator::F64Trunc => instructions.push(Instruction::F64Trunc),
+                Operator::F64Nearest => instructions.push(Instruction::F64Nearest),
+                Operator::F64Sqrt => instructions.push(Instruction::F64Sqrt),
+                Operator::F64Eq => instructions.push(Instruction::F64Eq),
+                Operator::F64Ne => instructions.push(Instruction::F64Ne),
+                Operator::F64Lt => instructions.push(Instruction::F64Lt),
+                Operator::F64Gt => instructions.push(Instruction::F64Gt),
+                Operator::F64Le => instructions.push(Instruction::F64Le),
+                Operator::F64Ge => instructions.push(Instruction::F64Ge),
+                // Conversion operations
+                Operator::I32WrapI64 => instructions.push(Instruction::I32WrapI64),
+                Operator::I64ExtendI32S => instructions.push(Instruction::I64ExtendI32S),
+                Operator::I64ExtendI32U => instructions.push(Instruction::I64ExtendI32U),
+                Operator::I32TruncF32S => instructions.push(Instruction::I32TruncF32S),
+                Operator::I32TruncF32U => instructions.push(Instruction::I32TruncF32U),
+                Operator::I32TruncF64S => instructions.push(Instruction::I32TruncF64S),
+                Operator::I32TruncF64U => instructions.push(Instruction::I32TruncF64U),
+                Operator::I64TruncF32S => instructions.push(Instruction::I64TruncF32S),
+                Operator::I64TruncF32U => instructions.push(Instruction::I64TruncF32U),
+                Operator::I64TruncF64S => instructions.push(Instruction::I64TruncF64S),
+                Operator::I64TruncF64U => instructions.push(Instruction::I64TruncF64U),
+                Operator::F32ConvertI32S => instructions.push(Instruction::F32ConvertI32S),
+                Operator::F32ConvertI32U => instructions.push(Instruction::F32ConvertI32U),
+                Operator::F32ConvertI64S => instructions.push(Instruction::F32ConvertI64S),
+                Operator::F32ConvertI64U => instructions.push(Instruction::F32ConvertI64U),
+                Operator::F64ConvertI32S => instructions.push(Instruction::F64ConvertI32S),
+                Operator::F64ConvertI32U => instructions.push(Instruction::F64ConvertI32U),
+                Operator::F64ConvertI64S => instructions.push(Instruction::F64ConvertI64S),
+                Operator::F64ConvertI64U => instructions.push(Instruction::F64ConvertI64U),
+                Operator::F32DemoteF64 => instructions.push(Instruction::F32DemoteF64),
+                Operator::F64PromoteF32 => instructions.push(Instruction::F64PromoteF32),
+                Operator::I32ReinterpretF32 => instructions.push(Instruction::I32ReinterpretF32),
+                Operator::I64ReinterpretF64 => instructions.push(Instruction::I64ReinterpretF64),
+                Operator::F32ReinterpretI32 => instructions.push(Instruction::F32ReinterpretI32),
+                Operator::F64ReinterpretI64 => instructions.push(Instruction::F64ReinterpretI64),
+                // Rotate operations
+                Operator::I32Rotl => instructions.push(Instruction::I32Rotl),
+                Operator::I32Rotr => instructions.push(Instruction::I32Rotr),
+                Operator::I64Rotl => instructions.push(Instruction::I64Rotl),
+                Operator::I64Rotr => instructions.push(Instruction::I64Rotr),
+                // Memory size/grow operations
+                Operator::MemorySize { mem, .. } => instructions.push(Instruction::MemorySize(mem)),
+                Operator::MemoryGrow { mem, .. } => instructions.push(Instruction::MemoryGrow(mem)),
+                // Float loads/stores
+                Operator::F32Load { memarg } => {
+                    instructions.push(Instruction::F32Load {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::F32Store { memarg } => {
+                    instructions.push(Instruction::F32Store {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::F64Load { memarg } => {
+                    instructions.push(Instruction::F64Load {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::F64Store { memarg } => {
+                    instructions.push(Instruction::F64Store {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                // Additional load/store variants
+                Operator::I32Load8S { memarg } => {
+                    instructions.push(Instruction::I32Load8S {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Load8U { memarg } => {
+                    instructions.push(Instruction::I32Load8U {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Load16S { memarg } => {
+                    instructions.push(Instruction::I32Load16S {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Load16U { memarg } => {
+                    instructions.push(Instruction::I32Load16U {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load8S { memarg } => {
+                    instructions.push(Instruction::I64Load8S {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load8U { memarg } => {
+                    instructions.push(Instruction::I64Load8U {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load16S { memarg } => {
+                    instructions.push(Instruction::I64Load16S {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load16U { memarg } => {
+                    instructions.push(Instruction::I64Load16U {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load32S { memarg } => {
+                    instructions.push(Instruction::I64Load32S {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Load32U { memarg } => {
+                    instructions.push(Instruction::I64Load32U {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Store8 { memarg } => {
+                    instructions.push(Instruction::I32Store8 {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I32Store16 { memarg } => {
+                    instructions.push(Instruction::I32Store16 {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Store8 { memarg } => {
+                    instructions.push(Instruction::I64Store8 {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Store16 { memarg } => {
+                    instructions.push(Instruction::I64Store16 {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                Operator::I64Store32 { memarg } => {
+                    instructions.push(Instruction::I64Store32 {
+                        offset: memarg.offset as u32,
+                        align: memarg.align as u32,
+                    });
+                }
+                // Unknown/unsupported - skip for now (will be caught by validation)
                 _ => {
-                    // For unsupported instructions, encode them as raw bytes for pass-through
-                    // This preserves correctness while we gradually add optimization support
-                    use leb128;
-
-                    let encoded_bytes: Vec<u8> = match &op {
-                        // Type conversions (single-byte opcodes)
-                        Operator::I32WrapI64 => vec![0xa7],
-                        Operator::I64ExtendI32S => vec![0xac],
-                        Operator::I64ExtendI32U => vec![0xad],
-                        Operator::F32DemoteF64 => vec![0xb6],
-                        Operator::F64PromoteF32 => vec![0xbb],
-                        Operator::I32TruncF32S => vec![0xa8],
-                        Operator::I32TruncF32U => vec![0xa9],
-                        Operator::I32TruncF64S => vec![0xaa],
-                        Operator::I32TruncF64U => vec![0xab],
-                        Operator::I64TruncF32S => vec![0xae],
-                        Operator::I64TruncF32U => vec![0xaf],
-                        Operator::I64TruncF64S => vec![0xb0],
-                        Operator::I64TruncF64U => vec![0xb1],
-                        Operator::F32ConvertI32S => vec![0xb2],
-                        Operator::F32ConvertI32U => vec![0xb3],
-                        Operator::F32ConvertI64S => vec![0xb4],
-                        Operator::F32ConvertI64U => vec![0xb5],
-                        Operator::F64ConvertI32S => vec![0xb7],
-                        Operator::F64ConvertI32U => vec![0xb8],
-                        Operator::F64ConvertI64S => vec![0xb9],
-                        Operator::F64ConvertI64U => vec![0xba],
-                        Operator::I32ReinterpretF32 => vec![0xbc],
-                        Operator::I64ReinterpretF64 => vec![0xbd],
-                        Operator::F32ReinterpretI32 => vec![0xbe],
-                        Operator::F64ReinterpretI64 => vec![0xbf],
-
-                        // Rotate operations
-                        Operator::I32Rotl => vec![0x77],
-                        Operator::I32Rotr => vec![0x78],
-                        Operator::I64Rotl => vec![0x89],
-                        Operator::I64Rotr => vec![0x8a],
-
-                        // Stack operations
-                        Operator::Drop => vec![0x1a],
-
-                        // Global operations
-                        Operator::GlobalGet { global_index } => {
-                            let mut bytes = vec![0x23]; // global.get opcode
-                            let mut idx_buf = [0u8; 10];
-                            let idx_len = leb128::write::unsigned(
-                                &mut &mut idx_buf[..],
-                                *global_index as u64,
-                            )
-                            .unwrap();
-                            bytes.extend_from_slice(&idx_buf[..idx_len]);
-                            bytes
-                        }
-                        Operator::GlobalSet { global_index } => {
-                            let mut bytes = vec![0x24]; // global.set opcode
-                            let mut idx_buf = [0u8; 10];
-                            let idx_len = leb128::write::unsigned(
-                                &mut &mut idx_buf[..],
-                                *global_index as u64,
-                            )
-                            .unwrap();
-                            bytes.extend_from_slice(&idx_buf[..idx_len]);
-                            bytes
-                        }
-
-                        // Float operations (f32)
-                        Operator::F32Const { value } => {
-                            let mut bytes = vec![0x43]; // f32.const opcode
-                            bytes.extend_from_slice(&value.bits().to_le_bytes());
-                            bytes
-                        }
-                        Operator::F32Add => vec![0x92],
-                        Operator::F32Sub => vec![0x93],
-                        Operator::F32Mul => vec![0x94],
-                        Operator::F32Div => vec![0x95],
-                        Operator::F32Min => vec![0x96],
-                        Operator::F32Max => vec![0x97],
-                        Operator::F32Copysign => vec![0x98],
-                        Operator::F32Abs => vec![0x8b],
-                        Operator::F32Neg => vec![0x8c],
-                        Operator::F32Ceil => vec![0x8d],
-                        Operator::F32Floor => vec![0x8e],
-                        Operator::F32Trunc => vec![0x8f],
-                        Operator::F32Nearest => vec![0x90],
-                        Operator::F32Sqrt => vec![0x91],
-                        Operator::F32Eq => vec![0x5b],
-                        Operator::F32Ne => vec![0x5c],
-                        Operator::F32Lt => vec![0x5d],
-                        Operator::F32Gt => vec![0x5e],
-                        Operator::F32Le => vec![0x5f],
-                        Operator::F32Ge => vec![0x60],
-
-                        // Float operations (f64)
-                        Operator::F64Const { value } => {
-                            let mut bytes = vec![0x44]; // f64.const opcode
-                            bytes.extend_from_slice(&value.bits().to_le_bytes());
-                            bytes
-                        }
-                        Operator::F64Add => vec![0xa0],
-                        Operator::F64Sub => vec![0xa1],
-                        Operator::F64Mul => vec![0xa2],
-                        Operator::F64Div => vec![0xa3],
-                        Operator::F64Min => vec![0xa4],
-                        Operator::F64Max => vec![0xa5],
-                        Operator::F64Copysign => vec![0xa6],
-                        Operator::F64Abs => vec![0x99],
-                        Operator::F64Neg => vec![0x9a],
-                        Operator::F64Ceil => vec![0x9b],
-                        Operator::F64Floor => vec![0x9c],
-                        Operator::F64Trunc => vec![0x9d],
-                        Operator::F64Nearest => vec![0x9e],
-                        Operator::F64Sqrt => vec![0x9f],
-                        Operator::F64Eq => vec![0x61],
-                        Operator::F64Ne => vec![0x62],
-                        Operator::F64Lt => vec![0x63],
-                        Operator::F64Gt => vec![0x64],
-                        Operator::F64Le => vec![0x65],
-                        Operator::F64Ge => vec![0x66],
-
-                        // Memory operations
-                        Operator::MemorySize { mem, .. } => {
-                            let mut bytes = vec![0x3f];
-                            bytes.push(*mem as u8);
-                            bytes
-                        }
-                        Operator::MemoryGrow { mem, .. } => {
-                            let mut bytes = vec![0x40];
-                            bytes.push(*mem as u8);
-                            bytes
-                        }
-                        Operator::MemoryCopy { dst_mem, src_mem } => {
-                            let mut bytes = vec![0xfc, 0x0a]; // 0xfc is bulk memory prefix, 0x0a is memory.copy
-                            bytes.push(*dst_mem as u8);
-                            bytes.push(*src_mem as u8);
-                            bytes
-                        }
-                        Operator::MemoryFill { mem } => {
-                            let mut bytes = vec![0xfc, 0x0b]; // 0xfc prefix, 0x0b is memory.fill
-                            bytes.push(*mem as u8);
-                            bytes
-                        }
-                        Operator::MemoryInit { data_index, mem } => {
-                            let mut bytes = vec![0xfc, 0x08]; // 0xfc prefix, 0x08 is memory.init
-                            bytes.push(*data_index as u8);
-                            bytes.push(*mem as u8);
-                            bytes
-                        }
-                        Operator::DataDrop { data_index } => {
-                            let mut bytes = vec![0xfc, 0x09]; // 0xfc prefix, 0x09 is data.drop
-                            bytes.push(*data_index as u8);
-                            bytes
-                        }
-
-                        // Additional load/store variants with memarg
-                        Operator::I32Load8S { memarg } => encode_memop(0x2c, memarg),
-                        Operator::I32Load8U { memarg } => encode_memop(0x2d, memarg),
-                        Operator::I32Load16S { memarg } => encode_memop(0x2e, memarg),
-                        Operator::I32Load16U { memarg } => encode_memop(0x2f, memarg),
-                        Operator::I64Load8S { memarg } => encode_memop(0x30, memarg),
-                        Operator::I64Load8U { memarg } => encode_memop(0x31, memarg),
-                        Operator::I64Load16S { memarg } => encode_memop(0x32, memarg),
-                        Operator::I64Load16U { memarg } => encode_memop(0x33, memarg),
-                        Operator::I64Load32S { memarg } => encode_memop(0x34, memarg),
-                        Operator::I64Load32U { memarg } => encode_memop(0x35, memarg),
-                        Operator::I32Store8 { memarg } => encode_memop(0x3a, memarg),
-                        Operator::I32Store16 { memarg } => encode_memop(0x3b, memarg),
-                        Operator::I64Store8 { memarg } => encode_memop(0x3c, memarg),
-                        Operator::I64Store16 { memarg } => encode_memop(0x3d, memarg),
-                        Operator::I64Store32 { memarg } => encode_memop(0x3e, memarg),
-
-                        // Float loads/stores
-                        Operator::F32Load { memarg } => encode_memop(0x2a, memarg),
-                        Operator::F64Load { memarg } => encode_memop(0x2b, memarg),
-                        Operator::F32Store { memarg } => encode_memop(0x38, memarg),
-                        Operator::F64Store { memarg } => encode_memop(0x39, memarg),
-
-                        // Unknown/unsupported - skip for now
-                        _ => {
-                            continue;
-                        }
-                    };
-
-                    if !encoded_bytes.is_empty() {
-                        instructions.push(Instruction::Unknown(encoded_bytes));
-                    }
+                    // Skip truly unsupported instructions
+                    // ValidationGuard will catch if this causes issues
                 }
             }
         }
@@ -1776,6 +2087,393 @@ pub mod encode {
                             },
                         ));
                     }
+                    // Float operations (f32)
+                    Instruction::F32Add => {
+                        func_body.instruction(&EncoderInstruction::F32Add);
+                    }
+                    Instruction::F32Sub => {
+                        func_body.instruction(&EncoderInstruction::F32Sub);
+                    }
+                    Instruction::F32Mul => {
+                        func_body.instruction(&EncoderInstruction::F32Mul);
+                    }
+                    Instruction::F32Div => {
+                        func_body.instruction(&EncoderInstruction::F32Div);
+                    }
+                    Instruction::F32Min => {
+                        func_body.instruction(&EncoderInstruction::F32Min);
+                    }
+                    Instruction::F32Max => {
+                        func_body.instruction(&EncoderInstruction::F32Max);
+                    }
+                    Instruction::F32Copysign => {
+                        func_body.instruction(&EncoderInstruction::F32Copysign);
+                    }
+                    Instruction::F32Abs => {
+                        func_body.instruction(&EncoderInstruction::F32Abs);
+                    }
+                    Instruction::F32Neg => {
+                        func_body.instruction(&EncoderInstruction::F32Neg);
+                    }
+                    Instruction::F32Ceil => {
+                        func_body.instruction(&EncoderInstruction::F32Ceil);
+                    }
+                    Instruction::F32Floor => {
+                        func_body.instruction(&EncoderInstruction::F32Floor);
+                    }
+                    Instruction::F32Trunc => {
+                        func_body.instruction(&EncoderInstruction::F32Trunc);
+                    }
+                    Instruction::F32Nearest => {
+                        func_body.instruction(&EncoderInstruction::F32Nearest);
+                    }
+                    Instruction::F32Sqrt => {
+                        func_body.instruction(&EncoderInstruction::F32Sqrt);
+                    }
+                    Instruction::F32Eq => {
+                        func_body.instruction(&EncoderInstruction::F32Eq);
+                    }
+                    Instruction::F32Ne => {
+                        func_body.instruction(&EncoderInstruction::F32Ne);
+                    }
+                    Instruction::F32Lt => {
+                        func_body.instruction(&EncoderInstruction::F32Lt);
+                    }
+                    Instruction::F32Gt => {
+                        func_body.instruction(&EncoderInstruction::F32Gt);
+                    }
+                    Instruction::F32Le => {
+                        func_body.instruction(&EncoderInstruction::F32Le);
+                    }
+                    Instruction::F32Ge => {
+                        func_body.instruction(&EncoderInstruction::F32Ge);
+                    }
+                    // Float operations (f64)
+                    Instruction::F64Add => {
+                        func_body.instruction(&EncoderInstruction::F64Add);
+                    }
+                    Instruction::F64Sub => {
+                        func_body.instruction(&EncoderInstruction::F64Sub);
+                    }
+                    Instruction::F64Mul => {
+                        func_body.instruction(&EncoderInstruction::F64Mul);
+                    }
+                    Instruction::F64Div => {
+                        func_body.instruction(&EncoderInstruction::F64Div);
+                    }
+                    Instruction::F64Min => {
+                        func_body.instruction(&EncoderInstruction::F64Min);
+                    }
+                    Instruction::F64Max => {
+                        func_body.instruction(&EncoderInstruction::F64Max);
+                    }
+                    Instruction::F64Copysign => {
+                        func_body.instruction(&EncoderInstruction::F64Copysign);
+                    }
+                    Instruction::F64Abs => {
+                        func_body.instruction(&EncoderInstruction::F64Abs);
+                    }
+                    Instruction::F64Neg => {
+                        func_body.instruction(&EncoderInstruction::F64Neg);
+                    }
+                    Instruction::F64Ceil => {
+                        func_body.instruction(&EncoderInstruction::F64Ceil);
+                    }
+                    Instruction::F64Floor => {
+                        func_body.instruction(&EncoderInstruction::F64Floor);
+                    }
+                    Instruction::F64Trunc => {
+                        func_body.instruction(&EncoderInstruction::F64Trunc);
+                    }
+                    Instruction::F64Nearest => {
+                        func_body.instruction(&EncoderInstruction::F64Nearest);
+                    }
+                    Instruction::F64Sqrt => {
+                        func_body.instruction(&EncoderInstruction::F64Sqrt);
+                    }
+                    Instruction::F64Eq => {
+                        func_body.instruction(&EncoderInstruction::F64Eq);
+                    }
+                    Instruction::F64Ne => {
+                        func_body.instruction(&EncoderInstruction::F64Ne);
+                    }
+                    Instruction::F64Lt => {
+                        func_body.instruction(&EncoderInstruction::F64Lt);
+                    }
+                    Instruction::F64Gt => {
+                        func_body.instruction(&EncoderInstruction::F64Gt);
+                    }
+                    Instruction::F64Le => {
+                        func_body.instruction(&EncoderInstruction::F64Le);
+                    }
+                    Instruction::F64Ge => {
+                        func_body.instruction(&EncoderInstruction::F64Ge);
+                    }
+                    // Conversion operations
+                    Instruction::I32WrapI64 => {
+                        func_body.instruction(&EncoderInstruction::I32WrapI64);
+                    }
+                    Instruction::I64ExtendI32S => {
+                        func_body.instruction(&EncoderInstruction::I64ExtendI32S);
+                    }
+                    Instruction::I64ExtendI32U => {
+                        func_body.instruction(&EncoderInstruction::I64ExtendI32U);
+                    }
+                    Instruction::I32TruncF32S => {
+                        func_body.instruction(&EncoderInstruction::I32TruncF32S);
+                    }
+                    Instruction::I32TruncF32U => {
+                        func_body.instruction(&EncoderInstruction::I32TruncF32U);
+                    }
+                    Instruction::I32TruncF64S => {
+                        func_body.instruction(&EncoderInstruction::I32TruncF64S);
+                    }
+                    Instruction::I32TruncF64U => {
+                        func_body.instruction(&EncoderInstruction::I32TruncF64U);
+                    }
+                    Instruction::I64TruncF32S => {
+                        func_body.instruction(&EncoderInstruction::I64TruncF32S);
+                    }
+                    Instruction::I64TruncF32U => {
+                        func_body.instruction(&EncoderInstruction::I64TruncF32U);
+                    }
+                    Instruction::I64TruncF64S => {
+                        func_body.instruction(&EncoderInstruction::I64TruncF64S);
+                    }
+                    Instruction::I64TruncF64U => {
+                        func_body.instruction(&EncoderInstruction::I64TruncF64U);
+                    }
+                    Instruction::F32ConvertI32S => {
+                        func_body.instruction(&EncoderInstruction::F32ConvertI32S);
+                    }
+                    Instruction::F32ConvertI32U => {
+                        func_body.instruction(&EncoderInstruction::F32ConvertI32U);
+                    }
+                    Instruction::F32ConvertI64S => {
+                        func_body.instruction(&EncoderInstruction::F32ConvertI64S);
+                    }
+                    Instruction::F32ConvertI64U => {
+                        func_body.instruction(&EncoderInstruction::F32ConvertI64U);
+                    }
+                    Instruction::F64ConvertI32S => {
+                        func_body.instruction(&EncoderInstruction::F64ConvertI32S);
+                    }
+                    Instruction::F64ConvertI32U => {
+                        func_body.instruction(&EncoderInstruction::F64ConvertI32U);
+                    }
+                    Instruction::F64ConvertI64S => {
+                        func_body.instruction(&EncoderInstruction::F64ConvertI64S);
+                    }
+                    Instruction::F64ConvertI64U => {
+                        func_body.instruction(&EncoderInstruction::F64ConvertI64U);
+                    }
+                    Instruction::F32DemoteF64 => {
+                        func_body.instruction(&EncoderInstruction::F32DemoteF64);
+                    }
+                    Instruction::F64PromoteF32 => {
+                        func_body.instruction(&EncoderInstruction::F64PromoteF32);
+                    }
+                    Instruction::I32ReinterpretF32 => {
+                        func_body.instruction(&EncoderInstruction::I32ReinterpretF32);
+                    }
+                    Instruction::I64ReinterpretF64 => {
+                        func_body.instruction(&EncoderInstruction::I64ReinterpretF64);
+                    }
+                    Instruction::F32ReinterpretI32 => {
+                        func_body.instruction(&EncoderInstruction::F32ReinterpretI32);
+                    }
+                    Instruction::F64ReinterpretI64 => {
+                        func_body.instruction(&EncoderInstruction::F64ReinterpretI64);
+                    }
+                    // Rotate operations
+                    Instruction::I32Rotl => {
+                        func_body.instruction(&EncoderInstruction::I32Rotl);
+                    }
+                    Instruction::I32Rotr => {
+                        func_body.instruction(&EncoderInstruction::I32Rotr);
+                    }
+                    Instruction::I64Rotl => {
+                        func_body.instruction(&EncoderInstruction::I64Rotl);
+                    }
+                    Instruction::I64Rotr => {
+                        func_body.instruction(&EncoderInstruction::I64Rotr);
+                    }
+                    // Memory size/grow operations
+                    Instruction::MemorySize(mem) => {
+                        func_body.instruction(&EncoderInstruction::MemorySize(*mem));
+                    }
+                    Instruction::MemoryGrow(mem) => {
+                        func_body.instruction(&EncoderInstruction::MemoryGrow(*mem));
+                    }
+                    // Float loads/stores
+                    Instruction::F32Load { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
+                            offset: *offset as u64,
+                            align: *align,
+                            memory_index: 0,
+                        }));
+                    }
+                    Instruction::F32Store { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::F32Store(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::F64Load { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
+                            offset: *offset as u64,
+                            align: *align,
+                            memory_index: 0,
+                        }));
+                    }
+                    Instruction::F64Store { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::F64Store(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    // Additional load/store variants
+                    Instruction::I32Load8S { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Load8S(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I32Load8U { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Load8U(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I32Load16S { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Load16S(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I32Load16U { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Load16U(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load8S { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load8S(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load8U { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load8U(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load16S { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load16S(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load16U { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load16U(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load32S { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load32S(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Load32U { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Load32U(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I32Store8 { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Store8(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I32Store16 { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I32Store16(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Store8 { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Store8(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Store16 { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Store16(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
+                    Instruction::I64Store32 { offset, align } => {
+                        func_body.instruction(&EncoderInstruction::I64Store32(
+                            wasm_encoder::MemArg {
+                                offset: *offset as u64,
+                                align: *align,
+                                memory_index: 0,
+                            },
+                        ));
+                    }
                     // Control flow instructions (Phase 14)
                     Instruction::Block { block_type, body } => {
                         let bt = convert_blocktype_to_encoder(block_type);
@@ -1847,6 +2545,9 @@ pub mod encode {
                     }
                     Instruction::Nop => {
                         func_body.instruction(&EncoderInstruction::Nop);
+                    }
+                    Instruction::Drop => {
+                        func_body.instruction(&EncoderInstruction::Drop);
                     }
                     Instruction::End => {
                         // End should not appear in instruction lists after parsing
@@ -2260,8 +2961,367 @@ pub mod encode {
             Instruction::Nop => {
                 func_body.instruction(&EncoderInstruction::Nop);
             }
+            Instruction::Drop => {
+                func_body.instruction(&EncoderInstruction::Drop);
+            }
             Instruction::End => {
                 func_body.instruction(&EncoderInstruction::End);
+            }
+            // Float operations (f32)
+            Instruction::F32Add => {
+                func_body.instruction(&EncoderInstruction::F32Add);
+            }
+            Instruction::F32Sub => {
+                func_body.instruction(&EncoderInstruction::F32Sub);
+            }
+            Instruction::F32Mul => {
+                func_body.instruction(&EncoderInstruction::F32Mul);
+            }
+            Instruction::F32Div => {
+                func_body.instruction(&EncoderInstruction::F32Div);
+            }
+            Instruction::F32Min => {
+                func_body.instruction(&EncoderInstruction::F32Min);
+            }
+            Instruction::F32Max => {
+                func_body.instruction(&EncoderInstruction::F32Max);
+            }
+            Instruction::F32Copysign => {
+                func_body.instruction(&EncoderInstruction::F32Copysign);
+            }
+            Instruction::F32Abs => {
+                func_body.instruction(&EncoderInstruction::F32Abs);
+            }
+            Instruction::F32Neg => {
+                func_body.instruction(&EncoderInstruction::F32Neg);
+            }
+            Instruction::F32Ceil => {
+                func_body.instruction(&EncoderInstruction::F32Ceil);
+            }
+            Instruction::F32Floor => {
+                func_body.instruction(&EncoderInstruction::F32Floor);
+            }
+            Instruction::F32Trunc => {
+                func_body.instruction(&EncoderInstruction::F32Trunc);
+            }
+            Instruction::F32Nearest => {
+                func_body.instruction(&EncoderInstruction::F32Nearest);
+            }
+            Instruction::F32Sqrt => {
+                func_body.instruction(&EncoderInstruction::F32Sqrt);
+            }
+            // Float comparisons (f32) - produce i32
+            Instruction::F32Eq => {
+                func_body.instruction(&EncoderInstruction::F32Eq);
+            }
+            Instruction::F32Ne => {
+                func_body.instruction(&EncoderInstruction::F32Ne);
+            }
+            Instruction::F32Lt => {
+                func_body.instruction(&EncoderInstruction::F32Lt);
+            }
+            Instruction::F32Gt => {
+                func_body.instruction(&EncoderInstruction::F32Gt);
+            }
+            Instruction::F32Le => {
+                func_body.instruction(&EncoderInstruction::F32Le);
+            }
+            Instruction::F32Ge => {
+                func_body.instruction(&EncoderInstruction::F32Ge);
+            }
+            // Float operations (f64)
+            Instruction::F64Add => {
+                func_body.instruction(&EncoderInstruction::F64Add);
+            }
+            Instruction::F64Sub => {
+                func_body.instruction(&EncoderInstruction::F64Sub);
+            }
+            Instruction::F64Mul => {
+                func_body.instruction(&EncoderInstruction::F64Mul);
+            }
+            Instruction::F64Div => {
+                func_body.instruction(&EncoderInstruction::F64Div);
+            }
+            Instruction::F64Min => {
+                func_body.instruction(&EncoderInstruction::F64Min);
+            }
+            Instruction::F64Max => {
+                func_body.instruction(&EncoderInstruction::F64Max);
+            }
+            Instruction::F64Copysign => {
+                func_body.instruction(&EncoderInstruction::F64Copysign);
+            }
+            Instruction::F64Abs => {
+                func_body.instruction(&EncoderInstruction::F64Abs);
+            }
+            Instruction::F64Neg => {
+                func_body.instruction(&EncoderInstruction::F64Neg);
+            }
+            Instruction::F64Ceil => {
+                func_body.instruction(&EncoderInstruction::F64Ceil);
+            }
+            Instruction::F64Floor => {
+                func_body.instruction(&EncoderInstruction::F64Floor);
+            }
+            Instruction::F64Trunc => {
+                func_body.instruction(&EncoderInstruction::F64Trunc);
+            }
+            Instruction::F64Nearest => {
+                func_body.instruction(&EncoderInstruction::F64Nearest);
+            }
+            Instruction::F64Sqrt => {
+                func_body.instruction(&EncoderInstruction::F64Sqrt);
+            }
+            // Float comparisons (f64) - produce i32
+            Instruction::F64Eq => {
+                func_body.instruction(&EncoderInstruction::F64Eq);
+            }
+            Instruction::F64Ne => {
+                func_body.instruction(&EncoderInstruction::F64Ne);
+            }
+            Instruction::F64Lt => {
+                func_body.instruction(&EncoderInstruction::F64Lt);
+            }
+            Instruction::F64Gt => {
+                func_body.instruction(&EncoderInstruction::F64Gt);
+            }
+            Instruction::F64Le => {
+                func_body.instruction(&EncoderInstruction::F64Le);
+            }
+            Instruction::F64Ge => {
+                func_body.instruction(&EncoderInstruction::F64Ge);
+            }
+            // Conversion operations
+            Instruction::I32WrapI64 => {
+                func_body.instruction(&EncoderInstruction::I32WrapI64);
+            }
+            Instruction::I64ExtendI32S => {
+                func_body.instruction(&EncoderInstruction::I64ExtendI32S);
+            }
+            Instruction::I64ExtendI32U => {
+                func_body.instruction(&EncoderInstruction::I64ExtendI32U);
+            }
+            Instruction::I32TruncF32S => {
+                func_body.instruction(&EncoderInstruction::I32TruncF32S);
+            }
+            Instruction::I32TruncF32U => {
+                func_body.instruction(&EncoderInstruction::I32TruncF32U);
+            }
+            Instruction::I32TruncF64S => {
+                func_body.instruction(&EncoderInstruction::I32TruncF64S);
+            }
+            Instruction::I32TruncF64U => {
+                func_body.instruction(&EncoderInstruction::I32TruncF64U);
+            }
+            Instruction::I64TruncF32S => {
+                func_body.instruction(&EncoderInstruction::I64TruncF32S);
+            }
+            Instruction::I64TruncF32U => {
+                func_body.instruction(&EncoderInstruction::I64TruncF32U);
+            }
+            Instruction::I64TruncF64S => {
+                func_body.instruction(&EncoderInstruction::I64TruncF64S);
+            }
+            Instruction::I64TruncF64U => {
+                func_body.instruction(&EncoderInstruction::I64TruncF64U);
+            }
+            Instruction::F32ConvertI32S => {
+                func_body.instruction(&EncoderInstruction::F32ConvertI32S);
+            }
+            Instruction::F32ConvertI32U => {
+                func_body.instruction(&EncoderInstruction::F32ConvertI32U);
+            }
+            Instruction::F32ConvertI64S => {
+                func_body.instruction(&EncoderInstruction::F32ConvertI64S);
+            }
+            Instruction::F32ConvertI64U => {
+                func_body.instruction(&EncoderInstruction::F32ConvertI64U);
+            }
+            Instruction::F64ConvertI32S => {
+                func_body.instruction(&EncoderInstruction::F64ConvertI32S);
+            }
+            Instruction::F64ConvertI32U => {
+                func_body.instruction(&EncoderInstruction::F64ConvertI32U);
+            }
+            Instruction::F64ConvertI64S => {
+                func_body.instruction(&EncoderInstruction::F64ConvertI64S);
+            }
+            Instruction::F64ConvertI64U => {
+                func_body.instruction(&EncoderInstruction::F64ConvertI64U);
+            }
+            Instruction::F32DemoteF64 => {
+                func_body.instruction(&EncoderInstruction::F32DemoteF64);
+            }
+            Instruction::F64PromoteF32 => {
+                func_body.instruction(&EncoderInstruction::F64PromoteF32);
+            }
+            // Reinterpret operations
+            Instruction::I32ReinterpretF32 => {
+                func_body.instruction(&EncoderInstruction::I32ReinterpretF32);
+            }
+            Instruction::I64ReinterpretF64 => {
+                func_body.instruction(&EncoderInstruction::I64ReinterpretF64);
+            }
+            Instruction::F32ReinterpretI32 => {
+                func_body.instruction(&EncoderInstruction::F32ReinterpretI32);
+            }
+            Instruction::F64ReinterpretI64 => {
+                func_body.instruction(&EncoderInstruction::F64ReinterpretI64);
+            }
+            // Memory operations (float)
+            Instruction::F32Load { offset, align } => {
+                func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::F32Store { offset, align } => {
+                func_body.instruction(&EncoderInstruction::F32Store(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::F64Load { offset, align } => {
+                func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::F64Store { offset, align } => {
+                func_body.instruction(&EncoderInstruction::F64Store(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            // Memory operations (integer variants)
+            Instruction::I32Load8S { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Load8S(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Load8U { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Load16S { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Load16S(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Load16U { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Load16U(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load8S { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load8S(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load8U { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load8U(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load16S { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load16S(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load16U { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load16U(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load32S { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load32S(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Load32U { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Load32U(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Store8 { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Store8(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I32Store16 { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I32Store16(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Store8 { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Store8(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Store16 { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Store16(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            Instruction::I64Store32 { offset, align } => {
+                func_body.instruction(&EncoderInstruction::I64Store32(wasm_encoder::MemArg {
+                    offset: *offset as u64,
+                    align: *align,
+                    memory_index: 0,
+                }));
+            }
+            // Memory size/grow
+            Instruction::MemorySize(mem_idx) => {
+                func_body.instruction(&EncoderInstruction::MemorySize(*mem_idx));
+            }
+            Instruction::MemoryGrow(mem_idx) => {
+                func_body.instruction(&EncoderInstruction::MemoryGrow(*mem_idx));
+            }
+            // Rotate operations
+            Instruction::I32Rotl => {
+                func_body.instruction(&EncoderInstruction::I32Rotl);
+            }
+            Instruction::I32Rotr => {
+                func_body.instruction(&EncoderInstruction::I32Rotr);
+            }
+            Instruction::I64Rotl => {
+                func_body.instruction(&EncoderInstruction::I64Rotl);
+            }
+            Instruction::I64Rotr => {
+                func_body.instruction(&EncoderInstruction::I64Rotr);
             }
             Instruction::Unknown(bytes) => {
                 // Write raw instruction bytes directly
@@ -2277,14 +3337,14 @@ pub mod terms {
     use super::{BlockType, Instruction, Value, ValueType};
     use anyhow::{anyhow, Result};
     use loom_isle::{
-        block, br, br_if, br_table, call, call_indirect, i32_load, i32_store, i64_load, i64_store,
-        iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64,
-        idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
-        iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
-        ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
-        ipopcnt64, irems32, irems64, iremu32, iremu64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
-        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
-        nop, return_val, select_instr, unreachable, Imm32, Imm64,
+        block, br, br_if, br_table, call, call_indirect, drop_instr, i32_load, i32_store, i64_load,
+        i64_store, iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32,
+        ictz64, idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else,
+        iges32, iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32,
+        ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64,
+        ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, ishl32, ishl64, ishrs32, ishrs64,
+        ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee,
+        loop_construct, nop, return_val, select_instr, unreachable, Imm32, Imm64,
     };
 
     /// Convert a sequence of WebAssembly instructions to ISLE terms
@@ -2953,6 +4013,13 @@ pub mod terms {
                 Instruction::Nop => {
                     stack.push(nop());
                 }
+                Instruction::Drop => {
+                    // Pop value from stack and wrap in Drop term
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for drop"))?;
+                    stack.push(drop_instr(val));
+                }
                 Instruction::GlobalGet(_) => {
                     // Global loads: treated as unknown values that cannot be optimized
                     // Reason: globals can be modified by imports or concurrent threads
@@ -2981,6 +4048,102 @@ pub mod terms {
                 }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
+                }
+                // Float, conversion, and memory operations don't have ISLE term representations yet
+                // They are passed through unchanged - stack effects tracked elsewhere for validation
+                Instruction::F32Add
+                | Instruction::F32Sub
+                | Instruction::F32Mul
+                | Instruction::F32Div
+                | Instruction::F32Min
+                | Instruction::F32Max
+                | Instruction::F32Copysign
+                | Instruction::F32Abs
+                | Instruction::F32Neg
+                | Instruction::F32Ceil
+                | Instruction::F32Floor
+                | Instruction::F32Trunc
+                | Instruction::F32Nearest
+                | Instruction::F32Sqrt
+                | Instruction::F32Eq
+                | Instruction::F32Ne
+                | Instruction::F32Lt
+                | Instruction::F32Gt
+                | Instruction::F32Le
+                | Instruction::F32Ge
+                | Instruction::F64Add
+                | Instruction::F64Sub
+                | Instruction::F64Mul
+                | Instruction::F64Div
+                | Instruction::F64Min
+                | Instruction::F64Max
+                | Instruction::F64Copysign
+                | Instruction::F64Abs
+                | Instruction::F64Neg
+                | Instruction::F64Ceil
+                | Instruction::F64Floor
+                | Instruction::F64Trunc
+                | Instruction::F64Nearest
+                | Instruction::F64Sqrt
+                | Instruction::F64Eq
+                | Instruction::F64Ne
+                | Instruction::F64Lt
+                | Instruction::F64Gt
+                | Instruction::F64Le
+                | Instruction::F64Ge
+                | Instruction::I32WrapI64
+                | Instruction::I64ExtendI32S
+                | Instruction::I64ExtendI32U
+                | Instruction::I32TruncF32S
+                | Instruction::I32TruncF32U
+                | Instruction::I32TruncF64S
+                | Instruction::I32TruncF64U
+                | Instruction::I64TruncF32S
+                | Instruction::I64TruncF32U
+                | Instruction::I64TruncF64S
+                | Instruction::I64TruncF64U
+                | Instruction::F32ConvertI32S
+                | Instruction::F32ConvertI32U
+                | Instruction::F32ConvertI64S
+                | Instruction::F32ConvertI64U
+                | Instruction::F64ConvertI32S
+                | Instruction::F64ConvertI32U
+                | Instruction::F64ConvertI64S
+                | Instruction::F64ConvertI64U
+                | Instruction::F32DemoteF64
+                | Instruction::F64PromoteF32
+                | Instruction::I32ReinterpretF32
+                | Instruction::I64ReinterpretF64
+                | Instruction::F32ReinterpretI32
+                | Instruction::F64ReinterpretI64
+                | Instruction::F32Load { .. }
+                | Instruction::F32Store { .. }
+                | Instruction::F64Load { .. }
+                | Instruction::F64Store { .. }
+                | Instruction::I32Load8S { .. }
+                | Instruction::I32Load8U { .. }
+                | Instruction::I32Load16S { .. }
+                | Instruction::I32Load16U { .. }
+                | Instruction::I64Load8S { .. }
+                | Instruction::I64Load8U { .. }
+                | Instruction::I64Load16S { .. }
+                | Instruction::I64Load16U { .. }
+                | Instruction::I64Load32S { .. }
+                | Instruction::I64Load32U { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. }
+                | Instruction::MemorySize(_)
+                | Instruction::MemoryGrow(_)
+                | Instruction::I32Rotl
+                | Instruction::I32Rotr
+                | Instruction::I64Rotl
+                | Instruction::I64Rotr => {
+                    // These instructions don't have ISLE term representations
+                    // They are passed through unchanged in the encoding phase
+                    // ISLE optimization only applies to integer operations currently
                 }
                 Instruction::Unknown(_) => {
                     // Unknown instructions cannot be converted to ISLE terms
@@ -3525,6 +4688,12 @@ pub mod terms {
             ValueData::Nop => {
                 instructions.push(Instruction::Nop);
             }
+
+            ValueData::Drop { val } => {
+                // Push the value onto the stack, then drop it
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::Drop);
+            }
         }
 
         Ok(())
@@ -3625,6 +4794,146 @@ pub mod optimize {
             .any(|i| matches!(i, Instruction::Unknown(_)))
     }
 
+    /// Helper: Check if a function contains instructions not supported by ISLE term conversion
+    ///
+    /// The instructions_to_terms function only handles a subset of WASM instructions.
+    /// For unsupported instructions (floats, conversions, rotations, etc.), it doesn't
+    /// properly simulate stack effects, which causes stack underflow errors.
+    ///
+    /// This function identifies functions that should skip ISLE-based optimization
+    /// to avoid corrupting the stack simulation.
+    fn has_unsupported_isle_instructions(func: &Function) -> bool {
+        has_unsupported_isle_instructions_in_block(&func.instructions)
+    }
+
+    fn has_unsupported_isle_instructions_in_block(instructions: &[Instruction]) -> bool {
+        for instr in instructions {
+            match instr {
+                // Recursively check nested blocks
+                Instruction::Block { body, .. }
+                | Instruction::Loop { body, .. } => {
+                    if has_unsupported_isle_instructions_in_block(body) {
+                        return true;
+                    }
+                }
+                Instruction::If { then_body, else_body, .. } => {
+                    if has_unsupported_isle_instructions_in_block(then_body)
+                        || has_unsupported_isle_instructions_in_block(else_body)
+                    {
+                        return true;
+                    }
+                }
+
+                // Float operations - not supported in ISLE terms
+                Instruction::F32Const(_)
+                | Instruction::F64Const(_)
+                | Instruction::F32Add
+                | Instruction::F32Sub
+                | Instruction::F32Mul
+                | Instruction::F32Div
+                | Instruction::F32Min
+                | Instruction::F32Max
+                | Instruction::F32Copysign
+                | Instruction::F32Abs
+                | Instruction::F32Neg
+                | Instruction::F32Ceil
+                | Instruction::F32Floor
+                | Instruction::F32Trunc
+                | Instruction::F32Nearest
+                | Instruction::F32Sqrt
+                | Instruction::F32Eq
+                | Instruction::F32Ne
+                | Instruction::F32Lt
+                | Instruction::F32Gt
+                | Instruction::F32Le
+                | Instruction::F32Ge
+                | Instruction::F64Add
+                | Instruction::F64Sub
+                | Instruction::F64Mul
+                | Instruction::F64Div
+                | Instruction::F64Min
+                | Instruction::F64Max
+                | Instruction::F64Copysign
+                | Instruction::F64Abs
+                | Instruction::F64Neg
+                | Instruction::F64Ceil
+                | Instruction::F64Floor
+                | Instruction::F64Trunc
+                | Instruction::F64Nearest
+                | Instruction::F64Sqrt
+                | Instruction::F64Eq
+                | Instruction::F64Ne
+                | Instruction::F64Lt
+                | Instruction::F64Gt
+                | Instruction::F64Le
+                | Instruction::F64Ge
+                // Conversion operations
+                | Instruction::I32WrapI64
+                | Instruction::I64ExtendI32S
+                | Instruction::I64ExtendI32U
+                | Instruction::I32TruncF32S
+                | Instruction::I32TruncF32U
+                | Instruction::I32TruncF64S
+                | Instruction::I32TruncF64U
+                | Instruction::I64TruncF32S
+                | Instruction::I64TruncF32U
+                | Instruction::I64TruncF64S
+                | Instruction::I64TruncF64U
+                | Instruction::F32ConvertI32S
+                | Instruction::F32ConvertI32U
+                | Instruction::F32ConvertI64S
+                | Instruction::F32ConvertI64U
+                | Instruction::F64ConvertI32S
+                | Instruction::F64ConvertI32U
+                | Instruction::F64ConvertI64S
+                | Instruction::F64ConvertI64U
+                | Instruction::F32DemoteF64
+                | Instruction::F64PromoteF32
+                | Instruction::I32ReinterpretF32
+                | Instruction::I64ReinterpretF64
+                | Instruction::F32ReinterpretI32
+                | Instruction::F64ReinterpretI64
+                // Float memory operations
+                | Instruction::F32Load { .. }
+                | Instruction::F32Store { .. }
+                | Instruction::F64Load { .. }
+                | Instruction::F64Store { .. }
+                // Partial-width memory operations
+                | Instruction::I32Load8S { .. }
+                | Instruction::I32Load8U { .. }
+                | Instruction::I32Load16S { .. }
+                | Instruction::I32Load16U { .. }
+                | Instruction::I64Load8S { .. }
+                | Instruction::I64Load8U { .. }
+                | Instruction::I64Load16S { .. }
+                | Instruction::I64Load16U { .. }
+                | Instruction::I64Load32S { .. }
+                | Instruction::I64Load32U { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. }
+                // Memory operations
+                | Instruction::MemorySize(_)
+                | Instruction::MemoryGrow(_)
+                // Rotation operations
+                | Instruction::I32Rotl
+                | Instruction::I32Rotr
+                | Instruction::I64Rotl
+                | Instruction::I64Rotr
+                // Unknown instructions
+                | Instruction::Unknown(_) => {
+                    return true;
+                }
+
+                // All other instructions are supported
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
@@ -3638,7 +4947,12 @@ pub mod optimize {
         optimize_advanced_instructions(module)?;
 
         // Apply local variable optimizations (including RSE)
+        // RSE replaces redundant local.set with drop
         simplify_locals(module)?;
+
+        // Apply dead code elimination
+        // This removes const+drop patterns created by RSE and other unreachable code
+        eliminate_dead_code(module)?;
 
         // Apply code folding (tail merging)
         code_folding(module)?;
@@ -3667,14 +4981,19 @@ pub mod optimize {
     /// This uses ISLE pattern matching rules to fold constants (e.g., i32.const 100 + i32.const 200 → i32.const 300)
     pub fn constant_folding(module: &mut Module) -> Result<()> {
         use super::Value;
+        use crate::verify::TranslationValidator;
         use loom_isle::{simplify_with_env, LocalEnv};
 
         for func in &mut module.functions {
-            // Skip optimization for functions with Unknown instructions
-            // These act as optimization barriers since we can't reason about their behavior
-            if has_unknown_instructions(func) {
+            // Skip optimization for functions with unsupported instructions
+            // This includes floats, conversions, rotations, and unknown opcodes
+            // which would corrupt the stack simulation in instructions_to_terms
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
                 continue;
             }
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "constant_folding");
 
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
@@ -3699,6 +5018,9 @@ pub mod optimize {
                     }
                 }
             }
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -3710,22 +5032,68 @@ pub mod optimize {
     /// 2. Removes unused drops (i32.const; drop)
     /// 3. Removes dead local.set operations
     pub fn eliminate_dead_code(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        // Build module-level context for Call instruction validation
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            // Create validation guard with module context for Call validation
+            let guard = ValidationGuard::with_context(func, "eliminate_dead_code", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "eliminate_dead_code");
+
             // Pass 1: Remove unreachable code
             func.instructions = eliminate_dead_code_in_block(&func.instructions);
 
             // Pass 2: Remove trivial dead code (const + drop)
             func.instructions = eliminate_trivial_dead_code(&func.instructions);
+
+            // Validate stack correctness after transformation - fail if invalid
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
 
         Ok(())
     }
 
-    /// Remove trivial dead code by recursively processing nested blocks
+    /// Remove trivial dead code patterns:
+    /// - const + drop (value produced but immediately discarded)
+    /// - local.get + drop (value loaded but immediately discarded)
+    /// - global.get + drop (value loaded but immediately discarded)
     fn eliminate_trivial_dead_code(instructions: &[Instruction]) -> Vec<Instruction> {
         let mut result = Vec::new();
+        let mut i = 0;
 
-        for instr in instructions {
+        while i < instructions.len() {
+            let instr = &instructions[i];
+
+            // Check for patterns: value-producing instruction followed by drop
+            if i + 1 < instructions.len() {
+                if let Instruction::Drop = &instructions[i + 1] {
+                    // Check if current instruction is a pure value producer (no side effects)
+                    let is_pure_producer = matches!(
+                        instr,
+                        Instruction::I32Const(_)
+                            | Instruction::I64Const(_)
+                            | Instruction::F32Const(_)
+                            | Instruction::F64Const(_)
+                            | Instruction::LocalGet(_)
+                            | Instruction::GlobalGet(_)
+                    );
+
+                    if is_pure_producer {
+                        // Skip both the producer and the drop
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
             // Recursively process nested blocks
             match instr {
                 Instruction::Block { block_type, body } => {
@@ -3755,6 +5123,7 @@ pub mod optimize {
                     result.push(instr.clone());
                 }
             }
+            i += 1;
         }
 
         result
@@ -3868,8 +5237,19 @@ pub mod optimize {
     /// Branch Simplification (Phase 15 - Issue #16)
     /// Simplifies control flow by removing redundant branches and folding constant conditions
     pub fn simplify_branches(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(func, "simplify_branches", ctx.clone());
+            let translator = TranslationValidator::new(func, "simplify_branches");
+
             func.instructions = simplify_branches_in_block(&func.instructions);
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -3981,8 +5361,19 @@ pub mod optimize {
     /// Block Merging (Phase 16 - Issue #17)
     /// Merges nested blocks to reduce CFG complexity and improve code locality
     pub fn merge_blocks(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(func, "merge_blocks", ctx.clone());
+            let translator = TranslationValidator::new(func, "merge_blocks");
+
             func.instructions = merge_blocks_in_instructions(&func.instructions);
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -4148,8 +5539,26 @@ pub mod optimize {
     /// Vacuum Cleanup Pass (Phase 17 - Issue #20)
     /// Final cleanup pass that removes nops, unwraps trivial blocks, and simplifies degenerate patterns
     pub fn vacuum(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            // Create validation guard with module context for Call validation
+            let guard = ValidationGuard::with_context(func, "vacuum", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "vacuum");
+
+            // Apply vacuum transformation
             func.instructions = vacuum_instructions(&func.instructions);
+
+            // Validate stack correctness after transformation - fail if invalid
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -4158,7 +5567,7 @@ pub mod optimize {
     fn vacuum_instructions(instructions: &[Instruction]) -> Vec<Instruction> {
         let mut result = Vec::new();
 
-        for instr in instructions {
+        for (i, instr) in instructions.iter().enumerate() {
             match instr {
                 // Skip nops entirely
                 Instruction::Nop => continue,
@@ -4168,7 +5577,25 @@ pub mod optimize {
                     let cleaned_body = vacuum_instructions(body);
 
                     // Check if block is trivial and can be unwrapped
-                    if is_trivial_block(&cleaned_body, block_type) {
+                    // CRITICAL: Don't unwrap blocks with result types if followed by another block/if
+                    // because the next block creates a new stack scope that won't see the result value
+                    let next_is_block = instructions[i + 1..]
+                        .iter()
+                        .find(|next| !matches!(next, Instruction::Nop))
+                        .map(|next| {
+                            matches!(
+                                next,
+                                Instruction::Block { .. }
+                                    | Instruction::If { .. }
+                                    | Instruction::Loop { .. }
+                            )
+                        })
+                        .unwrap_or(false);
+
+                    let should_unwrap = is_trivial_block(&cleaned_body, block_type)
+                        && !(*block_type != BlockType::Empty && next_is_block);
+
+                    if should_unwrap {
                         // Unwrap: add body instructions directly
                         result.extend(cleaned_body);
                     } else {
@@ -4290,7 +5717,18 @@ pub mod optimize {
     ///
     /// This runs iteratively until a fixed point is reached.
     pub fn simplify_locals(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            // Create validation guard with module context for Call validation
+            let guard = ValidationGuard::with_context(func, "simplify_locals", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "simplify_locals");
+
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 10;
@@ -4306,12 +5744,17 @@ pub mod optimize {
                 func.instructions =
                     simplify_instructions(&func.instructions, &usage, &equivalences, &mut changed);
 
-                // TODO: Fix eliminate_redundant_sets - it incorrectly removes stack-producing instructions
-                // The bug is that it assumes value_idx is always result.len() - 1, but in stack-based
-                // WASM, the value could be produced by an instruction multiple positions back.
-                // Disabled until properly fixed.
-                // func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
+                // Apply Redundant Set Elimination
+                // This replaces redundant local.set with drop, preserving stack effects.
+                // The DCE pass will then clean up const+drop patterns.
+                func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
             }
+
+            // Validate stack correctness after all iterations - fail if invalid
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -4498,84 +5941,91 @@ pub mod optimize {
 
     /// Eliminate Redundant Sets (Redundant Set Elimination - RSE)
     ///
-    /// Removes redundant local.set instructions when a local is set twice without
-    /// an intervening get. This is inspired by Binaryen's redundant-set-elimination pass.
+    /// Replaces redundant local.set instructions with `drop` when a local is set twice
+    /// without an intervening get. This is inspired by Binaryen's redundant-set-elimination pass.
     ///
     /// Example:
     /// ```wasm
-    /// local.set $x (i32.const 10)  ;; This is redundant
-    /// local.set $x (i32.const 20)  ;; $x is overwritten
+    /// i32.const 10
+    /// local.set $x     ;; redundant - replaced with drop
+    /// i32.const 20
+    /// local.set $x     ;; survives
     /// local.get $x
     /// ```
     ///
-    /// Optimizes to:
+    /// Optimizes to (after DCE removes const+drop):
     /// ```wasm
-    /// local.set $x (i32.const 20)
+    /// i32.const 20
+    /// local.set $x
     /// local.get $x
     /// ```
     ///
     /// Algorithm:
     /// - Track the last set position for each local
     /// - When encountering a new set to the same local, check if there was an intervening get
-    /// - If no get, mark the previous set as redundant
+    /// - If no get, replace the previous set with `drop` (preserves stack effects)
+    /// - For `local.tee`, remove entirely if redundant (value stays on stack)
     /// - Conservative: Only eliminates in straight-line code, not across control flow
+    ///
+    /// The key insight is that replacing `local.set` with `drop` preserves stack effects:
+    /// - `local.set`: pops 1 value, pushes 0
+    /// - `drop`: pops 1 value, pushes 0
+    /// The existing DCE pass will then clean up `const; drop` patterns.
     ///
     /// Benefits:
     /// - 2-5% binary size reduction on typical code
     /// - Reduces unnecessary local variable writes
     /// - Enables further optimizations (dead code elimination)
-    #[allow(dead_code)] // Currently disabled due to bugs - see comment in simplify_locals
     fn eliminate_redundant_sets(
         instructions: &[Instruction],
         changed: &mut bool,
     ) -> Vec<Instruction> {
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
 
+        /// Information about a local.set instruction
         #[derive(Debug, Clone)]
         struct SetInfo {
-            result_idx: usize,
-            value_idx: usize, // Index of instruction that produces the value
+            /// Position of the set instruction in the result vector
+            position: usize,
+            /// Whether there was a get between this set and the next
             has_intervening_get: bool,
+            /// Whether this is a tee (which should be removed, not replaced with drop)
+            is_tee: bool,
         }
 
-        fn process_instructions(
+        /// First pass: identify which sets are redundant
+        fn find_redundant_sets(
             instructions: &[Instruction],
-            changed: &mut bool,
             last_sets: &mut HashMap<u32, SetInfo>,
-        ) -> Vec<Instruction> {
-            let mut result = Vec::new();
-            let mut to_remove = std::collections::HashSet::new();
+            redundant_positions: &mut HashSet<usize>,
+            tee_positions_to_remove: &mut HashSet<usize>,
+            base_position: usize,
+        ) -> usize {
+            let mut position = base_position;
 
             for instr in instructions.iter() {
                 match instr {
                     Instruction::LocalSet(idx) => {
-                        // Check if there's a previous set to the same local
+                        // Check if previous set to same local is redundant
                         if let Some(prev_set) = last_sets.get(idx) {
-                            // Don't eliminate if indices are sentinel values (from outer scope)
-                            if prev_set.result_idx != usize::MAX && !prev_set.has_intervening_get {
-                                // Mark previous set AND its value-producing instruction for removal
-                                to_remove.insert(prev_set.result_idx);
-                                to_remove.insert(prev_set.value_idx);
-                                *changed = true;
+                            if !prev_set.has_intervening_get {
+                                if prev_set.is_tee {
+                                    tee_positions_to_remove.insert(prev_set.position);
+                                } else {
+                                    redundant_positions.insert(prev_set.position);
+                                }
                             }
                         }
-
-                        // The value for this set is produced by the previous instruction
-                        let value_idx = if result.is_empty() {
-                            0
-                        } else {
-                            result.len() - 1
-                        };
-                        let result_idx = result.len();
-                        result.push(instr.clone());
+                        // Track this set
                         last_sets.insert(
                             *idx,
                             SetInfo {
-                                result_idx,
-                                value_idx,
+                                position,
                                 has_intervening_get: false,
+                                is_tee: false,
                             },
                         );
+                        position += 1;
                     }
 
                     Instruction::LocalGet(idx) => {
@@ -4583,49 +6033,60 @@ pub mod optimize {
                         if let Some(set_info) = last_sets.get_mut(idx) {
                             set_info.has_intervening_get = true;
                         }
-                        result.push(instr.clone());
+                        position += 1;
                     }
 
                     Instruction::LocalTee(idx) => {
-                        // Tee both sets and gets
+                        // Tee acts as both set and get
+                        // Check if previous set is redundant
                         if let Some(prev_set) = last_sets.get(idx) {
-                            // Don't eliminate if indices are sentinel values (from outer scope)
-                            if prev_set.result_idx != usize::MAX && !prev_set.has_intervening_get {
-                                to_remove.insert(prev_set.result_idx);
-                                to_remove.insert(prev_set.value_idx);
-                                *changed = true;
+                            if !prev_set.has_intervening_get {
+                                if prev_set.is_tee {
+                                    tee_positions_to_remove.insert(prev_set.position);
+                                } else {
+                                    redundant_positions.insert(prev_set.position);
+                                }
                             }
                         }
-
-                        // Tee also takes a value from the stack
-                        let value_idx = if result.is_empty() {
-                            0
-                        } else {
-                            result.len() - 1
-                        };
-                        let result_idx = result.len();
-                        result.push(instr.clone());
+                        // Track this tee (it also produces a value, so has_intervening_get = true)
                         last_sets.insert(
                             *idx,
                             SetInfo {
-                                result_idx,
-                                value_idx,
-                                has_intervening_get: true, // Tee returns value
+                                position,
+                                has_intervening_get: true,
+                                is_tee: true,
                             },
                         );
+                        position += 1;
                     }
 
-                    // Recursively process control flow structures
-                    Instruction::Block { block_type, body } => {
-                        // Clone last_sets but clear indices to prevent eliminating outer-scope sets
-                        let mut block_sets = last_sets.clone();
-                        for set_info in block_sets.values_mut() {
-                            set_info.result_idx = usize::MAX; // Sentinel: don't eliminate
-                            set_info.value_idx = usize::MAX;
-                        }
-                        let processed_body = process_instructions(body, changed, &mut block_sets);
+                    // Recursively analyze control flow structures
+                    Instruction::Block { body, .. } => {
+                        // Save state and recurse with fresh tracking
+                        let mut block_sets: HashMap<u32, SetInfo> = last_sets
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    *k,
+                                    SetInfo {
+                                        position: usize::MAX, // Sentinel: don't mark outer sets redundant
+                                        has_intervening_get: v.has_intervening_get,
+                                        is_tee: v.is_tee,
+                                    },
+                                )
+                            })
+                            .collect();
 
-                        // Merge back: if local was read in block, mark as read
+                        position += 1; // Block start
+                        position = find_redundant_sets(
+                            body,
+                            &mut block_sets,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                        );
+
+                        // Merge back: if local was read in block, mark as read in outer scope
                         for (idx, info) in block_sets {
                             if info.has_intervening_get {
                                 if let Some(outer_info) = last_sets.get_mut(&idx) {
@@ -4633,54 +6094,76 @@ pub mod optimize {
                                 }
                             }
                         }
-
-                        result.push(Instruction::Block {
-                            block_type: block_type.clone(),
-                            body: processed_body,
-                        });
                     }
 
-                    Instruction::Loop { block_type, body } => {
-                        // Clone last_sets but clear indices to prevent eliminating outer-scope sets
-                        let mut loop_sets = last_sets.clone();
-                        for set_info in loop_sets.values_mut() {
-                            set_info.result_idx = usize::MAX;
-                            set_info.value_idx = usize::MAX;
-                        }
-                        let processed_body = process_instructions(body, changed, &mut loop_sets);
+                    Instruction::Loop { body, .. } => {
+                        // For loops, conservatively mark all locals as potentially read
+                        // (they might be read on back-edge iterations)
+                        let mut loop_sets: HashMap<u32, SetInfo> = last_sets
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    *k,
+                                    SetInfo {
+                                        position: usize::MAX,
+                                        has_intervening_get: v.has_intervening_get,
+                                        is_tee: v.is_tee,
+                                    },
+                                )
+                            })
+                            .collect();
+
+                        position += 1; // Loop start
+                        position = find_redundant_sets(
+                            body,
+                            &mut loop_sets,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                        );
 
                         // Conservative: mark all locals as potentially read
                         for set_info in last_sets.values_mut() {
                             set_info.has_intervening_get = true;
                         }
-
-                        result.push(Instruction::Loop {
-                            block_type: block_type.clone(),
-                            body: processed_body,
-                        });
                     }
 
                     Instruction::If {
-                        block_type,
                         then_body,
                         else_body,
+                        ..
                     } => {
-                        // Clone last_sets but clear indices to prevent eliminating outer-scope sets
-                        let mut then_sets = last_sets.clone();
-                        for set_info in then_sets.values_mut() {
-                            set_info.result_idx = usize::MAX;
-                            set_info.value_idx = usize::MAX;
-                        }
-                        let mut else_sets = last_sets.clone();
-                        for set_info in else_sets.values_mut() {
-                            set_info.result_idx = usize::MAX;
-                            set_info.value_idx = usize::MAX;
-                        }
+                        // Process both branches independently
+                        let mut then_sets: HashMap<u32, SetInfo> = last_sets
+                            .iter()
+                            .map(|(k, v)| {
+                                (
+                                    *k,
+                                    SetInfo {
+                                        position: usize::MAX,
+                                        has_intervening_get: v.has_intervening_get,
+                                        is_tee: v.is_tee,
+                                    },
+                                )
+                            })
+                            .collect();
+                        let mut else_sets = then_sets.clone();
 
-                        let processed_then =
-                            process_instructions(then_body, changed, &mut then_sets);
-                        let processed_else =
-                            process_instructions(else_body, changed, &mut else_sets);
+                        position += 1; // If start
+                        position = find_redundant_sets(
+                            then_body,
+                            &mut then_sets,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                        );
+                        position = find_redundant_sets(
+                            else_body,
+                            &mut else_sets,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                        );
 
                         // Conservative: if either branch reads, consider it read
                         for (idx, then_info) in then_sets {
@@ -4697,7 +6180,100 @@ pub mod optimize {
                                 }
                             }
                         }
+                    }
 
+                    _ => {
+                        position += 1;
+                    }
+                }
+            }
+            position
+        }
+
+        /// Second pass: transform instructions based on analysis
+        fn transform_instructions(
+            instructions: &[Instruction],
+            redundant_positions: &HashSet<usize>,
+            tee_positions_to_remove: &HashSet<usize>,
+            position: &mut usize,
+            changed: &mut bool,
+        ) -> Vec<Instruction> {
+            let mut result = Vec::new();
+
+            for instr in instructions.iter() {
+                let current_pos = *position;
+                *position += 1;
+
+                match instr {
+                    Instruction::LocalSet(_) => {
+                        if redundant_positions.contains(&current_pos) {
+                            // Replace redundant set with drop (preserves stack effects)
+                            result.push(Instruction::Drop);
+                            *changed = true;
+                        } else {
+                            result.push(instr.clone());
+                        }
+                    }
+
+                    Instruction::LocalTee(_) => {
+                        if tee_positions_to_remove.contains(&current_pos) {
+                            // Remove redundant tee entirely (value stays on stack)
+                            // Don't push anything - this preserves stack because:
+                            // tee: pop value, set local, push value -> net effect: value stays
+                            // nothing: value stays
+                            *changed = true;
+                        } else {
+                            result.push(instr.clone());
+                        }
+                    }
+
+                    Instruction::Block { block_type, body } => {
+                        let processed_body = transform_instructions(
+                            body,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                            changed,
+                        );
+                        result.push(Instruction::Block {
+                            block_type: block_type.clone(),
+                            body: processed_body,
+                        });
+                    }
+
+                    Instruction::Loop { block_type, body } => {
+                        let processed_body = transform_instructions(
+                            body,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                            changed,
+                        );
+                        result.push(Instruction::Loop {
+                            block_type: block_type.clone(),
+                            body: processed_body,
+                        });
+                    }
+
+                    Instruction::If {
+                        block_type,
+                        then_body,
+                        else_body,
+                    } => {
+                        let processed_then = transform_instructions(
+                            then_body,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                            changed,
+                        );
+                        let processed_else = transform_instructions(
+                            else_body,
+                            redundant_positions,
+                            tee_positions_to_remove,
+                            position,
+                            changed,
+                        );
                         result.push(Instruction::If {
                             block_type: block_type.clone(),
                             then_body: processed_then,
@@ -4711,21 +6287,34 @@ pub mod optimize {
                 }
             }
 
-            // Filter out marked redundant sets
-            if !to_remove.is_empty() {
-                result
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(idx, _)| !to_remove.contains(idx))
-                    .map(|(_, instr)| instr)
-                    .collect()
-            } else {
-                result
-            }
+            result
         }
 
+        // Pass 1: Find redundant sets
         let mut last_sets = HashMap::new();
-        process_instructions(instructions, changed, &mut last_sets)
+        let mut redundant_positions = HashSet::new();
+        let mut tee_positions_to_remove = HashSet::new();
+        find_redundant_sets(
+            instructions,
+            &mut last_sets,
+            &mut redundant_positions,
+            &mut tee_positions_to_remove,
+            0,
+        );
+
+        // Pass 2: Transform instructions
+        if redundant_positions.is_empty() && tee_positions_to_remove.is_empty() {
+            instructions.to_vec()
+        } else {
+            let mut position = 0;
+            transform_instructions(
+                instructions,
+                &redundant_positions,
+                &tee_positions_to_remove,
+                &mut position,
+                changed,
+            )
+        }
     }
 
     /// Code Folding (Tail Merging)
@@ -4764,7 +6353,17 @@ pub mod optimize {
     /// - Enables further optimizations
     /// - Expected: 5-10% binary size reduction
     pub fn code_folding(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(func, "code_folding", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "code_folding");
+
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 5;
@@ -4775,6 +6374,11 @@ pub mod optimize {
 
                 func.instructions = fold_instructions(&func.instructions, &mut changed);
             }
+
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -4793,29 +6397,84 @@ pub mod optimize {
                     let mut folded_then = fold_instructions(then_body, changed);
                     let mut folded_else = fold_instructions(else_body, changed);
 
-                    // Find common tail instructions
-                    let mut common_tail = Vec::new();
-                    while !folded_then.is_empty() && !folded_else.is_empty() {
-                        let then_last = &folded_then[folded_then.len() - 1];
-                        let else_last = &folded_else[folded_else.len() - 1];
+                    // Find common tail instructions that are SAFE to extract
+                    //
+                    // We can extract a sequence of instructions from the tail if:
+                    // 1. The instructions are identical in both branches
+                    // 2. The extracted sequence is "self-contained" - it doesn't need more
+                    //    values from the branch than what the remaining branch produces
+                    //
+                    // Algorithm: Find all matching tail instructions, track cumulative "debt"
+                    // (how many values the extracted sequence needs from outside).
+                    // Extract as long as debt can be "paid off" by earlier matched instructions.
 
-                        // Check if instructions match
-                        if instructions_equal(then_last, else_last) {
-                            common_tail.push(then_last.clone());
-                            folded_then.pop();
-                            folded_else.pop();
-                            *changed = true;
-                        } else {
+                    // Phase 1: Find all matching tail instructions with their stack requirements
+                    // For each instruction, track: how many it consumes (needs) and produces
+                    let mut potential_tail: Vec<(Instruction, i32, i32)> = Vec::new(); // (instr, consumes, produces)
+                    let mut then_idx = folded_then.len();
+                    let mut else_idx = folded_else.len();
+
+                    while then_idx > 0 && else_idx > 0 {
+                        let then_last = &folded_then[then_idx - 1];
+                        let else_last = &folded_else[else_idx - 1];
+
+                        if !instructions_equal(then_last, else_last) {
                             break;
                         }
+
+                        let (consumes, produces) = instruction_stack_io(then_last);
+                        potential_tail.push((then_last.clone(), consumes, produces));
+                        then_idx -= 1;
+                        else_idx -= 1;
+                    }
+
+                    // Phase 2: Find the longest extractable suffix
+                    // Track "debt": how many values the sequence needs from outside
+                    // We process from END backwards, accumulating debt.
+                    // When debt reaches <= 0, the sequence is self-contained.
+                    let mut best_extract_count = 0;
+                    let mut running_debt: i32 = 0;
+
+                    for (i, (_instr, consumes, produces)) in potential_tail.iter().enumerate() {
+                        running_debt = running_debt + *consumes - *produces;
+
+                        // If running debt is <= 0, the sequence up to here is self-contained
+                        if running_debt <= 0 {
+                            best_extract_count = i + 1;
+                        }
+                    }
+
+                    // Build common_tail from the extractable instructions
+                    let mut common_tail: Vec<Instruction> = Vec::new();
+                    if best_extract_count > 0 {
+                        for i in 0..best_extract_count {
+                            common_tail.push(potential_tail[i].0.clone());
+                        }
+                        // Remove from both branches
+                        for _ in 0..best_extract_count {
+                            folded_then.pop();
+                            folded_else.pop();
+                        }
+                        *changed = true;
                     }
 
                     // Reverse common_tail because we built it backwards
                     common_tail.reverse();
 
+                    // CRITICAL: If we extracted the entire body, we need to update the block type
+                    // because the if statement no longer produces a value from its branches
+                    let new_block_type = if folded_then.is_empty() && folded_else.is_empty() {
+                        // Both branches are now empty - the if produces no value
+                        // The common tail (moved outside) will produce the value instead
+                        BlockType::Empty
+                    } else {
+                        // Branches still have content - keep original type
+                        block_type.clone()
+                    };
+
                     // Add the folded if statement
                     result.push(Instruction::If {
-                        block_type: block_type.clone(),
+                        block_type: new_block_type,
                         then_body: folded_then,
                         else_body: folded_else,
                     });
@@ -4845,6 +6504,89 @@ pub mod optimize {
         }
 
         result
+    }
+
+    /// Calculate the stack I/O of an instruction
+    ///
+    /// Returns (consumes, produces) - the number of values consumed from
+    /// and produced to the stack.
+    fn instruction_stack_io(instr: &Instruction) -> (i32, i32) {
+        use Instruction::*;
+
+        match instr {
+            // Constants: consume 0, produce 1
+            I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => (0, 1),
+
+            // Locals/Globals get: consume 0, produce 1
+            LocalGet(_) | GlobalGet(_) => (0, 1),
+
+            // Locals/Globals set: consume 1, produce 0
+            LocalSet(_) | GlobalSet(_) => (1, 0),
+
+            // Local tee: consume 1, produce 1
+            LocalTee(_) => (1, 1),
+
+            // Binary ops: consume 2, produce 1
+            I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU |
+            I32And | I32Or | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr |
+            I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU |
+            I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU |
+            I64And | I64Or | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr |
+            I64Eq | I64Ne | I64LtS | I64LtU | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU |
+            // Float binary ops
+            F32Add | F32Sub | F32Mul | F32Div | F32Min | F32Max | F32Copysign |
+            F32Eq | F32Ne | F32Lt | F32Gt | F32Le | F32Ge |
+            F64Add | F64Sub | F64Mul | F64Div | F64Min | F64Max | F64Copysign |
+            F64Eq | F64Ne | F64Lt | F64Gt | F64Le | F64Ge => (2, 1),
+
+            // Unary ops: consume 1, produce 1
+            I32Eqz | I32Clz | I32Ctz | I32Popcnt |
+            I64Eqz | I64Clz | I64Ctz | I64Popcnt |
+            // Float unary ops
+            F32Abs | F32Neg | F32Ceil | F32Floor | F32Trunc | F32Nearest | F32Sqrt |
+            F64Abs | F64Neg | F64Ceil | F64Floor | F64Trunc | F64Nearest | F64Sqrt |
+            // Conversion ops (unary)
+            I32WrapI64 | I64ExtendI32S | I64ExtendI32U |
+            I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U |
+            I64TruncF32S | I64TruncF32U | I64TruncF64S | I64TruncF64U |
+            F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U |
+            F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U |
+            F32DemoteF64 | F64PromoteF32 |
+            I32ReinterpretF32 | I64ReinterpretF64 | F32ReinterpretI32 | F64ReinterpretI64 => (1, 1),
+
+            // Memory loads: consume 1 (address), produce 1
+            I32Load { .. } | I64Load { .. } | F32Load { .. } | F64Load { .. } |
+            I32Load8S { .. } | I32Load8U { .. } | I32Load16S { .. } | I32Load16U { .. } |
+            I64Load8S { .. } | I64Load8U { .. } | I64Load16S { .. } | I64Load16U { .. } |
+            I64Load32S { .. } | I64Load32U { .. } => (1, 1),
+
+            // Memory stores: consume 2 (address + value), produce 0
+            I32Store { .. } | I64Store { .. } | F32Store { .. } | F64Store { .. } |
+            I32Store8 { .. } | I32Store16 { .. } |
+            I64Store8 { .. } | I64Store16 { .. } | I64Store32 { .. } => (2, 0),
+
+            // Memory size: consume 0, produce 1
+            MemorySize(_) => (0, 1),
+
+            // Memory grow: consume 1, produce 1
+            MemoryGrow(_) => (1, 1),
+
+            // Drop: consume 1, produce 0
+            Drop => (1, 0),
+
+            // Select: consume 3 (val, val, condition), produce 1
+            Select => (3, 1),
+
+            // Nop: no effect
+            Nop => (0, 0),
+
+            // Control flow - use large consume to prevent extraction
+            Block { .. } | Loop { .. } | If { .. } |
+            Br(_) | BrIf(_) | BrTable { .. } |
+            Return | Unreachable | Call(_) | CallIndirect { .. } | End | Unknown(_) => {
+                (100, 0) // Large consume prevents extraction
+            }
+        }
     }
 
     /// Check if two instructions are equal for the purpose of code folding
@@ -4966,7 +6708,18 @@ pub mod optimize {
     /// - Can enable further optimizations
     /// - Expected: 3-8% performance improvement
     pub fn loop_invariant_code_motion(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard =
+                ValidationGuard::with_context(func, "loop_invariant_code_motion", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "loop_invariant_code_motion");
+
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 3;
@@ -4977,6 +6730,11 @@ pub mod optimize {
 
                 func.instructions = hoist_loop_invariants(&func.instructions, &mut changed);
             }
+
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -5068,34 +6826,65 @@ pub mod optimize {
 
     /// Extract loop-invariant instructions from the beginning of the loop body
     /// Returns (hoisted_instructions, remaining_body)
+    ///
+    /// IMPORTANT: We can only hoist instruction sequences that have a net stack
+    /// effect of 0. Otherwise, we'd remove values that later instructions depend on.
     fn extract_invariants(
         instructions: &[Instruction],
         modified_locals: &std::collections::HashSet<u32>,
         changed: &mut bool,
     ) -> (Vec<Instruction>, Vec<Instruction>) {
         let mut hoisted = Vec::new();
-        let mut remaining = Vec::new();
-        let mut can_hoist = true;
+        let mut stack_balance: i32 = 0; // Track net stack effect of hoisted sequence
+        let mut last_safe_hoist_idx: usize = 0; // Index of last instruction where balance was 0
 
+        // First pass: find all consecutive invariant instructions and track balance
+        let mut idx = 0;
         for instr in instructions {
-            // Once we find a non-invariant instruction, stop hoisting
-            if !can_hoist {
-                remaining.push(instr.clone());
-                continue;
+            if !is_loop_invariant(instr, modified_locals) {
+                break; // Stop at first non-invariant instruction
             }
 
-            // Check if this instruction is loop-invariant
-            if is_loop_invariant(instr, modified_locals) {
-                hoisted.push(instr.clone());
-                *changed = true;
-            } else {
-                // Can't hoist this or anything after it (for now)
-                can_hoist = false;
-                remaining.push(instr.clone());
+            // Calculate stack effect of this instruction
+            let (consumes, produces) = instruction_stack_io(instr);
+            let new_balance = stack_balance - consumes + produces;
+
+            // Can't hoist if we'd need values from the loop body we haven't seen yet
+            if new_balance < 0 && consumes > stack_balance {
+                break;
+            }
+
+            hoisted.push(instr.clone());
+            stack_balance = new_balance;
+            idx += 1;
+
+            // Track the last point where balance was 0 (safe to stop here)
+            if stack_balance == 0 {
+                last_safe_hoist_idx = idx;
             }
         }
 
-        (hoisted, remaining)
+        // If we never reached balance=0, we can't hoist anything safely
+        if last_safe_hoist_idx == 0 {
+            // Put everything back
+            return (Vec::new(), instructions.to_vec());
+        }
+
+        // Trim hoisted to the last safe point
+        let safe_hoisted: Vec<_> = hoisted.into_iter().take(last_safe_hoist_idx).collect();
+
+        // Everything else goes into remaining
+        let remaining_instrs: Vec<_> = instructions
+            .iter()
+            .skip(last_safe_hoist_idx)
+            .cloned()
+            .collect();
+
+        if !safe_hoisted.is_empty() {
+            *changed = true;
+        }
+
+        (safe_hoisted, remaining_instrs)
     }
 
     /// Check if an instruction is loop-invariant
@@ -5108,10 +6897,14 @@ pub mod optimize {
 
         match instr {
             // Constants are always invariant
-            I32Const(_) | I64Const(_) => true,
+            I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => true,
 
             // LocalGet is invariant if the local isn't modified in the loop
             LocalGet(idx) => !modified_locals.contains(idx),
+
+            // LocalSet is invariant if we're computing a loop-invariant value
+            // (the actual safety is ensured by stack balance tracking)
+            LocalSet(_) | LocalTee(_) => true,
 
             // Pure arithmetic operations are invariant
             I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or
@@ -5126,6 +6919,12 @@ pub mod optimize {
 
             // Select is invariant (doesn't modify state)
             Select => true,
+
+            // Drop is invariant (just removes from stack)
+            Drop => true,
+
+            // Nop has no effect
+            Nop => true,
 
             // Everything else is NOT invariant (side effects, control flow, memory access, etc.)
             _ => false,
@@ -5153,7 +6952,17 @@ pub mod optimize {
     /// - Cleaner control flow
     /// - Expected: 1-2% binary size reduction
     pub fn remove_unused_branches(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(func, "remove_unused_branches", ctx.clone());
+
+            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            let translator = TranslationValidator::new(func, "remove_unused_branches");
+
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 3;
@@ -5164,6 +6973,11 @@ pub mod optimize {
 
                 func.instructions = remove_dead_code(&func.instructions, &mut changed);
             }
+
+            guard.validate(func)?;
+
+            // Z3 translation validation: prove semantic equivalence
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -5247,7 +7061,16 @@ pub mod optimize {
     /// - Simpler constant handling
     /// - Expected: 1-2% code size reduction
     pub fn optimize_added_constants(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard =
+                ValidationGuard::with_context(func, "optimize_added_constants", ctx.clone());
+            let translator = TranslationValidator::new(func, "optimize_added_constants");
+
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 3;
@@ -5258,6 +7081,9 @@ pub mod optimize {
 
                 func.instructions = merge_constant_adds(&func.instructions, &mut changed);
             }
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -5380,6 +7206,8 @@ pub mod optimize {
     /// - Lower indices use smaller LEB128 encoding
     /// - Expected: 10-15% binary size reduction
     pub fn coalesce_locals(module: &mut Module) -> Result<()> {
+        use crate::verify::TranslationValidator;
+
         for func in &mut module.functions {
             // Skip functions with no locals
             let total_locals = func.signature.params.len()
@@ -5393,10 +7221,14 @@ pub mod optimize {
                 continue;
             }
 
+            // Capture original for Z3 verification
+            let translator = TranslationValidator::new(func, "coalesce_locals");
+
             // Step 1: Compute live ranges
             let live_ranges = compute_live_ranges(&func.instructions, func.signature.params.len());
 
             if live_ranges.is_empty() {
+                translator.verify(func)?; // No change, still verify
                 continue;
             }
 
@@ -5413,6 +7245,7 @@ pub mod optimize {
                 (param_count..total_locals as u32).all(|idx| coloring.contains_key(&idx));
 
             if !all_locals_in_map {
+                translator.verify(func)?; // No change, still verify
                 continue; // Skip this function - has dead stores
             }
 
@@ -5423,6 +7256,9 @@ pub mod optimize {
             if (max_color + 1) < original_count as u32 {
                 remap_function_locals(func, &coloring);
             }
+
+            // Z3 translation validation
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -5715,9 +7551,15 @@ pub mod optimize {
             return Ok(());
         }
 
+        use crate::verify::TranslationValidator;
+
         for func in &mut module.functions {
+            let translator = TranslationValidator::new(func, "precompute");
+
             func.instructions =
                 propagate_global_constants_in_instructions(&func.instructions, &global_constants);
+
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -5796,9 +7638,17 @@ pub mod optimize {
     /// - `optimize_advanced_instructions()` (algebraic simplifications, strength reduction)
     /// - Self-operation optimizations (x-x→0, x^x→0, etc.)
     pub fn eliminate_common_subexpressions(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
         use std::collections::HashMap;
 
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard =
+                ValidationGuard::with_context(func, "eliminate_common_subexpressions", ctx.clone());
+            let translator = TranslationValidator::new(func, "eliminate_common_subexpressions");
+
             // Phase 1: Find all expression patterns (binary ops with 3-instruction sequences)
             let patterns = find_expression_patterns(&func.instructions);
 
@@ -5841,6 +7691,9 @@ pub mod optimize {
 
             // Phase 4: Apply CSE transformations
             apply_cse_transformations(func, &patterns, &safe_duplicates);
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -6095,9 +7948,13 @@ pub mod optimize {
     ///   (local.get $x) (local.get $y) (i32.add)
     ///   (local.get $x) (local.get $y) (i32.add)  ;; duplicate!
     pub fn eliminate_common_subexpressions_enhanced(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
         use std::collections::hash_map::DefaultHasher;
         use std::collections::HashMap;
         use std::hash::{Hash, Hasher};
+
+        let ctx = ValidationContext::from_module(module);
 
         // CSE transformation actions
         #[derive(Debug, Clone, Copy)]
@@ -6190,6 +8047,14 @@ pub mod optimize {
         }
 
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(
+                func,
+                "eliminate_common_subexpressions_enhanced",
+                ctx.clone(),
+            );
+            let translator =
+                TranslationValidator::new(func, "eliminate_common_subexpressions_enhanced");
+
             // Simulate stack to build expression trees
             let mut stack: Vec<Expr> = Vec::new();
             let mut expr_at_position: HashMap<usize, (Expr, u64)> = HashMap::new();
@@ -6445,6 +8310,9 @@ pub mod optimize {
 
                 func.instructions = new_instructions;
             }
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -6461,13 +8329,23 @@ pub mod optimize {
     /// instruction sequences in stack-based form.
     pub fn optimize_advanced_instructions(module: &mut Module) -> Result<()> {
         use super::Value;
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
         use loom_isle::{simplify_with_env, LocalEnv};
 
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
-            // Skip optimization for functions with Unknown instructions
-            if has_unknown_instructions(func) {
+            // Skip optimization for functions with unsupported instructions
+            // This includes floats, conversions, rotations, and unknown opcodes
+            // which would corrupt the stack simulation in instructions_to_terms
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
                 continue;
             }
+
+            let guard =
+                ValidationGuard::with_context(func, "optimize_advanced_instructions", ctx.clone());
+            let translator = TranslationValidator::new(func, "optimize_advanced_instructions");
 
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
@@ -6493,6 +8371,9 @@ pub mod optimize {
                     }
                 }
             }
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
         Ok(())
     }
@@ -6506,11 +8387,15 @@ pub mod optimize {
     ///
     /// Benefits 40-50% of typical WebAssembly code.
     pub fn inline_functions(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
         use std::collections::HashMap;
 
         // Run inlining to fixed point to ensure idempotence
         // Keep inlining until no more candidates are found
         loop {
+            // Build context at start of each iteration (after possible function changes)
+            let ctx = ValidationContext::from_module(module);
             // Phase 1: Build call graph and analyze functions
             let mut call_counts: HashMap<u32, usize> = HashMap::new();
             let mut function_sizes: HashMap<u32, usize> = HashMap::new();
@@ -6556,6 +8441,9 @@ pub mod optimize {
             let all_functions = module.functions.clone();
 
             for func in &mut module.functions {
+                let guard = ValidationGuard::with_context(func, "inline_functions", ctx.clone());
+                let translator = TranslationValidator::new(func, "inline_functions");
+
                 func.instructions = inline_calls_in_block(
                     &func.instructions,
                     &inline_set,
@@ -6563,6 +8451,9 @@ pub mod optimize {
                     func.signature.params.len() as u32,
                     &mut func.locals,
                 );
+
+                guard.validate(func)?;
+                translator.verify(func)?;
             }
 
             // Continue to next iteration to check for more inlining opportunities
@@ -6822,9 +8713,16 @@ pub mod optimize {
     /// - Nested blocks with compatible types → flattened
     /// - Empty blocks → removed
     pub fn fold_code(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
         use std::collections::HashMap;
 
+        let ctx = ValidationContext::from_module(module);
+
         for func in &mut module.functions {
+            let guard = ValidationGuard::with_context(func, "fold_code", ctx.clone());
+            let translator = TranslationValidator::new(func, "fold_code");
+
             // Phase 1: Analyze local variable usage
             let mut usage = HashMap::new();
             count_local_usage(&func.instructions, &mut usage);
@@ -6841,6 +8739,9 @@ pub mod optimize {
             // TODO: Phase 4: Fold single-use temporaries
             // This requires tracking the expression assigned to each temporary
             // and substituting it at the use site (complex for stack-based code)
+
+            guard.validate(func)?;
+            translator.verify(func)?;
         }
 
         Ok(())
@@ -6973,6 +8874,21 @@ pub mod optimize {
 /// This module provides translation validation to prove that optimizations
 /// preserve program semantics. Only available with the "verification" feature.
 pub mod verify;
+
+/// Optimization rule verification using Z3
+///
+/// This module provides formal proofs that individual optimization rules are
+/// mathematically correct. Unlike translation validation (which checks specific
+/// transformations), rule verification proves properties hold for ALL inputs.
+///
+/// Example: `∀x: i32. x * 8 = x << 3` - proven for all 2^32 possible values.
+pub mod verify_rules;
+
+/// End-to-end verification and gap analysis
+///
+/// This module provides honest assessment of what IS and ISN'T verified,
+/// plus infrastructure for true end-to-end verification via concrete execution.
+pub mod verify_e2e;
 
 /// WebAssembly Component Model optimization
 ///

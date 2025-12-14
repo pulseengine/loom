@@ -12,7 +12,13 @@
       "Bash(cargo build:*)",
       "Bash(gh issue view:*)",
       "WebSearch",
-      "Bash(export Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h)"
+      "Bash(export Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h)",
+      "Bash(xargs:*)",
+      "Bash(LIBRARY_PATH=/opt/homebrew/lib cargo build:*)",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(cat:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(LIBRARY_PATH=/opt/homebrew/lib cargo test:*)"
     ],
     "deny": [],
     "ask": []

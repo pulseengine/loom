@@ -35,6 +35,8 @@ criterion = "0.5"
 wasmtime = "17.0"
 
 [features]
+# Default features - verification enabled for safety
+default = ["verification"]
 # Verification support with Z3 SMT solver
 verification = ["z3"]
 

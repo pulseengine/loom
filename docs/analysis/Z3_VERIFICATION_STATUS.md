@@ -23,39 +23,56 @@ LOOM implements **translation validation** - it proves that each individual opti
 
 ### Current Verification Coverage
 
-**Supported Instructions** (line 118-354 in verify.rs):
+**Supported Instructions** (verify.rs):
 - ✅ i32/i64 constants (I32Const, I64Const)
-- ✅ i32/i64 arithmetic (Add, Sub, Mul)
+- ✅ i32/i64 arithmetic (Add, Sub, Mul, Div, Rem)
 - ✅ i32/i64 bitwise (And, Or, Xor, Shl, ShrU, ShrS)
+- ✅ i32/i64 comparison (Eq, Ne, Lt, Gt, Le, Ge)
 - ✅ Local operations (LocalGet, LocalSet, LocalTee)
-- ✅ Control flow termination (End)
-- ❌ Floating point (F32, F64) - explicitly not supported (line 129-131)
+- ✅ Global operations (GlobalGet, GlobalSet)
+- ✅ Control flow (If, Else, Block, Loop, End)
+- ✅ Floating point constants (F32Const, F64Const) - as bitvectors
+- ✅ Floating point operations - via Unknown opcode decoding (correct stack effects)
+- ✅ Select instruction
+- ⚠️ Floating point arithmetic - sound but imprecise (symbolic results, not IEEE 754)
 - ❌ Memory operations - not yet implemented
-- ❌ Control flow (if/loop/block/br) - not yet implemented
-- ❌ Comparison operations - not yet implemented
-- ❌ Division/remainder - not yet implemented
 
 ### Verified Optimizations
 
-**Unit Tests** (line 373-505 in verify.rs):
+**Unit Tests** (16 tests in verify.rs):
 1. ✅ Constant folding: `2 + 3 → 5` (test_verify_constant_folding)
 2. ✅ Strength reduction: `x * 4 → x << 2` (test_verify_strength_reduction)
 3. ✅ Bitwise identity: `x XOR x → 0` (test_verify_bitwise_identity)
 4. ✅ Incorrect optimization detection: `x + 1 ≠ 2` (test_verify_detects_incorrect_optimization)
+5. ✅ Comparison optimization (test_verify_comparison_optimization)
+6. ✅ Division optimization (test_verify_division_optimization)
+7. ✅ Select optimization (test_verify_select_optimization)
+8. ✅ Global operations (test_verify_global_operations)
+9. ✅ If/else simplification (test_verify_if_else_simplification)
+10. ✅ If/else with condition (test_verify_if_else_with_condition)
+11. ✅ Block result (test_verify_block_result)
+12. ✅ Nested if (test_verify_nested_if)
+13. ✅ Float param function (test_verify_float_param_function)
+14. ✅ F64 param function (test_verify_f64_param_function)
+15. ✅ Float constant folding (test_verify_float_constant_folding)
 
-**All 4 tests pass** ✅
+**All 16 tests pass** ✅
 
 ### CLI Integration
 
+**Z3 Verification is now enabled by default** (as of Phase 5 integration). The `verification` feature is a default feature in `loom-core`.
+
 **Usage**:
 ```bash
-# Build with verification feature
-RUSTFLAGS="-L /opt/homebrew/opt/z3/lib" \
-Z3_SYS_Z3_HEADER=/opt/homebrew/opt/z3/include/z3.h \
-cargo build --features verification
+# Standard build (verification enabled by default)
+export Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h
+LIBRARY_PATH=/opt/homebrew/lib cargo build --release
 
 # Optimize with Z3 verification
-./target/debug/loom optimize input.wat -o output.wasm --verify
+./target/release/loom optimize input.wat -o output.wasm --verify
+
+# Build without verification (for minimal binary size)
+cargo build --release --no-default-features
 ```
 
 **Output**:
@@ -167,7 +184,7 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
 | **Used in LOOM for** | Writing optimization passes | Verifying optimizations are correct |
 | **Example** | `(rule (simplify (iadd32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_add x y)))` | `solver.assert(orig._eq(opt).not()); solver.check() == UNSAT` |
 | **Proof strength** | No proof - could have bugs | Mathematical proof for supported ops |
-| **LOOM status** | ✅ Working (but limited by architecture) | ✅ Working with --features verification |
+| **LOOM status** | ✅ Working (but limited by architecture) | ✅ Enabled by default in loom-core |
 
 ## What ISLE Investigation Found
 
@@ -182,24 +199,30 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
 
 ### What is Formally Verified ✅
 
-All optimizations on programs that only use:
-- i32/i64 constants and arithmetic (add, sub, mul)
+All optimizations on programs that use:
+- i32/i64 constants and arithmetic (add, sub, mul, div, rem)
 - i32/i64 bitwise operations (and, or, xor, shl, shr)
+- i32/i64 comparison operations (eq, ne, lt, gt, le, ge)
 - Local variables (get, set, tee)
+- Global variables (get, set)
+- Control flow (if/else, block, loop)
+- Select instruction
+- Floating point constants (bit-pattern equality)
+- Floating point operations (correct stack effects, symbolic results)
 
 **For these programs, Z3 provides mathematical proof that optimizations are correct.**
+
+### What is Sound but Imprecise ⚠️
+
+- **Floating point arithmetic**: Float operations (add, sub, mul, div, etc.) are tracked with correct stack effects but use symbolic results instead of IEEE 754 semantics. This means the verifier won't produce false positives, but may miss some valid equivalences.
 
 ### What is NOT Verified ❌
 
 Programs using:
-- Floating point (F32, F64)
-- Memory operations
-- Control flow (if, loop, block, br)
-- Function calls
-- Comparisons
-- Division/remainder
+- Memory operations (load, store)
+- Function calls (indirect verification via ValidationContext)
 
-**These require extending encode_function_to_smt() with more cases.**
+**Memory operations require extending encode_function_to_smt() with Z3 array theory.**
 
 ### Property-Based Testing Coverage
 

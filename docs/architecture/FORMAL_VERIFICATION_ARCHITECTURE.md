@@ -9,7 +9,7 @@ This document presents a **formally verified optimizer architecture** for LOOM b
 3. **Property-Based Testing** - Empirical validation
 4. **ISLE DSL** - Readable, auditable optimization rules
 
-**Key Finding**: LOOM's current approach (Rust + Z3) is **superior to pure ISLE** and provides formal verification guarantees. Symbolica is **not recommended** (wrong tool for the job).
+**Note**: LOOM uses Z3 for rule verification. This proves algebraic rules correct but has limitations - see Section 6 for gaps in coverage.
 
 ---
 
@@ -80,7 +80,7 @@ In plain English: "For all valid programs, optimization preserves semantics."
 **Level 2: Formal Verification (CI)**
 - Z3 translation validation - ~100ms per function
 - SMT encoding for all optimizations
-- Enabled with `--features verification`
+- **Enabled by default** (Phase 5: `verification` is a default feature in loom-core)
 
 **Level 3: Exhaustive Testing (Nightly)**
 - Differential testing vs wasm-opt
@@ -962,27 +962,30 @@ jobs:
 3. Mechanized proofs for critical optimizations (if needed)
 4. Integration with other verification tools
 
-### Final Verdict
+### Current Status
 
-**LOOM's current architecture is sound and superior to pure ISLE**:
-- ✅ Rust pattern matching provides explicit control
-- ✅ Z3 verification provides formal guarantees
-- ✅ Modular pipeline enables incremental verification
-- ✅ Property testing provides fast feedback
+LOOM's verification approach:
+- Z3 proves algebraic rules correct (57 rules currently)
+- EMI testing catches some implementation bugs
+- Property testing provides fast feedback
 
-**Recommended enhancements**:
-- ⭐ Extend Z3 coverage (highest priority)
-- ⭐ Add differential testing and fuzzing
-- ⚠️ Consider egg as research project (optional)
-- 💡 Symbolica for fast algebraic verification (backlog - performance optimization only)
+**Known limitations** (see `verify_e2e.rs` for details):
+- Rule proofs don't verify the Rust implementation
+- Memory operations use abstract models (not byte-precise)
+- Float operations not fully modeled
+- Function calls treated as unknown
 
-**For stakeholders**:
-- ✅ "LOOM uses formal verification via Z3 SMT solver"
-- ✅ "Optimizations are mathematically proven correct"
-- ✅ "Integer arithmetic and bitwise optimizations fully verified"
-- ⭐ "Expanding verification to all WebAssembly operations"
+**Recommended improvements**:
+- Extend Z3 coverage to more instruction types
+- Add differential testing against wasm-opt
+- Improve EMI coverage
 
-LOOM is on the right path. Focus on expanding what works (Z3 verification) rather than adopting new tools (Symbolica, full egg migration) that don't provide clear benefits.
+**Honest assessment for documentation**:
+- "LOOM uses Z3 to verify optimization rules"
+- "57 algebraic rules are mathematically proven"
+- "Implementation correctness relies on testing, not formal proofs"
+
+The verification provides some confidence but is not complete. See `loom-core/src/verify_e2e.rs` for a detailed gap analysis.
 
 ---
 
