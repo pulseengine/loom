@@ -172,7 +172,7 @@ jobs:
             -o /tmp/test.wasm --verify --stats
 
   wasm-build:
-    name: WASM Build (wasm32-wasip2)
+    name: WASM Build (wasm32-wasip2 with Z3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -180,8 +180,78 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
-      - name: Build for wasm32-wasip2
-        run: cargo build --release --target wasm32-wasip2 --package loom-cli
+        with:
+          key: wasm-z3-build
+
+      - name: Install wasi-sdk
+        run: |
+          WASI_SDK_VERSION=25
+          wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz -O wasi-sdk.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          rm wasi-sdk.tar.gz
+          echo "WASI_SDK_PREFIX=/opt/wasi-sdk" >> $GITHUB_ENV
+
+      - name: Cache Z3 WASI build
+        id: cache-z3-wasi
+        uses: actions/cache@v4
+        with:
+          path: /opt/z3-wasi
+          key: z3-wasi-${{ runner.os }}-v1
+
+      - name: Build Z3 for WASI
+        if: steps.cache-z3-wasi.outputs.cache-hit != 'true'
+        run: |
+          # Clone Z3
+          git clone --depth 1 https://github.com/Z3Prover/z3.git /tmp/z3-src
+
+          # Create cmake toolchain file for wasi-sdk
+          cat > /tmp/wasi-sdk.cmake << 'EOF'
+          set(CMAKE_SYSTEM_NAME WASI)
+          set(CMAKE_SYSTEM_VERSION 1)
+          set(CMAKE_SYSTEM_PROCESSOR wasm32)
+          set(WASI_SDK_PREFIX $ENV{WASI_SDK_PREFIX})
+          set(CMAKE_C_COMPILER "${WASI_SDK_PREFIX}/bin/clang")
+          set(CMAKE_CXX_COMPILER "${WASI_SDK_PREFIX}/bin/clang++")
+          set(CMAKE_AR "${WASI_SDK_PREFIX}/bin/llvm-ar")
+          set(CMAKE_RANLIB "${WASI_SDK_PREFIX}/bin/llvm-ranlib")
+          set(CMAKE_C_COMPILER_TARGET "wasm32-wasip2")
+          set(CMAKE_CXX_COMPILER_TARGET "wasm32-wasip2")
+          set(CMAKE_SYSROOT "${WASI_SDK_PREFIX}/share/wasi-sysroot")
+          set(CMAKE_C_FLAGS_INIT "-fno-exceptions")
+          set(CMAKE_CXX_FLAGS_INIT "-fno-exceptions -fno-rtti")
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          set(Z3_SINGLE_THREADED ON CACHE BOOL "" FORCE)
+          set(Z3_BUILD_EXECUTABLE OFF CACHE BOOL "" FORCE)
+          set(Z3_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+          set(Z3_BUILD_JAVA_BINDINGS OFF CACHE BOOL "" FORCE)
+          set(Z3_BUILD_DOTNET_BINDINGS OFF CACHE BOOL "" FORCE)
+          EOF
+
+          # Build Z3
+          mkdir -p /tmp/z3-build
+          cd /tmp/z3-build
+          cmake /tmp/z3-src \
+            -DCMAKE_TOOLCHAIN_FILE=/tmp/wasi-sdk.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/z3-wasi \
+            -DZ3_BUILD_LIBZ3_SHARED=OFF
+          make -j$(nproc)
+          sudo make install
+
+      - name: Build loom for wasm32-wasip2
+        env:
+          Z3_SYS_Z3_HEADER: /opt/z3-wasi/include/z3.h
+          WASI_SDK_PREFIX: /opt/wasi-sdk
+        run: |
+          # Set library path for z3-sys
+          export LIBRARY_PATH=/opt/z3-wasi/lib
+          export Z3_LIB_DIR=/opt/z3-wasi/lib
+
+          cargo build --release --target wasm32-wasip2 --package loom-cli
+
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
