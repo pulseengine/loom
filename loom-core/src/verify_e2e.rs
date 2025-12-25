@@ -295,13 +295,11 @@ pub fn verify_by_execution(
     //       - Compare outputs (must be identical)
     // 3. Any difference is a BUG
 
-    let mut findings = Vec::new();
-
-    findings.push(VerificationFinding {
+    let findings = vec![VerificationFinding {
         description: "Execution-based verification not yet implemented".to_string(),
         severity: FindingSeverity::Gap,
         location: None,
-    });
+    }];
 
     // This is what EMI testing in loom-testing does!
     // We should integrate it here.

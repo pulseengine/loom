@@ -41,8 +41,9 @@ default = ["verification"]
 verification = ["z3"]
 
 [dependencies.z3]
-version = "0.12"
+version = "0.19"
 optional = true
+features = ["bundled"]
 
 [lib]
 path = "src/lib.rs"

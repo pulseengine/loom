@@ -8,11 +8,12 @@ use loom_testing::emi::{analyze_dead_code, emi_test, EmiConfig};
 /// Load a fixture as WASM bytes
 fn load_fixture(name: &str) -> Vec<u8> {
     let path = format!("../tests/fixtures/{}", name);
-    let content = std::fs::read(&path).expect(&format!("Failed to read fixture: {}", path));
+    let content =
+        std::fs::read(&path).unwrap_or_else(|_| panic!("Failed to read fixture: {}", path));
 
     if name.ends_with(".wat") {
         wat::parse_bytes(&content)
-            .expect(&format!("Failed to parse WAT: {}", path))
+            .unwrap_or_else(|_| panic!("Failed to parse WAT: {}", path))
             .into_owned()
     } else {
         content

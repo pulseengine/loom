@@ -387,6 +387,15 @@ pub enum ValueData {
         val: Value,
     },
 
+    /// Global variable operations
+    GlobalGet {
+        idx: u32,
+    },
+    GlobalSet {
+        idx: u32,
+        val: Value,
+    },
+
     /// Memory operations (Phase 13 - Memory Optimization)
     I32Load {
         addr: Value,
@@ -510,6 +519,20 @@ pub enum ValueData {
 
     /// Drop - discards the top stack value
     Drop {
+        val: Value,
+    },
+
+    /// Integer conversion operations
+    /// i32.wrap_i64 - truncates i64 to i32 (keeps low 32 bits)
+    I32WrapI64 {
+        val: Value,
+    },
+    /// i64.extend_i32_s - sign-extends i32 to i64
+    I64ExtendI32S {
+        val: Value,
+    },
+    /// i64.extend_i32_u - zero-extends i32 to i64
+    I64ExtendI32U {
         val: Value,
     },
 }
@@ -881,6 +904,16 @@ pub fn local_tee(idx: u32, val: Value) -> Value {
     Value(Box::new(ValueData::LocalTee { idx, val }))
 }
 
+/// Construct a global.get operation
+pub fn global_get(idx: u32) -> Value {
+    Value(Box::new(ValueData::GlobalGet { idx }))
+}
+
+/// Construct a global.set operation
+pub fn global_set(idx: u32, val: Value) -> Value {
+    Value(Box::new(ValueData::GlobalSet { idx, val }))
+}
+
 /// Construct an i32.load operation
 pub fn i32_load(addr: Value, offset: u32, align: u32) -> Value {
     Value(Box::new(ValueData::I32Load {
@@ -1103,6 +1136,21 @@ pub fn return_instr() -> Value {
 /// Drop constructor for ISLE - discards a value from stack
 pub fn drop_instr(val: Value) -> Value {
     Value(Box::new(ValueData::Drop { val }))
+}
+
+/// i32.wrap_i64 constructor - truncates i64 to i32 (keeps low 32 bits)
+pub fn i32_wrap_i64(val: Value) -> Value {
+    Value(Box::new(ValueData::I32WrapI64 { val }))
+}
+
+/// i64.extend_i32_s constructor - sign-extends i32 to i64
+pub fn i64_extend_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ExtendI32S { val }))
+}
+
+/// i64.extend_i32_u constructor - zero-extends i32 to i64
+pub fn i64_extend_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ExtendI32U { val }))
 }
 
 /// BlockType::Empty constructor

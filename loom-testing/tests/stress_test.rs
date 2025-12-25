@@ -121,7 +121,7 @@ fn is_component(wasm: &[u8]) -> bool {
 }
 
 /// Run optimization and validation on a WASM module
-fn test_optimize_valid(name: &str, wasm: &[u8]) -> Result<(usize, usize), String> {
+fn test_optimize_valid(_name: &str, wasm: &[u8]) -> Result<(usize, usize), String> {
     // Skip Component Model files - they need the CLI's component-aware path
     if is_component(wasm) {
         return Err("Component Model file (use CLI for these)".to_string());

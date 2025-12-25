@@ -139,7 +139,7 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
                 eprintln!("✓ Module {}: Optimized successfully", idx);
             }
             Err(e) => {
-                eprintln!("⚠  Module {}: Failed to optimize: {}", idx, e);
+                eprintln!("⚠  Module {}: Failed to optimize: {:?}", idx, e);
                 eprintln!("   Using original bytes for this module");
                 // Keep original bytes
             }
@@ -201,20 +201,45 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // Parse the module
     let mut module = crate::parse::parse_wasm(module_bytes)?;
 
-    // Apply the full optimization pipeline to core modules within components
-    // This enables LOOM's unique advantage: being the first Component Model optimizer
-    //
-    // IR support now includes:
-    // - Global.get and global.set (conservative: treated as memory barriers)
-    // - F32/F64 constants (passed through, float optimization pending)
-    // - All control flow constructs (blocks, loops, branches)
-    // - All expression-level operations
-    //
-    // The optimization passes are safe because:
-    // 1. GlobalGet/GlobalSet are treated as memory effects (cannot be removed/reordered)
-    // 2. Unknown instructions still result in function skipping (conservative)
-    // 3. Output is validated with wasmparser before acceptance
-    crate::optimize::optimize_module(&mut module).context("Core module optimization failed")?;
+    // Apply optimization passes with validation after each pass
+    // This provides detailed error messages showing which pass caused issues
+    #[allow(clippy::type_complexity)]
+    let passes: &[(&str, fn(&mut crate::Module) -> Result<()>)] = &[
+        ("constant_folding", crate::optimize::constant_folding),
+        (
+            "optimize_advanced_instructions",
+            crate::optimize::optimize_advanced_instructions,
+        ),
+        ("simplify_locals", crate::optimize::simplify_locals),
+        ("eliminate_dead_code", crate::optimize::eliminate_dead_code),
+        ("code_folding", crate::optimize::code_folding),
+        (
+            "loop_invariant_code_motion",
+            crate::optimize::loop_invariant_code_motion,
+        ),
+        (
+            "remove_unused_branches",
+            crate::optimize::remove_unused_branches,
+        ),
+        (
+            "optimize_added_constants",
+            crate::optimize::optimize_added_constants,
+        ),
+    ];
+
+    for (pass_name, pass_fn) in passes {
+        pass_fn(&mut module).with_context(|| format!("Pass '{}' failed", pass_name))?;
+
+        // Validate after each pass to identify the problematic one
+        let bytes = crate::encode::encode_wasm(&module)?;
+        if let Err(e) = wasmparser::validate(&bytes) {
+            return Err(anyhow!(
+                "Module became invalid after '{}' pass: {}",
+                pass_name,
+                e
+            ));
+        }
+    }
 
     // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
