@@ -1,3 +1,6 @@
+// Allow index-based loops - needed for accessing operators[j] by index
+#![allow(clippy::needless_range_loop)]
+
 //! Static analysis for dead code detection
 //!
 //! This module identifies dead code regions in WebAssembly modules
@@ -25,14 +28,11 @@ pub fn analyze_dead_code(wasm_bytes: &[u8]) -> Result<Vec<DeadRegion>> {
     for payload in parser.parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse Wasm payload")?;
 
-        match payload {
-            Payload::CodeSectionEntry(body) => {
-                // Analyze this function for dead code
-                let regions = analyze_function_body(func_idx, &body)?;
-                dead_regions.extend(regions);
-                func_idx += 1;
-            }
-            _ => {}
+        if let Payload::CodeSectionEntry(body) = payload {
+            // Analyze this function for dead code
+            let regions = analyze_function_body(func_idx, &body)?;
+            dead_regions.extend(regions);
+            func_idx += 1;
         }
     }
 
@@ -154,23 +154,18 @@ fn find_dead_if_branch(
 
     if condition_is_true {
         // Else branch is dead
-        if let Some(else_off) = else_offset {
-            Some(DeadRegion {
-                func_idx,
-                start_offset: else_off,
-                end_offset,
-                region_type: DeadRegionType::ConstantBranchIf {
-                    is_then_dead: false,
-                },
-                description: format!(
-                    "Else branch is dead (condition is always true) at offset {}",
-                    if_offset
-                ),
-            })
-        } else {
-            // No else branch - nothing to mark as dead
-            None
-        }
+        else_offset.map(|else_off| DeadRegion {
+            func_idx,
+            start_offset: else_off,
+            end_offset,
+            region_type: DeadRegionType::ConstantBranchIf {
+                is_then_dead: false,
+            },
+            description: format!(
+                "Else branch is dead (condition is always true) at offset {}",
+                if_offset
+            ),
+        })
     } else {
         // Then branch is dead (from after if to else or end)
         let dead_end = else_offset.unwrap_or(end_offset);

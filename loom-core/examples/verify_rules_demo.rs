@@ -144,7 +144,7 @@ fn print_category(title: &str, proofs: &[(&String, &RuleProof)]) {
     }
 
     println!("┌─ {} ─", title);
-    for (name, proof) in proofs {
+    for (_name, proof) in proofs {
         let status = if proof.proven { "✓" } else { "✗" };
         println!(
             "│  {} {} ({}ms)",

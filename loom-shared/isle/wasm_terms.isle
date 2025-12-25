@@ -136,6 +136,12 @@
     (LocalSet (idx u32) (val Value))
     (LocalTee (idx u32) (val Value))
 
+    ;; Global variable operations
+    ;; GlobalGet produces a value from a global variable
+    ;; GlobalSet consumes a value and stores it to a global (side effect)
+    (GlobalGet (idx u32))
+    (GlobalSet (idx u32) (val Value))
+
     ;; Memory operations (Phase 13 - Memory Optimization)
     (I32Load (addr Value) (offset u32) (align u32))
     (I32Store (addr Value) (value Value) (offset u32) (align u32))
@@ -155,6 +161,14 @@
 
     ;; Drop instruction - discards the top stack value
     (Drop (val Value))
+
+    ;; Integer conversion operations
+    ;; i32.wrap_i64 - wrap i64 to i32 (truncates high 32 bits)
+    (I32WrapI64 (val Value))
+    ;; i64.extend_i32_s - sign-extend i32 to i64
+    (I64ExtendI32S (val Value))
+    ;; i64.extend_i32_u - zero-extend i32 to i64
+    (I64ExtendI32U (val Value))
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -366,6 +380,13 @@
 (decl local_tee (u32 Value) Value)
 (extern constructor local_tee local_tee)
 
+;; Global variable constructors
+(decl global_get (u32) Value)
+(extern constructor global_get global_get)
+
+(decl global_set (u32 Value) Value)
+(extern constructor global_set global_set)
+
 ;; Memory operation constructors (Phase 13)
 (decl i32_load (Value u32 u32) Value)
 (extern constructor i32_load i32_load)
@@ -404,6 +425,16 @@
 ;; Drop instruction constructor - discards a value from stack
 (decl drop_instr (Value) Value)
 (extern constructor drop_instr drop_instr)
+
+;; Integer conversion constructors
+(decl i32_wrap_i64 (Value) Value)
+(extern constructor i32_wrap_i64 i32_wrap_i64)
+
+(decl i64_extend_i32_s (Value) Value)
+(extern constructor i64_extend_i32_s i64_extend_i32_s)
+
+(decl i64_extend_i32_u (Value) Value)
+(extern constructor i64_extend_i32_u i64_extend_i32_u)
 
 ;; BlockType constructors
 (decl block_type_empty () BlockType)

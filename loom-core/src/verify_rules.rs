@@ -1,3 +1,7 @@
+// Clippy allows for Z3 code patterns
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::unnecessary_cast)]
+
 //! Z3-Based Optimization Rule Verification
 //!
 //! This module provides formal verification for LOOM's optimization rules using Z3.
@@ -28,9 +32,9 @@
 //! ```
 
 #[cfg(feature = "verification")]
-use z3::ast::{Ast, BV};
+use z3::ast::BV;
 #[cfg(feature = "verification")]
-use z3::{Config, Context, SatResult, Solver};
+use z3::{SatResult, Solver};
 
 #[allow(unused_imports)]
 use anyhow::{anyhow, Result};
@@ -158,23 +162,23 @@ pub fn verify_strength_reduction_mul_power2_i32(power: u32) -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_mul_pow2_i32({})", 1u32 << power);
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
     // Create symbolic variable x
-    let x = BV::new_const(&ctx, "x", 32);
+    let x = BV::new_const("x", 32);
 
     // Left side: x * (2^power)
-    let multiplier = BV::from_u64(&ctx, (1u64 << power) as u64, 32);
+    let multiplier = BV::from_u64((1u64 << power) as u64, 32);
     let mul_result = x.bvmul(&multiplier);
 
     // Right side: x << power
-    let shift_amt = BV::from_u64(&ctx, power as u64, 32);
+    let shift_amt = BV::from_u64(power as u64, 32);
     let shift_result = x.bvshl(&shift_amt);
 
     // Assert they are NOT equal (looking for counterexample)
-    solver.assert(&mul_result._eq(&shift_result).not());
+    solver.assert(&mul_result.eq(&shift_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -204,21 +208,21 @@ pub fn verify_strength_reduction_div_power2_u32(power: u32) -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_div_pow2_u32({})", 1u32 << power);
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
+    let x = BV::new_const("x", 32);
 
     // Left side: x /u (2^power)
-    let divisor = BV::from_u64(&ctx, (1u64 << power) as u64, 32);
+    let divisor = BV::from_u64((1u64 << power) as u64, 32);
     let div_result = x.bvudiv(&divisor);
 
     // Right side: x >>u power
-    let shift_amt = BV::from_u64(&ctx, power as u64, 32);
+    let shift_amt = BV::from_u64(power as u64, 32);
     let shift_result = x.bvlshr(&shift_amt);
 
-    solver.assert(&div_result._eq(&shift_result).not());
+    solver.assert(&div_result.eq(&shift_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -246,21 +250,21 @@ pub fn verify_strength_reduction_rem_power2_u32(power: u32) -> RuleProof {
     let mask = divisor - 1;
     let rule_name = format!("strength_reduction_rem_pow2_u32({})", divisor);
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
+    let x = BV::new_const("x", 32);
 
     // Left side: x %u (2^power)
-    let divisor_bv = BV::from_u64(&ctx, divisor as u64, 32);
+    let divisor_bv = BV::from_u64(divisor as u64, 32);
     let rem_result = x.bvurem(&divisor_bv);
 
     // Right side: x & (2^power - 1)
-    let mask_bv = BV::from_u64(&ctx, mask as u64, 32);
+    let mask_bv = BV::from_u64(mask as u64, 32);
     let and_result = x.bvand(&mask_bv);
 
-    solver.assert(&rem_result._eq(&and_result).not());
+    solver.assert(&rem_result.eq(&and_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -288,16 +292,16 @@ pub fn verify_add_zero_identity_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "add_zero_identity_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let add_result = x.bvadd(&zero);
 
-    solver.assert(&add_result._eq(&x).not());
+    solver.assert(&add_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -317,16 +321,16 @@ pub fn verify_mul_zero_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "mul_zero_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let mul_result = x.bvmul(&zero);
 
-    solver.assert(&mul_result._eq(&zero).not());
+    solver.assert(&mul_result.eq(&zero).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -346,16 +350,16 @@ pub fn verify_mul_one_identity_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "mul_one_identity_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let one = BV::from_u64(&ctx, 1, 32);
+    let x = BV::new_const("x", 32);
+    let one = BV::from_u64(1, 32);
 
     let mul_result = x.bvmul(&one);
 
-    solver.assert(&mul_result._eq(&x).not());
+    solver.assert(&mul_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -375,16 +379,16 @@ pub fn verify_sub_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "sub_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let sub_result = x.bvsub(&x);
 
-    solver.assert(&sub_result._eq(&zero).not());
+    solver.assert(&sub_result.eq(&zero).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -408,16 +412,16 @@ pub fn verify_xor_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "xor_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let xor_result = x.bvxor(&x);
 
-    solver.assert(&xor_result._eq(&zero).not());
+    solver.assert(&xor_result.eq(&zero).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -437,15 +441,15 @@ pub fn verify_and_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "and_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
+    let x = BV::new_const("x", 32);
 
     let and_result = x.bvand(&x);
 
-    solver.assert(&and_result._eq(&x).not());
+    solver.assert(&and_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -465,15 +469,15 @@ pub fn verify_or_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "or_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
+    let x = BV::new_const("x", 32);
 
     let or_result = x.bvor(&x);
 
-    solver.assert(&or_result._eq(&x).not());
+    solver.assert(&or_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -493,16 +497,16 @@ pub fn verify_and_zero_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "and_zero_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let and_result = x.bvand(&zero);
 
-    solver.assert(&and_result._eq(&zero).not());
+    solver.assert(&and_result.eq(&zero).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -522,16 +526,16 @@ pub fn verify_or_all_ones_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "or_all_ones_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let all_ones = BV::from_i64(&ctx, -1, 32); // 0xFFFFFFFF
+    let x = BV::new_const("x", 32);
+    let all_ones = BV::from_i64(-1, 32); // 0xFFFFFFFF
 
     let or_result = x.bvor(&all_ones);
 
-    solver.assert(&or_result._eq(&all_ones).not());
+    solver.assert(&or_result.eq(&all_ones).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -555,16 +559,16 @@ pub fn verify_xor_zero_identity_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "xor_zero_identity_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     let xor_result = x.bvxor(&zero);
 
-    solver.assert(&xor_result._eq(&x).not());
+    solver.assert(&xor_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -588,17 +592,17 @@ pub fn verify_eq_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "eq_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let one = BV::from_u64(&ctx, 1, 32);
+    let x = BV::new_const("x", 32);
+    let one = BV::from_u64(1, 32);
 
     // (x == x) ? 1 : 0 should always be 1
-    let eq_result = x._eq(&x).ite(&one, &BV::from_u64(&ctx, 0, 32));
+    let eq_result = x.eq(&x).ite(&one, &BV::from_u64(0, 32));
 
-    solver.assert(&eq_result._eq(&one).not());
+    solver.assert(&eq_result.eq(&one).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -618,18 +622,18 @@ pub fn verify_ne_self_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "ne_self_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
-    let one = BV::from_u64(&ctx, 1, 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
+    let one = BV::from_u64(1, 32);
 
     // (x != x) ? 1 : 0 should always be 0
-    let ne_result = x._eq(&x).not().ite(&one, &zero);
+    let ne_result = x.eq(&x).not().ite(&one, &zero);
 
-    solver.assert(&ne_result._eq(&zero).not());
+    solver.assert(&ne_result.eq(&zero).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -654,19 +658,19 @@ pub fn verify_constant_folding_add_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "constant_folding_add_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
     // For any two constants a, b, adding them at runtime equals the pre-computed sum
-    let a = BV::new_const(&ctx, "a", 32);
-    let b = BV::new_const(&ctx, "b", 32);
+    let a = BV::new_const("a", 32);
+    let b = BV::new_const("b", 32);
 
     let runtime_add = a.bvadd(&b);
     // The pre-computed result would be the same operation - this is trivially true
     // but demonstrates the framework
 
-    solver.assert(&runtime_add._eq(&a.bvadd(&b)).not());
+    solver.assert(&runtime_add.eq(&a.bvadd(&b)).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -695,18 +699,18 @@ pub fn verify_wrapping_add_semantics_i32() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "wrapping_add_semantics_i32";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
     // Test case: i32::MAX + 1 should wrap to i32::MIN
-    let max_val = BV::from_i64(&ctx, i32::MAX as i64, 32);
-    let one = BV::from_u64(&ctx, 1, 32);
-    let min_val = BV::from_i64(&ctx, i32::MIN as i64, 32);
+    let max_val = BV::from_i64(i32::MAX as i64, 32);
+    let one = BV::from_u64(1, 32);
+    let min_val = BV::from_i64(i32::MIN as i64, 32);
 
     let wrapped_result = max_val.bvadd(&one);
 
-    solver.assert(&wrapped_result._eq(&min_val).not());
+    solver.assert(&wrapped_result.eq(&min_val).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -734,16 +738,16 @@ pub fn verify_add_zero_identity_i64() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "add_zero_identity_i64";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 64);
-    let zero = BV::from_u64(&ctx, 0, 64);
+    let x = BV::new_const("x", 64);
+    let zero = BV::from_u64(0, 64);
 
     let add_result = x.bvadd(&zero);
 
-    solver.assert(&add_result._eq(&x).not());
+    solver.assert(&add_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -763,19 +767,19 @@ pub fn verify_strength_reduction_mul_power2_i64(power: u32) -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_mul_pow2_i64({})", 1u64 << power);
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 64);
+    let x = BV::new_const("x", 64);
 
-    let multiplier = BV::from_u64(&ctx, 1u64 << power, 64);
+    let multiplier = BV::from_u64(1u64 << power, 64);
     let mul_result = x.bvmul(&multiplier);
 
-    let shift_amt = BV::from_u64(&ctx, power as u64, 64);
+    let shift_amt = BV::from_u64(power as u64, 64);
     let shift_result = x.bvshl(&shift_amt);
 
-    solver.assert(&mul_result._eq(&shift_result).not());
+    solver.assert(&mul_result.eq(&shift_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -808,18 +812,18 @@ pub fn verify_shift_left_right_not_identity_i32(n: u32) -> RuleProof {
         return RuleProof::error(&rule_name, "shift amount must be 1-31", 0);
     }
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let shift_amt = BV::from_u64(&ctx, n as u64, 32);
+    let x = BV::new_const("x", 32);
+    let shift_amt = BV::from_u64(n as u64, 32);
 
     // (x << n) >> n
     let shifted = x.bvshl(&shift_amt).bvlshr(&shift_amt);
 
     // Try to find x where (x << n) >> n != x
-    solver.assert(&shifted._eq(&x).not());
+    solver.assert(&shifted.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1091,7 +1095,7 @@ pub fn verify_pass_composition(pass_a: &str, pass_b: &str) -> RuleProof {
 /// Verify the full optimization pipeline composes correctly
 #[cfg(feature = "verification")]
 pub fn verify_pipeline_composition() -> Vec<RuleProof> {
-    let passes = vec![
+    let passes = [
         "constant_folding",
         "optimize_advanced_instructions",
         "simplify_locals",
@@ -1137,24 +1141,24 @@ pub fn verify_constant_if_true_elimination() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "constant_if_true_elimination";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
     // Model: if (1) then x else y
     // After optimization: x
     //
     // For any x, y: if(1, x, y) = x
-    let x = BV::new_const(&ctx, "x", 32);
-    let y = BV::new_const(&ctx, "y", 32);
-    let one = BV::from_u64(&ctx, 1, 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let y = BV::new_const("y", 32);
+    let one = BV::from_u64(1, 32);
+    let zero = BV::from_u64(0, 32);
 
     // if (1 != 0) then x else y
-    let if_result = one._eq(&zero).not().ite(&x, &y);
+    let if_result = one.eq(&zero).not().ite(&x, &y);
 
     // Should equal x
-    solver.assert(&if_result._eq(&x).not());
+    solver.assert(&if_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1178,18 +1182,18 @@ pub fn verify_constant_if_false_elimination() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "constant_if_false_elimination";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let y = BV::new_const(&ctx, "y", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let y = BV::new_const("y", 32);
+    let zero = BV::from_u64(0, 32);
 
     // if (0 != 0) then x else y = y
-    let if_result = zero._eq(&zero).not().ite(&x, &y);
+    let if_result = zero.eq(&zero).not().ite(&x, &y);
 
-    solver.assert(&if_result._eq(&y).not());
+    solver.assert(&if_result.eq(&y).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1213,19 +1217,19 @@ pub fn verify_select_true() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "select_true";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let y = BV::new_const(&ctx, "y", 32);
-    let one = BV::from_u64(&ctx, 1, 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let y = BV::new_const("y", 32);
+    let one = BV::from_u64(1, 32);
+    let zero = BV::from_u64(0, 32);
 
     // select(cond, x, y) = if cond != 0 then x else y
-    let select_result = one._eq(&zero).not().ite(&x, &y);
+    let select_result = one.eq(&zero).not().ite(&x, &y);
 
-    solver.assert(&select_result._eq(&x).not());
+    solver.assert(&select_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1245,17 +1249,17 @@ pub fn verify_select_false() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "select_false";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let y = BV::new_const(&ctx, "y", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let x = BV::new_const("x", 32);
+    let y = BV::new_const("y", 32);
+    let zero = BV::from_u64(0, 32);
 
-    let select_result = zero._eq(&zero).not().ite(&x, &y);
+    let select_result = zero.eq(&zero).not().ite(&x, &y);
 
-    solver.assert(&select_result._eq(&y).not());
+    solver.assert(&select_result.eq(&y).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1275,18 +1279,18 @@ pub fn verify_select_same() -> RuleProof {
     let start = std::time::Instant::now();
     let rule_name = "select_same";
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let c = BV::new_const(&ctx, "c", 32);
-    let x = BV::new_const(&ctx, "x", 32);
-    let zero = BV::from_u64(&ctx, 0, 32);
+    let c = BV::new_const("c", 32);
+    let x = BV::new_const("x", 32);
+    let zero = BV::from_u64(0, 32);
 
     // select(c, x, x) should always equal x regardless of c
-    let select_result = c._eq(&zero).not().ite(&x, &x);
+    let select_result = c.eq(&zero).not().ite(&x, &x);
 
-    solver.assert(&select_result._eq(&x).not());
+    solver.assert(&select_result.eq(&x).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
@@ -1354,8 +1358,8 @@ pub fn generate_test_from_counterexample(
                 let value_str = parts[1].trim();
 
                 // Parse hex value
-                let value = if value_str.starts_with("#x") {
-                    i64::from_str_radix(&value_str[2..], 16).unwrap_or(0)
+                let value = if let Some(hex) = value_str.strip_prefix("#x") {
+                    i64::from_str_radix(hex, 16).unwrap_or(0)
                 } else if value_str.starts_with("(- ") && value_str.ends_with(')') {
                     // Negative number: (- 123)
                     let num_str = &value_str[3..value_str.len() - 1];
@@ -1425,12 +1429,12 @@ fn generate_wat_for_rule(rule_name: &str, inputs: &[(String, i64)]) -> String {
 /// Probe for edge cases by asking Z3 to find inputs that produce specific outputs
 #[cfg(feature = "verification")]
 pub fn find_edge_case_inputs(target_output: i32, operation: &str) -> Option<GeneratedTestCase> {
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
-    let x = BV::new_const(&ctx, "x", 32);
-    let target = BV::from_i64(&ctx, target_output as i64, 32);
+    let x = BV::new_const("x", 32);
+    let target = BV::from_i64(target_output as i64, 32);
 
     // Set up constraint based on operation
     let _extra_var = match operation {
@@ -1440,18 +1444,18 @@ pub fn find_edge_case_inputs(target_output: i32, operation: &str) -> Option<Gene
             // clz(x) = 0 when x >= 2^31, clz(x) = 32 when x = 0
             if target_output == 0 {
                 // clz(x) = 0 means x has its high bit set
-                let high_bit = BV::from_u64(&ctx, 0x80000000, 32);
-                solver.assert(&x.bvand(&high_bit)._eq(&high_bit));
+                let high_bit = BV::from_u64(0x80000000, 32);
+                solver.assert(&x.bvand(&high_bit).eq(&high_bit));
             } else if target_output == 32 {
                 // clz(x) = 32 means x = 0
-                solver.assert(&x._eq(&BV::from_u64(&ctx, 0, 32)));
+                solver.assert(&x.eq(&BV::from_u64(0, 32)));
             }
             None
         }
         "i32.add_overflow" => {
             // Find x, y where x + y overflows to target
-            let y = BV::new_const(&ctx, "y", 32);
-            solver.assert(&x.bvadd(&y)._eq(&target));
+            let y = BV::new_const("y", 32);
+            solver.assert(&x.bvadd(&y).eq(&target));
             // And the result is different from mathematical sum
             // (i.e., there was overflow)
             Some(y)
@@ -1743,13 +1747,13 @@ pub fn generate_isle_proof_obligations(rules: &[IsleRule]) -> Vec<RuleProof> {
 fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str) -> RuleProof {
     let start = std::time::Instant::now();
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = Solver::new(&ctx);
+    // Default config used via thread-local context
+    // Context is thread-local in z3 0.19
+    let solver = Solver::new();
 
     // Create symbolic constants
-    let k1 = BV::new_const(&ctx, "k1", 32);
-    let k2 = BV::new_const(&ctx, "k2", 32);
+    let k1 = BV::new_const("k1", 32);
+    let k2 = BV::new_const("k2", 32);
 
     // Compute the operation result
     let op_result = match operation {
@@ -1781,7 +1785,7 @@ fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str) -> RuleProof
     };
 
     // Assert they are NOT equal (looking for counterexample)
-    solver.assert(&op_result._eq(&folded_result).not());
+    solver.assert(&op_result.eq(&folded_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 

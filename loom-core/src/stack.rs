@@ -524,7 +524,7 @@ pub mod validation {
             };
         }
 
-        for (_i, (actual, expected)) in stack.iter().zip(results.iter()).enumerate() {
+        for (actual, expected) in stack.iter().zip(results.iter()) {
             // Unknown is compatible with any expected type (from locals without type context)
             if *actual != ValueType::Unknown && actual != expected {
                 return ValidationResult::WrongOutput {
@@ -992,6 +992,68 @@ pub mod validation {
                 Ok(())
             }
 
+            // Sign extension operations (in-place sign extension)
+            I32Extend8S | I32Extend16S => {
+                pop_expected(stack, ValueType::I32)?;
+                stack.push(ValueType::I32);
+                Ok(())
+            }
+            I64Extend8S | I64Extend16S | I64Extend32S => {
+                pop_expected(stack, ValueType::I64)?;
+                stack.push(ValueType::I64);
+                Ok(())
+            }
+
+            // Saturating truncation operations (non-trapping float-to-int conversions)
+            // These are like regular truncation but saturate instead of trapping
+            I32TruncSatF32S | I32TruncSatF32U => {
+                pop_expected(stack, ValueType::F32)?;
+                stack.push(ValueType::I32);
+                Ok(())
+            }
+            I32TruncSatF64S | I32TruncSatF64U => {
+                pop_expected(stack, ValueType::F64)?;
+                stack.push(ValueType::I32);
+                Ok(())
+            }
+            I64TruncSatF32S | I64TruncSatF32U => {
+                pop_expected(stack, ValueType::F32)?;
+                stack.push(ValueType::I64);
+                Ok(())
+            }
+            I64TruncSatF64S | I64TruncSatF64U => {
+                pop_expected(stack, ValueType::F64)?;
+                stack.push(ValueType::I64);
+                Ok(())
+            }
+
+            // Bulk memory operations
+            MemoryFill(_) => {
+                // memory.fill: [dst, val, len] -> []
+                pop_expected(stack, ValueType::I32)?; // len
+                pop_expected(stack, ValueType::I32)?; // val
+                pop_expected(stack, ValueType::I32)?; // dst
+                Ok(())
+            }
+            MemoryCopy { .. } => {
+                // memory.copy: [dst, src, len] -> []
+                pop_expected(stack, ValueType::I32)?; // len
+                pop_expected(stack, ValueType::I32)?; // src
+                pop_expected(stack, ValueType::I32)?; // dst
+                Ok(())
+            }
+            MemoryInit { .. } => {
+                // memory.init: [dst, src, len] -> []
+                pop_expected(stack, ValueType::I32)?; // len
+                pop_expected(stack, ValueType::I32)?; // src offset in data segment
+                pop_expected(stack, ValueType::I32)?; // dst in memory
+                Ok(())
+            }
+            DataDrop(_) => {
+                // data.drop: [] -> []
+                Ok(())
+            }
+
             // End, Unknown - no stack effect
             End | Unknown(_) => Ok(()),
         }
@@ -1026,32 +1088,51 @@ pub mod validation {
 
     impl ValidationContext {
         /// Create a validation context from a module
+        ///
+        /// Builds function signature table including both imported and local functions.
+        /// WebAssembly function indices count imports first, then local functions.
         pub fn from_module(module: &crate::Module) -> Self {
-            let function_signatures = module
-                .functions
-                .iter()
-                .map(|f| {
-                    let params: Vec<ValueType> = f
-                        .signature
-                        .params
-                        .iter()
-                        .map(super::convert_value_type)
-                        .collect();
-                    let results: Vec<ValueType> = f
-                        .signature
-                        .results
-                        .iter()
-                        .map(super::convert_value_type)
-                        .collect();
-                    (params, results)
-                })
-                .collect();
+            let mut function_signatures = Vec::new();
+
+            // First, add imported function signatures (they come first in indexing)
+            for import in &module.imports {
+                if let crate::ImportKind::Func(type_idx) = &import.kind {
+                    if let Some(sig) = module.types.get(*type_idx as usize) {
+                        let params: Vec<ValueType> =
+                            sig.params.iter().map(super::convert_value_type).collect();
+                        let results: Vec<ValueType> =
+                            sig.results.iter().map(super::convert_value_type).collect();
+                        function_signatures.push((params, results));
+                    }
+                }
+            }
+
+            // Then add local function signatures
+            for f in &module.functions {
+                let params: Vec<ValueType> = f
+                    .signature
+                    .params
+                    .iter()
+                    .map(super::convert_value_type)
+                    .collect();
+                let results: Vec<ValueType> = f
+                    .signature
+                    .results
+                    .iter()
+                    .map(super::convert_value_type)
+                    .collect();
+                function_signatures.push((params, results));
+            }
+
             ValidationContext {
                 function_signatures,
             }
         }
 
         /// Get the signature of a function by index
+        ///
+        /// This properly handles both imported functions (lower indices) and
+        /// local functions (higher indices).
         pub fn get_function_signature(
             &self,
             idx: u32,
@@ -1073,6 +1154,7 @@ pub mod validation {
     /// ```
     pub struct ValidationGuard {
         pass_name: String,
+        #[allow(dead_code)]
         original_signature: StackSignature,
         func_name: Option<String>,
         /// If true, skip validation because we can't accurately analyze (e.g., has Unknown instructions)
@@ -1450,13 +1532,10 @@ pub mod effects {
     /// stack effects depend on the called function's signature.
     #[derive(Debug, Clone)]
     pub struct SignatureContext<'a> {
-        /// Function signatures indexed by function index
-        /// This includes both imported and defined functions
-        pub function_signatures: &'a [crate::FunctionSignature],
-        /// Type signatures for indirect calls (indexed by type index)
-        pub type_signatures: &'a [crate::FunctionSignature],
-        /// Number of imported functions (call indices below this are imports)
-        pub num_imported_functions: usize,
+        /// Reference to the module for looking up signatures
+        module: &'a crate::Module,
+        /// Number of imported functions (function indices below this are imports)
+        num_imported_functions: usize,
     }
 
     impl<'a> SignatureContext<'a> {
@@ -1470,20 +1549,41 @@ pub mod effects {
                 .count();
 
             SignatureContext {
-                function_signatures: &module.types,
-                type_signatures: &module.types,
+                module,
                 num_imported_functions,
             }
         }
 
         /// Get the signature for a function by its index
+        ///
+        /// WebAssembly function index space: imports come first (0..num_imports),
+        /// then local functions (num_imports..num_imports+num_local_funcs)
         pub fn get_function_signature(&self, func_idx: u32) -> Option<&crate::FunctionSignature> {
-            self.function_signatures.get(func_idx as usize)
+            let func_idx = func_idx as usize;
+
+            if func_idx < self.num_imported_functions {
+                // This is an imported function - find the nth function import
+                let mut import_func_count = 0;
+                for import in &self.module.imports {
+                    if let crate::ImportKind::Func(type_idx) = &import.kind {
+                        if import_func_count == func_idx {
+                            // Found the import, look up its signature from type index
+                            return self.module.types.get(*type_idx as usize);
+                        }
+                        import_func_count += 1;
+                    }
+                }
+                None
+            } else {
+                // This is a local function
+                let local_idx = func_idx - self.num_imported_functions;
+                self.module.functions.get(local_idx).map(|f| &f.signature)
+            }
         }
 
         /// Get the signature for a type by its index (for indirect calls)
         pub fn get_type_signature(&self, type_idx: u32) -> Option<&crate::FunctionSignature> {
-            self.type_signatures.get(type_idx as usize)
+            self.module.types.get(type_idx as usize)
         }
     }
 
@@ -2045,6 +2145,58 @@ pub mod effects {
                 SignatureKind::Fixed,
             ),
 
+            // Sign extension operations
+            I32Extend8S | I32Extend16S => StackSignature::new(
+                vec![ValueType::I32],
+                vec![ValueType::I32],
+                SignatureKind::Fixed,
+            ),
+            I64Extend8S | I64Extend16S | I64Extend32S => StackSignature::new(
+                vec![ValueType::I64],
+                vec![ValueType::I64],
+                SignatureKind::Fixed,
+            ),
+
+            // Saturating truncation operations (non-trapping)
+            I32TruncSatF32S | I32TruncSatF32U => StackSignature::new(
+                vec![ValueType::F32],
+                vec![ValueType::I32],
+                SignatureKind::Fixed,
+            ),
+            I32TruncSatF64S | I32TruncSatF64U => StackSignature::new(
+                vec![ValueType::F64],
+                vec![ValueType::I32],
+                SignatureKind::Fixed,
+            ),
+            I64TruncSatF32S | I64TruncSatF32U => StackSignature::new(
+                vec![ValueType::F32],
+                vec![ValueType::I64],
+                SignatureKind::Fixed,
+            ),
+            I64TruncSatF64S | I64TruncSatF64U => StackSignature::new(
+                vec![ValueType::F64],
+                vec![ValueType::I64],
+                SignatureKind::Fixed,
+            ),
+
+            // Bulk memory operations
+            MemoryFill(_) => StackSignature::new(
+                vec![ValueType::I32, ValueType::I32, ValueType::I32],
+                vec![],
+                SignatureKind::Fixed,
+            ),
+            MemoryCopy { .. } => StackSignature::new(
+                vec![ValueType::I32, ValueType::I32, ValueType::I32],
+                vec![],
+                SignatureKind::Fixed,
+            ),
+            MemoryInit { .. } => StackSignature::new(
+                vec![ValueType::I32, ValueType::I32, ValueType::I32],
+                vec![],
+                SignatureKind::Fixed,
+            ),
+            DataDrop(_) => StackSignature::empty(),
+
             // Unknown instructions - conservative empty signature
             Unknown(_) => StackSignature::empty(),
         }
@@ -2510,8 +2662,19 @@ mod tests {
 
     /// Helper to create a test module with specified types
     fn make_test_module(types: Vec<crate::FunctionSignature>) -> crate::Module {
+        // Create functions for each type (so function indices map to types)
+        let functions: Vec<crate::Function> = types
+            .iter()
+            .map(|sig| crate::Function {
+                name: None,
+                signature: sig.clone(),
+                locals: vec![],
+                instructions: vec![],
+            })
+            .collect();
+
         crate::Module {
-            functions: vec![],
+            functions,
             memories: vec![],
             tables: vec![],
             globals: vec![],

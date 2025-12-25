@@ -92,7 +92,7 @@ fn load_wasm(path: &str) -> Result<Vec<u8>> {
         std::fs::read(&path).with_context(|| format!("Failed to read file: {}", path.display()))?;
 
     // If it's a .wat file, parse it to wasm
-    if path.extension().map_or(false, |ext| ext == "wat") {
+    if path.extension().is_some_and(|ext| ext == "wat") {
         wat::parse_bytes(&content)
             .map(|cow| cow.into_owned())
             .with_context(|| format!("Failed to parse WAT: {}", path.display()))
@@ -195,10 +195,8 @@ fn corpus_command(dir: &str, iterations: usize) -> Result<()> {
 
     let mut files: Vec<PathBuf> = Vec::new();
     for pattern in &patterns {
-        for entry in glob::glob(pattern)? {
-            if let Ok(path) = entry {
-                files.push(path);
-            }
+        for path in glob::glob(pattern)?.flatten() {
+            files.push(path);
         }
     }
 

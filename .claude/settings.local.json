@@ -18,7 +18,12 @@
       "mcp__sequential-thinking__sequentialthinking",
       "Bash(cat:*)",
       "WebFetch(domain:github.com)",
-      "Bash(LIBRARY_PATH=/opt/homebrew/lib cargo test:*)"
+      "Bash(LIBRARY_PATH=/opt/homebrew/lib cargo test:*)",
+      "Bash(for f in /Users/r/git/loom/*.wasm)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)",
+      "Bash(wasm-tools component wit:*)",
+      "Bash(wasmtime:*)"
     ],
     "deny": [],
     "ask": []

@@ -56,3 +56,8 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# Use forked z3 for WASI support (pulseengine/z3.rs with wasi-sdk patches)
+# This enables Z3 verification in WASM builds
+[patch.crates-io]
+z3 = { git = "https://github.com/pulseengine/z3.rs.git", branch = "wasi-sdk-support" }
+z3-sys = { git = "https://github.com/pulseengine/z3.rs.git", branch = "wasi-sdk-support" }
