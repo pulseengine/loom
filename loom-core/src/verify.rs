@@ -91,6 +91,69 @@ impl VerificationSignatureContext {
 #[allow(dead_code)]
 const MAX_LOOP_UNROLL: usize = 3;
 
+/// Shared symbolic inputs for verification
+///
+/// When comparing original vs optimized functions, BOTH encodings must use
+/// the SAME symbolic inputs. Otherwise Z3 treats them as independent variables
+/// and can trivially find counterexamples by assigning different values.
+#[cfg(feature = "verification")]
+struct SharedSymbolicInputs {
+    /// Symbolic parameters (shared between original and optimized)
+    #[allow(dead_code)]
+    params: Vec<BV>,
+    /// Initial local variable values (zeros for non-param locals)
+    initial_locals: Vec<BV>,
+    /// Symbolic globals (shared between original and optimized)
+    globals: Vec<BV>,
+}
+
+#[cfg(feature = "verification")]
+impl SharedSymbolicInputs {
+    /// Create shared symbolic inputs for a function
+    fn from_function(func: &Function) -> Self {
+        let mut params = Vec::new();
+        let mut initial_locals = Vec::new();
+
+        // Create symbolic parameters
+        for (idx, param_type) in func.signature.params.iter().enumerate() {
+            let width = match param_type {
+                crate::ValueType::I32 => 32,
+                crate::ValueType::I64 => 64,
+                crate::ValueType::F32 => 32,
+                crate::ValueType::F64 => 64,
+            };
+            let param = BV::new_const(format!("param{}", idx), width);
+            params.push(param.clone());
+            initial_locals.push(param);
+        }
+
+        // Initialize non-param locals to zero
+        for (count, local_type) in func.locals.iter() {
+            let width = match local_type {
+                crate::ValueType::I32 => 32,
+                crate::ValueType::I64 => 64,
+                crate::ValueType::F32 => 32,
+                crate::ValueType::F64 => 64,
+            };
+            for _ in 0..*count {
+                initial_locals.push(BV::from_u64(0, width));
+            }
+        }
+
+        // Create symbolic globals
+        let mut globals = Vec::new();
+        for i in 0..16 {
+            globals.push(BV::new_const(format!("global{}", i), 32));
+        }
+
+        SharedSymbolicInputs {
+            params,
+            initial_locals,
+            globals,
+        }
+    }
+}
+
 /// Execution state for symbolic execution
 /// Tracks the symbolic state at each point during execution
 #[cfg(feature = "verification")]
@@ -573,9 +636,16 @@ pub fn verify_function_equivalence_with_context(
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
-        // Encode both functions with signature context
-        let orig_result = encode_function_to_smt_with_context(original, sig_ctx);
-        let opt_result = encode_function_to_smt_with_context(optimized, sig_ctx);
+        // CRITICAL: Create SHARED symbolic inputs that both encodings will use.
+        // Without this, each encoding creates independent symbolic variables,
+        // and Z3 trivially finds they can differ.
+        let shared_inputs = SharedSymbolicInputs::from_function(original);
+
+        // Encode both functions with the SAME shared inputs
+        let orig_result =
+            encode_function_to_smt_with_shared_inputs(original, sig_ctx, &shared_inputs);
+        let opt_result =
+            encode_function_to_smt_with_shared_inputs(optimized, sig_ctx, &shared_inputs);
 
         // Compute result while BVs are still valid
         match (&orig_result, &opt_result) {
@@ -865,11 +935,26 @@ fn encode_function_to_smt(func: &Function) -> Result<Option<BV>> {
 ///
 /// This version uses the signature context for proper Call/CallIndirect stack modeling.
 #[cfg(feature = "verification")]
+#[allow(dead_code)]
 fn encode_function_to_smt_with_context(
     func: &Function,
     sig_ctx: &VerificationSignatureContext,
 ) -> Result<Option<BV>> {
     encode_function_to_smt_impl(func, Some(sig_ctx))
+}
+
+/// Encode a WebAssembly function using pre-created shared symbolic inputs
+///
+/// This is CRITICAL for correct verification: both original and optimized functions
+/// must use the SAME symbolic inputs. Otherwise Z3 treats them as independent and
+/// can trivially find counterexamples.
+#[cfg(feature = "verification")]
+fn encode_function_to_smt_with_shared_inputs(
+    func: &Function,
+    sig_ctx: &VerificationSignatureContext,
+    shared: &SharedSymbolicInputs,
+) -> Result<Option<BV>> {
+    encode_function_to_smt_impl_inner(func, Some(sig_ctx), Some(shared))
 }
 
 /// Internal implementation of SMT encoding with optional signature context
@@ -878,48 +963,62 @@ fn encode_function_to_smt_impl(
     func: &Function,
     sig_ctx: Option<&VerificationSignatureContext>,
 ) -> Result<Option<BV>> {
+    encode_function_to_smt_impl_inner(func, sig_ctx, None)
+}
+
+/// Core SMT encoding implementation
+///
+/// When `shared_inputs` is Some, uses the provided symbolic inputs.
+/// When None, creates fresh symbolic inputs (for standalone encoding).
+#[cfg(feature = "verification")]
+fn encode_function_to_smt_impl_inner(
+    func: &Function,
+    sig_ctx: Option<&VerificationSignatureContext>,
+    shared_inputs: Option<&SharedSymbolicInputs>,
+) -> Result<Option<BV>> {
     // Create symbolic variables for parameters
     let mut stack: Vec<BV> = Vec::new();
-    let mut locals: Vec<BV> = Vec::new();
+    let mut locals: Vec<BV>;
+    let mut globals: Vec<BV>;
 
-    // Initialize parameters as symbolic inputs
-    // Floats are treated as bit patterns (bitvectors) for verification
-    for (idx, param_type) in func.signature.params.iter().enumerate() {
-        let width = match param_type {
-            crate::ValueType::I32 => 32,
-            crate::ValueType::I64 => 64,
-            // Floats are treated as bitvectors - we verify bit-pattern equality
-            // This handles constant folding and bit-level operations correctly
-            // Full IEEE 754 arithmetic verification is not yet supported
-            crate::ValueType::F32 => 32,
-            crate::ValueType::F64 => 64,
-        };
-        let param = BV::new_const(format!("param{}", idx), width);
-        locals.push(param);
-    }
+    if let Some(shared) = shared_inputs {
+        // Use shared inputs - CRITICAL for correct verification
+        locals = shared.initial_locals.clone();
+        globals = shared.globals.clone();
+    } else {
+        // Create fresh inputs (for standalone encoding)
+        locals = Vec::new();
 
-    // Initialize local variables to zero
-    // func.locals is Vec<(count, type)> pairs - expand them
-    for (count, local_type) in func.locals.iter() {
-        let width = match local_type {
-            crate::ValueType::I32 => 32,
-            crate::ValueType::I64 => 64,
-            // Floats treated as bitvectors
-            crate::ValueType::F32 => 32,
-            crate::ValueType::F64 => 64,
-        };
-        // Create 'count' locals of this type
-        for _ in 0..*count {
-            locals.push(BV::from_u64(0, width));
+        // Initialize parameters as symbolic inputs
+        for (idx, param_type) in func.signature.params.iter().enumerate() {
+            let width = match param_type {
+                crate::ValueType::I32 => 32,
+                crate::ValueType::I64 => 64,
+                crate::ValueType::F32 => 32,
+                crate::ValueType::F64 => 64,
+            };
+            let param = BV::new_const(format!("param{}", idx), width);
+            locals.push(param);
         }
-    }
 
-    // Initialize globals as symbolic (we don't know initial values)
-    // Map from global index to symbolic BV
-    let mut globals: Vec<BV> = Vec::new();
-    // Pre-allocate some globals (typically functions don't use many)
-    for i in 0..16 {
-        globals.push(BV::new_const(format!("global{}", i), 32));
+        // Initialize local variables to zero
+        for (count, local_type) in func.locals.iter() {
+            let width = match local_type {
+                crate::ValueType::I32 => 32,
+                crate::ValueType::I64 => 64,
+                crate::ValueType::F32 => 32,
+                crate::ValueType::F64 => 64,
+            };
+            for _ in 0..*count {
+                locals.push(BV::from_u64(0, width));
+            }
+        }
+
+        // Initialize globals as symbolic
+        globals = Vec::new();
+        for i in 0..16 {
+            globals.push(BV::new_const(format!("global{}", i), 32));
+        }
     }
 
     // Symbolically execute instructions
@@ -1400,15 +1499,18 @@ fn encode_function_to_smt_impl(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Clz"));
                 }
-                // Count leading zeros: encoded as conditional checks
-                // For simplicity, we use a symbolic encoding
                 let val = stack.pop().unwrap();
-                // CLZ is complex to encode precisely; use fresh symbolic for now
-                // This is sound for verification (we don't prove properties about CLZ itself)
-                let result = BV::new_const(format!("clz32_{}", stack.len()), 32);
-                // Assert result is in valid range [0, 32]
-                // We skip the constraint for now to keep it simple
-                let _ = val; // Suppress unused warning
+                // Count leading zeros: encode as nested conditionals checking each bit from MSB
+                // If bit 31 is set → 0, else if bit 30 is set → 1, ..., else → 32
+                // CRITICAL: We build the ITE chain so MSB check is outermost (evaluated first)
+                let mut result = BV::from_i64(32, 32); // All zeros case
+                for i in (0..32).rev() {
+                    // Reverse order so MSB (i=0, bit_pos=31) becomes outermost ITE
+                    let bit_pos = 31 - i;
+                    let mask = BV::from_i64(1i64 << bit_pos, 32);
+                    let bit_set = val.bvand(&mask).eq(&mask);
+                    result = bit_set.ite(&BV::from_i64(i as i64, 32), &result);
+                }
                 stack.push(result);
             }
             Instruction::I32Ctz => {
@@ -1416,8 +1518,15 @@ fn encode_function_to_smt_impl(
                     return Err(anyhow!("Stack underflow in I32Ctz"));
                 }
                 let val = stack.pop().unwrap();
-                let result = BV::new_const(format!("ctz32_{}", stack.len()), 32);
-                let _ = val;
+                // Count trailing zeros: encode as nested conditionals checking each bit from LSB
+                // If bit 0 is set → 0, else if bit 1 is set → 1, ..., else → 32
+                let mut result = BV::from_i64(32, 32); // All zeros case
+                for i in 0..32 {
+                    let bit_pos = 31 - i;
+                    let mask = BV::from_i64(1i64 << bit_pos, 32);
+                    let bit_set = val.bvand(&mask).eq(&mask);
+                    result = bit_set.ite(&BV::from_i64(bit_pos as i64, 32), &result);
+                }
                 stack.push(result);
             }
             Instruction::I32Popcnt => {
@@ -1425,8 +1534,15 @@ fn encode_function_to_smt_impl(
                     return Err(anyhow!("Stack underflow in I32Popcnt"));
                 }
                 let val = stack.pop().unwrap();
-                let result = BV::new_const(format!("popcnt32_{}", stack.len()), 32);
-                let _ = val;
+                // Population count: sum all the bits
+                // For each bit position, extract (val >> i) & 1 and sum them
+                let mut result = BV::from_i64(0, 32);
+                for i in 0..32 {
+                    let mask = BV::from_i64(1i64 << i, 32);
+                    let bit = val.bvand(&mask).eq(&mask);
+                    // Add 1 if bit is set, 0 otherwise
+                    result = bit.ite(&result.bvadd(BV::from_i64(1, 32)), &result);
+                }
                 stack.push(result);
             }
 
@@ -1448,8 +1564,20 @@ fn encode_function_to_smt_impl(
                     return Err(anyhow!("Stack underflow in I64Clz"));
                 }
                 let val = stack.pop().unwrap();
-                let result = BV::new_const(format!("clz64_{}", stack.len()), 64);
-                let _ = val;
+                // Count leading zeros for i64: same approach as i32 but 64 bits
+                // CRITICAL: Reverse order so MSB check is outermost
+                let mut result = BV::from_i64(64, 64); // All zeros case
+                for i in (0..64).rev() {
+                    let bit_pos = 63 - i;
+                    let mask = if bit_pos < 63 {
+                        BV::from_i64(1i64 << bit_pos, 64)
+                    } else {
+                        // Handle bit 63 specially to avoid overflow
+                        BV::from_i64(i64::MIN, 64)
+                    };
+                    let bit_set = val.bvand(&mask).eq(&mask);
+                    result = bit_set.ite(&BV::from_i64(i as i64, 64), &result);
+                }
                 stack.push(result);
             }
             Instruction::I64Ctz => {
@@ -1457,8 +1585,18 @@ fn encode_function_to_smt_impl(
                     return Err(anyhow!("Stack underflow in I64Ctz"));
                 }
                 let val = stack.pop().unwrap();
-                let result = BV::new_const(format!("ctz64_{}", stack.len()), 64);
-                let _ = val;
+                // Count trailing zeros for i64
+                let mut result = BV::from_i64(64, 64); // All zeros case
+                for i in 0..64 {
+                    let bit_pos = 63 - i;
+                    let mask = if bit_pos < 63 {
+                        BV::from_i64(1i64 << bit_pos, 64)
+                    } else {
+                        BV::from_i64(i64::MIN, 64)
+                    };
+                    let bit_set = val.bvand(&mask).eq(&mask);
+                    result = bit_set.ite(&BV::from_i64(bit_pos as i64, 64), &result);
+                }
                 stack.push(result);
             }
             Instruction::I64Popcnt => {
@@ -1466,8 +1604,17 @@ fn encode_function_to_smt_impl(
                     return Err(anyhow!("Stack underflow in I64Popcnt"));
                 }
                 let val = stack.pop().unwrap();
-                let result = BV::new_const(format!("popcnt64_{}", stack.len()), 64);
-                let _ = val;
+                // Population count for i64: sum all 64 bits
+                let mut result = BV::from_i64(0, 64);
+                for i in 0..64 {
+                    let mask = if i < 63 {
+                        BV::from_i64(1i64 << i, 64)
+                    } else {
+                        BV::from_i64(i64::MIN, 64)
+                    };
+                    let bit = val.bvand(&mask).eq(&mask);
+                    result = bit.ite(&result.bvadd(BV::from_i64(1, 64)), &result);
+                }
                 stack.push(result);
             }
 
