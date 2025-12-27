@@ -1,0 +1,54 @@
+;; LOOM - Constant Folding Optimization Rules (Cranelift Style)
+;; Rewritten to match Cranelift's cprop.isle pattern style
+;;
+;; Key insight: Pattern match directly on instruction constructors
+;; with nested extractors, rather than using if-let chains.
+
+;; ============================================================================
+;; i32 Constant Folding (Cranelift Style)
+;; ============================================================================
+
+;; i32.add constant folding: (iadd32 (iconst32 k1) (iconst32 k2)) → iconst32 (k1+k2)
+;; Pattern matches on the iadd32 constructor with nested iconst32 patterns
+(rule (simplify (iadd32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_add k1 k2))))
+
+;; i32.sub constant folding
+(rule (simplify (isub32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_sub k1 k2))))
+
+;; i32.mul constant folding
+(rule (simplify (imul32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_mul k1 k2))))
+
+;; ============================================================================
+;; i64 Constant Folding
+;; ============================================================================
+
+;; i64.add constant folding
+(rule (simplify (iadd64 (iconst64 (imm64 k1)) (iconst64 (imm64 k2))))
+      (iconst64 (imm64 (imm64_add k1 k2))))
+
+;; i64.sub constant folding
+(rule (simplify (isub64 (iconst64 (imm64 k1)) (iconst64 (imm64 k2))))
+      (iconst64 (imm64 (imm64_sub k1 k2))))
+
+;; i64.mul constant folding
+(rule (simplify (imul64 (iconst64 (imm64 k1)) (iconst64 (imm64 k2))))
+      (iconst64 (imm64 (imm64_mul k1 k2))))
+
+;; ============================================================================
+;; Bitwise Operations Constant Folding
+;; ============================================================================
+
+;; i32.and constant folding
+(rule (simplify (iand32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_and k1 k2))))
+
+;; i32.or constant folding
+(rule (simplify (ior32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_or k1 k2))))
+
+;; i32.xor constant folding
+(rule (simplify (ixor32 (iconst32 (imm32 k1)) (iconst32 (imm32 k2))))
+      (iconst32 (imm32 (imm32_xor k1 k2))))

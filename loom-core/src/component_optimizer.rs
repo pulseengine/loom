@@ -139,7 +139,7 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
                 eprintln!("✓ Module {}: Optimized successfully", idx);
             }
             Err(e) => {
-                eprintln!("⚠  Module {}: Failed to optimize: {}", idx, e);
+                eprintln!("⚠  Module {}: Failed to optimize: {:?}", idx, e);
                 eprintln!("   Using original bytes for this module");
                 // Keep original bytes
             }
@@ -199,27 +199,52 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     wasmparser::validate(module_bytes).context("Input module validation failed")?;
 
     // Parse the module
-    let module = crate::parse::parse_wasm(module_bytes)?;
+    let mut module = crate::parse::parse_wasm(module_bytes)?;
 
-    // TODO: Component module optimization requires full IR support for all instructions
-    // Currently, many instructions (global.get, global.set, select, etc.) are parsed
-    // as Unknown and act as optimization barriers. When we try to optimize, the Unknown
-    // instructions interfere with transformations.
-    //
-    // For now, just do parse+encode roundtrip without optimization.
-    // This still provides value:
-    // - Validates the module can be parsed and re-encoded
-    // - Prepares infrastructure for future component optimization
-    //
-    // Next steps:
-    // 1. Add proper IR support for global.get/set, select, and other missing instructions
-    // 2. Update optimization passes to handle these instructions correctly
-    // 3. Then re-enable optimization here
+    // Apply optimization passes with validation after each pass
+    // This provides detailed error messages showing which pass caused issues
+    #[allow(clippy::type_complexity)]
+    let passes: &[(&str, fn(&mut crate::Module) -> Result<()>)] = &[
+        ("constant_folding", crate::optimize::constant_folding),
+        (
+            "optimize_advanced_instructions",
+            crate::optimize::optimize_advanced_instructions,
+        ),
+        ("simplify_locals", crate::optimize::simplify_locals),
+        ("eliminate_dead_code", crate::optimize::eliminate_dead_code),
+        ("code_folding", crate::optimize::code_folding),
+        (
+            "loop_invariant_code_motion",
+            crate::optimize::loop_invariant_code_motion,
+        ),
+        (
+            "remove_unused_branches",
+            crate::optimize::remove_unused_branches,
+        ),
+        (
+            "optimize_added_constants",
+            crate::optimize::optimize_added_constants,
+        ),
+    ];
 
-    // Encode without optimization (parse+encode roundtrip only)
+    for (pass_name, pass_fn) in passes {
+        pass_fn(&mut module).with_context(|| format!("Pass '{}' failed", pass_name))?;
+
+        // Validate after each pass to identify the problematic one
+        let bytes = crate::encode::encode_wasm(&module)?;
+        if let Err(e) = wasmparser::validate(&bytes) {
+            return Err(anyhow!(
+                "Module became invalid after '{}' pass: {}",
+                pass_name,
+                e
+            ));
+        }
+    }
+
+    // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
-    // Validate before accepting
+    // Validate before accepting to ensure optimization correctness
     if let Err(e) = wasmparser::validate(&optimized_bytes) {
         return Err(anyhow!("Module roundtrip validation failed: {}", e));
     }

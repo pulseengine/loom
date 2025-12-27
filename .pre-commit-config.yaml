@@ -21,19 +21,19 @@ repos:
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
-        entry: bash -c 'cargo clippy --all-targets --all-features -- -D warnings'
+        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo clippy --all-targets --all-features -- -D warnings'
         language: system
         types: [rust]
         pass_filenames: false
       - id: cargo-test
         name: cargo test
-        entry: cargo test --all
+        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo test --all'
         language: system
         types: [rust]
         pass_filenames: false
       - id: cargo-build
         name: cargo build
-        entry: cargo build --release
+        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo build --release'
         language: system
         types: [rust]
         pass_filenames: false

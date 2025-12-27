@@ -42,6 +42,8 @@
   )
 
   ;; Test 7: Mixed - some unwrappable, some not
+  ;; First block is trivial (single const), second is not (has i32.add)
+  ;; After optimization, trivial blocks should be unwrapped
   (func $mixed_patterns (result i32)
     (nop)
     (block (result i32)
@@ -49,8 +51,10 @@
     )
     (nop)
     (block (result i32)
+      (i32.const 20)
       (i32.const 32)
       (i32.add)
     )
+    (i32.add)
   )
 )

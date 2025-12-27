@@ -1,0 +1,47 @@
+;; LOOM - Constant Folding Optimization Rules
+;; These rules fold constant operations at compile time
+;;
+;; Strategy: Use value_data extractor to match on ValueData enum variants,
+;; then use if-let with constant extractors to check if operands are constants.
+
+;; ============================================================================
+;; i32 Constant Folding
+;; ============================================================================
+
+;; i32.add constant folding: (i32.const x) + (i32.const y) → i32.const (x+y)
+;; Cranelift-style: pattern match directly on constructors with nested extractors
+(rule (simplify (iadd32 (iconst32 x) (iconst32 y)))
+      (iconst32 (imm32_add x y)))
+
+;; i32.sub constant folding
+(rule (simplify (isub32 (iconst32 x) (iconst32 y)))
+      (iconst32 (imm32_sub x y)))
+
+;; i32.mul constant folding
+(rule (simplify (imul32 (iconst32 x) (iconst32 y)))
+      (iconst32 (imm32_mul x y)))
+
+;; ============================================================================
+;; i64 Constant Folding
+;; ============================================================================
+
+;; i64.add constant folding
+(rule (simplify val)
+      (if-let (ValueData.I64Add lhs rhs) (value_data val))
+      (if-let x (i64_const lhs))
+      (if-let y (i64_const rhs))
+      (iconst64 (imm64_add x y)))
+
+;; i64.sub constant folding
+(rule (simplify val)
+      (if-let (ValueData.I64Sub lhs rhs) (value_data val))
+      (if-let x (i64_const lhs))
+      (if-let y (i64_const rhs))
+      (iconst64 (imm64_sub x y)))
+
+;; i64.mul constant folding
+(rule (simplify val)
+      (if-let (ValueData.I64Mul lhs rhs) (value_data val))
+      (if-let x (i64_const lhs))
+      (if-let y (i64_const rhs))
+      (iconst64 (imm64_mul x y)))

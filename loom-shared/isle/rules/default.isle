@@ -1,0 +1,6 @@
+;; LOOM - Default Fallback Rule
+;; This rule must be last to catch any value that doesn't match other rules
+
+;; Default case: return value unchanged if no rule applies
+;; This must have lowest priority so other rules take precedence
+(rule (simplify val) val)

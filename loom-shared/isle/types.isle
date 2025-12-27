@@ -1,0 +1,147 @@
+;; LOOM - WebAssembly ISLE Type Definitions
+;; This file contains all type definitions used across ISLE rules
+
+;; ============================================================================
+;; Primitive Types
+;; ============================================================================
+
+;; 32-bit immediate values
+(type Imm32 (primitive Imm32))
+
+;; 64-bit immediate values
+(type Imm64 (primitive Imm64))
+
+;; ============================================================================
+;; WebAssembly Value Types
+;; ============================================================================
+
+;; Block type signature (for blocks, loops, if statements)
+(type BlockType (enum
+    ;; No result type
+    (Empty)
+    ;; Single result of i32 or i64
+    (I32Result)
+    (I64Result)
+))
+
+;; Optional string for block labels
+(type OptionString (primitive OptionString))
+
+;; List of instructions (for block bodies)
+;; ISLE doesn't have good support for recursive lists, so we use a primitive type
+;; that's handled in the Rust integration layer
+(type InstructionList (primitive InstructionList))
+
+;; ValueData represents the actual value content
+;; We use a separate type to allow for proper boxing in recursive structures
+(type ValueData (enum
+    ;; i32.const N - 32-bit constant
+    (I32Const (val Imm32))
+
+    ;; i32 binary operations
+    (I32Add (lhs Value) (rhs Value))
+    (I32Sub (lhs Value) (rhs Value))
+    (I32Mul (lhs Value) (rhs Value))
+    (I32DivS (lhs Value) (rhs Value))
+    (I32DivU (lhs Value) (rhs Value))
+    (I32RemS (lhs Value) (rhs Value))
+    (I32RemU (lhs Value) (rhs Value))
+
+    ;; i32 bitwise operations
+    (I32And (lhs Value) (rhs Value))
+    (I32Or (lhs Value) (rhs Value))
+    (I32Xor (lhs Value) (rhs Value))
+    (I32Shl (lhs Value) (rhs Value))
+    (I32ShrS (lhs Value) (rhs Value))
+    (I32ShrU (lhs Value) (rhs Value))
+    (I32Rotl (lhs Value) (rhs Value))
+    (I32Rotr (lhs Value) (rhs Value))
+
+    ;; i32 comparison operations
+    (I32Eq (lhs Value) (rhs Value))
+    (I32Ne (lhs Value) (rhs Value))
+    (I32LtS (lhs Value) (rhs Value))
+    (I32LtU (lhs Value) (rhs Value))
+    (I32GtS (lhs Value) (rhs Value))
+    (I32GtU (lhs Value) (rhs Value))
+    (I32LeS (lhs Value) (rhs Value))
+    (I32LeU (lhs Value) (rhs Value))
+    (I32GeS (lhs Value) (rhs Value))
+    (I32GeU (lhs Value) (rhs Value))
+
+    ;; i32 unary operations
+    (I32Eqz (val Value))
+    (I32Clz (val Value))
+    (I32Ctz (val Value))
+    (I32Popcnt (val Value))
+
+    ;; i64.const N - 64-bit constant
+    (I64Const (val Imm64))
+
+    ;; i64 binary operations
+    (I64Add (lhs Value) (rhs Value))
+    (I64Sub (lhs Value) (rhs Value))
+    (I64Mul (lhs Value) (rhs Value))
+    (I64DivS (lhs Value) (rhs Value))
+    (I64DivU (lhs Value) (rhs Value))
+    (I64RemS (lhs Value) (rhs Value))
+    (I64RemU (lhs Value) (rhs Value))
+
+    ;; i64 bitwise operations
+    (I64And (lhs Value) (rhs Value))
+    (I64Or (lhs Value) (rhs Value))
+    (I64Xor (lhs Value) (rhs Value))
+    (I64Shl (lhs Value) (rhs Value))
+    (I64ShrS (lhs Value) (rhs Value))
+    (I64ShrU (lhs Value) (rhs Value))
+    (I64Rotl (lhs Value) (rhs Value))
+    (I64Rotr (lhs Value) (rhs Value))
+
+    ;; i64 comparison operations
+    (I64Eq (lhs Value) (rhs Value))
+    (I64Ne (lhs Value) (rhs Value))
+    (I64LtS (lhs Value) (rhs Value))
+    (I64LtU (lhs Value) (rhs Value))
+    (I64GtS (lhs Value) (rhs Value))
+    (I64GtU (lhs Value) (rhs Value))
+    (I64LeS (lhs Value) (rhs Value))
+    (I64LeU (lhs Value) (rhs Value))
+    (I64GeS (lhs Value) (rhs Value))
+    (I64GeU (lhs Value) (rhs Value))
+
+    ;; i64 unary operations
+    (I64Eqz (val Value))
+    (I64Clz (val Value))
+    (I64Ctz (val Value))
+    (I64Popcnt (val Value))
+
+    ;; Select instruction
+    (Select (cond Value) (true_val Value) (false_val Value))
+
+    ;; Local variable operations
+    (LocalGet (idx u32))
+    (LocalSet (idx u32) (val Value))
+    (LocalTee (idx u32) (val Value))
+
+    ;; Memory operations
+    (I32Load (addr Value) (offset u32) (align u32))
+    (I64Load (addr Value) (offset u32) (align u32))
+    (I32Store (addr Value) (value Value) (offset u32) (align u32))
+    (I64Store (addr Value) (value Value) (offset u32) (align u32))
+
+    ;; Control flow
+    (Block (label OptionString) (block_type BlockType) (body InstructionList))
+    (Loop (label OptionString) (block_type BlockType) (body InstructionList))
+    (If (cond Value) (block_type BlockType) (then_body InstructionList) (else_body InstructionList))
+    (Br (label_idx u32))
+    (BrIf (cond Value) (label_idx u32))
+    (Call (func_idx u32))
+    (Return)
+))
+
+;; Value is a boxed pointer to ValueData
+;; This allows recursive structures without infinite size
+(type Value (primitive Value))
+
+;; Primitive types for local variable indices
+(type u32 (primitive u32))

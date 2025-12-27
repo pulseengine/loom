@@ -387,6 +387,15 @@ pub enum ValueData {
         val: Value,
     },
 
+    /// Global variable operations
+    GlobalGet {
+        idx: u32,
+    },
+    GlobalSet {
+        idx: u32,
+        val: Value,
+    },
+
     /// Memory operations (Phase 13 - Memory Optimization)
     I32Load {
         addr: Value,
@@ -507,6 +516,25 @@ pub enum ValueData {
 
     /// Nop - no operation
     Nop,
+
+    /// Drop - discards the top stack value
+    Drop {
+        val: Value,
+    },
+
+    /// Integer conversion operations
+    /// i32.wrap_i64 - truncates i64 to i32 (keeps low 32 bits)
+    I32WrapI64 {
+        val: Value,
+    },
+    /// i64.extend_i32_s - sign-extends i32 to i64
+    I64ExtendI32S {
+        val: Value,
+    },
+    /// i64.extend_i32_u - zero-extends i32 to i64
+    I64ExtendI32U {
+        val: Value,
+    },
 }
 
 // Include the ISLE-generated code in a module so `super::*` works
@@ -529,9 +557,25 @@ pub fn iconst32(val: Imm32) -> Value {
     Value(Box::new(ValueData::I32Const { val }))
 }
 
+/// Extract i32.const value (extractor for pattern matching)
+pub fn iconst32_extract(val: &Value) -> Option<Imm32> {
+    match val.0.as_ref() {
+        ValueData::I32Const { val } => Some(*val),
+        _ => None,
+    }
+}
+
 /// Construct an i32.add operation
 pub fn iadd32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Add { lhs, rhs }))
+}
+
+/// Extract i32.add operands (extractor for pattern matching)
+pub fn iadd32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Add { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 /// Construct an i32.sub operation
@@ -539,9 +583,25 @@ pub fn isub32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Sub { lhs, rhs }))
 }
 
+/// Extract i32.sub operands (extractor for pattern matching)
+pub fn isub32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Sub { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
+}
+
 /// Construct an i32.mul operation
 pub fn imul32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32Mul { lhs, rhs }))
+}
+
+/// Extract i32.mul operands (extractor for pattern matching)
+pub fn imul32_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I32Mul { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 /// Construct an i64.const value
@@ -844,6 +904,16 @@ pub fn local_tee(idx: u32, val: Value) -> Value {
     Value(Box::new(ValueData::LocalTee { idx, val }))
 }
 
+/// Construct a global.get operation
+pub fn global_get(idx: u32) -> Value {
+    Value(Box::new(ValueData::GlobalGet { idx }))
+}
+
+/// Construct a global.set operation
+pub fn global_set(idx: u32, val: Value) -> Value {
+    Value(Box::new(ValueData::GlobalSet { idx, val }))
+}
+
 /// Construct an i32.load operation
 pub fn i32_load(addr: Value, offset: u32, align: u32) -> Value {
     Value(Box::new(ValueData::I32Load {
@@ -1063,6 +1133,26 @@ pub fn return_instr() -> Value {
     Value(Box::new(ValueData::Return { values: Vec::new() }))
 }
 
+/// Drop constructor for ISLE - discards a value from stack
+pub fn drop_instr(val: Value) -> Value {
+    Value(Box::new(ValueData::Drop { val }))
+}
+
+/// i32.wrap_i64 constructor - truncates i64 to i32 (keeps low 32 bits)
+pub fn i32_wrap_i64(val: Value) -> Value {
+    Value(Box::new(ValueData::I32WrapI64 { val }))
+}
+
+/// i64.extend_i32_s constructor - sign-extends i32 to i64
+pub fn i64_extend_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ExtendI32S { val }))
+}
+
+/// i64.extend_i32_u constructor - zero-extends i32 to i64
+pub fn i64_extend_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ExtendI32U { val }))
+}
+
 /// BlockType::Empty constructor
 pub fn block_type_empty() -> BlockType {
     BlockType::Empty
@@ -1174,6 +1264,66 @@ pub fn imm64_shr_s(lhs: Imm64, rhs: Imm64) -> Imm64 {
 /// Logical (unsigned) shift right for 64-bit immediates
 pub fn imm64_shr_u(lhs: Imm64, rhs: Imm64) -> Imm64 {
     Imm64(((lhs.0 as u64).wrapping_shr((rhs.0 & 0x3F) as u32)) as i64)
+}
+
+// ============================================================================
+// Helper Functions for Strength Reduction Optimizations
+// ============================================================================
+
+/// Check if a 32-bit immediate is a power of 2 (used as ISLE extractor)
+/// Returns Some(value) if power of 2, None otherwise
+pub fn is_power_of_two_i32(val: Imm32) -> Option<Imm32> {
+    let n = val.0;
+    if n > 0 && (n & (n - 1)) == 0 {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+/// Check if a 64-bit immediate is a power of 2 (used as ISLE extractor)
+/// Returns Some(value) if power of 2, None otherwise
+pub fn is_power_of_two_i64(val: Imm64) -> Option<Imm64> {
+    let n = val.0;
+    if n > 0 && (n & (n - 1)) == 0 {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+/// Get log2 of a power-of-2 immediate (32-bit)
+/// Assumes the input is a power of 2
+pub fn log2_i32(val: Imm32) -> Imm32 {
+    let mut n = val.0;
+    let mut log = 0;
+    while n > 1 {
+        n >>= 1;
+        log += 1;
+    }
+    Imm32(log)
+}
+
+/// Get log2 of a power-of-2 immediate (64-bit)
+/// Assumes the input is a power of 2
+pub fn log2_i64(val: Imm64) -> Imm64 {
+    let mut n = val.0;
+    let mut log = 0;
+    while n > 1 {
+        n >>= 1;
+        log += 1;
+    }
+    Imm64(log)
+}
+
+/// Subtract 1 from an immediate (for computing masks in x % power_of_2 optimization)
+pub fn imm32_sub_1(val: Imm32) -> Imm32 {
+    Imm32(val.0.wrapping_sub(1))
+}
+
+/// Subtract 1 from an immediate (for computing masks in x % power_of_2 optimization)
+pub fn imm64_sub_1(val: Imm64) -> Imm64 {
+    Imm64(val.0.wrapping_sub(1))
 }
 
 /// Memory location identifier: (base_address, offset)
@@ -1438,6 +1588,21 @@ fn simplify_stateless(val: Value) -> Value {
                 }
                 // Algebraic: x - 0 = x
                 (_, ValueData::I32Const { val }) if val.value() == 0 => lhs_simplified,
+                // Algebraic: 0 - (0 - x) = x (double negation)
+                (
+                    ValueData::I32Const { val: l },
+                    ValueData::I32Sub {
+                        lhs: inner_l,
+                        rhs: inner_r,
+                    },
+                ) if l.value() == 0 => {
+                    if let ValueData::I32Const { val: inner_l_val } = inner_l.data() {
+                        if inner_l_val.value() == 0 {
+                            return inner_r.clone();
+                        }
+                    }
+                    isub32(lhs_simplified, rhs_simplified)
+                }
                 _ => isub32(lhs_simplified, rhs_simplified),
             }
         }
@@ -1460,6 +1625,28 @@ fn simplify_stateless(val: Value) -> Value {
                 (_, ValueData::I32Const { val }) if val.value() == 1 => lhs_simplified,
                 // Algebraic: 1 * x = x
                 (ValueData::I32Const { val }, _) if val.value() == 1 => rhs_simplified,
+                // Algebraic: x * -1 = 0 - x (negate)
+                (_, ValueData::I32Const { val }) if val.value() == -1 => {
+                    isub32(iconst32(Imm32(0)), lhs_simplified)
+                }
+                // Algebraic: -1 * x = 0 - x (negate)
+                (ValueData::I32Const { val }, _) if val.value() == -1 => {
+                    isub32(iconst32(Imm32(0)), rhs_simplified)
+                }
+                // Strength reduction: x * power_of_2 → x << log2(power_of_2)
+                (_, ValueData::I32Const { val: rhs_val })
+                    if is_power_of_two_i32(*rhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i32(*rhs_val);
+                    ishl32(lhs_simplified, iconst32(shift_amount))
+                }
+                // Strength reduction: power_of_2 * x → x << log2(power_of_2)
+                (ValueData::I32Const { val: lhs_val }, _)
+                    if is_power_of_two_i32(*lhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i32(*lhs_val);
+                    ishl32(rhs_simplified, iconst32(shift_amount))
+                }
                 _ => imul32(lhs_simplified, rhs_simplified),
             }
         }
@@ -1494,6 +1681,21 @@ fn simplify_stateless(val: Value) -> Value {
                     iconst64(imm64_sub(*lhs_val, *rhs_val))
                 }
                 (_, ValueData::I64Const { val }) if val.value() == 0 => lhs_simplified,
+                // Algebraic: 0 - (0 - x) = x (double negation)
+                (
+                    ValueData::I64Const { val: l },
+                    ValueData::I64Sub {
+                        lhs: inner_l,
+                        rhs: inner_r,
+                    },
+                ) if l.value() == 0 => {
+                    if let ValueData::I64Const { val: inner_l_val } = inner_l.data() {
+                        if inner_l_val.value() == 0 {
+                            return inner_r.clone();
+                        }
+                    }
+                    isub64(lhs_simplified, rhs_simplified)
+                }
                 _ => isub64(lhs_simplified, rhs_simplified),
             }
         }
@@ -1511,7 +1713,68 @@ fn simplify_stateless(val: Value) -> Value {
                 (ValueData::I64Const { val }, _) if val.value() == 0 => iconst64(Imm64(0)),
                 (_, ValueData::I64Const { val }) if val.value() == 1 => lhs_simplified,
                 (ValueData::I64Const { val }, _) if val.value() == 1 => rhs_simplified,
+                // Algebraic: x * -1 = 0 - x (negate)
+                (_, ValueData::I64Const { val }) if val.value() == -1 => {
+                    isub64(iconst64(Imm64(0)), lhs_simplified)
+                }
+                // Algebraic: -1 * x = 0 - x (negate)
+                (ValueData::I64Const { val }, _) if val.value() == -1 => {
+                    isub64(iconst64(Imm64(0)), rhs_simplified)
+                }
+                // Strength reduction: x * power_of_2 → x << log2(power_of_2)
+                // Note: i64.shl takes i32 for the shift amount
+                (_, ValueData::I64Const { val: rhs_val })
+                    if is_power_of_two_i64(*rhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i64(*rhs_val);
+                    ishl64(lhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                }
+                // Strength reduction: power_of_2 * x → x << log2(power_of_2)
+                // Note: i64.shl takes i32 for the shift amount
+                (ValueData::I64Const { val: lhs_val }, _)
+                    if is_power_of_two_i64(*lhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i64(*lhs_val);
+                    ishl64(rhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                }
                 _ => imul64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // i64.div_u optimizations (unsigned division)
+        ValueData::I64DivU { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Strength reduction: x / power_of_2 → x >> log2(power_of_2)
+                // Note: i64.shr_u takes i32 for the shift amount
+                (_, ValueData::I64Const { val: rhs_val })
+                    if is_power_of_two_i64(*rhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i64(*rhs_val);
+                    ishru64(lhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                }
+                // Algebraic: x / 1 = x
+                (_, ValueData::I64Const { val }) if val.value() == 1 => lhs_simplified,
+                _ => idivu64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // i64.rem_u optimizations (unsigned remainder/modulo)
+        ValueData::I64RemU { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Strength reduction: x % power_of_2 → x & (power_of_2 - 1)
+                (_, ValueData::I64Const { val: rhs_val })
+                    if is_power_of_two_i64(*rhs_val).is_some() =>
+                {
+                    let mask = imm64_sub_1(*rhs_val);
+                    iand64(lhs_simplified, iconst64(mask))
+                }
+                _ => iremu64(lhs_simplified, rhs_simplified),
             }
         }
 
@@ -2052,11 +2315,21 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding: const / const
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
                     if r.value() != 0 =>
                 {
                     iconst32(Imm32(((l.value() as u32) / (r.value() as u32)) as i32))
                 }
+                // Strength reduction: x / power_of_2 → x >> log2(power_of_2)
+                (_, ValueData::I32Const { val: rhs_val })
+                    if is_power_of_two_i32(*rhs_val).is_some() =>
+                {
+                    let shift_amount = log2_i32(*rhs_val);
+                    ishru32(lhs_simplified, iconst32(shift_amount))
+                }
+                // Algebraic: x / 1 = x
+                (_, ValueData::I32Const { val }) if val.value() == 1 => lhs_simplified,
                 _ => idivu32(lhs_simplified, rhs_simplified),
             }
         }
@@ -2078,10 +2351,18 @@ fn simplify_stateless(val: Value) -> Value {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding: const % const
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
                     if r.value() != 0 =>
                 {
                     iconst32(Imm32(((l.value() as u32) % (r.value() as u32)) as i32))
+                }
+                // Strength reduction: x % power_of_2 → x & (power_of_2 - 1)
+                (_, ValueData::I32Const { val: rhs_val })
+                    if is_power_of_two_i32(*rhs_val).is_some() =>
+                {
+                    let mask = imm32_sub_1(*rhs_val);
+                    iand32(lhs_simplified, iconst32(mask))
                 }
                 _ => iremu32(lhs_simplified, rhs_simplified),
             }
@@ -2101,19 +2382,6 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
 
-        ValueData::I64DivU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
-            match (lhs_simplified.data(), rhs_simplified.data()) {
-                (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
-                    if r.value() != 0 =>
-                {
-                    iconst64(Imm64(((l.value() as u64) / (r.value() as u64)) as i64))
-                }
-                _ => idivu64(lhs_simplified, rhs_simplified),
-            }
-        }
-
         ValueData::I64RemS { lhs, rhs } => {
             let lhs_simplified = simplify(lhs.clone());
             let rhs_simplified = simplify(rhs.clone());
@@ -2124,19 +2392,6 @@ fn simplify_stateless(val: Value) -> Value {
                     iconst64(Imm64(l.value().wrapping_rem(r.value())))
                 }
                 _ => irems64(lhs_simplified, rhs_simplified),
-            }
-        }
-
-        ValueData::I64RemU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
-            match (lhs_simplified.data(), rhs_simplified.data()) {
-                (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
-                    if r.value() != 0 =>
-                {
-                    iconst64(Imm64(((l.value() as u64) % (r.value() as u64)) as i64))
-                }
-                _ => iremu64(lhs_simplified, rhs_simplified),
             }
         }
 
@@ -2231,6 +2486,11 @@ fn simplify_stateless(val: Value) -> Value {
             let cond_simplified = simplify(cond.clone());
             let true_simplified = simplify(true_val.clone());
             let false_simplified = simplify(false_val.clone());
+
+            // Algebraic: select(c, x, x) → x (both branches same)
+            if are_values_equal(&true_simplified, &false_simplified) {
+                return true_simplified;
+            }
 
             match cond_simplified.data() {
                 // Constant folding: (select (i32.const 0) true false) → false
@@ -2557,6 +2817,81 @@ mod tests {
                 assert_eq!(val.value(), 20);
             }
             _ => panic!("Expected nested constant folding"),
+        }
+    }
+
+    #[test]
+    fn test_mul_negative_one() {
+        // Test: (i32.mul x -1) → (i32.sub 0 x)
+        let x = local_get(0);
+        let term = imul32(x, iconst32(Imm32::from(-1)));
+        let simplified = simplify(term);
+
+        // Should be (0 - local.get 0)
+        match simplified.data() {
+            ValueData::I32Sub { lhs, rhs } => {
+                match lhs.data() {
+                    ValueData::I32Const { val } => assert_eq!(val.value(), 0),
+                    _ => panic!("Expected i32.const 0"),
+                }
+                match rhs.data() {
+                    ValueData::LocalGet { idx } => assert_eq!(*idx, 0),
+                    _ => panic!("Expected local.get 0"),
+                }
+            }
+            _ => panic!("Expected (i32.sub 0 x) for x * -1"),
+        }
+    }
+
+    #[test]
+    fn test_double_negation_i32() {
+        // Test: (i32.sub 0 (i32.sub 0 x)) → x
+        let x = local_get(0);
+        let neg_x = isub32(iconst32(Imm32::from(0)), x);
+        let double_neg = isub32(iconst32(Imm32::from(0)), neg_x);
+        let simplified = simplify(double_neg);
+
+        match simplified.data() {
+            ValueData::LocalGet { idx } => assert_eq!(*idx, 0),
+            _ => panic!("Expected local.get 0 for double negation"),
+        }
+    }
+
+    #[test]
+    fn test_select_same_branches() {
+        // Test: (select cond x x) → x
+        let cond = local_get(0);
+        let x = iconst32(Imm32::from(42));
+        let term = select_instr(cond, x.clone(), x);
+        let simplified = simplify(term);
+
+        match simplified.data() {
+            ValueData::I32Const { val } => assert_eq!(val.value(), 42),
+            _ => panic!("Expected i32.const 42 for select with same branches"),
+        }
+    }
+
+    #[test]
+    fn test_i64_mul_negative_one() {
+        // Test: (i64.mul x -1) → (i64.sub 0 x)
+        let x = local_get(0);
+        let term = imul64(x, iconst64(Imm64::from(-1)));
+        let simplified = simplify(term);
+
+        // Note: local_get produces i32 conceptually, but the mul expects i64
+        // The test verifies the structure of the transformation
+        match simplified.data() {
+            ValueData::I64Sub { lhs, rhs } => {
+                match lhs.data() {
+                    ValueData::I64Const { val } => assert_eq!(val.value(), 0),
+                    _ => panic!("Expected i64.const 0"),
+                }
+                match rhs.data() {
+                    ValueData::LocalGet { idx } => assert_eq!(*idx, 0),
+                    _ => panic!("Expected local.get 0"),
+                }
+            }
+            _ => panic!("Expected (i64.sub 0 x) for x * -1"),
         }
     }
 }

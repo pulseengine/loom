@@ -47,3 +47,4 @@ docs/source/_generated/
 *.tmp
 *.bak
 .cache/
+*.z3-trace

@@ -61,6 +61,16 @@ enum Commands {
     Version,
 }
 
+/// Statistics for a single pass
+#[derive(Debug, Clone)]
+struct PassStats {
+    name: String,
+    instructions_before: usize,
+    instructions_after: usize,
+    #[allow(dead_code)]
+    reduction: i64, // Can be negative if pass adds instructions
+}
+
 /// Statistics about the optimization
 #[derive(Debug, Default)]
 struct OptimizationStats {
@@ -70,6 +80,8 @@ struct OptimizationStats {
     bytes_after: usize,
     optimization_time_ms: u128,
     constant_folds: usize,
+    pass_stats: Vec<PassStats>,
+    reencoding_bytes: Option<usize>, // Bytes after re-encoding with no optimization
 }
 
 impl OptimizationStats {
@@ -88,8 +100,48 @@ impl OptimizationStats {
             self.bytes_after,
             self.reduction_percentage(self.bytes_before, self.bytes_after)
         );
+
+        // Show re-encoding baseline if available
+        if let Some(reenc) = self.reencoding_bytes {
+            let reenc_effect = self.bytes_before as i64 - reenc as i64;
+            let opt_effect = reenc as i64 - self.bytes_after as i64;
+            println!();
+            println!(
+                "  Re-encoding effect: {} bytes ({:+})",
+                reenc, -reenc_effect
+            );
+            println!("  Optimization effect: {} bytes reduction", opt_effect);
+        }
+
         println!("Constant folds: {}", self.constant_folds);
         println!("Optimization time: {} ms", self.optimization_time_ms);
+
+        // Per-pass breakdown
+        if !self.pass_stats.is_empty() {
+            println!();
+            println!("📈 Per-Pass Breakdown");
+            println!("─────────────────────────────────────────");
+            for pass in &self.pass_stats {
+                let delta = pass.instructions_before as i64 - pass.instructions_after as i64;
+                if delta != 0 {
+                    println!(
+                        "  {:20} {:4} → {:4} ({:+} instructions)",
+                        pass.name, pass.instructions_before, pass.instructions_after, delta
+                    );
+                }
+            }
+
+            // Show passes that did nothing
+            let inactive: Vec<_> = self
+                .pass_stats
+                .iter()
+                .filter(|p| p.instructions_before == p.instructions_after)
+                .map(|p| p.name.as_str())
+                .collect();
+            if !inactive.is_empty() {
+                println!("  (no effect: {})", inactive.join(", "));
+            }
+        }
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 
@@ -239,6 +291,14 @@ fn optimize_command(
         ..Default::default()
     };
 
+    // Measure re-encoding baseline (parse → encode with no optimization)
+    // This shows what size change comes from just re-encoding vs actual optimization
+    if show_stats && !is_wat_input {
+        if let Ok(reencoded) = loom_core::encode::encode_wasm(&module) {
+            stats.reencoding_bytes = Some(reencoded.len());
+        }
+    }
+
     // Apply optimizations
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
@@ -255,58 +315,100 @@ fn optimize_command(
             .map_or(true, |passes| passes.contains(&pass_name))
     };
 
-    // Run selected passes in optimal order
+    // Helper to track pass stats
+    let mut track_pass = |name: &str, before: usize, after: usize| {
+        if show_stats {
+            stats.pass_stats.push(PassStats {
+                name: name.to_string(),
+                instructions_before: before,
+                instructions_after: after,
+                reduction: before as i64 - after as i64,
+            });
+        }
+    };
+
+    // Run selected passes in optimal order with tracking
     if should_run("inline") {
         println!("  Running: inline");
+        let before = count_instructions(&module);
         loom_core::optimize::inline_functions(&mut module).context("Function inlining failed")?;
+        let after = count_instructions(&module);
+        track_pass("inline", before, after);
     }
 
     if should_run("precompute") {
         println!("  Running: precompute");
+        let before = count_instructions(&module);
         loom_core::optimize::precompute(&mut module).context("Precompute failed")?;
+        let after = count_instructions(&module);
+        track_pass("precompute", before, after);
     }
 
     if should_run("constant-folding") {
         println!("  Running: constant-folding");
+        let before = count_instructions(&module);
         loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
+        let after = count_instructions(&module);
+        track_pass("constant-folding", before, after);
     }
 
     if should_run("cse") {
         println!("  Running: cse");
+        let before = count_instructions(&module);
         loom_core::optimize::eliminate_common_subexpressions_enhanced(&mut module)
             .context("CSE failed")?;
+        let after = count_instructions(&module);
+        track_pass("cse", before, after);
     }
 
     if should_run("advanced") {
         println!("  Running: advanced");
+        let before = count_instructions(&module);
         loom_core::optimize::optimize_advanced_instructions(&mut module)
             .context("Advanced instruction optimization failed")?;
+        let after = count_instructions(&module);
+        track_pass("advanced", before, after);
     }
 
     if should_run("branches") {
         println!("  Running: branches");
+        let before = count_instructions(&module);
         loom_core::optimize::simplify_branches(&mut module)
             .context("Branch simplification failed")?;
+        let after = count_instructions(&module);
+        track_pass("branches", before, after);
     }
 
     if should_run("dce") {
         println!("  Running: dce");
+        let before = count_instructions(&module);
         loom_core::optimize::eliminate_dead_code(&mut module).context("DCE failed")?;
+        let after = count_instructions(&module);
+        track_pass("dce", before, after);
     }
 
     if should_run("merge-blocks") {
         println!("  Running: merge-blocks");
+        let before = count_instructions(&module);
         loom_core::optimize::merge_blocks(&mut module).context("Block merging failed")?;
+        let after = count_instructions(&module);
+        track_pass("merge-blocks", before, after);
     }
 
     if should_run("vacuum") {
         println!("  Running: vacuum");
+        let before = count_instructions(&module);
         loom_core::optimize::vacuum(&mut module).context("Vacuum cleanup failed")?;
+        let after = count_instructions(&module);
+        track_pass("vacuum", before, after);
     }
 
     if should_run("simplify-locals") {
         println!("  Running: simplify-locals");
+        let before = count_instructions(&module);
         loom_core::optimize::simplify_locals(&mut module).context("SimplifyLocals failed")?;
+        let after = count_instructions(&module);
+        track_pass("simplify-locals", before, after);
     }
 
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
@@ -743,6 +845,8 @@ mod tests {
             bytes_after: 50,
             optimization_time_ms: 1,
             constant_folds: 2,
+            pass_stats: vec![],
+            reencoding_bytes: None,
         };
 
         assert_eq!(stats.reduction_percentage(10, 5), 50.0);

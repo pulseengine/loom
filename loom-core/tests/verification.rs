@@ -208,6 +208,207 @@ fn prop_nested_optimization() {
     });
 }
 
+// ============================================================================
+// Z3 Translation Validation Tests
+// ============================================================================
+
+/// Test Z3 verification of constant folding
+///
+/// Demonstrates that Z3 can prove: i32.const 2 + i32.const 3 ≡ i32.const 5
+#[test]
+#[cfg(feature = "verification")]
+fn test_z3_constant_folding_verification() {
+    use loom_core::verify::verify_function_equivalence;
+
+    // Original: 2 + 3
+    let original = Function {
+        name: Some("test_add".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::I32Const(2),
+            Instruction::I32Const(3),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    // Optimized: 5
+    let optimized = Function {
+        name: Some("test_add".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::I32Const(5), Instruction::End],
+    };
+
+    // Z3 should prove these are equivalent
+    let result = verify_function_equivalence(&original, &optimized, "test");
+    assert!(result.is_ok(), "Verification should succeed");
+    assert!(result.unwrap(), "Functions should be proven equivalent");
+}
+
+/// Test Z3 verification of dead code elimination
+///
+/// Demonstrates that Z3 can prove removing dead code is semantically equivalent
+#[test]
+#[cfg(feature = "verification")]
+fn test_z3_dead_code_verification() {
+    use loom_core::verify::verify_function_equivalence;
+
+    // Original: const 42, const 99, drop (dead code)
+    let original = Function {
+        name: Some("test_dce".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::I32Const(42),
+            Instruction::I32Const(99),
+            Instruction::Drop, // Dead code pattern
+            Instruction::End,
+        ],
+    };
+
+    // Optimized: just const 42
+    let optimized = Function {
+        name: Some("test_dce".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::I32Const(42), Instruction::End],
+    };
+
+    let result = verify_function_equivalence(&original, &optimized, "test_dce");
+    assert!(result.is_ok(), "Verification should succeed");
+    assert!(result.unwrap(), "DCE should be proven equivalent");
+}
+
+/// Test Z3 verification with parameters
+///
+/// Demonstrates Z3 verifies parametric functions correctly
+#[test]
+#[cfg(feature = "verification")]
+fn test_z3_parametric_verification() {
+    use loom_core::verify::verify_function_equivalence;
+
+    // Original: x + 0
+    let original = Function {
+        name: Some("test_param".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Const(0),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    // Optimized: x (identity - adding zero is no-op)
+    let optimized = Function {
+        name: Some("test_param".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::LocalGet(0), Instruction::End],
+    };
+
+    let result = verify_function_equivalence(&original, &optimized, "test_param");
+    assert!(result.is_ok(), "Verification should succeed");
+    assert!(result.unwrap(), "x + 0 = x should be proven");
+}
+
+/// Test Z3 catches semantic differences
+///
+/// Demonstrates Z3 can detect when an "optimization" is incorrect
+#[test]
+#[cfg(feature = "verification")]
+fn test_z3_catches_bad_optimization() {
+    use loom_core::verify::verify_function_equivalence;
+
+    // Original: x + 1
+    let original = Function {
+        name: Some("test_bad".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    // Bad "optimization": just returns x (incorrect!)
+    let bad_optimized = Function {
+        name: Some("test_bad".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::LocalGet(0), Instruction::End],
+    };
+
+    let result = verify_function_equivalence(&original, &bad_optimized, "test_bad");
+    // This should return Ok(false) - Z3 finds a counterexample
+    assert!(result.is_ok(), "Verification should complete");
+    assert!(
+        !result.unwrap(),
+        "Z3 should detect x + 1 ≠ x (bad optimization)"
+    );
+}
+
+/// Test TranslationValidator RAII pattern
+#[test]
+#[cfg(feature = "verification")]
+fn test_translation_validator_raii() {
+    use loom_core::verify::TranslationValidator;
+
+    let mut func = Function {
+        name: Some("test_validator".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::I32Const(10),
+            Instruction::I32Const(20),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    // Capture original state
+    let validator = TranslationValidator::new(&func, "test_pass");
+
+    // Simulate optimization: fold 10 + 20 -> 30
+    func.instructions = vec![Instruction::I32Const(30), Instruction::End];
+
+    // Verify equivalence
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "Validator should prove equivalence");
+}
+
 /// Verification Summary Test
 ///
 /// Runs a comprehensive suite of test cases to build confidence in correctness.
