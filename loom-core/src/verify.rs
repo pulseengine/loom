@@ -36,6 +36,7 @@ use anyhow::{anyhow, Result};
 
 /// Signature context for verification - stores function and type signatures
 /// for proper Call/CallIndirect stack effect modeling.
+#[cfg(feature = "verification")]
 #[derive(Clone, Default)]
 pub struct VerificationSignatureContext {
     /// Function signatures indexed by function index (imports first, then locals)
@@ -44,6 +45,7 @@ pub struct VerificationSignatureContext {
     pub type_signatures: Vec<FunctionSignature>,
 }
 
+#[cfg(feature = "verification")]
 impl VerificationSignatureContext {
     /// Create a new empty context (for backwards compatibility)
     pub fn new() -> Self {
@@ -82,6 +84,24 @@ impl VerificationSignatureContext {
     /// Get the signature for a type by its index (for indirect calls)
     pub fn get_type_signature(&self, type_idx: u32) -> Option<&FunctionSignature> {
         self.type_signatures.get(type_idx as usize)
+    }
+}
+
+/// Stub signature context when verification is disabled
+#[cfg(not(feature = "verification"))]
+#[derive(Clone, Default)]
+pub struct VerificationSignatureContext;
+
+#[cfg(not(feature = "verification"))]
+impl VerificationSignatureContext {
+    /// Create a new empty context (stub)
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Create a signature context from a module (stub)
+    pub fn from_module(_module: &Module) -> Self {
+        Self
     }
 }
 
@@ -899,6 +919,17 @@ pub struct TranslationValidator {
 impl TranslationValidator {
     /// Create a stub validator (does nothing when verification disabled)
     pub fn new(_func: &crate::Function, pass_name: &str) -> Self {
+        Self {
+            pass_name: pass_name.to_string(),
+        }
+    }
+
+    /// Create a stub validator with context (does nothing when verification disabled)
+    pub fn new_with_context(
+        _func: &crate::Function,
+        pass_name: &str,
+        _sig_ctx: VerificationSignatureContext,
+    ) -> Self {
         Self {
             pass_name: pass_name.to_string(),
         }
