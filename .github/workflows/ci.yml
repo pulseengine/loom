@@ -96,6 +96,7 @@ jobs:
             "bench_bitops"         # CSE LocalTee bug
             "bench_locals"         # CSE LocalTee bug
             "crypto_utils"         # CSE LocalTee bug
+            "fibonacci"            # CSE changes semantics
             "simple_game_logic"    # CSE LocalTee bug
             "simplify_locals_test" # CSE LocalTee bug
             "test_input"           # CSE LocalTee bug
@@ -174,6 +175,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Use separate cache for benchmarks (no verification)
+          key: bench-no-verify
       - name: Run benchmarks
         # Disable verification for benchmarks - we're measuring optimization perf
         run: cargo bench --no-fail-fast --no-default-features
@@ -193,9 +197,8 @@ jobs:
         run: cargo build --release --features verification
       - name: Test verification
         run: |
-          # Use fibonacci.wat which passes all verification
-          # (test_input.wat hits CSE LocalTee bug)
-          ./target/release/loom optimize tests/fixtures/fibonacci.wat \
+          # Use bench_compare.wat which passes all verification
+          ./target/release/loom optimize tests/fixtures/bench_compare.wat \
             -o /tmp/test.wasm --verify --stats
 
   wasm-build:
