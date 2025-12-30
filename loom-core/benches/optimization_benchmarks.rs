@@ -219,6 +219,7 @@ fn bench_function_inlining(c: &mut Criterion) {
                 (func $main (param i32) (result i32)
                     local.get 0
                     call $helper
+                    local.get 0
                     call $helper
                     i32.add
                 )
