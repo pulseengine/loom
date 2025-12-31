@@ -6280,9 +6280,32 @@ pub mod optimize {
                 // Analyze local usage and build equivalences
                 let (usage, equivalences) = analyze_locals(&func.instructions);
 
-                // Apply optimizations
-                func.instructions =
-                    simplify_instructions(&func.instructions, &usage, &equivalences, &mut changed);
+                // SAFETY: Only apply equivalence substitution for straight-line code.
+                // Control flow (if/block/loop) makes equivalence tracking unsound because:
+                // 1. Sets in one branch don't affect the other branch
+                // 2. Equivalences created before a branch may be invalidated in one path
+                // Per our proof-first philosophy: skip unsafe optimizations.
+                let has_control_flow = func.instructions.iter().any(|i| {
+                    matches!(
+                        i,
+                        Instruction::If { .. }
+                            | Instruction::Block { .. }
+                            | Instruction::Loop { .. }
+                    )
+                });
+
+                // Apply optimizations (skip equivalence substitution if control flow present)
+                let safe_equivalences = if has_control_flow {
+                    std::collections::HashMap::new()
+                } else {
+                    equivalences
+                };
+                func.instructions = simplify_instructions(
+                    &func.instructions,
+                    &usage,
+                    &safe_equivalences,
+                    &mut changed,
+                );
 
                 // Apply Redundant Set Elimination
                 // This replaces redundant local.set with drop, preserving stack effects.
@@ -6334,6 +6357,7 @@ pub mod optimize {
                 let instr = &instructions[i];
 
                 // Detect equivalence pattern: local.get followed by local.set
+                // AND clear equivalence when local is set to something else
                 if i + 1 < instructions.len() {
                     if let (Instruction::LocalGet(src_idx), Instruction::LocalSet(dst_idx)) =
                         (&instructions[i], &instructions[i + 1])
@@ -6341,6 +6365,23 @@ pub mod optimize {
                         // This creates equivalence: dst ≡ src
                         equivalences.insert(*dst_idx, *src_idx);
                     }
+                }
+
+                // Clear equivalence when a local is set (unless it's from the pattern above)
+                // This ensures we don't use stale equivalences after a local is modified
+                match instr {
+                    Instruction::LocalSet(idx) => {
+                        // Check if this is NOT the target of a local.get; local.set pattern
+                        if i == 0 || !matches!(&instructions[i - 1], Instruction::LocalGet(_)) {
+                            // This set breaks any prior equivalence
+                            equivalences.remove(idx);
+                        }
+                    }
+                    Instruction::LocalTee(idx) => {
+                        // Tee also breaks equivalence (unless immediately after local.get of same local)
+                        equivalences.remove(idx);
+                    }
+                    _ => {}
                 }
 
                 match instr {
@@ -8857,13 +8898,13 @@ pub mod optimize {
                 if let Some(positions) = hash_to_positions.get(hash) {
                     if positions.len() > 1 {
                         // Check if this is a simple expression we can safely transform
+                        // SAFETY: Only CSE constants - LocalGet is UNSAFE because the
+                        // local's value might change between uses (via local.set)
                         if let Some((expr, _)) = expr_at_position.get(&positions[0]) {
-                            let is_simple = matches!(
-                                expr,
-                                Expr::Const32(_) | Expr::Const64(_) | Expr::LocalGet(_)
-                            );
+                            let is_safe_to_cse =
+                                matches!(expr, Expr::Const32(_) | Expr::Const64(_));
 
-                            if is_simple {
+                            if is_safe_to_cse {
                                 // First occurrence: add local.tee after it
                                 position_action
                                     .insert(positions[0], CSEAction::SaveToLocal(*local_idx));

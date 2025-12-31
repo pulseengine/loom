@@ -1674,31 +1674,41 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Local operations
+            // Note: Optimization passes (like CSE) may add new locals to the optimized
+            // function that don't exist in the original. We extend locals dynamically
+            // similar to how we handle globals.
             Instruction::LocalGet(idx) => {
-                if *idx as usize >= locals.len() {
-                    return Err(anyhow!("LocalGet index out of bounds: {}", idx));
+                let idx = *idx as usize;
+                // Extend locals vector if needed (for optimizer-added locals)
+                while locals.len() <= idx {
+                    // Default to 32-bit zero - will be set by LocalTee before read
+                    locals.push(BV::from_u64(0, 32));
                 }
-                stack.push(locals[*idx as usize].clone());
+                stack.push(locals[idx].clone());
             }
             Instruction::LocalSet(idx) => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in LocalSet"));
                 }
-                if *idx as usize >= locals.len() {
-                    return Err(anyhow!("LocalSet index out of bounds: {}", idx));
+                let idx = *idx as usize;
+                // Extend locals vector if needed
+                while locals.len() <= idx {
+                    locals.push(BV::from_u64(0, 32));
                 }
                 let value = stack.pop().unwrap();
-                locals[*idx as usize] = value;
+                locals[idx] = value;
             }
             Instruction::LocalTee(idx) => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in LocalTee"));
                 }
-                if *idx as usize >= locals.len() {
-                    return Err(anyhow!("LocalTee index out of bounds: {}", idx));
+                let idx = *idx as usize;
+                // Extend locals vector if needed (CSE adds locals for caching)
+                while locals.len() <= idx {
+                    locals.push(BV::from_u64(0, 32));
                 }
                 let value = stack.last().unwrap().clone();
-                locals[*idx as usize] = value;
+                locals[idx] = value;
             }
 
             // Global operations

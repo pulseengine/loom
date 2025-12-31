@@ -88,19 +88,9 @@ jobs:
         run: |
           mkdir -p /tmp/loom-optimized
 
-          # Known failures: Z3 verification catches bugs in CSE optimization
-          # These are real bugs that Z3 correctly rejects - tracked for fixing
-          # The CSE pass has a LocalTee index out of bounds bug
-          KNOWN_FAILURES=(
-            "advanced_math"        # CSE LocalTee bug
-            "bench_bitops"         # CSE LocalTee bug
-            "bench_locals"         # CSE LocalTee bug
-            "crypto_utils"         # CSE LocalTee bug
-            "fibonacci"            # CSE changes semantics
-            "simple_game_logic"    # CSE LocalTee bug
-            "simplify_locals_test" # CSE LocalTee bug
-            "test_input"           # CSE LocalTee bug
-          )
+          # All fixture tests now pass with Z3 verification!
+          # CSE and simplify_locals bugs have been fixed.
+          KNOWN_FAILURES=()
 
           unexpected_failures=()
           success_count=0
