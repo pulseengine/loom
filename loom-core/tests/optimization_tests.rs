@@ -1056,18 +1056,21 @@ fn test_rse_with_intervening_get() {
         )
     "#;
 
-    // Both sets should remain because there's a get between them
-    // Note: We call simplify_locals directly to test RSE in isolation,
-    // without constant folding interfering
+    // Both stores should remain because there's a get between them
+    // Note: simplify_locals may convert local.set+local.get to local.tee
+    // (single-use temp folding), so we count both Set and Tee as "stores"
     let mut module = parse::parse_wat(input).unwrap();
     optimize::simplify_locals(&mut module).unwrap();
 
     let instructions_str = format!("{:?}", module.functions[0].instructions);
-    let set_count = instructions_str.matches("LocalSet").count();
+    // Count both LocalSet and LocalTee as "stores" since temp folding
+    // converts set+get pairs to tee
+    let store_count = instructions_str.matches("LocalSet").count()
+        + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        set_count, 2,
-        "Expected 2 LocalSet instructions (no elimination), got {} in: {:?}",
-        set_count, module.functions[0].instructions
+        store_count, 2,
+        "Expected 2 local store instructions (Set or Tee), got {} in: {:?}",
+        store_count, module.functions[0].instructions
     );
 }
 
@@ -1116,6 +1119,8 @@ fn test_rse_different_locals() {
     "#;
 
     // First set to $x should be eliminated, but $y set should remain
+    // Note: simplify_locals may convert local.set+local.get to local.tee
+    // (single-use temp folding), so we count both Set and Tee as "stores"
     let mut module = parse::parse_wat(input).unwrap();
     let before = module.functions[0].instructions.len();
     optimize::optimize_module(&mut module).unwrap();
@@ -1129,11 +1134,14 @@ fn test_rse_different_locals() {
     );
 
     let instructions_str = format!("{:?}", module.functions[0].instructions);
-    let set_count = instructions_str.matches("LocalSet").count();
+    // Count both LocalSet and LocalTee as "stores" since temp folding
+    // converts set+get pairs to tee
+    let store_count = instructions_str.matches("LocalSet").count()
+        + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        set_count, 2,
-        "Expected 2 LocalSet instructions, got {} in: {:?}",
-        set_count, module.functions[0].instructions
+        store_count, 2,
+        "Expected 2 local store instructions (Set or Tee), got {} in: {:?}",
+        store_count, module.functions[0].instructions
     );
 }
 
