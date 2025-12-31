@@ -42,7 +42,7 @@ jobs:
         run: cargo build -p loom-shared --verbose
 
       - name: Test loom-shared
-        run: cargo test -p loom-shared --verbose
+        run: cargo test -p loom-shared --release --verbose
 
       - name: Check ISLE generation
         run: |
@@ -86,7 +86,7 @@ jobs:
         run: cargo build --workspace --verbose
 
       - name: Test all crates
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --release --verbose
 
       - name: Verify loom-isle re-exports
         run: |
