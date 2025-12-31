@@ -6459,6 +6459,25 @@ pub mod optimize {
             // careful stack analysis across block boundaries. Per our proof-first philosophy: we only
             // implement optimizations we can prove correct. Equivalence canonicalization is proven safe.
 
+            // Single-use temp folding: local.set $x; local.get $x -> local.tee $x
+            // This is safe because both patterns have the same stack effect:
+            // - set+get: consume 1 (set), produce 1 (get) = net 0
+            // - tee: consume 1, produce 1 = net 0
+            // The tee is more efficient as it avoids the round-trip through the local.
+            if let Instruction::LocalSet(set_idx) = instr {
+                if i + 1 < instructions.len() {
+                    if let Instruction::LocalGet(get_idx) = &instructions[i + 1] {
+                        if set_idx == get_idx {
+                            // Pattern matched: local.set $x; local.get $x -> local.tee $x
+                            *changed = true;
+                            result.push(Instruction::LocalTee(*set_idx));
+                            i += 2; // Skip both instructions
+                            continue;
+                        }
+                    }
+                }
+            }
+
             // Process individual instruction
             let processed = match instr {
                 // Canonicalize gets based on equivalences
@@ -11005,6 +11024,54 @@ mod tests {
         // Verify the function still works
         let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
         wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+    }
+
+    #[test]
+    fn test_simplify_locals_single_use_temp_folding() {
+        // Test that local.set $x; local.get $x -> local.tee $x
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (local $temp i32)
+
+                ;; This pattern: set then immediately get same local
+                ;; should be folded to local.tee
+                (i32.const 42)
+                (local.set $temp)
+                (local.get $temp)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Count instructions before
+        let before_count = module.functions[0].instructions.len();
+
+        // Apply simplify_locals
+        optimize::simplify_locals(&mut module).expect("SimplifyLocals failed");
+
+        // Count instructions after - should be fewer (set+get -> tee)
+        let after_count = module.functions[0].instructions.len();
+
+        // Verify optimization happened (one fewer instruction)
+        assert!(
+            after_count < before_count,
+            "Expected temp folding: before={} after={}",
+            before_count,
+            after_count
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+        // Verify a local.tee was created (check for the pattern)
+        let has_tee = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalTee(_)));
+        assert!(has_tee, "Expected local.tee after folding");
     }
 
     // Property-Based Tests for Correctness Verification
