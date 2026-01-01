@@ -1727,6 +1727,55 @@ fn test_licm_non_consecutive_global_get() {
 }
 
 #[test]
+fn test_licm_expression_tree_hoisting() {
+    // Test that entire expression trees are hoisted, not just individual instructions
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local $sum i32)
+                (loop $loop
+                    ;; Entire expression (x + y) is invariant
+                    (local.get $x)
+                    (local.get $y)
+                    (i32.add)
+                    ;; Add to sum (which is modified)
+                    (local.get $sum)
+                    (i32.add)
+                    (local.set $sum)
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Count i32.add instructions in loop before LICM
+    fn count_adds_in_loop(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::Loop { body, .. } = instr {
+                return body.iter().filter(|i| matches!(i, Instruction::I32Add)).count();
+            }
+        }
+        0
+    }
+
+    let adds_before = count_adds_in_loop(&module.functions[0].instructions);
+    assert_eq!(adds_before, 2, "Should have 2 i32.add in loop before LICM");
+
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // After LICM: (x + y) should be hoisted, leaving only 1 add in loop
+    let adds_after = count_adds_in_loop(&module.functions[0].instructions);
+    assert_eq!(
+        adds_after, 1,
+        "Should have 1 i32.add in loop after expression tree hoisting (x+y hoisted)"
+    );
+}
+
+#[test]
 fn test_licm_global_not_hoisted_when_modified() {
     let input = r#"
         (module
