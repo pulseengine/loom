@@ -11629,7 +11629,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Z3 finds counterexample for CSE optimization. The CSE adds new locals which may affect verification. Needs investigation."]
     fn test_cse_phase4_duplicate_constants() {
         // Test that CSE Phase 4 eliminates duplicate constants
         // Use a case where the same constant is used multiple times in expressions
