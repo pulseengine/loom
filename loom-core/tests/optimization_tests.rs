@@ -3,7 +3,7 @@
 //! This test suite validates all optimization passes to ensure correctness
 //! and that semantics are preserved.
 
-use loom_core::{optimize, parse};
+use loom_core::{encode, optimize, parse};
 
 /// Helper to test that WAT input optimizes to expected WAT output
 #[allow(dead_code)]
@@ -1017,27 +1017,34 @@ fn test_rse_simple_redundant_set() {
         )
     "#;
 
-    // First set should be eliminated since it's immediately overwritten
+    // After full optimization:
+    // 1. RSE eliminates first set (redundant - immediately overwritten)
+    // 2. Temp folding converts set+get to tee
+    // 3. Dead store elimination removes tee (local never read elsewhere)
+    // Result: just I32Const(20) remains
     let mut module = parse::parse_wat(input).unwrap();
     let before = module.functions[0].instructions.len();
     optimize::optimize_module(&mut module).unwrap();
     let after = module.functions[0].instructions.len();
 
-    // Should have fewer instructions (one LocalSet removed)
+    // Should have significantly fewer instructions
     assert!(
         after < before,
-        "Expected fewer instructions after RSE. Before: {}, After: {}",
+        "Expected fewer instructions after optimization. Before: {}, After: {}",
         before,
         after
     );
 
-    let instructions_str = format!("{:?}", module.functions[0].instructions);
-    // Should only have one set with value 20
-    let set_count = instructions_str.matches("LocalSet").count();
+    // Verify the function still works and produces valid WASM
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+    // The final output should just be a constant (20)
     assert_eq!(
-        set_count, 1,
-        "Expected exactly 1 LocalSet remaining, got {} in: {:?}",
-        set_count, module.functions[0].instructions
+        module.functions[0].instructions.len(),
+        1,
+        "Expected just 1 instruction (constant), got {:?}",
+        module.functions[0].instructions
     );
 }
 
@@ -1056,20 +1063,24 @@ fn test_rse_with_intervening_get() {
         )
     "#;
 
-    // Both stores should remain because there's a get between them
-    // Note: simplify_locals may convert local.set+local.get to local.tee
-    // (single-use temp folding), so we count both Set and Tee as "stores"
+    // After full optimization:
+    // 1. Temp folding converts both set+get pairs to tee
+    // 2. Dead store elimination removes both tees (local never read via local.get)
+    // Result: i32.const 10; drop; i32.const 20
     let mut module = parse::parse_wat(input).unwrap();
     optimize::simplify_locals(&mut module).unwrap();
 
+    // Verify the function still works and produces valid WASM
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+    // No stores should remain (all eliminated as dead)
     let instructions_str = format!("{:?}", module.functions[0].instructions);
-    // Count both LocalSet and LocalTee as "stores" since temp folding
-    // converts set+get pairs to tee
-    let store_count = instructions_str.matches("LocalSet").count()
-        + instructions_str.matches("LocalTee").count();
+    let store_count =
+        instructions_str.matches("LocalSet").count() + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        store_count, 2,
-        "Expected 2 local store instructions (Set or Tee), got {} in: {:?}",
+        store_count, 0,
+        "Expected 0 local store instructions (all dead), got {} in: {:?}",
         store_count, module.functions[0].instructions
     );
 }
@@ -1088,16 +1099,26 @@ fn test_rse_multiple_redundant_sets() {
         )
     "#;
 
-    // First two sets should be eliminated
+    // After full optimization:
+    // 1. RSE eliminates first two sets (redundant)
+    // 2. Temp folding converts set+get to tee
+    // 3. Dead store elimination removes tee (local never read elsewhere)
+    // Result: just I32Const(30)
     let mut module = parse::parse_wat(input).unwrap();
     optimize::optimize_module(&mut module).unwrap();
 
+    // Verify the function still works and produces valid WASM
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+    // No stores should remain after dead store elimination
     let instructions_str = format!("{:?}", module.functions[0].instructions);
-    let set_count = instructions_str.matches("LocalSet").count();
+    let store_count =
+        instructions_str.matches("LocalSet").count() + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        set_count, 1,
-        "Expected only 1 LocalSet (value 30), got {} in: {:?}",
-        set_count, module.functions[0].instructions
+        store_count, 0,
+        "Expected 0 stores (all eliminated as dead), got {} in: {:?}",
+        store_count, module.functions[0].instructions
     );
 }
 
@@ -1118,9 +1139,11 @@ fn test_rse_different_locals() {
         )
     "#;
 
-    // First set to $x should be eliminated, but $y set should remain
-    // Note: simplify_locals may convert local.set+local.get to local.tee
-    // (single-use temp folding), so we count both Set and Tee as "stores"
+    // After optimization cascade:
+    // 1. RSE eliminates first set to $x (redundant - overwritten before read)
+    // 2. Temp folding: set $x; get $x -> tee $x (now adjacent after RSE)
+    // 3. Dead store elim: tee $x eliminated (no other local.get $x exists)
+    // Result: const 20, set $y, const 30, get $y, add (local $x eliminated entirely!)
     let mut module = parse::parse_wat(input).unwrap();
     let before = module.functions[0].instructions.len();
     optimize::optimize_module(&mut module).unwrap();
@@ -1128,19 +1151,22 @@ fn test_rse_different_locals() {
 
     assert!(
         after < before,
-        "Expected RSE to eliminate first set to $x. Before: {}, After: {}",
+        "Expected optimization to reduce instruction count. Before: {}, After: {}",
         before,
         after
     );
 
+    // Verify the function still works and produces valid WASM
+    let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+    wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+    // Only $y store remains (local $x is completely eliminated via optimization cascade)
     let instructions_str = format!("{:?}", module.functions[0].instructions);
-    // Count both LocalSet and LocalTee as "stores" since temp folding
-    // converts set+get pairs to tee
-    let store_count = instructions_str.matches("LocalSet").count()
-        + instructions_str.matches("LocalTee").count();
+    let store_count =
+        instructions_str.matches("LocalSet").count() + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        store_count, 2,
-        "Expected 2 local store instructions (Set or Tee), got {} in: {:?}",
+        store_count, 1,
+        "Expected 1 store ($y only - $x eliminated), got {} in: {:?}",
         store_count, module.functions[0].instructions
     );
 }
@@ -1157,23 +1183,22 @@ fn test_rse_with_tee() {
         )
     "#;
 
-    // First set should be eliminated, tee both sets and returns value
+    // Since $x is never read (no local.get $x):
+    // - First set is a dead store -> replaced with drop -> eliminated by DCE
+    // - Tee is a dead store -> eliminated (value stays on stack)
+    // Result: just i32.const 20 returned directly
     let mut module = parse::parse_wat(input).unwrap();
     optimize::optimize_module(&mut module).unwrap();
 
     let instructions_str = format!("{:?}", module.functions[0].instructions);
     let set_count = instructions_str.matches("LocalSet").count();
     let tee_count = instructions_str.matches("LocalTee").count();
+    let store_count = set_count + tee_count;
 
     assert_eq!(
-        set_count, 0,
-        "Expected 0 LocalSet (eliminated by tee), got {} in: {:?}",
-        set_count, module.functions[0].instructions
-    );
-    assert_eq!(
-        tee_count, 1,
-        "Expected 1 LocalTee, got {} in: {:?}",
-        tee_count, module.functions[0].instructions
+        store_count, 0,
+        "Expected 0 stores (all dead - $x never read), got {} in: {:?}",
+        store_count, module.functions[0].instructions
     );
 }
 
