@@ -7395,12 +7395,13 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 Instruction::Loop { block_type, body } => {
-                    // Track which locals are modified inside the loop
+                    // Track which locals and globals are modified inside the loop
                     let modified_locals = find_modified_locals(body);
+                    let modified_globals = find_modified_globals(body);
 
                     // Find loop-invariant instructions that can be hoisted
                     let (hoisted, remaining_body) =
-                        extract_invariants(body, &modified_locals, changed);
+                        extract_invariants(body, &modified_locals, &modified_globals, changed);
 
                     // Add hoisted instructions before the loop
                     result.extend(hoisted);
@@ -7474,6 +7475,38 @@ pub mod optimize {
         modified
     }
 
+    /// Find all globals modified within a loop body
+    fn find_modified_globals(instructions: &[Instruction]) -> std::collections::HashSet<u32> {
+        use std::collections::HashSet;
+
+        let mut modified = HashSet::new();
+
+        fn scan_instructions(instructions: &[Instruction], modified: &mut HashSet<u32>) {
+            for instr in instructions {
+                match instr {
+                    Instruction::GlobalSet(idx) => {
+                        modified.insert(*idx);
+                    }
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        scan_instructions(body, modified);
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        scan_instructions(then_body, modified);
+                        scan_instructions(else_body, modified);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        scan_instructions(instructions, &mut modified);
+        modified
+    }
+
     /// Extract loop-invariant instructions from the beginning of the loop body
     /// Returns (hoisted_instructions, remaining_body)
     ///
@@ -7482,6 +7515,7 @@ pub mod optimize {
     fn extract_invariants(
         instructions: &[Instruction],
         modified_locals: &std::collections::HashSet<u32>,
+        modified_globals: &std::collections::HashSet<u32>,
         changed: &mut bool,
     ) -> (Vec<Instruction>, Vec<Instruction>) {
         let mut hoisted = Vec::new();
@@ -7491,7 +7525,7 @@ pub mod optimize {
         // First pass: find all consecutive invariant instructions and track balance
         let mut idx = 0;
         for instr in instructions {
-            if !is_loop_invariant(instr, modified_locals) {
+            if !is_loop_invariant(instr, modified_locals, modified_globals) {
                 break; // Stop at first non-invariant instruction
             }
 
@@ -7538,10 +7572,11 @@ pub mod optimize {
     }
 
     /// Check if an instruction is loop-invariant
-    /// An instruction is invariant if it doesn't read any modified locals and has no side effects
+    /// An instruction is invariant if it doesn't read any modified locals/globals and has no side effects
     fn is_loop_invariant(
         instr: &Instruction,
         modified_locals: &std::collections::HashSet<u32>,
+        modified_globals: &std::collections::HashSet<u32>,
     ) -> bool {
         use Instruction::*;
 
@@ -7551,6 +7586,9 @@ pub mod optimize {
 
             // LocalGet is invariant if the local isn't modified in the loop
             LocalGet(idx) => !modified_locals.contains(idx),
+
+            // GlobalGet is invariant if the global isn't modified in the loop
+            GlobalGet(idx) => !modified_globals.contains(idx),
 
             // LocalSet is invariant if we're computing a loop-invariant value
             // (the actual safety is ensured by stack balance tracking)
