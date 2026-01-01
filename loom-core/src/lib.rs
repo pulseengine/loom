@@ -7388,7 +7388,7 @@ pub mod optimize {
                 + func.locals.iter().map(|(count, _)| count).sum::<u32>();
             let mut new_locals: Vec<super::ValueType> = Vec::new();
 
-            func.instructions = hoist_invariant_values(
+            func.instructions = hoist_invariant_expressions(
                 &func.instructions,
                 base_local_idx,
                 &mut new_locals,
@@ -7408,13 +7408,14 @@ pub mod optimize {
         Ok(())
     }
 
-    /// Phase 2 LICM: Hoist single invariant value-producing instructions from anywhere in loops
+    /// Phase 2 LICM: Hoist invariant expression trees from anywhere in loops
     ///
-    /// For invariant instructions that produce exactly one value (like global.get, i32.const),
-    /// we can hoist them even if they're not at the start of the loop by:
-    /// 1. Computing the value before the loop and storing to a new local
-    /// 2. Replacing the instruction in the loop with local.get
-    fn hoist_invariant_values(
+    /// Uses stack simulation to identify complete expression trees that are
+    /// entirely loop-invariant. For each invariant expression:
+    /// 1. Hoist the entire instruction sequence before the loop
+    /// 2. Store result to a new local
+    /// 3. Replace the sequence in the loop with local.get
+    fn hoist_invariant_expressions(
         instructions: &[Instruction],
         base_local_idx: u32,
         new_locals: &mut Vec<super::ValueType>,
@@ -7428,51 +7429,78 @@ pub mod optimize {
                     let modified_locals = find_modified_locals(body);
                     let modified_globals = find_modified_globals(body);
 
-                    // Find invariant value-producers in the loop body
-                    let mut hoisted_before_loop: Vec<Instruction> = Vec::new();
-                    let mut replacements: std::collections::HashMap<usize, u32> =
-                        std::collections::HashMap::new();
+                    // Find invariant expression trees using stack simulation
+                    let expr_spans = find_invariant_expression_spans(
+                        body,
+                        &modified_locals,
+                        &modified_globals,
+                    );
 
-                    for (pos, loop_instr) in body.iter().enumerate() {
-                        // Check if this is an invariant instruction that produces exactly 1 value
-                        if is_hoistable_value_producer(
-                            loop_instr,
-                            &modified_locals,
-                            &modified_globals,
-                        ) {
-                            // Determine the value type
-                            let value_type = get_instruction_result_type(loop_instr);
-                            if let Some(vt) = value_type {
-                                let local_idx =
-                                    base_local_idx + new_locals.len() as u32;
-                                new_locals.push(vt);
+                    // Select non-overlapping spans to hoist (greedy: largest first)
+                    let mut spans_to_hoist: Vec<_> = expr_spans
+                        .into_iter()
+                        .filter(|s| s.is_invariant)
+                        .collect();
+                    spans_to_hoist.sort_by_key(|s| std::cmp::Reverse(s.end_pos - s.start_pos));
 
-                                // Add: original instruction + local.tee before the loop
-                                hoisted_before_loop.push(loop_instr.clone());
-                                hoisted_before_loop.push(Instruction::LocalSet(local_idx));
+                    let mut used_positions: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
+                    let mut selected_spans: Vec<ExprSpan> = Vec::new();
 
-                                // Mark this position to be replaced with local.get
-                                replacements.insert(pos, local_idx);
-                                *changed = true;
+                    for span in spans_to_hoist {
+                        let overlaps = (span.start_pos..=span.end_pos)
+                            .any(|p| used_positions.contains(&p));
+                        if !overlaps {
+                            for p in span.start_pos..=span.end_pos {
+                                used_positions.insert(p);
                             }
+                            selected_spans.push(span);
                         }
                     }
 
-                    // Build the new loop body with replacements
-                    let new_body: Vec<Instruction> = body
-                        .iter()
-                        .enumerate()
-                        .map(|(pos, loop_instr)| {
-                            if let Some(local_idx) = replacements.get(&pos) {
-                                Instruction::LocalGet(*local_idx)
-                            } else {
-                                loop_instr.clone()
+                    // Build hoisted instructions and replacement map
+                    let mut hoisted_before_loop: Vec<Instruction> = Vec::new();
+                    let mut span_replacements: std::collections::HashMap<usize, (usize, u32)> =
+                        std::collections::HashMap::new();
+
+                    for span in &selected_spans {
+                        let local_idx = base_local_idx + new_locals.len() as u32;
+                        new_locals.push(span.result_type);
+
+                        // Copy the expression instructions
+                        for pos in span.start_pos..=span.end_pos {
+                            hoisted_before_loop.push(body[pos].clone());
+                        }
+                        hoisted_before_loop.push(Instruction::LocalSet(local_idx));
+
+                        // Mark start position -> (end_pos, local_idx)
+                        span_replacements.insert(span.start_pos, (span.end_pos, local_idx));
+                        *changed = true;
+                    }
+
+                    // Build the new loop body
+                    let mut new_body: Vec<Instruction> = Vec::new();
+                    let mut skip_until: Option<usize> = None;
+
+                    for (pos, loop_instr) in body.iter().enumerate() {
+                        if let Some(skip_to) = skip_until {
+                            if pos <= skip_to {
+                                continue;
                             }
-                        })
-                        .collect();
+                            skip_until = None;
+                        }
+
+                        if let Some((end_pos, local_idx)) = span_replacements.get(&pos) {
+                            // Replace span with local.get
+                            new_body.push(Instruction::LocalGet(*local_idx));
+                            skip_until = Some(*end_pos);
+                        } else {
+                            new_body.push(loop_instr.clone());
+                        }
+                    }
 
                     // Recursively process the new body
-                    let processed_body = hoist_invariant_values(
+                    let processed_body = hoist_invariant_expressions(
                         &new_body,
                         base_local_idx + new_locals.len() as u32,
                         new_locals,
@@ -7490,7 +7518,7 @@ pub mod optimize {
                 Instruction::Block { block_type, body } => {
                     result.push(Instruction::Block {
                         block_type: block_type.clone(),
-                        body: hoist_invariant_values(
+                        body: hoist_invariant_expressions(
                             body,
                             base_local_idx + new_locals.len() as u32,
                             new_locals,
@@ -7506,13 +7534,13 @@ pub mod optimize {
                 } => {
                     result.push(Instruction::If {
                         block_type: block_type.clone(),
-                        then_body: hoist_invariant_values(
+                        then_body: hoist_invariant_expressions(
                             then_body,
                             base_local_idx + new_locals.len() as u32,
                             new_locals,
                             changed,
                         ),
-                        else_body: hoist_invariant_values(
+                        else_body: hoist_invariant_expressions(
                             else_body,
                             base_local_idx + new_locals.len() as u32,
                             new_locals,
@@ -7530,40 +7558,295 @@ pub mod optimize {
         result
     }
 
-    /// Check if an instruction is a hoistable value producer
-    /// Returns true for invariant instructions that produce exactly 1 value
-    fn is_hoistable_value_producer(
-        instr: &Instruction,
-        modified_locals: &std::collections::HashSet<u32>,
-        modified_globals: &std::collections::HashSet<u32>,
-    ) -> bool {
-        match instr {
-            // Constants are always hoistable
-            Instruction::I32Const(_) | Instruction::I64Const(_) => true,
-
-            // LocalGet is hoistable if the local isn't modified
-            Instruction::LocalGet(idx) => !modified_locals.contains(idx),
-
-            // GlobalGet is hoistable if the global isn't modified
-            Instruction::GlobalGet(idx) => !modified_globals.contains(idx),
-
-            // Other instructions are not hoistable in this phase
-            // (binary ops need their operands which complicates things)
-            _ => false,
-        }
+    /// Represents an expression span in the instruction stream
+    #[derive(Debug, Clone)]
+    struct ExprSpan {
+        start_pos: usize,
+        end_pos: usize,
+        result_type: super::ValueType,
+        is_invariant: bool,
     }
 
-    /// Get the result type of an instruction that produces exactly 1 value
-    fn get_instruction_result_type(instr: &Instruction) -> Option<super::ValueType> {
-        match instr {
-            Instruction::I32Const(_)
-            | Instruction::LocalGet(_)
-            | Instruction::GlobalGet(_) => Some(super::ValueType::I32), // Simplified: assume i32
-            Instruction::I64Const(_) => Some(super::ValueType::I64),
-            Instruction::F32Const(_) => Some(super::ValueType::F32),
-            Instruction::F64Const(_) => Some(super::ValueType::F64),
-            _ => None,
+    /// Stack entry for expression tree building
+    #[derive(Debug, Clone)]
+    struct StackEntry {
+        start_pos: usize,
+        result_type: super::ValueType,
+        is_invariant: bool,
+    }
+
+    /// Find all invariant expression spans in a loop body using stack simulation
+    fn find_invariant_expression_spans(
+        body: &[Instruction],
+        modified_locals: &std::collections::HashSet<u32>,
+        modified_globals: &std::collections::HashSet<u32>,
+    ) -> Vec<ExprSpan> {
+        let mut spans: Vec<ExprSpan> = Vec::new();
+        let mut stack: Vec<StackEntry> = Vec::new();
+
+        for (pos, instr) in body.iter().enumerate() {
+            match instr {
+                // Value producers: push onto stack
+                Instruction::I32Const(_) => {
+                    // Record single-instruction span for constants
+                    spans.push(ExprSpan {
+                        start_pos: pos,
+                        end_pos: pos,
+                        result_type: super::ValueType::I32,
+                        is_invariant: true,
+                    });
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::I32,
+                        is_invariant: true,
+                    });
+                }
+                Instruction::I64Const(_) => {
+                    spans.push(ExprSpan {
+                        start_pos: pos,
+                        end_pos: pos,
+                        result_type: super::ValueType::I64,
+                        is_invariant: true,
+                    });
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::I64,
+                        is_invariant: true,
+                    });
+                }
+                Instruction::F32Const(_) => {
+                    spans.push(ExprSpan {
+                        start_pos: pos,
+                        end_pos: pos,
+                        result_type: super::ValueType::F32,
+                        is_invariant: true,
+                    });
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::F32,
+                        is_invariant: true,
+                    });
+                }
+                Instruction::F64Const(_) => {
+                    spans.push(ExprSpan {
+                        start_pos: pos,
+                        end_pos: pos,
+                        result_type: super::ValueType::F64,
+                        is_invariant: true,
+                    });
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::F64,
+                        is_invariant: true,
+                    });
+                }
+                Instruction::LocalGet(idx) => {
+                    let is_inv = !modified_locals.contains(idx);
+                    if is_inv {
+                        spans.push(ExprSpan {
+                            start_pos: pos,
+                            end_pos: pos,
+                            result_type: super::ValueType::I32, // Simplified
+                            is_invariant: true,
+                        });
+                    }
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::I32, // Simplified
+                        is_invariant: is_inv,
+                    });
+                }
+                Instruction::GlobalGet(idx) => {
+                    let is_inv = !modified_globals.contains(idx);
+                    if is_inv {
+                        spans.push(ExprSpan {
+                            start_pos: pos,
+                            end_pos: pos,
+                            result_type: super::ValueType::I32, // Simplified
+                            is_invariant: true,
+                        });
+                    }
+                    stack.push(StackEntry {
+                        start_pos: pos,
+                        result_type: super::ValueType::I32, // Simplified
+                        is_invariant: is_inv,
+                    });
+                }
+
+                // Binary operations: pop 2, push 1
+                Instruction::I32Add
+                | Instruction::I32Sub
+                | Instruction::I32Mul
+                | Instruction::I32And
+                | Instruction::I32Or
+                | Instruction::I32Xor
+                | Instruction::I32Shl
+                | Instruction::I32ShrS
+                | Instruction::I32ShrU => {
+                    if stack.len() >= 2 {
+                        let right = stack.pop().unwrap();
+                        let left = stack.pop().unwrap();
+                        let is_inv = left.is_invariant && right.is_invariant;
+                        let start = left.start_pos.min(right.start_pos);
+
+                        // Record the combined expression span
+                        if is_inv && pos > start {
+                            spans.push(ExprSpan {
+                                start_pos: start,
+                                end_pos: pos,
+                                result_type: super::ValueType::I32,
+                                is_invariant: true,
+                            });
+                        }
+
+                        stack.push(StackEntry {
+                            start_pos: start,
+                            result_type: super::ValueType::I32,
+                            is_invariant: is_inv,
+                        });
+                    } else {
+                        stack.clear(); // Stack underflow, reset
+                    }
+                }
+
+                Instruction::I64Add
+                | Instruction::I64Sub
+                | Instruction::I64Mul
+                | Instruction::I64And
+                | Instruction::I64Or
+                | Instruction::I64Xor => {
+                    if stack.len() >= 2 {
+                        let right = stack.pop().unwrap();
+                        let left = stack.pop().unwrap();
+                        let is_inv = left.is_invariant && right.is_invariant;
+                        let start = left.start_pos.min(right.start_pos);
+
+                        if is_inv && pos > start {
+                            spans.push(ExprSpan {
+                                start_pos: start,
+                                end_pos: pos,
+                                result_type: super::ValueType::I64,
+                                is_invariant: true,
+                            });
+                        }
+
+                        stack.push(StackEntry {
+                            start_pos: start,
+                            result_type: super::ValueType::I64,
+                            is_invariant: is_inv,
+                        });
+                    } else {
+                        stack.clear();
+                    }
+                }
+
+                // Comparison operations: pop 2, push 1 (i32 result)
+                Instruction::I32Eq
+                | Instruction::I32Ne
+                | Instruction::I32LtS
+                | Instruction::I32LtU
+                | Instruction::I32GtS
+                | Instruction::I32GtU
+                | Instruction::I32LeS
+                | Instruction::I32LeU
+                | Instruction::I32GeS
+                | Instruction::I32GeU
+                | Instruction::I64Eq
+                | Instruction::I64Ne
+                | Instruction::I64LtS
+                | Instruction::I64LtU
+                | Instruction::I64GtS
+                | Instruction::I64GtU
+                | Instruction::I64LeS
+                | Instruction::I64LeU
+                | Instruction::I64GeS
+                | Instruction::I64GeU => {
+                    if stack.len() >= 2 {
+                        let right = stack.pop().unwrap();
+                        let left = stack.pop().unwrap();
+                        let is_inv = left.is_invariant && right.is_invariant;
+                        let start = left.start_pos.min(right.start_pos);
+
+                        if is_inv && pos > start {
+                            spans.push(ExprSpan {
+                                start_pos: start,
+                                end_pos: pos,
+                                result_type: super::ValueType::I32,
+                                is_invariant: true,
+                            });
+                        }
+
+                        stack.push(StackEntry {
+                            start_pos: start,
+                            result_type: super::ValueType::I32,
+                            is_invariant: is_inv,
+                        });
+                    } else {
+                        stack.clear();
+                    }
+                }
+
+                // Unary operations: pop 1, push 1
+                Instruction::I32Eqz | Instruction::I32Clz | Instruction::I32Ctz => {
+                    if let Some(operand) = stack.pop() {
+                        if operand.is_invariant && pos > operand.start_pos {
+                            spans.push(ExprSpan {
+                                start_pos: operand.start_pos,
+                                end_pos: pos,
+                                result_type: super::ValueType::I32,
+                                is_invariant: true,
+                            });
+                        }
+                        stack.push(StackEntry {
+                            start_pos: operand.start_pos,
+                            result_type: super::ValueType::I32,
+                            is_invariant: operand.is_invariant,
+                        });
+                    }
+                }
+
+                Instruction::I64Eqz => {
+                    if let Some(operand) = stack.pop() {
+                        if operand.is_invariant && pos > operand.start_pos {
+                            spans.push(ExprSpan {
+                                start_pos: operand.start_pos,
+                                end_pos: pos,
+                                result_type: super::ValueType::I32,
+                                is_invariant: true,
+                            });
+                        }
+                        stack.push(StackEntry {
+                            start_pos: operand.start_pos,
+                            result_type: super::ValueType::I32,
+                            is_invariant: operand.is_invariant,
+                        });
+                    }
+                }
+
+                // Instructions that consume values or have side effects: reset tracking
+                Instruction::LocalSet(_)
+                | Instruction::LocalTee(_)
+                | Instruction::GlobalSet(_)
+                | Instruction::Drop
+                | Instruction::Call(_)
+                | Instruction::CallIndirect { .. }
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. }
+                | Instruction::Return
+                | Instruction::Block { .. }
+                | Instruction::Loop { .. }
+                | Instruction::If { .. } => {
+                    stack.clear(); // Reset on control flow or side effects
+                }
+
+                _ => {
+                    stack.clear(); // Unknown instruction, reset
+                }
+            }
         }
+
+        spans
     }
 
     fn hoist_loop_invariants(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
