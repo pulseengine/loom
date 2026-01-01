@@ -6416,8 +6416,9 @@ pub mod optimize {
                         });
                         entry.sets.push(*position);
                         entry.last_set = Some(*position);
-                        // Tee also acts as a get (returns value)
-                        entry.gets.push(*position);
+                        // Note: tee is NOT counted as a get for dead store elimination.
+                        // Tee stores to local AND returns value on stack, but it doesn't
+                        // READ from the local. We only count local.get as actual reads.
                     }
                     // Recurse into control flow
                     Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
@@ -6490,16 +6491,17 @@ pub mod optimize {
                     }
                 }
 
-                // Check for dead stores
+                // Dead store elimination: replace local.set with drop if local is never read
+                // This is safe because both consume 1 value from stack:
+                // - local.set: pop value, store to local
+                // - drop: pop value, discard
+                // Stack balance is preserved; DCE will later remove const+drop patterns.
                 Instruction::LocalSet(idx) => {
                     if let Some(local_usage) = usage.get(idx) {
                         if local_usage.gets.is_empty() {
-                            // No gets, this is a dead store
-                            // We need to keep the value for stack balance, so drop it
+                            // No reads of this local anywhere - this is a dead store
                             *changed = true;
-                            // Note: This is simplified - we should check if the value
-                            // on the stack has side effects before dropping
-                            instr.clone() // Keep for now, will need value analysis
+                            Instruction::Drop
                         } else {
                             instr.clone()
                         }
@@ -6528,6 +6530,21 @@ pub mod optimize {
                     then_body: simplify_instructions(then_body, usage, equivalences, changed),
                     else_body: simplify_instructions(else_body, usage, equivalences, changed),
                 },
+
+                // Dead store elimination for local.tee: if local is never read, skip the tee
+                // local.tee has stack effect [t] → [t] (value stays on stack), so removing
+                // it preserves stack balance. We just lose the pointless store.
+                Instruction::LocalTee(idx) => {
+                    if let Some(local_usage) = usage.get(idx) {
+                        if local_usage.gets.is_empty() {
+                            // No reads of this local - tee is pointless, skip it
+                            *changed = true;
+                            i += 1;
+                            continue; // Don't add anything to result
+                        }
+                    }
+                    instr.clone()
+                }
 
                 _ => instr.clone(),
             };
@@ -11029,6 +11046,7 @@ mod tests {
     #[test]
     fn test_simplify_locals_single_use_temp_folding() {
         // Test that local.set $x; local.get $x -> local.tee $x
+        // The local must be read elsewhere so the tee isn't eliminated as dead
         let wat = r#"
             (module
               (func $test (result i32)
@@ -11038,6 +11056,10 @@ mod tests {
                 ;; should be folded to local.tee
                 (i32.const 42)
                 (local.set $temp)
+                (local.get $temp)
+                (drop)
+
+                ;; Read the local again to prevent dead store elimination
                 (local.get $temp)
               )
             )
@@ -11072,6 +11094,108 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::LocalTee(_)));
         assert!(has_tee, "Expected local.tee after folding");
+    }
+
+    #[test]
+    fn test_simplify_locals_dead_store_elimination() {
+        // Test that local.set to never-read locals is replaced with drop
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (local $dead i32)
+
+                ;; Dead store: $dead is never read
+                (i32.const 100)
+                (local.set $dead)
+
+                ;; Return value directly
+                (i32.const 42)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Apply simplify_locals
+        optimize::simplify_locals(&mut module).expect("SimplifyLocals failed");
+
+        // Verify the function still produces valid WASM
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
+
+        // Verify dead store was eliminated (replaced with drop)
+        let has_drop = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Drop));
+        assert!(
+            has_drop,
+            "Expected drop instruction after dead store elimination"
+        );
+
+        // Verify no LocalSet remains (the dead one was replaced with drop)
+        let set_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalSet(_)))
+            .count();
+        assert_eq!(
+            set_count, 0,
+            "Expected 0 LocalSet after dead store elimination, got {}",
+            set_count
+        );
+    }
+
+    #[test]
+    fn test_simplify_locals_dead_tee_elimination() {
+        // Test that local.tee to never-read locals is removed entirely
+        let wat = r#"
+            (module
+              (func $test (result i32)
+                (local $dead i32)
+
+                ;; Dead tee: $dead is never read via local.get
+                ;; The value stays on stack, but the store is pointless
+                (i32.const 42)
+                (local.tee $dead)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Count instructions before
+        let before_count = module.functions[0].instructions.len();
+
+        // Apply simplify_locals
+        optimize::simplify_locals(&mut module).expect("SimplifyLocals failed");
+
+        // Count instructions after - should be fewer (tee removed)
+        let after_count = module.functions[0].instructions.len();
+
+        // Verify optimization happened
+        assert!(
+            after_count < before_count,
+            "Expected dead tee elimination: before={} after={}",
+            before_count,
+            after_count
+        );
+
+        // Verify no LocalTee remains
+        let tee_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalTee(_)))
+            .count();
+        assert_eq!(
+            tee_count, 0,
+            "Expected no LocalTee after dead store elimination, got {}",
+            tee_count
+        );
+
+        // Verify the function still works
+        let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
     }
 
     // Property-Based Tests for Correctness Verification
