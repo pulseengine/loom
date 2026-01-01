@@ -1676,6 +1676,57 @@ fn test_licm_global_get_invariant() {
 }
 
 #[test]
+fn test_licm_non_consecutive_global_get() {
+    // Test that global.get can be hoisted even when NOT at the start of the loop
+    let input = r#"
+        (module
+            (global $g (mut i32) (i32.const 100))
+            (func (result i32)
+                (local $sum i32)
+                (loop $loop
+                    ;; First: read $sum (modified local - NOT invariant)
+                    (local.get $sum)
+                    ;; Second: global.get is invariant but not at start!
+                    (global.get $g)
+                    (i32.add)
+                    (local.set $sum)
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+
+    // Before LICM: global.get is inside the loop
+    fn count_global_gets_in_loop(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::Loop { body, .. } = instr {
+                return body
+                    .iter()
+                    .filter(|i| matches!(i, Instruction::GlobalGet(_)))
+                    .count();
+            }
+        }
+        0
+    }
+
+    let before = count_global_gets_in_loop(&module.functions[0].instructions);
+    assert_eq!(before, 1, "Should have 1 global.get in loop before LICM");
+
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // After LICM: global.get should be hoisted (replaced with local.get)
+    let after = count_global_gets_in_loop(&module.functions[0].instructions);
+    assert_eq!(
+        after, 0,
+        "global.get should be hoisted outside loop (non-consecutive LICM)"
+    );
+}
+
+#[test]
 fn test_licm_global_not_hoisted_when_modified() {
     let input = r#"
         (module

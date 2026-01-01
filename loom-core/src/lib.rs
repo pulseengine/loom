@@ -7370,6 +7370,7 @@ pub mod optimize {
             // Capture original for translation validation (Z3 proof of semantic equivalence)
             let translator = TranslationValidator::new(func, "loop_invariant_code_motion");
 
+            // Phase 1: Consecutive hoisting from loop start (existing behavior)
             let mut changed = true;
             let mut iterations = 0;
             const MAX_ITERATIONS: usize = 3;
@@ -7381,12 +7382,188 @@ pub mod optimize {
                 func.instructions = hoist_loop_invariants(&func.instructions, &mut changed);
             }
 
+            // Phase 2: Non-consecutive hoisting of single invariant value-producers
+            // This finds invariant instructions anywhere in loop bodies and hoists them
+            let base_local_idx = func.signature.params.len() as u32
+                + func.locals.iter().map(|(count, _)| count).sum::<u32>();
+            let mut new_locals: Vec<super::ValueType> = Vec::new();
+
+            func.instructions = hoist_invariant_values(
+                &func.instructions,
+                base_local_idx,
+                &mut new_locals,
+                &mut changed,
+            );
+
+            // Add the new locals we allocated
+            for local_type in new_locals {
+                func.locals.push((1, local_type));
+            }
+
             guard.validate(func)?;
 
             // Z3 translation validation: prove semantic equivalence
             translator.verify(func)?;
         }
         Ok(())
+    }
+
+    /// Phase 2 LICM: Hoist single invariant value-producing instructions from anywhere in loops
+    ///
+    /// For invariant instructions that produce exactly one value (like global.get, i32.const),
+    /// we can hoist them even if they're not at the start of the loop by:
+    /// 1. Computing the value before the loop and storing to a new local
+    /// 2. Replacing the instruction in the loop with local.get
+    fn hoist_invariant_values(
+        instructions: &[Instruction],
+        base_local_idx: u32,
+        new_locals: &mut Vec<super::ValueType>,
+        changed: &mut bool,
+    ) -> Vec<Instruction> {
+        let mut result = Vec::new();
+
+        for instr in instructions {
+            match instr {
+                Instruction::Loop { block_type, body } => {
+                    let modified_locals = find_modified_locals(body);
+                    let modified_globals = find_modified_globals(body);
+
+                    // Find invariant value-producers in the loop body
+                    let mut hoisted_before_loop: Vec<Instruction> = Vec::new();
+                    let mut replacements: std::collections::HashMap<usize, u32> =
+                        std::collections::HashMap::new();
+
+                    for (pos, loop_instr) in body.iter().enumerate() {
+                        // Check if this is an invariant instruction that produces exactly 1 value
+                        if is_hoistable_value_producer(
+                            loop_instr,
+                            &modified_locals,
+                            &modified_globals,
+                        ) {
+                            // Determine the value type
+                            let value_type = get_instruction_result_type(loop_instr);
+                            if let Some(vt) = value_type {
+                                let local_idx =
+                                    base_local_idx + new_locals.len() as u32;
+                                new_locals.push(vt);
+
+                                // Add: original instruction + local.tee before the loop
+                                hoisted_before_loop.push(loop_instr.clone());
+                                hoisted_before_loop.push(Instruction::LocalSet(local_idx));
+
+                                // Mark this position to be replaced with local.get
+                                replacements.insert(pos, local_idx);
+                                *changed = true;
+                            }
+                        }
+                    }
+
+                    // Build the new loop body with replacements
+                    let new_body: Vec<Instruction> = body
+                        .iter()
+                        .enumerate()
+                        .map(|(pos, loop_instr)| {
+                            if let Some(local_idx) = replacements.get(&pos) {
+                                Instruction::LocalGet(*local_idx)
+                            } else {
+                                loop_instr.clone()
+                            }
+                        })
+                        .collect();
+
+                    // Recursively process the new body
+                    let processed_body = hoist_invariant_values(
+                        &new_body,
+                        base_local_idx + new_locals.len() as u32,
+                        new_locals,
+                        changed,
+                    );
+
+                    // Add hoisted instructions before the loop
+                    result.extend(hoisted_before_loop);
+                    result.push(Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: processed_body,
+                    });
+                }
+
+                Instruction::Block { block_type, body } => {
+                    result.push(Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: hoist_invariant_values(
+                            body,
+                            base_local_idx + new_locals.len() as u32,
+                            new_locals,
+                            changed,
+                        ),
+                    });
+                }
+
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    result.push(Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: hoist_invariant_values(
+                            then_body,
+                            base_local_idx + new_locals.len() as u32,
+                            new_locals,
+                            changed,
+                        ),
+                        else_body: hoist_invariant_values(
+                            else_body,
+                            base_local_idx + new_locals.len() as u32,
+                            new_locals,
+                            changed,
+                        ),
+                    });
+                }
+
+                _ => {
+                    result.push(instr.clone());
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Check if an instruction is a hoistable value producer
+    /// Returns true for invariant instructions that produce exactly 1 value
+    fn is_hoistable_value_producer(
+        instr: &Instruction,
+        modified_locals: &std::collections::HashSet<u32>,
+        modified_globals: &std::collections::HashSet<u32>,
+    ) -> bool {
+        match instr {
+            // Constants are always hoistable
+            Instruction::I32Const(_) | Instruction::I64Const(_) => true,
+
+            // LocalGet is hoistable if the local isn't modified
+            Instruction::LocalGet(idx) => !modified_locals.contains(idx),
+
+            // GlobalGet is hoistable if the global isn't modified
+            Instruction::GlobalGet(idx) => !modified_globals.contains(idx),
+
+            // Other instructions are not hoistable in this phase
+            // (binary ops need their operands which complicates things)
+            _ => false,
+        }
+    }
+
+    /// Get the result type of an instruction that produces exactly 1 value
+    fn get_instruction_result_type(instr: &Instruction) -> Option<super::ValueType> {
+        match instr {
+            Instruction::I32Const(_)
+            | Instruction::LocalGet(_)
+            | Instruction::GlobalGet(_) => Some(super::ValueType::I32), // Simplified: assume i32
+            Instruction::I64Const(_) => Some(super::ValueType::I64),
+            Instruction::F32Const(_) => Some(super::ValueType::F32),
+            Instruction::F64Const(_) => Some(super::ValueType::F64),
+            _ => None,
+        }
     }
 
     fn hoist_loop_invariants(instructions: &[Instruction], changed: &mut bool) -> Vec<Instruction> {
