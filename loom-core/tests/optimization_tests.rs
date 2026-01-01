@@ -1627,6 +1627,96 @@ fn test_licm_nested_loops() {
     );
 }
 
+#[test]
+fn test_licm_global_get_invariant() {
+    let input = r#"
+        (module
+            (global $g (mut i32) (i32.const 100))
+            (func (result i32)
+                (local $sum i32)
+                (local $cached i32)
+                (loop $loop
+                    ;; Complete invariant expression: global.get + local.set
+                    ;; This can be hoisted because stack balance ends at 0
+                    (local.set $cached (global.get $g))
+                    ;; Use the cached value
+                    (local.set $sum
+                        (i32.add (local.get $sum) (local.get $cached))
+                    )
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    // The global.get + local.set should be hoisted outside the loop
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // Count GlobalGet instructions inside the loop body
+    fn count_global_gets_in_loop(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            if let Instruction::Loop { body, .. } = instr {
+                return body
+                    .iter()
+                    .filter(|i| matches!(i, Instruction::GlobalGet(_)))
+                    .count();
+            }
+        }
+        0
+    }
+
+    let global_gets_in_loop = count_global_gets_in_loop(&module.functions[0].instructions);
+    assert_eq!(
+        global_gets_in_loop, 0,
+        "global.get should be hoisted outside the loop"
+    );
+}
+
+#[test]
+fn test_licm_global_not_hoisted_when_modified() {
+    let input = r#"
+        (module
+            (global $g (mut i32) (i32.const 100))
+            (func (result i32)
+                (local $sum i32)
+                (loop $loop
+                    ;; global.get $g is NOT invariant because $g is modified in loop
+                    (global.get $g)
+                    (local.get $sum)
+                    (i32.add)
+                    (local.set $sum)
+                    ;; Modify the global!
+                    (global.set $g (i32.const 200))
+                    (br_if $loop (i32.const 0))
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    // The global.get should NOT be hoisted because $g is modified
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+
+    // Count GlobalGet instructions at top level (outside loop)
+    fn count_global_gets_outside_loop(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        instrs
+            .iter()
+            .filter(|i| matches!(i, Instruction::GlobalGet(_)))
+            .count()
+    }
+
+    let global_gets_outside = count_global_gets_outside_loop(&module.functions[0].instructions);
+    assert_eq!(
+        global_gets_outside, 0,
+        "global.get should NOT be hoisted when global is modified in loop"
+    );
+}
+
 // Remove Unused Branches Tests
 
 #[test]
