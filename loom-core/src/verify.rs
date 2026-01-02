@@ -22,9 +22,9 @@
 //! ```
 
 #[cfg(feature = "verification")]
-use z3::ast::{Bool, BV};
+use z3::ast::{Array, Bool, BV};
 #[cfg(feature = "verification")]
-use z3::{with_z3_config, Config, SatResult, Solver};
+use z3::{with_z3_config, Config, SatResult, Solver, Sort};
 
 #[cfg(not(feature = "verification"))]
 use crate::Module;
@@ -297,6 +297,9 @@ struct SharedSymbolicInputs {
     initial_locals: Vec<BV>,
     /// Symbolic globals (shared between original and optimized)
     globals: Vec<BV>,
+    /// Symbolic memory (Array from 32-bit address to 8-bit byte)
+    /// Using Array theory allows Z3 to reason about memory operations precisely.
+    memory: Array,
 }
 
 #[cfg(feature = "verification")]
@@ -338,10 +341,17 @@ impl SharedSymbolicInputs {
             globals.push(BV::new_const(format!("global{}", i), 32));
         }
 
+        // Create symbolic memory: Array[BitVec32 -> BitVec8]
+        // This is a fully symbolic initial memory state
+        let addr_sort = Sort::bitvector(32);
+        let byte_sort = Sort::bitvector(8);
+        let memory = Array::new_const("memory", &addr_sort, &byte_sort);
+
         SharedSymbolicInputs {
             params,
             initial_locals,
             globals,
+            memory,
         }
     }
 }
@@ -532,17 +542,17 @@ fn contains_loops(instructions: &[Instruction]) -> bool {
 fn contains_unverifiable_instructions(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
-            // Memory operations with dynamic addressing are imprecisely modeled
-            // (we model memory symbolically, not precisely)
-            Instruction::I32Load { .. }
-            | Instruction::I64Load { .. }
-            | Instruction::I32Store { .. }
-            | Instruction::I64Store { .. }
-            | Instruction::F32Load { .. }
+            // Float memory operations not yet modeled with Array theory
+            Instruction::F32Load { .. }
             | Instruction::F64Load { .. }
             | Instruction::F32Store { .. }
-            | Instruction::F64Store { .. }
-            | Instruction::I32Load8S { .. }
+            | Instruction::F64Store { .. } => {
+                return true;
+            }
+
+            // Partial-width memory operations not yet modeled with Array theory
+            // (8-bit, 16-bit loads/stores with sign extension need separate implementation)
+            Instruction::I32Load8S { .. }
             | Instruction::I32Load8U { .. }
             | Instruction::I32Load16S { .. }
             | Instruction::I32Load16U { .. }
@@ -557,10 +567,11 @@ fn contains_unverifiable_instructions(instructions: &[Instruction]) -> bool {
             | Instruction::I64Store8 { .. }
             | Instruction::I64Store16 { .. }
             | Instruction::I64Store32 { .. } => {
-                // Memory ops are modeled but imprecisely (fresh symbolic per load)
-                // For full correctness proofs, we'd need a memory model
                 return true;
             }
+
+            // Note: I32Load, I64Load, I32Store, I64Store are now verified
+            // using Z3 Array theory (Array[BitVec32 -> BitVec8] with little-endian encoding)
 
             // These operations are modeled but imprecisely
             Instruction::MemorySize(_) | Instruction::MemoryGrow(_) => {
@@ -883,20 +894,22 @@ pub fn verify_function_equivalence_with_result(
     VerificationResult::Verified
 }
 
-/// Check if instructions contain memory operations specifically
 #[cfg(feature = "verification")]
+/// Check if instructions contain unverifiable memory operations.
+///
+/// Note: I32Load, I64Load, I32Store, I64Store are NOW verifiable with Z3 Array theory.
+/// Only partial-width (8/16-bit) and float memory operations remain unverifiable.
 fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
-            Instruction::I32Load { .. }
-            | Instruction::I64Load { .. }
-            | Instruction::I32Store { .. }
-            | Instruction::I64Store { .. }
-            | Instruction::F32Load { .. }
+            // Float memory operations - not yet modeled
+            Instruction::F32Load { .. }
             | Instruction::F64Load { .. }
             | Instruction::F32Store { .. }
-            | Instruction::F64Store { .. }
-            | Instruction::I32Load8S { .. }
+            | Instruction::F64Store { .. } => return true,
+
+            // Partial-width memory operations - not yet modeled
+            Instruction::I32Load8S { .. }
             | Instruction::I32Load8U { .. }
             | Instruction::I32Load16S { .. }
             | Instruction::I32Load16U { .. }
@@ -910,10 +923,13 @@ fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
             | Instruction::I32Store16 { .. }
             | Instruction::I64Store8 { .. }
             | Instruction::I64Store16 { .. }
-            | Instruction::I64Store32 { .. }
-            | Instruction::MemorySize(_)
-            | Instruction::MemoryGrow(_) => return true,
+            | Instruction::I64Store32 { .. } => return true,
 
+            // Memory size/grow not modeled
+            Instruction::MemorySize(_) | Instruction::MemoryGrow(_) => return true,
+
+            // Note: I32Load, I64Load, I32Store, I64Store are now verifiable
+            // via Z3 Array theory (Array[BitVec32 -> BitVec8] with little-endian encoding)
             Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                 if contains_memory_instructions(body) {
                     return true;
@@ -1384,11 +1400,13 @@ fn encode_function_to_smt_impl_inner(
     let mut stack: Vec<BV> = Vec::new();
     let mut locals: Vec<BV>;
     let mut globals: Vec<BV>;
+    let mut memory: Array;
 
     if let Some(shared) = shared_inputs {
         // Use shared inputs - CRITICAL for correct verification
         locals = shared.initial_locals.clone();
         globals = shared.globals.clone();
+        memory = shared.memory.clone();
     } else {
         // Create fresh inputs (for standalone encoding)
         locals = Vec::new();
@@ -1423,6 +1441,11 @@ fn encode_function_to_smt_impl_inner(
         for i in 0..16 {
             globals.push(BV::new_const(format!("global{}", i), 32));
         }
+
+        // Create symbolic memory: Array[BitVec32 -> BitVec8]
+        let addr_sort = Sort::bitvector(32);
+        let byte_sort = Sort::bitvector(8);
+        memory = Array::new_const("memory", &addr_sort, &byte_sort);
     }
 
     // Symbolically execute instructions
@@ -2107,29 +2130,65 @@ fn encode_function_to_smt_impl_inner(
                 globals[idx] = value;
             }
 
-            // Memory operations - use word-level symbolic memory (simpler than byte-level)
-            // Note: We use BV32 -> BV32 arrays for i32 and separate for i64
+            // Memory operations using Z3 Array theory
+            // Memory is byte-addressable: Array[BitVec32 -> BitVec8]
+            // Multi-byte loads/stores combine bytes in little-endian order
             Instruction::I32Load { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load"));
                 }
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Create a fresh symbolic value representing the memory read
-                // This is sound: we track that the same address yields the same value
-                let mem_var = BV::new_const(format!("mem32_{}_{}", stack.len(), offset), 32);
-                let _ = effective_addr; // Address determines uniqueness
-                stack.push(mem_var);
+
+                // Read 4 bytes in little-endian order and combine into 32-bit
+                // memory.select returns Dynamic, cast to BV via as_bv()
+                let byte0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let byte2: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
+                    .as_bv()
+                    .unwrap();
+                let byte3: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
+                    .as_bv()
+                    .unwrap();
+
+                // Zero-extend each byte to 32 bits
+                let b0 = byte0.zero_ext(24);
+                let b1 = byte1.zero_ext(24);
+                let b2 = byte2.zero_ext(24);
+                let b3 = byte3.zero_ext(24);
+
+                // Combine: result = b3 << 24 | b2 << 16 | b1 << 8 | b0
+                let result = b0
+                    .bvor(b1.bvshl(BV::from_i64(8, 32)))
+                    .bvor(b2.bvshl(BV::from_i64(16, 32)))
+                    .bvor(b3.bvshl(BV::from_i64(24, 32)));
+
+                stack.push(result);
             }
             Instruction::I32Store { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store"));
                 }
-                let _value = stack.pop().unwrap();
-                let _addr = stack.pop().unwrap();
-                // Store has no stack output - just consume the values
-                // Memory effects are abstracted (conservative but sound)
-                let _ = offset;
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+
+                // Extract 4 bytes from 32-bit value (little-endian)
+                let byte0 = value.extract(7, 0);
+                let byte1 = value.extract(15, 8);
+                let byte2 = value.extract(23, 16);
+                let byte3 = value.extract(31, 24);
+
+                // Store each byte
+                memory = memory.store(&effective_addr, &byte0);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(2, 32)), &byte2);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(3, 32)), &byte3);
             }
             Instruction::I64Load { offset, .. } => {
                 if stack.is_empty() {
@@ -2137,17 +2196,31 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let mem_var = BV::new_const(format!("mem64_{}_{}", stack.len(), offset), 64);
-                let _ = effective_addr;
-                stack.push(mem_var);
+
+                // Read 8 bytes in little-endian order
+                let mut result = BV::from_i64(0, 64);
+                for i in 0..8i64 {
+                    let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
+                    let byte_val: BV = memory.select(&byte_addr).as_bv().unwrap();
+                    let extended = byte_val.zero_ext(56);
+                    result = result.bvor(extended.bvshl(BV::from_i64(i * 8, 64)));
+                }
+                stack.push(result);
             }
             Instruction::I64Store { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store"));
                 }
-                let _value = stack.pop().unwrap();
-                let _addr = stack.pop().unwrap();
-                let _ = offset;
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+
+                // Store 8 bytes (little-endian)
+                for i in 0..8i64 {
+                    let byte_val = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+                    let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
+                    memory = memory.store(&byte_addr, &byte_val);
+                }
             }
 
             // Control flow instructions

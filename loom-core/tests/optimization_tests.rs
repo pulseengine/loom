@@ -1756,7 +1756,10 @@ fn test_licm_expression_tree_hoisting() {
         use loom_core::Instruction;
         for instr in instrs {
             if let Instruction::Loop { body, .. } = instr {
-                return body.iter().filter(|i| matches!(i, Instruction::I32Add)).count();
+                return body
+                    .iter()
+                    .filter(|i| matches!(i, Instruction::I32Add))
+                    .count();
             }
         }
         0
