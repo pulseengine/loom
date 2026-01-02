@@ -685,3 +685,57 @@ fn test_memory_load_store_verification() {
         coverage.summary()
     );
 }
+
+/// Test that simple loops (no nesting, no unverifiable ops) are now verified
+///
+/// This tests the bounded loop unrolling verification for simple loops.
+#[test]
+#[cfg(feature = "verification")]
+fn test_simple_loop_verification() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    // Simple loop: just increments a counter
+    let func_with_simple_loop = Function {
+        name: Some("simple_loop".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32], // initial counter value
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            // Simple loop that adds 1 three times
+            Instruction::Block {
+                block_type: loom_core::BlockType::Empty,
+                body: vec![Instruction::Loop {
+                    block_type: loom_core::BlockType::Empty,
+                    body: vec![
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(1),
+                        Instruction::I32Add,
+                        Instruction::LocalSet(0),
+                        // Exit after one iteration (simplified - real loop would have condition)
+                        Instruction::Br(1), // Break out of block
+                    ],
+                }],
+            },
+            Instruction::LocalGet(0),
+            Instruction::End,
+        ],
+    };
+
+    // Verify the function with itself (identity should be equivalent)
+    let result = verify_function_equivalence_with_result(
+        &func_with_simple_loop,
+        &func_with_simple_loop,
+        "simple_loop_test",
+    );
+
+    // Simple loops should now be verified (not skipped)
+    assert!(
+        result.is_verified(),
+        "Simple loop functions should now be verified, got: {:?}",
+        result
+    );
+
+    println!("Simple loop verification test passed: {:?}", result);
+}
