@@ -504,17 +504,22 @@ fn block_type_width(block_type: &BlockType) -> Option<u32> {
     }
 }
 
-/// Check if an instruction sequence contains any loops
+/// Check if a function contains complex loops that would make verification unsound
 ///
-/// Bounded loop unrolling in SMT verification can produce false positives,
-/// so we skip verification for functions containing loops.
+/// Simple loops (no nesting, no unverifiable ops, bounded body) can be verified
+/// using bounded unrolling. Complex loops are skipped.
 #[cfg(feature = "verification")]
-fn contains_loops(instructions: &[Instruction]) -> bool {
+fn contains_complex_loops(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
-            Instruction::Loop { .. } => return true,
+            Instruction::Loop { body, .. } => {
+                // Check if this loop is too complex for bounded verification
+                if is_complex_loop(body) {
+                    return true;
+                }
+            }
             Instruction::Block { body, .. } => {
-                if contains_loops(body) {
+                if contains_complex_loops(body) {
                     return true;
                 }
             }
@@ -523,7 +528,7 @@ fn contains_loops(instructions: &[Instruction]) -> bool {
                 else_body,
                 ..
             } => {
-                if contains_loops(then_body) || contains_loops(else_body) {
+                if contains_complex_loops(then_body) || contains_complex_loops(else_body) {
                     return true;
                 }
             }
@@ -531,6 +536,82 @@ fn contains_loops(instructions: &[Instruction]) -> bool {
         }
     }
     false
+}
+
+/// Check if a loop body is too complex for bounded unrolling verification
+///
+/// Complex loops include:
+/// - Nested loops (loops within loops)
+/// - Unverifiable instructions in loop body
+/// - Very large loop bodies (> 50 instructions)
+#[cfg(feature = "verification")]
+fn is_complex_loop(body: &[Instruction]) -> bool {
+    // Check for nested loops
+    if contains_any_loop(body) {
+        return true;
+    }
+
+    // Check for unverifiable instructions
+    if contains_unverifiable_instructions(body) {
+        return true;
+    }
+
+    // Check body size (very large loops may timeout)
+    if count_instructions(body) > 50 {
+        return true;
+    }
+
+    false
+}
+
+/// Check if instructions contain ANY loop (for nested loop detection)
+#[cfg(feature = "verification")]
+fn contains_any_loop(instructions: &[Instruction]) -> bool {
+    for instr in instructions {
+        match instr {
+            Instruction::Loop { .. } => return true,
+            Instruction::Block { body, .. } => {
+                if contains_any_loop(body) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if contains_any_loop(then_body) || contains_any_loop(else_body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Count total instructions recursively
+#[cfg(feature = "verification")]
+fn count_instructions(instructions: &[Instruction]) -> usize {
+    let mut count = 0;
+    for instr in instructions {
+        count += 1;
+        match instr {
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                count += count_instructions(body);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count += count_instructions(then_body);
+                count += count_instructions(else_body);
+            }
+            _ => {}
+        }
+    }
+    count
 }
 
 /// Check if a function contains instructions that cannot be precisely verified
@@ -735,7 +816,9 @@ pub fn verify_function_equivalence(
     // Bounded loop unrolling can create false positives because the unrolled state
     // may differ between original and optimized even when semantically equivalent.
     // A full loop verification would require loop invariants or abstract interpretation.
-    if contains_loops(&original.instructions) || contains_loops(&optimized.instructions) {
+    if contains_complex_loops(&original.instructions)
+        || contains_complex_loops(&optimized.instructions)
+    {
         return Ok(true); // Assume equivalent - loop verification is incomplete
     }
 
@@ -820,7 +903,9 @@ pub fn verify_function_equivalence_with_result(
     }
 
     // Check for loops FIRST
-    if contains_loops(&original.instructions) || contains_loops(&optimized.instructions) {
+    if contains_complex_loops(&original.instructions)
+        || contains_complex_loops(&optimized.instructions)
+    {
         return VerificationResult::SkippedLoop;
     }
 
@@ -975,7 +1060,9 @@ pub fn verify_function_equivalence_with_context(
 
     // Skip verification for functions containing loops
     // Bounded loop unrolling produces false positives
-    if contains_loops(&original.instructions) || contains_loops(&optimized.instructions) {
+    if contains_complex_loops(&original.instructions)
+        || contains_complex_loops(&optimized.instructions)
+    {
         return Ok(true); // Assume equivalent - loop verification is incomplete
     }
 
