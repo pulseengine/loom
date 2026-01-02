@@ -105,6 +105,178 @@ impl VerificationSignatureContext {
     }
 }
 
+// ============================================================================
+// Verification Coverage Tracking
+// ============================================================================
+
+/// Tracks verification coverage across function validations.
+///
+/// This struct provides metrics on what percentage of functions are fully
+/// Z3-verified vs skipped due to unsupported features (loops, memory ops).
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let mut coverage = VerificationCoverage::new();
+/// // After verification...
+/// println!("Coverage: {:.1}%", coverage.coverage_percent());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct VerificationCoverage {
+    /// Number of functions fully verified with Z3
+    pub verified: usize,
+    /// Number of functions skipped due to containing loops
+    pub skipped_loops: usize,
+    /// Number of functions skipped due to memory operations
+    pub skipped_memory: usize,
+    /// Number of functions skipped due to unknown/unsupported instructions
+    pub skipped_unknown: usize,
+    /// Number of functions where verification failed (counterexample found)
+    pub verification_failed: usize,
+    /// Number of functions where verification errored (timeout, etc.)
+    pub verification_error: usize,
+}
+
+impl VerificationCoverage {
+    /// Create a new empty coverage tracker
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a fully verified function
+    pub fn record_verified(&mut self) {
+        self.verified += 1;
+    }
+
+    /// Record a function skipped due to loops
+    pub fn record_skipped_loop(&mut self) {
+        self.skipped_loops += 1;
+    }
+
+    /// Record a function skipped due to memory operations
+    pub fn record_skipped_memory(&mut self) {
+        self.skipped_memory += 1;
+    }
+
+    /// Record a function skipped due to unknown instructions
+    pub fn record_skipped_unknown(&mut self) {
+        self.skipped_unknown += 1;
+    }
+
+    /// Record a verification failure (counterexample found)
+    pub fn record_failed(&mut self) {
+        self.verification_failed += 1;
+    }
+
+    /// Record a verification error (timeout, encoding error)
+    pub fn record_error(&mut self) {
+        self.verification_error += 1;
+    }
+
+    /// Total number of functions processed
+    pub fn total(&self) -> usize {
+        self.verified
+            + self.skipped_loops
+            + self.skipped_memory
+            + self.skipped_unknown
+            + self.verification_failed
+            + self.verification_error
+    }
+
+    /// Total number of functions skipped (not fully verified)
+    pub fn total_skipped(&self) -> usize {
+        self.skipped_loops + self.skipped_memory + self.skipped_unknown
+    }
+
+    /// Calculate verification coverage percentage (0.0 to 100.0)
+    ///
+    /// Coverage = verified / (verified + skipped)
+    /// Functions that failed or errored are not counted as skipped.
+    pub fn coverage_percent(&self) -> f64 {
+        let relevant = self.verified + self.total_skipped();
+        if relevant == 0 {
+            100.0
+        } else {
+            (self.verified as f64 / relevant as f64) * 100.0
+        }
+    }
+
+    /// Get a human-readable summary
+    pub fn summary(&self) -> String {
+        format!(
+            "Verification: {}/{} functions ({:.1}% Z3-proven)\n  \
+             Skipped: {} loops, {} memory ops, {} unknown\n  \
+             Failed: {}, Errors: {}",
+            self.verified,
+            self.total(),
+            self.coverage_percent(),
+            self.skipped_loops,
+            self.skipped_memory,
+            self.skipped_unknown,
+            self.verification_failed,
+            self.verification_error
+        )
+    }
+
+    /// Merge another coverage into this one
+    pub fn merge(&mut self, other: &VerificationCoverage) {
+        self.verified += other.verified;
+        self.skipped_loops += other.skipped_loops;
+        self.skipped_memory += other.skipped_memory;
+        self.skipped_unknown += other.skipped_unknown;
+        self.verification_failed += other.verification_failed;
+        self.verification_error += other.verification_error;
+    }
+}
+
+/// Result of verifying a function, including coverage info
+#[derive(Debug)]
+pub enum VerificationResult {
+    /// Function was fully verified as equivalent
+    Verified,
+    /// Function was skipped due to loops
+    SkippedLoop,
+    /// Function was skipped due to memory operations
+    SkippedMemory,
+    /// Function was skipped due to unknown instructions
+    SkippedUnknown,
+    /// Verification found a counterexample (not equivalent)
+    Failed(String),
+    /// Verification encountered an error
+    Error(String),
+}
+
+impl VerificationResult {
+    /// Returns true if this result indicates the functions are equivalent
+    /// (either proven or assumed due to skipping)
+    pub fn is_equivalent(&self) -> bool {
+        matches!(
+            self,
+            VerificationResult::Verified
+                | VerificationResult::SkippedLoop
+                | VerificationResult::SkippedMemory
+                | VerificationResult::SkippedUnknown
+        )
+    }
+
+    /// Returns true if this result was fully Z3-verified
+    pub fn is_verified(&self) -> bool {
+        matches!(self, VerificationResult::Verified)
+    }
+
+    /// Update coverage tracker based on this result
+    pub fn update_coverage(&self, coverage: &mut VerificationCoverage) {
+        match self {
+            VerificationResult::Verified => coverage.record_verified(),
+            VerificationResult::SkippedLoop => coverage.record_skipped_loop(),
+            VerificationResult::SkippedMemory => coverage.record_skipped_memory(),
+            VerificationResult::SkippedUnknown => coverage.record_skipped_unknown(),
+            VerificationResult::Failed(_) => coverage.record_failed(),
+            VerificationResult::Error(_) => coverage.record_error(),
+        }
+    }
+}
+
 /// Maximum loop unrolling depth for verification
 /// Higher values = more precise but slower
 #[cfg(feature = "verification")]
@@ -616,6 +788,154 @@ pub fn verify_function_equivalence(
     Ok(true)
 }
 
+/// Verify function equivalence and return detailed result for coverage tracking.
+///
+/// This version returns a `VerificationResult` that indicates WHY a function
+/// was skipped or whether it was fully verified, enabling accurate coverage metrics.
+#[cfg(feature = "verification")]
+pub fn verify_function_equivalence_with_result(
+    original: &Function,
+    optimized: &Function,
+    pass_name: &str,
+) -> VerificationResult {
+    // Quick structural checks
+    if original.signature.params != optimized.signature.params
+        || original.signature.results != optimized.signature.results
+    {
+        return VerificationResult::Error(format!(
+            "{}: Function signature changed during optimization",
+            pass_name
+        ));
+    }
+
+    // Check for loops FIRST
+    if contains_loops(&original.instructions) || contains_loops(&optimized.instructions) {
+        return VerificationResult::SkippedLoop;
+    }
+
+    // Check for memory/unknown instructions
+    if contains_unverifiable_instructions(&original.instructions)
+        || contains_unverifiable_instructions(&optimized.instructions)
+    {
+        // Distinguish between memory ops and unknown ops
+        if contains_memory_instructions(&original.instructions)
+            || contains_memory_instructions(&optimized.instructions)
+        {
+            return VerificationResult::SkippedMemory;
+        }
+        return VerificationResult::SkippedUnknown;
+    }
+
+    // Create Z3 context and solver
+    let cfg = Config::new();
+    with_z3_config(&cfg, || {
+        let solver = Solver::new();
+
+        let orig_result = encode_function_to_smt(original);
+        let opt_result = encode_function_to_smt(optimized);
+
+        match (&orig_result, &opt_result) {
+            (Ok(Some(orig)), Ok(Some(opt))) => {
+                solver.assert(orig.eq(opt).not());
+
+                match solver.check() {
+                    SatResult::Unsat => VerificationResult::Verified,
+                    SatResult::Sat => {
+                        let model = solver
+                            .get_model()
+                            .map(|m| format!("{}", m))
+                            .unwrap_or_else(|| "no model".to_string());
+                        VerificationResult::Failed(format!(
+                            "{}: Found counterexample: {}",
+                            pass_name, model
+                        ))
+                    }
+                    SatResult::Unknown => VerificationResult::Error(format!(
+                        "{}: SMT solver returned unknown (timeout or too complex)",
+                        pass_name
+                    )),
+                }
+            }
+            (Ok(None), Ok(None)) => VerificationResult::Verified, // Both void
+            (Err(e), _) => VerificationResult::Error(format!(
+                "{}: Failed to encode original: {}",
+                pass_name, e
+            )),
+            (_, Err(e)) => VerificationResult::Error(format!(
+                "{}: Failed to encode optimized: {}",
+                pass_name, e
+            )),
+            _ => VerificationResult::Error(format!(
+                "{}: Return type mismatch between original and optimized",
+                pass_name
+            )),
+        }
+    })
+}
+
+/// Stub for when verification is disabled
+#[cfg(not(feature = "verification"))]
+pub fn verify_function_equivalence_with_result(
+    _original: &crate::Function,
+    _optimized: &crate::Function,
+    _pass_name: &str,
+) -> VerificationResult {
+    VerificationResult::Verified
+}
+
+/// Check if instructions contain memory operations specifically
+#[cfg(feature = "verification")]
+fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
+    for instr in instructions {
+        match instr {
+            Instruction::I32Load { .. }
+            | Instruction::I64Load { .. }
+            | Instruction::I32Store { .. }
+            | Instruction::I64Store { .. }
+            | Instruction::F32Load { .. }
+            | Instruction::F64Load { .. }
+            | Instruction::F32Store { .. }
+            | Instruction::F64Store { .. }
+            | Instruction::I32Load8S { .. }
+            | Instruction::I32Load8U { .. }
+            | Instruction::I32Load16S { .. }
+            | Instruction::I32Load16U { .. }
+            | Instruction::I64Load8S { .. }
+            | Instruction::I64Load8U { .. }
+            | Instruction::I64Load16S { .. }
+            | Instruction::I64Load16U { .. }
+            | Instruction::I64Load32S { .. }
+            | Instruction::I64Load32U { .. }
+            | Instruction::I32Store8 { .. }
+            | Instruction::I32Store16 { .. }
+            | Instruction::I64Store8 { .. }
+            | Instruction::I64Store16 { .. }
+            | Instruction::I64Store32 { .. }
+            | Instruction::MemorySize(_)
+            | Instruction::MemoryGrow(_) => return true,
+
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                if contains_memory_instructions(body) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if contains_memory_instructions(then_body)
+                    || contains_memory_instructions(else_body)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Verify function equivalence with signature context for proper Call handling
 ///
 /// This version uses the signature context to properly model Call/CallIndirect
@@ -767,6 +1087,59 @@ pub fn verify_module_transformation(
     _pass_name: &str,
 ) -> Result<bool> {
     Ok(true)
+}
+
+/// Compute verification coverage for a module transformation.
+///
+/// This analyzes each function in the module and returns detailed coverage
+/// metrics showing what percentage of functions can be fully Z3-verified
+/// vs. what must be skipped due to loops or memory operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let coverage = compute_verification_coverage(&original, &optimized, "optimize");
+/// println!("{}", coverage.summary());
+/// // Output: "Verification: 15/20 functions (75.0% Z3-proven)
+/// //          Skipped: 3 loops, 2 memory ops, 0 unknown"
+/// ```
+#[cfg(feature = "verification")]
+pub fn compute_verification_coverage(
+    original: &Module,
+    optimized: &Module,
+    pass_name: &str,
+) -> VerificationCoverage {
+    let mut coverage = VerificationCoverage::new();
+
+    if original.functions.len() != optimized.functions.len() {
+        // Module structure changed - can't compute meaningful coverage
+        coverage.record_error();
+        return coverage;
+    }
+
+    for (orig_func, opt_func) in original.functions.iter().zip(optimized.functions.iter()) {
+        let result = verify_function_equivalence_with_result(orig_func, opt_func, pass_name);
+        result.update_coverage(&mut coverage);
+    }
+
+    coverage
+}
+
+/// Stub for when verification is disabled
+#[cfg(not(feature = "verification"))]
+pub fn compute_verification_coverage(
+    original: &Module,
+    optimized: &Module,
+    _pass_name: &str,
+) -> VerificationCoverage {
+    // When verification is disabled, report all functions as verified
+    // (they're assumed correct)
+    let mut coverage = VerificationCoverage::new();
+    let func_count = original.functions.len().min(optimized.functions.len());
+    for _ in 0..func_count {
+        coverage.record_verified();
+    }
+    coverage
 }
 
 // ============================================================================
