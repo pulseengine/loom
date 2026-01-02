@@ -7430,17 +7430,12 @@ pub mod optimize {
                     let modified_globals = find_modified_globals(body);
 
                     // Find invariant expression trees using stack simulation
-                    let expr_spans = find_invariant_expression_spans(
-                        body,
-                        &modified_locals,
-                        &modified_globals,
-                    );
+                    let expr_spans =
+                        find_invariant_expression_spans(body, &modified_locals, &modified_globals);
 
                     // Select non-overlapping spans to hoist (greedy: largest first)
-                    let mut spans_to_hoist: Vec<_> = expr_spans
-                        .into_iter()
-                        .filter(|s| s.is_invariant)
-                        .collect();
+                    let mut spans_to_hoist: Vec<_> =
+                        expr_spans.into_iter().filter(|s| s.is_invariant).collect();
                     spans_to_hoist.sort_by_key(|s| std::cmp::Reverse(s.end_pos - s.start_pos));
 
                     let mut used_positions: std::collections::HashSet<usize> =
@@ -7448,8 +7443,8 @@ pub mod optimize {
                     let mut selected_spans: Vec<ExprSpan> = Vec::new();
 
                     for span in spans_to_hoist {
-                        let overlaps = (span.start_pos..=span.end_pos)
-                            .any(|p| used_positions.contains(&p));
+                        let overlaps =
+                            (span.start_pos..=span.end_pos).any(|p| used_positions.contains(&p));
                         if !overlaps {
                             for p in span.start_pos..=span.end_pos {
                                 used_positions.insert(p);
@@ -7468,9 +7463,8 @@ pub mod optimize {
                         new_locals.push(span.result_type);
 
                         // Copy the expression instructions
-                        for pos in span.start_pos..=span.end_pos {
-                            hoisted_before_loop.push(body[pos].clone());
-                        }
+                        hoisted_before_loop
+                            .extend(body[span.start_pos..=span.end_pos].iter().cloned());
                         hoisted_before_loop.push(Instruction::LocalSet(local_idx));
 
                         // Mark start position -> (end_pos, local_idx)
@@ -7569,6 +7563,7 @@ pub mod optimize {
 
     /// Stack entry for expression tree building
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct StackEntry {
         start_pos: usize,
         result_type: super::ValueType,

@@ -567,3 +567,121 @@ fn test_compute_verification_coverage() {
 
     println!("Module coverage: {}", coverage.summary());
 }
+
+/// Test that memory load/store operations are now verified with Z3 Array theory
+///
+/// This test verifies that functions using I32Load/I32Store are NO LONGER skipped
+/// and are properly verified using the Z3 Array memory model.
+#[test]
+#[cfg(feature = "verification")]
+fn test_memory_load_store_verification() {
+    use loom_core::verify::{
+        compute_verification_coverage, verify_function_equivalence_with_result,
+    };
+
+    // Function with I32Load - should now be verified (not skipped)
+    let func_with_load = Function {
+        name: Some("load_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32], // address parameter
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0), // get address
+            Instruction::I32Load {
+                align: 2,
+                offset: 0,
+            },
+            Instruction::End,
+        ],
+    };
+
+    // Verify the function with itself (identity transform should be equivalent)
+    let result =
+        verify_function_equivalence_with_result(&func_with_load, &func_with_load, "memory_test");
+
+    // Should be Verified (not SkippedMemory) since we now have Z3 Array theory
+    assert!(
+        result.is_verified(),
+        "Memory load functions should now be verified, got: {:?}",
+        result
+    );
+
+    // Function with I32Store followed by I32Load (store-load forwarding pattern)
+    let func_store_load = Function {
+        name: Some("store_load_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32], // address, value
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0), // address
+            Instruction::LocalGet(1), // value
+            Instruction::I32Store {
+                align: 2,
+                offset: 0,
+            },
+            Instruction::LocalGet(0), // address again
+            Instruction::I32Load {
+                align: 2,
+                offset: 0,
+            },
+            Instruction::End,
+        ],
+    };
+
+    let result2 = verify_function_equivalence_with_result(
+        &func_store_load,
+        &func_store_load,
+        "store_load_test",
+    );
+
+    assert!(
+        result2.is_verified(),
+        "Store-load function should be verified, got: {:?}",
+        result2
+    );
+
+    // Test full module coverage
+    let module = Module {
+        functions: vec![func_with_load.clone(), func_store_load.clone()],
+        memories: vec![loom_core::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        }],
+        tables: vec![],
+        globals: vec![],
+        types: vec![],
+        exports: vec![],
+        imports: vec![],
+        data_segments: vec![],
+        element_section_bytes: None,
+        start_function: None,
+        custom_sections: vec![],
+        type_section_bytes: None,
+        global_section_bytes: None,
+    };
+
+    let coverage = compute_verification_coverage(&module, &module, "memory_module_test");
+
+    // Both functions should be verified (not skipped)
+    assert_eq!(
+        coverage.verified,
+        2,
+        "Both memory functions should be verified, got coverage: {}",
+        coverage.summary()
+    );
+    assert_eq!(
+        coverage.skipped_memory, 0,
+        "No functions should be skipped for memory anymore"
+    );
+
+    println!(
+        "Memory verification test passed with coverage: {}",
+        coverage.summary()
+    );
+}
