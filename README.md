@@ -168,9 +168,10 @@ cargo build --release --features verification
 ```
 🔬 Running Z3 SMT verification...
   ✅ Z3 verification passed: optimizations are semantically equivalent
+  📊 Verification coverage: 42 verified, 3 skipped (93.3%)
 ```
 
-Z3 verification proves mathematically that optimizations preserve program semantics via translation validation.
+Z3 verification proves mathematically that optimizations preserve program semantics via translation validation. The coverage report shows how many functions were fully verified vs. skipped (due to unsupported patterns like complex loops). See `docs/FORMAL_VERIFICATION_GUIDE.md` for details.
 
 ## 💡 Examples
 
