@@ -449,3 +449,121 @@ fn test_verification_summary() {
 
     println!("\n=== All Verification Tests Passed ===\n");
 }
+
+/// Test VerificationCoverage tracking
+#[test]
+fn test_verification_coverage_tracking() {
+    use loom_core::verify::{VerificationCoverage, VerificationResult};
+
+    let mut coverage = VerificationCoverage::new();
+
+    // Initially empty
+    assert_eq!(coverage.total(), 0);
+    assert_eq!(coverage.coverage_percent(), 100.0); // 0/0 = 100%
+
+    // Add some verified functions
+    VerificationResult::Verified.update_coverage(&mut coverage);
+    VerificationResult::Verified.update_coverage(&mut coverage);
+    VerificationResult::Verified.update_coverage(&mut coverage);
+
+    assert_eq!(coverage.verified, 3);
+    assert_eq!(coverage.coverage_percent(), 100.0); // 3/3 = 100%
+
+    // Add some skipped functions
+    VerificationResult::SkippedLoop.update_coverage(&mut coverage);
+    VerificationResult::SkippedMemory.update_coverage(&mut coverage);
+
+    assert_eq!(coverage.skipped_loops, 1);
+    assert_eq!(coverage.skipped_memory, 1);
+    assert_eq!(coverage.total(), 5);
+    // 3 verified / (3 verified + 2 skipped) = 60%
+    assert!((coverage.coverage_percent() - 60.0).abs() < 0.1);
+
+    // Test summary output
+    let summary = coverage.summary();
+    assert!(summary.contains("3/5 functions"));
+    assert!(summary.contains("60.0% Z3-proven"));
+
+    println!("Coverage tracking test passed: {}", summary);
+}
+
+/// Test that VerificationResult correctly identifies equivalence
+#[test]
+fn test_verification_result_equivalence() {
+    use loom_core::verify::VerificationResult;
+
+    // These should all be considered "equivalent" (optimization accepted)
+    assert!(VerificationResult::Verified.is_equivalent());
+    assert!(VerificationResult::SkippedLoop.is_equivalent());
+    assert!(VerificationResult::SkippedMemory.is_equivalent());
+    assert!(VerificationResult::SkippedUnknown.is_equivalent());
+
+    // Only Verified should be "fully verified"
+    assert!(VerificationResult::Verified.is_verified());
+    assert!(!VerificationResult::SkippedLoop.is_verified());
+    assert!(!VerificationResult::SkippedMemory.is_verified());
+
+    // Failed/Error should not be equivalent
+    assert!(!VerificationResult::Failed("test".to_string()).is_equivalent());
+    assert!(!VerificationResult::Error("test".to_string()).is_equivalent());
+}
+
+/// Test module-level coverage computation
+#[test]
+#[cfg(feature = "verification")]
+fn test_compute_verification_coverage() {
+    use loom_core::verify::compute_verification_coverage;
+
+    // Create a simple module with one function that can be verified
+    let original = Module {
+        functions: vec![Function {
+            name: Some("simple".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::I32Const(10),
+                Instruction::I32Const(20),
+                Instruction::I32Add,
+                Instruction::End,
+            ],
+        }],
+        memories: vec![],
+        tables: vec![],
+        globals: vec![],
+        types: vec![],
+        exports: vec![],
+        imports: vec![],
+        data_segments: vec![],
+        element_section_bytes: None,
+        start_function: None,
+        custom_sections: vec![],
+        type_section_bytes: None,
+        global_section_bytes: None,
+    };
+
+    // Optimized version
+    let optimized = Module {
+        functions: vec![Function {
+            name: Some("simple".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::I32Const(30), Instruction::End],
+        }],
+        ..original.clone()
+    };
+
+    let coverage = compute_verification_coverage(&original, &optimized, "test");
+
+    // Should have 1 verified function
+    assert_eq!(coverage.verified, 1);
+    assert_eq!(coverage.total(), 1);
+    assert_eq!(coverage.coverage_percent(), 100.0);
+
+    println!("Module coverage: {}", coverage.summary());
+}
