@@ -538,34 +538,86 @@ fn contains_complex_loops(instructions: &[Instruction]) -> bool {
     false
 }
 
+/// Maximum instructions in a loop body for bounded verification
+const MAX_LOOP_BODY_INSTRUCTIONS: usize = 100;
+
+/// Maximum nesting depth for loop verification
+/// Currently 0 (no nested loops) - nested loop encoding has local index issues
+/// TODO: Fix encoding and increase to 1 for one level of nesting
+const MAX_LOOP_NESTING_DEPTH: usize = 0;
+
 /// Check if a loop body is too complex for bounded unrolling verification
 ///
 /// Complex loops include:
-/// - Nested loops (loops within loops)
+/// - Deeply nested loops (more than MAX_LOOP_NESTING_DEPTH levels)
 /// - Unverifiable instructions in loop body
-/// - Very large loop bodies (> 50 instructions)
+/// - Very large loop bodies (> MAX_LOOP_BODY_INSTRUCTIONS)
 #[cfg(feature = "verification")]
 fn is_complex_loop(body: &[Instruction]) -> bool {
-    // Check for nested loops
-    if contains_any_loop(body) {
-        return true;
-    }
+    is_complex_loop_at_depth(body, 0)
+}
 
-    // Check for unverifiable instructions
+/// Check loop complexity at a given nesting depth
+#[cfg(feature = "verification")]
+fn is_complex_loop_at_depth(body: &[Instruction], depth: usize) -> bool {
+    // Check for unverifiable instructions first
     if contains_unverifiable_instructions(body) {
         return true;
     }
 
     // Check body size (very large loops may timeout)
-    if count_instructions(body) > 50 {
+    if count_instructions(body) > MAX_LOOP_BODY_INSTRUCTIONS {
         return true;
+    }
+
+    // Check for nested loops - allow up to MAX_LOOP_NESTING_DEPTH
+    for instr in body {
+        match instr {
+            Instruction::Loop {
+                body: inner_body, ..
+            } => {
+                // When MAX_LOOP_NESTING_DEPTH is 0, any nested loop is too deep
+                // When > 0, check if we've exceeded the allowed depth
+                #[allow(clippy::absurd_extreme_comparisons)]
+                if depth >= MAX_LOOP_NESTING_DEPTH {
+                    // Too deep
+                    return true;
+                }
+                // Check the nested loop at increased depth
+                if is_complex_loop_at_depth(inner_body, depth + 1) {
+                    return true;
+                }
+            }
+            Instruction::Block {
+                body: inner_body, ..
+            } => {
+                // Recurse into blocks (they don't increase loop depth)
+                if is_complex_loop_at_depth(inner_body, depth) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if is_complex_loop_at_depth(then_body, depth)
+                    || is_complex_loop_at_depth(else_body, depth)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
     }
 
     false
 }
 
 /// Check if instructions contain ANY loop (for nested loop detection)
+/// Currently unused but kept for potential future use when MAX_LOOP_NESTING_DEPTH > 0
 #[cfg(feature = "verification")]
+#[allow(dead_code)]
 fn contains_any_loop(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
@@ -631,25 +683,11 @@ fn contains_unverifiable_instructions(instructions: &[Instruction]) -> bool {
                 return true;
             }
 
-            // Partial-width memory operations not yet modeled with Array theory
-            // (8-bit, 16-bit loads/stores with sign extension need separate implementation)
-            Instruction::I32Load8S { .. }
-            | Instruction::I32Load8U { .. }
-            | Instruction::I32Load16S { .. }
-            | Instruction::I32Load16U { .. }
-            | Instruction::I64Load8S { .. }
-            | Instruction::I64Load8U { .. }
-            | Instruction::I64Load16S { .. }
-            | Instruction::I64Load16U { .. }
-            | Instruction::I64Load32S { .. }
-            | Instruction::I64Load32U { .. }
-            | Instruction::I32Store8 { .. }
-            | Instruction::I32Store16 { .. }
-            | Instruction::I64Store8 { .. }
-            | Instruction::I64Store16 { .. }
-            | Instruction::I64Store32 { .. } => {
-                return true;
-            }
+            // Note: All integer memory operations are now verified using Z3 Array theory:
+            // - I32Load, I64Load, I32Store, I64Store (full-width)
+            // - I32Load8S/U, I32Load16S/U (partial-width loads with sign/zero extension)
+            // - I64Load8S/U, I64Load16S/U, I64Load32S/U (partial-width loads)
+            // - I32Store8, I32Store16, I64Store8, I64Store16, I64Store32 (partial-width stores)
 
             // Note: I32Load, I64Load, I32Store, I64Store are now verified
             // using Z3 Array theory (Array[BitVec32 -> BitVec8] with little-endian encoding)
@@ -2310,6 +2348,253 @@ fn encode_function_to_smt_impl_inner(
                 }
             }
 
+            // Partial-width loads (8-bit and 16-bit with sign/zero extension)
+            Instruction::I32Load8S { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32Load8S"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                // Sign-extend 8-bit to 32-bit
+                let result = byte_val.sign_ext(24);
+                stack.push(result);
+            }
+            Instruction::I32Load8U { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32Load8U"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                // Zero-extend 8-bit to 32-bit
+                let result = byte_val.zero_ext(24);
+                stack.push(result);
+            }
+            Instruction::I32Load16S { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32Load16S"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 2 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val16 = b0
+                    .zero_ext(8)
+                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
+                // Sign-extend 16-bit to 32-bit
+                let result = val16.sign_ext(16);
+                stack.push(result);
+            }
+            Instruction::I32Load16U { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32Load16U"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 2 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val16 = b0
+                    .zero_ext(8)
+                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
+                // Zero-extend 16-bit to 32-bit
+                let result = val16.zero_ext(16);
+                stack.push(result);
+            }
+            Instruction::I64Load8S { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load8S"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                // Sign-extend 8-bit to 64-bit
+                let result = byte_val.sign_ext(56);
+                stack.push(result);
+            }
+            Instruction::I64Load8U { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load8U"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                // Zero-extend 8-bit to 64-bit
+                let result = byte_val.zero_ext(56);
+                stack.push(result);
+            }
+            Instruction::I64Load16S { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load16S"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 2 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val16 = b0
+                    .zero_ext(8)
+                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
+                // Sign-extend 16-bit to 64-bit
+                let result = val16.sign_ext(48);
+                stack.push(result);
+            }
+            Instruction::I64Load16U { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load16U"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 2 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val16 = b0
+                    .zero_ext(8)
+                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
+                // Zero-extend 16-bit to 64-bit
+                let result = val16.zero_ext(48);
+                stack.push(result);
+            }
+            Instruction::I64Load32S { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load32S"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 4 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let b2: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
+                    .as_bv()
+                    .unwrap();
+                let b3: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val32 = b0
+                    .zero_ext(24)
+                    .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
+                    .bvor(b2.zero_ext(24).bvshl(BV::from_i64(16, 32)))
+                    .bvor(b3.zero_ext(24).bvshl(BV::from_i64(24, 32)));
+                // Sign-extend 32-bit to 64-bit
+                let result = val32.sign_ext(32);
+                stack.push(result);
+            }
+            Instruction::I64Load32U { offset, .. } => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64Load32U"));
+                }
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Read 4 bytes in little-endian order
+                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b1: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
+                    .as_bv()
+                    .unwrap();
+                let b2: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
+                    .as_bv()
+                    .unwrap();
+                let b3: BV = memory
+                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
+                    .as_bv()
+                    .unwrap();
+                let val32 = b0
+                    .zero_ext(24)
+                    .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
+                    .bvor(b2.zero_ext(24).bvshl(BV::from_i64(16, 32)))
+                    .bvor(b3.zero_ext(24).bvshl(BV::from_i64(24, 32)));
+                // Zero-extend 32-bit to 64-bit
+                let result = val32.zero_ext(32);
+                stack.push(result);
+            }
+
+            // Partial-width stores (8-bit, 16-bit, 32-bit)
+            Instruction::I32Store8 { offset, .. } => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in I32Store8"));
+                }
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Store low 8 bits
+                let byte_val = value.extract(7, 0);
+                memory = memory.store(&effective_addr, &byte_val);
+            }
+            Instruction::I32Store16 { offset, .. } => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in I32Store16"));
+                }
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Store low 16 bits in little-endian order
+                let byte0 = value.extract(7, 0);
+                let byte1 = value.extract(15, 8);
+                memory = memory.store(&effective_addr, &byte0);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+            }
+            Instruction::I64Store8 { offset, .. } => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in I64Store8"));
+                }
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Store low 8 bits
+                let byte_val = value.extract(7, 0);
+                memory = memory.store(&effective_addr, &byte_val);
+            }
+            Instruction::I64Store16 { offset, .. } => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in I64Store16"));
+                }
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Store low 16 bits in little-endian order
+                let byte0 = value.extract(7, 0);
+                let byte1 = value.extract(15, 8);
+                memory = memory.store(&effective_addr, &byte0);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+            }
+            Instruction::I64Store32 { offset, .. } => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in I64Store32"));
+                }
+                let value = stack.pop().unwrap();
+                let addr = stack.pop().unwrap();
+                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
+                // Store low 32 bits in little-endian order
+                let byte0 = value.extract(7, 0);
+                let byte1 = value.extract(15, 8);
+                let byte2 = value.extract(23, 16);
+                let byte3 = value.extract(31, 24);
+                memory = memory.store(&effective_addr, &byte0);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(2, 32)), &byte2);
+                memory = memory.store(&effective_addr.bvadd(BV::from_i64(3, 32)), &byte3);
+            }
+
             // Control flow instructions
 
             // Block: execute body, result goes on stack
@@ -2810,49 +3095,8 @@ fn encode_function_to_smt_impl_inner(
                 let _addr = stack.pop().unwrap();
             }
 
-            // Integer partial loads
-            Instruction::I32Load8S { .. }
-            | Instruction::I32Load8U { .. }
-            | Instruction::I32Load16S { .. }
-            | Instruction::I32Load16U { .. } => {
-                if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in I32 partial load"));
-                }
-                let _addr = stack.pop().unwrap();
-                stack.push(BV::new_const("i32_partial_load", 32));
-            }
-
-            Instruction::I64Load8S { .. }
-            | Instruction::I64Load8U { .. }
-            | Instruction::I64Load16S { .. }
-            | Instruction::I64Load16U { .. }
-            | Instruction::I64Load32S { .. }
-            | Instruction::I64Load32U { .. } => {
-                if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in I64 partial load"));
-                }
-                let _addr = stack.pop().unwrap();
-                stack.push(BV::new_const("i64_partial_load", 64));
-            }
-
-            // Integer partial stores
-            Instruction::I32Store8 { .. } | Instruction::I32Store16 { .. } => {
-                if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in I32 partial store"));
-                }
-                let _value = stack.pop().unwrap();
-                let _addr = stack.pop().unwrap();
-            }
-
-            Instruction::I64Store8 { .. }
-            | Instruction::I64Store16 { .. }
-            | Instruction::I64Store32 { .. } => {
-                if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in I64 partial store"));
-                }
-                let _value = stack.pop().unwrap();
-                let _addr = stack.pop().unwrap();
-            }
+            // Note: Integer partial loads/stores are now handled with precise Z3 encodings
+            // earlier in this match statement (I32Load8S/U, I32Load16S/U, I64Load8S/U, etc.)
 
             // Memory size/grow
             Instruction::MemorySize(_) => {
