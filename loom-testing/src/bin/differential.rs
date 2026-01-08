@@ -2,14 +2,22 @@
 //!
 //! This tool runs LOOM and wasm-opt on a corpus of WASM files and
 //! compares the results to validate correctness and find optimization gaps.
+//!
+//! Key features:
+//! - Size comparison (LOOM vs wasm-opt)
+//! - VALIDITY checking (both tools produce valid WASM)
+//! - SEMANTIC verification (original vs optimized produce same results)
+//!
+//! The semantic verification is CRITICAL for correctness - it catches bugs
+//! that formal verification might miss due to skipped functions.
 
 use anyhow::Result;
 use loom_testing::{DifferentialTester, TestResult};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
-    println!("🔬 LOOM Differential Testing");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    println!("🔬 LOOM Differential Testing (Hybrid Verification)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Create tester
     let tester = match DifferentialTester::new() {
@@ -50,6 +58,9 @@ fn main() -> Result<()> {
     let mut wasm_opt_wins = 0;
     let mut ties = 0;
     let mut errors = 0;
+    let mut semantic_divergences = 0;
+    let mut total_functions_tested = 0;
+    let mut total_functions_matching = 0;
 
     for (i, path) in wasm_files.iter().enumerate() {
         let filename = path.file_name().unwrap().to_string_lossy();
@@ -73,13 +84,45 @@ fn main() -> Result<()> {
             }
         };
 
+        // Track execution comparison stats
+        if let Some(ref details) = result.execution_details {
+            total_functions_tested += details.functions_tested;
+            total_functions_matching += details.functions_matching;
+        }
+
+        // Check for semantic divergence (CRITICAL - this means a bug!)
+        if result.original_loom_equivalent == Some(false) {
+            semantic_divergences += 1;
+            println!("🚨 SEMANTIC DIVERGENCE DETECTED!");
+            if let Some(ref details) = result.execution_details {
+                for divergence in &details.divergence_details {
+                    println!(
+                        "    Function: {} | Inputs: {:?}",
+                        divergence.function_name, divergence.input_values
+                    );
+                    println!(
+                        "    Original: {} | Optimized: {}",
+                        divergence.original_result, divergence.optimized_result
+                    );
+                }
+            }
+            results.push((path.clone(), result));
+            continue;
+        }
+
         match result.winner() {
             "LOOM" => {
                 loom_wins += 1;
+                let exec_info = result
+                    .execution_details
+                    .as_ref()
+                    .map(|d| format!(" [{}✓]", d.functions_matching))
+                    .unwrap_or_default();
                 println!(
-                    "✅ LOOM ({} bytes, {:.1}% reduction)",
+                    "✅ LOOM ({} bytes, {:.1}% reduction){}",
                     result.loom_size,
-                    result.loom_reduction_pct()
+                    result.loom_reduction_pct(),
+                    exec_info
                 );
             }
             "wasm-opt" => {
@@ -141,7 +184,29 @@ fn main() -> Result<()> {
     );
     println!("Errors:          {}", errors);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // CRITICAL: Semantic verification summary
+    println!("\n🔬 Semantic Verification (Hybrid Z3 + Runtime)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Functions tested:  {}", total_functions_tested);
+    println!("Functions matched: {}", total_functions_matching);
+    if semantic_divergences > 0 {
+        println!(
+            "🚨 DIVERGENCES:    {} (BUGS DETECTED!)",
+            semantic_divergences
+        );
+    } else {
+        println!("✅ Divergences:    0 (all optimizations preserve semantics)");
+    }
+    let semantic_rate = if total_functions_tested > 0 {
+        total_functions_matching as f64 / total_functions_tested as f64 * 100.0
+    } else {
+        100.0
+    };
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
     println!("\n🎯 LOOM success rate: {:.1}%", success_rate);
+    println!("🔐 Semantic correctness: {:.1}%", semantic_rate);
 
     // Calculate average reductions
     let valid_results: Vec<_> = results

@@ -1,0 +1,33 @@
+[package]
+name = "loom-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep this crate out of the main workspace
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+# Disable verification feature to avoid Z3 compilation (not needed for fuzzing)
+loom-core = { path = "../loom-core", default-features = false }
+wasmparser = { version = "0.241" }
+
+[[bin]]
+name = "fuzz_optimize"
+path = "fuzz_targets/fuzz_optimize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_roundtrip"
+path = "fuzz_targets/fuzz_roundtrip.rs"
+test = false
+doc = false
+bench = false
