@@ -542,9 +542,8 @@ fn contains_complex_loops(instructions: &[Instruction]) -> bool {
 const MAX_LOOP_BODY_INSTRUCTIONS: usize = 100;
 
 /// Maximum nesting depth for loop verification
-/// Currently 0 (no nested loops) - nested loop encoding has local index issues
-/// TODO: Fix encoding and increase to 1 for one level of nesting
-const MAX_LOOP_NESTING_DEPTH: usize = 0;
+/// Allows one level of nesting to verify nested loops
+const MAX_LOOP_NESTING_DEPTH: usize = 1;
 
 /// Check if a loop body is too complex for bounded unrolling verification
 ///
@@ -664,6 +663,37 @@ fn count_instructions(instructions: &[Instruction]) -> usize {
         }
     }
     count
+}
+
+/// Find the maximum local index used in instructions
+///
+/// This is needed because optimizations might create locals that aren't
+/// declared in the function's locals list yet (e.g., LICM adds temporaries).
+#[cfg(feature = "verification")]
+fn find_max_local_index(instructions: &[Instruction]) -> usize {
+    let mut max_idx = 0;
+    for instr in instructions {
+        match instr {
+            Instruction::LocalGet(idx)
+            | Instruction::LocalSet(idx)
+            | Instruction::LocalTee(idx) => {
+                max_idx = max_idx.max(*idx as usize);
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                max_idx = max_idx.max(find_max_local_index(body));
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                max_idx = max_idx.max(find_max_local_index(then_body));
+                max_idx = max_idx.max(find_max_local_index(else_body));
+            }
+            _ => {}
+        }
+    }
+    max_idx
 }
 
 /// Check if a function contains instructions that cannot be precisely verified
@@ -1532,6 +1562,24 @@ fn encode_function_to_smt_impl_inner(
         locals = shared.initial_locals.clone();
         globals = shared.globals.clone();
         memory = shared.memory.clone();
+
+        // Extend locals if the optimized function uses more locals than the original
+        // This can happen when optimizations like LICM add temporary locals
+        // We need to check both the declared locals AND the maximum index actually used
+        let declared_local_count = func.signature.params.len()
+            + func
+                .locals
+                .iter()
+                .map(|(count, _)| *count as usize)
+                .sum::<usize>();
+        let max_used_local = find_max_local_index(&func.instructions);
+        let needed_locals = declared_local_count.max(max_used_local + 1);
+
+        while locals.len() < needed_locals {
+            // Add zero-initialized locals for any extra locals in the optimized function
+            // Use i32 as default type since we don't know the actual type from the index alone
+            locals.push(BV::from_u64(0, 32));
+        }
     } else {
         // Create fresh inputs (for standalone encoding)
         locals = Vec::new();
@@ -3618,7 +3666,7 @@ fn encode_simple_instruction(
         Instruction::LocalGet(idx) => {
             let idx = *idx as usize;
             if idx >= locals.len() {
-                return Err(anyhow!("Local index out of bounds"));
+                return Err(anyhow!("LocalGet index {} out of bounds", idx));
             }
             stack.push(locals[idx].clone());
         }
@@ -3628,7 +3676,7 @@ fn encode_simple_instruction(
             }
             let idx = *idx as usize;
             if idx >= locals.len() {
-                return Err(anyhow!("Local index out of bounds"));
+                return Err(anyhow!("LocalSet index {} out of bounds", idx));
             }
             let val = stack.pop().unwrap();
             locals[idx] = val;
@@ -3639,7 +3687,7 @@ fn encode_simple_instruction(
             }
             let idx = *idx as usize;
             if idx >= locals.len() {
-                return Err(anyhow!("Local index out of bounds"));
+                return Err(anyhow!("LocalTee index {} out of bounds", idx));
             }
             let val = stack.last().unwrap().clone();
             locals[idx] = val;

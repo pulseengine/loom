@@ -23,7 +23,15 @@
       "Bash(do echo \"=== $f ===\")",
       "Bash(done)",
       "Bash(wasm-tools component wit:*)",
-      "Bash(wasmtime:*)"
+      "Bash(wasmtime:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "WebFetch(domain:kripken.github.io)",
+      "Bash(wc:*)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(cargo check:*)",
+      "Bash(cargo +nightly fuzz build:*)",
+      "Bash(cargo +nightly fuzz run:*)"
     ],
     "deny": [],
     "ask": []
