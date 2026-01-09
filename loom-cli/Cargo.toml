@@ -19,11 +19,17 @@ clap = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 
+# Attestation support (optional)
+wsc-attestation = { version = "0.4", optional = true }
+serde_json = { version = "1.0", optional = true }
+
 [features]
-# Default features - verification enabled for production safety
-default = ["verification"]
+# Default features - verification and attestation enabled for production safety
+default = ["verification", "attestation"]
 # Enable Z3-based formal verification
 verification = ["loom-core/verification"]
+# Enable transformation attestation support
+attestation = ["wsc-attestation", "serde_json"]
 
 [[bin]]
 name = "loom"
