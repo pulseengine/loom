@@ -42,6 +42,13 @@ enum Commands {
         #[arg(long)]
         verify: bool,
 
+        /// Add transformation attestation to output (for supply chain security)
+        /// Embeds a cryptographic audit trail in a custom section
+        /// Enabled by default; use --no-attestation to disable
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[cfg(feature = "attestation")]
+        attestation: bool,
+
         /// Select specific optimization passes (comma-separated)
         /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals
         /// Example: --passes inline,constant-folding,dce
@@ -178,6 +185,60 @@ fn count_constant_folds(module: &loom_core::Module) -> usize {
     count
 }
 
+/// Build transformation attestation for the optimization
+#[cfg(feature = "attestation")]
+fn build_attestation(
+    input_bytes: &[u8],
+    input_name: &str,
+    optimized_module: &loom_core::Module,
+    enabled_passes: &Option<Vec<&str>>,
+    verification_status: Option<bool>,
+) -> String {
+    use wsc_attestation::TransformationAttestationBuilder;
+
+    // Encode the optimized module to get its bytes for hashing
+    let output_bytes = loom_core::encode::encode_wasm(optimized_module).unwrap_or_default();
+
+    // Build the attestation
+    let mut builder =
+        TransformationAttestationBuilder::new_optimization("loom", env!("CARGO_PKG_VERSION"))
+            .add_input_unsigned(input_bytes, input_name);
+
+    // Add optimization parameters
+    let passes_str = enabled_passes
+        .as_ref()
+        .map(|p| p.join(","))
+        .unwrap_or_else(|| "all".to_string());
+    builder = builder.add_parameter("passes", serde_json::json!(passes_str));
+
+    // Add verification status if available
+    if let Some(verified) = verification_status {
+        builder = builder.add_parameter("z3_verified", serde_json::json!(verified));
+    }
+
+    // Add metadata about the optimization
+    builder = builder.add_metadata(
+        "instructions_before",
+        serde_json::json!(count_instructions_from_bytes(input_bytes)),
+    );
+    builder = builder.add_metadata(
+        "instructions_after",
+        serde_json::json!(count_instructions(optimized_module)),
+    );
+
+    // Build and serialize
+    let attestation = builder.build(&output_bytes, "output.wasm");
+    attestation.to_json().unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Count instructions from raw WASM bytes (for attestation)
+#[cfg(feature = "attestation")]
+fn count_instructions_from_bytes(bytes: &[u8]) -> usize {
+    loom_core::parse::parse_wasm(bytes)
+        .map(|m| count_instructions(&m))
+        .unwrap_or(0)
+}
+
 /// Optimize command implementation
 fn optimize_command(
     input: String,
@@ -185,6 +246,7 @@ fn optimize_command(
     output_wat: bool,
     show_stats: bool,
     run_verify: bool,
+    add_attestation: bool,
     passes: Option<Vec<String>>,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
@@ -417,6 +479,47 @@ fn optimize_command(
     // Collect statistics after optimization
     stats.instructions_after = count_instructions(&module);
 
+    // Add transformation attestation if enabled
+    #[cfg(feature = "attestation")]
+    let verification_status = if run_verify {
+        #[cfg(feature = "verification")]
+        {
+            // Check if Z3 verification passed
+            match loom_core::verify::verify_optimization(
+                original_module.as_ref().unwrap_or(&module),
+                &module,
+            ) {
+                Ok(true) => Some(true),
+                Ok(false) => Some(false),
+                Err(_) => None,
+            }
+        }
+        #[cfg(not(feature = "verification"))]
+        None
+    } else {
+        None
+    };
+
+    #[cfg(feature = "attestation")]
+    if add_attestation && !output_wat {
+        println!("🔏 Adding transformation attestation...");
+        let attestation = build_attestation(
+            &input_bytes,
+            &input,
+            &module,
+            &enabled_passes,
+            verification_status,
+        );
+        // Add attestation to custom sections
+        module.custom_sections.push((
+            wsc_attestation::TRANSFORMATION_ATTESTATION_SECTION.to_string(),
+            attestation.into_bytes(),
+        ));
+        println!("✓ Attestation added to custom section");
+    }
+    #[cfg(not(feature = "attestation"))]
+    let _ = add_attestation; // Suppress unused warning
+
     // Encode output
     let output_bytes = if output_wat {
         println!("📝 Encoding to WAT format...");
@@ -563,9 +666,15 @@ fn main() -> Result<()> {
             wat,
             stats,
             verify,
+            #[cfg(feature = "attestation")]
+            attestation,
             passes,
         }) => {
-            optimize_command(input, output, wat, stats, verify, passes)?;
+            #[cfg(feature = "attestation")]
+            let add_attestation = attestation;
+            #[cfg(not(feature = "attestation"))]
+            let add_attestation = false;
+            optimize_command(input, output, wat, stats, verify, add_attestation, passes)?;
         }
 
         Some(Commands::Verify { isle_file }) => {
@@ -637,6 +746,7 @@ mod tests {
             false,
             false,
             false,
+            false, // attestation
             None,
         );
 
@@ -672,6 +782,7 @@ mod tests {
             false,
             true, // Enable stats
             false,
+            false, // attestation
             None,
         );
 
@@ -703,7 +814,8 @@ mod tests {
             Some(output_path.to_string_lossy().to_string()),
             false,
             false,
-            true, // Enable verification
+            true,  // Enable verification
+            false, // attestation
             None,
         );
 
@@ -739,6 +851,7 @@ mod tests {
             true, // WAT output
             false,
             false,
+            false, // attestation (disabled for WAT)
             None,
         );
 
