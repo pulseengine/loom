@@ -32,7 +32,8 @@
       "Bash(cargo check:*)",
       "Bash(cargo +nightly fuzz build:*)",
       "Bash(cargo +nightly fuzz run:*)",
-      "Bash(timeout 10 cargo +nightly fuzz run:*)"
+      "Bash(timeout 10 cargo +nightly fuzz run:*)",
+      "WebFetch(domain:docs.rs)"
     ],
     "deny": [],
     "ask": []
