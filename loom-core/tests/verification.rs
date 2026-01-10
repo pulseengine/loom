@@ -739,3 +739,224 @@ fn test_simple_loop_verification() {
 
     println!("Simple loop verification test passed: {:?}", result);
 }
+
+// ============================================================================
+// Function Summary Tests
+// ============================================================================
+
+/// Test function summary analysis - pure function
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_pure() {
+    use loom_core::verify::FunctionSummary;
+
+    // A pure function: just adds two parameters
+    let pure_func = Function {
+        name: Some("pure_add".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&pure_func);
+    assert!(summary.is_pure(), "Function should be pure (no side effects)");
+    assert!(!summary.has_side_effects(), "Function should have no side effects");
+    assert!(summary.globals_read.is_empty(), "Function should not read globals");
+    assert!(summary.globals_written.is_empty(), "Function should not write globals");
+    assert!(!summary.reads_memory, "Function should not read memory");
+    assert!(!summary.writes_memory, "Function should not write memory");
+    assert!(!summary.has_calls, "Function should not have calls");
+}
+
+/// Test function summary analysis - function with global write
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_global_write() {
+    use loom_core::verify::FunctionSummary;
+
+    // Function that writes to a global
+    let impure_func = Function {
+        name: Some("write_global".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::GlobalSet(0), // Write to global 0
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&impure_func);
+    assert!(!summary.is_pure(), "Function should not be pure (writes global)");
+    assert!(summary.has_side_effects(), "Function should have side effects");
+    assert!(summary.globals_written.contains(&0), "Function should write global 0");
+    assert!(!summary.writes_memory, "Function should not write memory");
+}
+
+/// Test function summary analysis - function with memory write
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_memory_write() {
+    use loom_core::verify::FunctionSummary;
+
+    // Function that writes to memory
+    let store_func = Function {
+        name: Some("store_memory".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32], // addr, value
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0), // address
+            Instruction::LocalGet(1), // value
+            Instruction::I32Store { align: 2, offset: 0 },
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&store_func);
+    assert!(!summary.is_pure(), "Function should not be pure (writes memory)");
+    assert!(summary.has_side_effects(), "Function should have side effects");
+    assert!(summary.writes_memory, "Function should write memory");
+}
+
+/// Test function summary analysis - function with calls
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_with_calls() {
+    use loom_core::verify::FunctionSummary;
+
+    // Function that calls another function
+    let calling_func = Function {
+        name: Some("caller".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::Call(1), // Call function index 1
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&calling_func);
+    assert!(summary.has_calls, "Function should have calls");
+    assert!(summary.called_functions.contains(&1), "Function should call function 1");
+    assert!(!summary.has_indirect_calls, "Function should not have indirect calls");
+}
+
+/// Test function summary analysis - function with indirect calls
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_with_indirect_calls() {
+    use loom_core::verify::FunctionSummary;
+
+    // Function with indirect call
+    let indirect_call_func = Function {
+        name: Some("indirect_caller".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0), // table index
+            Instruction::CallIndirect {
+                type_idx: 0,
+                table_idx: 0,
+            },
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&indirect_call_func);
+    assert!(summary.has_calls, "Function should have calls");
+    assert!(summary.has_indirect_calls, "Function should have indirect calls");
+}
+
+/// Test building function summaries from a module
+#[test]
+#[cfg(feature = "verification")]
+fn test_build_function_summaries() {
+    use loom_core::verify::build_function_summaries;
+
+    let module = Module {
+        functions: vec![
+            // Function 0: pure
+            Function {
+                name: Some("pure".to_string()),
+                signature: FunctionSignature {
+                    params: vec![],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::I32Const(42), Instruction::End],
+            },
+            // Function 1: reads global
+            Function {
+                name: Some("read_global".to_string()),
+                signature: FunctionSignature {
+                    params: vec![],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::GlobalGet(0), Instruction::End],
+            },
+            // Function 2: writes global
+            Function {
+                name: Some("write_global".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![],
+                },
+                locals: vec![],
+                instructions: vec![
+                    Instruction::LocalGet(0),
+                    Instruction::GlobalSet(0),
+                    Instruction::End,
+                ],
+            },
+        ],
+        types: vec![],
+        imports: vec![],
+        exports: vec![],
+        tables: vec![],
+        memories: vec![],
+        globals: vec![],
+        start_function: None,
+        element_section_bytes: None,
+        data_segments: vec![],
+        custom_sections: vec![],
+        type_section_bytes: None,
+        global_section_bytes: None,
+    };
+
+    let summaries = build_function_summaries(&module);
+
+    // Function 0 should be pure
+    assert!(summaries.get(&0).unwrap().is_pure(), "Function 0 should be pure");
+
+    // Function 1 reads global but doesn't write
+    let summary1 = summaries.get(&1).unwrap();
+    assert!(summary1.globals_read.contains(&0), "Function 1 should read global 0");
+    assert!(summary1.is_pure(), "Function 1 should be pure (only reads)");
+
+    // Function 2 writes global
+    let summary2 = summaries.get(&2).unwrap();
+    assert!(summary2.globals_written.contains(&0), "Function 2 should write global 0");
+    assert!(!summary2.is_pure(), "Function 2 should not be pure");
+}

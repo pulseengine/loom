@@ -106,6 +106,221 @@ impl VerificationSignatureContext {
 }
 
 // ============================================================================
+// Function Call Summaries
+// ============================================================================
+
+/// Summary of a function's effects for verification purposes.
+///
+/// This enables more precise verification when function calls are present:
+/// - Track which globals are read/written
+/// - Track if memory is read/written
+/// - Determine if function is pure (no side effects)
+#[cfg(feature = "verification")]
+#[derive(Debug, Clone, Default)]
+pub struct FunctionSummary {
+    /// Set of global indices that this function reads
+    pub globals_read: std::collections::HashSet<u32>,
+    /// Set of global indices that this function writes
+    pub globals_written: std::collections::HashSet<u32>,
+    /// Whether this function reads from linear memory
+    pub reads_memory: bool,
+    /// Whether this function writes to linear memory
+    pub writes_memory: bool,
+    /// Whether this function makes calls to other functions
+    pub has_calls: bool,
+    /// Whether this function makes indirect calls (harder to analyze)
+    pub has_indirect_calls: bool,
+    /// Function indices that this function calls (direct calls only)
+    pub called_functions: std::collections::HashSet<u32>,
+}
+
+#[cfg(feature = "verification")]
+impl FunctionSummary {
+    /// Create a new empty function summary
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if this function is pure (no side effects)
+    /// A pure function doesn't write to globals or memory
+    pub fn is_pure(&self) -> bool {
+        self.globals_written.is_empty() && !self.writes_memory
+    }
+
+    /// Check if this function has any observable effects
+    pub fn has_side_effects(&self) -> bool {
+        !self.globals_written.is_empty() || self.writes_memory
+    }
+
+    /// Analyze a function and build its summary
+    pub fn analyze(func: &Function) -> Self {
+        let mut summary = FunctionSummary::new();
+
+        for instr in &func.instructions {
+            match instr {
+                // Global reads
+                Instruction::GlobalGet(idx) => {
+                    summary.globals_read.insert(*idx);
+                }
+                // Global writes
+                Instruction::GlobalSet(idx) => {
+                    summary.globals_written.insert(*idx);
+                }
+                // Memory reads
+                Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::F32Load { .. }
+                | Instruction::F64Load { .. }
+                | Instruction::I32Load8S { .. }
+                | Instruction::I32Load8U { .. }
+                | Instruction::I32Load16S { .. }
+                | Instruction::I32Load16U { .. }
+                | Instruction::I64Load8S { .. }
+                | Instruction::I64Load8U { .. }
+                | Instruction::I64Load16S { .. }
+                | Instruction::I64Load16U { .. }
+                | Instruction::I64Load32S { .. }
+                | Instruction::I64Load32U { .. } => {
+                    summary.reads_memory = true;
+                }
+                // Memory writes
+                Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::F32Store { .. }
+                | Instruction::F64Store { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. } => {
+                    summary.writes_memory = true;
+                }
+                // Direct calls
+                Instruction::Call(func_idx) => {
+                    summary.has_calls = true;
+                    summary.called_functions.insert(*func_idx);
+                }
+                // Indirect calls
+                Instruction::CallIndirect { .. } => {
+                    summary.has_indirect_calls = true;
+                    summary.has_calls = true;
+                }
+                // Memory size/grow operations
+                Instruction::MemorySize { .. } => {
+                    summary.reads_memory = true;
+                }
+                Instruction::MemoryGrow { .. } => {
+                    summary.writes_memory = true;
+                }
+                _ => {}
+            }
+        }
+
+        summary
+    }
+
+    /// Compute transitive closure of effects for a function
+    /// This propagates effects from called functions to callers
+    pub fn compute_transitive_effects(
+        summaries: &mut std::collections::HashMap<u32, FunctionSummary>,
+        module_func_count: u32,
+    ) {
+        // Fixed-point iteration: keep propagating until no changes
+        let mut changed = true;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 100;
+
+        while changed && iterations < MAX_ITERATIONS {
+            changed = false;
+            iterations += 1;
+
+            for func_idx in 0..module_func_count {
+                if let Some(summary) = summaries.get(&func_idx).cloned() {
+                    let mut new_summary = summary.clone();
+
+                    // Propagate effects from called functions
+                    for called_idx in &summary.called_functions {
+                        if let Some(called_summary) = summaries.get(called_idx) {
+                            // Merge global reads
+                            for g in &called_summary.globals_read {
+                                if new_summary.globals_read.insert(*g) {
+                                    changed = true;
+                                }
+                            }
+                            // Merge global writes
+                            for g in &called_summary.globals_written {
+                                if new_summary.globals_written.insert(*g) {
+                                    changed = true;
+                                }
+                            }
+                            // Propagate memory effects
+                            if called_summary.reads_memory && !new_summary.reads_memory {
+                                new_summary.reads_memory = true;
+                                changed = true;
+                            }
+                            if called_summary.writes_memory && !new_summary.writes_memory {
+                                new_summary.writes_memory = true;
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    // If function has indirect calls, be conservative
+                    if summary.has_indirect_calls {
+                        // Indirect calls could do anything
+                        new_summary.reads_memory = true;
+                        new_summary.writes_memory = true;
+                    }
+
+                    summaries.insert(func_idx, new_summary);
+                }
+            }
+        }
+    }
+}
+
+/// Build function summaries for all functions in a module
+#[cfg(feature = "verification")]
+pub fn build_function_summaries(module: &Module) -> std::collections::HashMap<u32, FunctionSummary> {
+    let mut summaries = std::collections::HashMap::new();
+
+    // Count imported functions (they come before local functions in indexing)
+    let import_func_count = module
+        .imports
+        .iter()
+        .filter(|i| matches!(i.kind, ImportKind::Func(_)))
+        .count() as u32;
+
+    // For imported functions, we don't have the body so assume worst case
+    for idx in 0..import_func_count {
+        let mut summary = FunctionSummary::new();
+        // Imported functions could do anything - be conservative
+        summary.reads_memory = true;
+        summary.writes_memory = true;
+        summary.has_calls = true;
+        summaries.insert(idx, summary);
+    }
+
+    // Analyze local functions
+    for (i, func) in module.functions.iter().enumerate() {
+        let func_idx = import_func_count + i as u32;
+        let summary = FunctionSummary::analyze(func);
+        summaries.insert(func_idx, summary);
+    }
+
+    // Compute transitive closure
+    let total_funcs = import_func_count + module.functions.len() as u32;
+    FunctionSummary::compute_transitive_effects(&mut summaries, total_funcs);
+
+    summaries
+}
+
+/// Stub for FunctionSummary when verification is disabled
+#[cfg(not(feature = "verification"))]
+#[derive(Debug, Clone, Default)]
+pub struct FunctionSummary;
+
+// ============================================================================
 // Verification Coverage Tracking
 // ============================================================================
 
@@ -3336,11 +3551,13 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Function call - properly model stack effects using signature context
+            // Also track side effects (globals/memory modifications) via function summaries
             Instruction::Call(func_idx) => {
                 // For verification, we can't inline calls (would need interprocedural analysis)
                 // Instead, we properly model the stack effects:
                 // 1. Pop the correct number of arguments
                 // 2. Push fresh symbolic values for results
+                // 3. Havoc globals/memory that the called function might modify
                 if let Some(ctx_ref) = sig_ctx {
                     if let Some(sig) = ctx_ref.get_function_signature(*func_idx) {
                         // Pop arguments (in reverse order, as they were pushed)
@@ -3365,6 +3582,33 @@ fn encode_function_to_smt_impl_inner(
                                 width,
                             ));
                         }
+
+                        // Havoc all globals that this function might modify
+                        // This is conservative but sound - we assume the call could
+                        // modify any global it has write access to
+                        // NOTE: For now we havoc ALL globals after any call since we
+                        // don't have the function summaries available in this context.
+                        // A future improvement would pass summaries through and only
+                        // havoc the specific globals the callee modifies.
+                        static CALL_COUNTER: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0);
+                        let call_id =
+                            CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        for (idx, global) in globals.iter_mut().enumerate() {
+                            // Replace with fresh symbolic value to model potential modification
+                            *global = BV::new_const(
+                                format!("global_{}_after_call_{}_{}", idx, func_idx, call_id),
+                                global.get_size(),
+                            );
+                        }
+
+                        // Memory is also potentially modified by the call
+                        // Create a fresh memory array to model this
+                        memory = Array::new_const(
+                            format!("mem_after_call_{}_{}", func_idx, call_id),
+                            &Sort::bitvector(32),
+                            &Sort::bitvector(8),
+                        );
                     } else {
                         // Unknown function - conservative: assume returns i32
                         stack.push(BV::new_const("call_unknown_result", 32));
@@ -3376,6 +3620,7 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Indirect call - properly model stack effects using type signature
+            // Indirect calls are maximally conservative since we don't know what function is called
             Instruction::CallIndirect { type_idx, .. } => {
                 // Pop table index first
                 if stack.is_empty() {
@@ -3410,6 +3655,24 @@ fn encode_function_to_smt_impl_inner(
                                 width,
                             ));
                         }
+
+                        // Indirect calls could call ANY function - must havoc everything
+                        // This is maximally conservative but sound
+                        static INDIRECT_CALL_COUNTER: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0);
+                        let call_id = INDIRECT_CALL_COUNTER
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        for (idx, global) in globals.iter_mut().enumerate() {
+                            *global = BV::new_const(
+                                format!("global_{}_after_indirect_call_{}", idx, call_id),
+                                global.get_size(),
+                            );
+                        }
+                        memory = Array::new_const(
+                            format!("mem_after_indirect_call_{}", call_id),
+                            &Sort::bitvector(32),
+                            &Sort::bitvector(8),
+                        );
                     } else {
                         // Unknown type - conservative: assume returns i32
                         stack.push(BV::new_const("call_indirect_unknown_result", 32));
