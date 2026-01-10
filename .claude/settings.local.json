@@ -31,7 +31,8 @@
       "WebFetch(domain:arxiv.org)",
       "Bash(cargo check:*)",
       "Bash(cargo +nightly fuzz build:*)",
-      "Bash(cargo +nightly fuzz run:*)"
+      "Bash(cargo +nightly fuzz run:*)",
+      "Bash(timeout 10 cargo +nightly fuzz run:*)"
     ],
     "deny": [],
     "ask": []

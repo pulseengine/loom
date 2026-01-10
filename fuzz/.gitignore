@@ -1,0 +1,5 @@
+# Fuzzing artifacts
+target/
+artifacts/
+corpus/
+coverage/

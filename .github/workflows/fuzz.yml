@@ -1,0 +1,130 @@
+# Continuous fuzzing workflow for LOOM
+# Runs fuzzing on nightly schedule and saves any crash artifacts
+
+name: Fuzzing
+
+on:
+  schedule:
+    # Run nightly at 2am UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual triggering
+    inputs:
+      duration:
+        description: 'Fuzzing duration in seconds'
+        default: '300'
+        type: string
+      target:
+        description: 'Fuzz target to run'
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - fuzz_optimize
+          - fuzz_roundtrip
+          - fuzz_differential
+
+env:
+  CARGO_TERM_COLOR: always
+  FUZZ_DURATION: ${{ github.event.inputs.duration || '300' }}
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_optimize
+          - fuzz_roundtrip
+          - fuzz_differential
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build fuzz targets
+        working-directory: fuzz
+        run: cargo +nightly fuzz build
+
+      - name: Run fuzzer - ${{ matrix.target }}
+        if: github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target
+        working-directory: fuzz
+        run: |
+          timeout ${FUZZ_DURATION}s cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${FUZZ_DURATION} \
+            -dict=dictionaries/wasm.dict \
+            || true  # Don't fail on timeout
+
+      - name: Check for crashes
+        working-directory: fuzz
+        run: |
+          if [ -d "artifacts/${{ matrix.target }}" ] && [ "$(ls -A artifacts/${{ matrix.target }})" ]; then
+            echo "::error::Crashes found in ${{ matrix.target }}!"
+            ls -la artifacts/${{ matrix.target }}/
+            exit 1
+          else
+            echo "No crashes found in ${{ matrix.target }}"
+          fi
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+
+      - name: Upload corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          retention-days: 7
+
+  coverage:
+    name: Fuzzing coverage report
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all corpora
+        uses: actions/download-artifact@v4
+        with:
+          pattern: corpus-*
+          path: fuzz/corpus/
+          merge-multiple: true
+
+      - name: Generate coverage summary
+        run: |
+          echo "## Fuzzing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | Corpus Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------------|" >> $GITHUB_STEP_SUMMARY
+          for dir in fuzz/corpus/*/; do
+            if [ -d "$dir" ]; then
+              target=$(basename "$dir")
+              count=$(find "$dir" -type f | wc -l)
+              echo "| $target | $count |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done

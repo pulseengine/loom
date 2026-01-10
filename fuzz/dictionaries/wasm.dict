@@ -1,0 +1,92 @@
+# WebAssembly fuzzing dictionary
+# Magic bytes and common WASM patterns
+
+# WASM magic number
+"\x00asm"
+
+# Version 1
+"\x01\x00\x00\x00"
+
+# Section IDs
+"\x00"  # Custom section
+"\x01"  # Type section
+"\x02"  # Import section
+"\x03"  # Function section
+"\x04"  # Table section
+"\x05"  # Memory section
+"\x06"  # Global section
+"\x07"  # Export section
+"\x08"  # Start section
+"\x09"  # Element section
+"\x0a"  # Code section
+"\x0b"  # Data section
+
+# Value types
+"\x7f"  # i32
+"\x7e"  # i64
+"\x7d"  # f32
+"\x7c"  # f64
+"\x70"  # funcref
+"\x6f"  # externref
+
+# Function type constructor
+"\x60"
+
+# Block types
+"\x40"  # void
+
+# Common instructions
+"\x00"  # unreachable
+"\x01"  # nop
+"\x02"  # block
+"\x03"  # loop
+"\x04"  # if
+"\x05"  # else
+"\x0b"  # end
+"\x0c"  # br
+"\x0d"  # br_if
+"\x0e"  # br_table
+"\x0f"  # return
+"\x10"  # call
+"\x11"  # call_indirect
+
+# Local/global ops
+"\x20"  # local.get
+"\x21"  # local.set
+"\x22"  # local.tee
+"\x23"  # global.get
+"\x24"  # global.set
+
+# Memory ops
+"\x28"  # i32.load
+"\x29"  # i64.load
+"\x2a"  # f32.load
+"\x2b"  # f64.load
+"\x36"  # i32.store
+"\x37"  # i64.store
+
+# Constants
+"\x41"  # i32.const
+"\x42"  # i64.const
+"\x43"  # f32.const
+"\x44"  # f64.const
+
+# Numeric ops
+"\x45"  # i32.eqz
+"\x46"  # i32.eq
+"\x47"  # i32.ne
+"\x6a"  # i32.add
+"\x6b"  # i32.sub
+"\x6c"  # i32.mul
+"\x6d"  # i32.div_s
+"\x6e"  # i32.div_u
+"\x71"  # i32.and
+"\x72"  # i32.or
+"\x73"  # i32.xor
+"\x74"  # i32.shl
+"\x75"  # i32.shr_s
+"\x76"  # i32.shr_u
+
+# Drop and select
+"\x1a"  # drop
+"\x1b"  # select

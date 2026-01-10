@@ -31,3 +31,10 @@ path = "fuzz_targets/fuzz_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_differential"
+path = "fuzz_targets/fuzz_differential.rs"
+test = false
+doc = false
+bench = false
