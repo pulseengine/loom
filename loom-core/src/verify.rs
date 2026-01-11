@@ -1829,12 +1829,10 @@ fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
             | Instruction::I64Load16S { .. }
             | Instruction::I64Load16U { .. }
             | Instruction::I64Load32S { .. }
-            | Instruction::I64Load32U { .. }
-            | Instruction::I32Store8 { .. }
-            | Instruction::I32Store16 { .. }
-            | Instruction::I64Store8 { .. }
-            | Instruction::I64Store16 { .. }
-            | Instruction::I64Store32 { .. } => return true,
+            | Instruction::I64Load32U { .. } => return true,
+
+            // Note: I32Store8, I32Store16, I64Store8, I64Store16, I64Store32 are now verifiable
+            // via Z3 Array theory with little-endian byte extraction
 
             // Note: MemorySize and MemoryGrow are now verifiable via shared memory_size variable
 

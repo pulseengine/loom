@@ -1105,3 +1105,116 @@ fn test_function_summary_memory_grow() {
         "memory.grow should mark function as writing memory"
     );
 }
+
+// =============================================================================
+// Partial-Width Store Verification Tests
+// =============================================================================
+
+/// Test that I32Store8 is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_partial_store_i32store8() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that stores a byte to memory
+    let func = Function {
+        name: Some("store_byte".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32], // addr, value
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0), // addr
+            Instruction::LocalGet(1), // value
+            Instruction::I32Store8 { align: 0, offset: 0 },
+            Instruction::End,
+        ],
+    };
+
+    let validator = TranslationValidator::new(&func, "i32store8_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "I32Store8 verification should succeed: {:?}", result);
+}
+
+/// Test that I32Store16 is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_partial_store_i32store16() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    let func = Function {
+        name: Some("store_short".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Store16 { align: 0, offset: 0 },
+            Instruction::End,
+        ],
+    };
+
+    let validator = TranslationValidator::new(&func, "i32store16_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "I32Store16 verification should succeed: {:?}", result);
+}
+
+/// Test that I64Store8 is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_partial_store_i64store8() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    let func = Function {
+        name: Some("store_byte_64".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I64],
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Store8 { align: 0, offset: 0 },
+            Instruction::End,
+        ],
+    };
+
+    let validator = TranslationValidator::new(&func, "i64store8_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "I64Store8 verification should succeed: {:?}", result);
+}
+
+/// Test that I64Store32 is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_partial_store_i64store32() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    let func = Function {
+        name: Some("store_word_64".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I64],
+            results: vec![],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I64Store32 { align: 0, offset: 0 },
+            Instruction::End,
+        ],
+    };
+
+    let validator = TranslationValidator::new(&func, "i64store32_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "I64Store32 verification should succeed: {:?}", result);
+}

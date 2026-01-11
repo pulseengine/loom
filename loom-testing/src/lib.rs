@@ -3,6 +3,7 @@
 //! This module provides infrastructure for comparing LOOM's optimization
 //! results against wasm-opt to validate correctness and identify gaps.
 
+pub mod differential;
 pub mod emi;
 
 #[cfg(feature = "runtime")]
