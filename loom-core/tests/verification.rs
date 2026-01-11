@@ -960,3 +960,148 @@ fn test_build_function_summaries() {
     assert!(summary2.globals_written.contains(&0), "Function 2 should write global 0");
     assert!(!summary2.is_pure(), "Function 2 should not be pure");
 }
+
+// =============================================================================
+// Memory Size/Grow Tests
+// =============================================================================
+
+/// Test that memory.size instruction is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_memory_size_verification() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that returns memory size
+    let func = Function {
+        name: Some("get_memory_size".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::MemorySize(0), Instruction::End],
+    };
+
+    // Create validator and verify the function against itself
+    // This should succeed since the function is equivalent to itself
+    let validator = TranslationValidator::new(&func, "memory_size_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "Memory size verification should succeed: {:?}", result);
+}
+
+/// Test that memory.grow instruction is properly verified
+#[test]
+#[cfg(feature = "verification")]
+fn test_memory_grow_verification() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that grows memory and returns the result
+    let func = Function {
+        name: Some("grow_memory".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32], // delta pages
+            results: vec![ValueType::I32], // old size or -1
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::MemoryGrow(0),
+            Instruction::End,
+        ],
+    };
+
+    // Verify function against itself
+    let validator = TranslationValidator::new(&func, "memory_grow_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "Memory grow verification should succeed: {:?}", result);
+}
+
+/// Test that memory.size after memory.grow reflects the state change
+#[test]
+#[cfg(feature = "verification")]
+fn test_memory_size_after_grow() {
+    use loom_core::verify::TranslationValidator;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that grows memory then returns the size
+    let func = Function {
+        name: Some("grow_then_size".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32], // delta pages
+            results: vec![ValueType::I32], // new memory size
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::MemoryGrow(0),
+            Instruction::Drop, // discard grow result
+            Instruction::MemorySize(0),
+            Instruction::End,
+        ],
+    };
+
+    // Verify function against itself
+    let validator = TranslationValidator::new(&func, "size_after_grow_test");
+    let result = validator.verify(&func);
+    assert!(result.is_ok(), "Size after grow verification should succeed: {:?}", result);
+}
+
+/// Test that memory operations are tracked in function summaries
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_memory_size() {
+    use loom_core::verify::FunctionSummary;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that uses memory.size
+    let func = Function {
+        name: Some("uses_memory_size".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![Instruction::MemorySize(0), Instruction::End],
+    };
+
+    let summary = FunctionSummary::analyze(&func);
+    assert!(
+        summary.reads_memory,
+        "memory.size should mark function as reading memory"
+    );
+    assert!(
+        !summary.writes_memory,
+        "memory.size should not mark function as writing memory"
+    );
+}
+
+/// Test that memory.grow is tracked as a memory write in function summaries
+#[test]
+#[cfg(feature = "verification")]
+fn test_function_summary_memory_grow() {
+    use loom_core::verify::FunctionSummary;
+    use loom_core::{Function, FunctionSignature, Instruction, ValueType};
+
+    // Function that uses memory.grow
+    let func = Function {
+        name: Some("uses_memory_grow".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::MemoryGrow(0),
+            Instruction::End,
+        ],
+    };
+
+    let summary = FunctionSummary::analyze(&func);
+    assert!(
+        summary.writes_memory,
+        "memory.grow should mark function as writing memory"
+    );
+}
