@@ -287,7 +287,9 @@ impl FunctionSummary {
 
 /// Build function summaries for all functions in a module
 #[cfg(feature = "verification")]
-pub fn build_function_summaries(module: &Module) -> std::collections::HashMap<u32, FunctionSummary> {
+pub fn build_function_summaries(
+    module: &Module,
+) -> std::collections::HashMap<u32, FunctionSummary> {
     let mut summaries = std::collections::HashMap::new();
 
     // Count imported functions (they come before local functions in indexing)

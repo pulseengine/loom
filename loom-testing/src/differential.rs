@@ -588,12 +588,12 @@ impl DifferentialExecutor {
             for (j, p) in params.iter().enumerate() {
                 let idx = (i + j) % subset_size;
                 let val = match p {
-                    ValType::I32 => {
-                        Val::I32(self.config.i32_test_values[idx % self.config.i32_test_values.len()])
-                    }
-                    ValType::I64 => {
-                        Val::I64(self.config.i64_test_values[idx % self.config.i64_test_values.len()])
-                    }
+                    ValType::I32 => Val::I32(
+                        self.config.i32_test_values[idx % self.config.i32_test_values.len()],
+                    ),
+                    ValType::I64 => Val::I64(
+                        self.config.i64_test_values[idx % self.config.i64_test_values.len()],
+                    ),
                     ValType::F32 => Val::F32(f32_vals[idx % f32_vals.len()].to_bits()),
                     ValType::F64 => Val::F64(f64_vals[idx % f64_vals.len()].to_bits()),
                     _ => continue,
@@ -887,13 +887,14 @@ mod tests {
 
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
         let executor = DifferentialExecutor::new().expect("Failed to create executor");
-        let result = executor
-            .test_optimization(&wasm)
-            .expect("Test failed");
+        let result = executor.test_optimization(&wasm).expect("Test failed");
 
         assert!(result.semantics_preserved, "Semantics should be preserved");
         assert!(result.optimized_valid, "Output should be valid");
-        assert!(result.functions_tested > 0, "Should test at least one function");
+        assert!(
+            result.functions_tested > 0,
+            "Should test at least one function"
+        );
     }
 
     #[test]
@@ -909,11 +910,12 @@ mod tests {
 
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
         let executor = DifferentialExecutor::new().expect("Failed to create executor");
-        let result = executor
-            .test_optimization(&wasm)
-            .expect("Test failed");
+        let result = executor.test_optimization(&wasm).expect("Test failed");
 
-        assert!(result.semantics_preserved, "Constant folding should preserve semantics");
+        assert!(
+            result.semantics_preserved,
+            "Constant folding should preserve semantics"
+        );
         assert!(result.functions_matched >= 1, "const function should match");
     }
 
@@ -960,9 +962,7 @@ mod tests {
 
         let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
         let executor = DifferentialExecutor::new().expect("Failed to create executor");
-        let result = executor
-            .test_optimization(&wasm)
-            .expect("Test failed");
+        let result = executor.test_optimization(&wasm).expect("Test failed");
 
         // If there were a bug, functions_diverged would be > 0
         assert_eq!(
