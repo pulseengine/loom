@@ -1,6 +1,31 @@
 ###############################################################################
-# Bazel now uses Bzlmod by default to manage external dependencies.
-# Please consider migrating your external dependencies from WORKSPACE to MODULE.bazel.
+# LOOM Bazel Module Configuration
 #
-# For more details, please check https://github.com/bazelbuild/bazel/issues/18958
+# Uses Bzlmod for modern dependency management.
+# See: https://bazel.build/external/overview#bzlmod
 ###############################################################################
+
+module(
+    name = "loom",
+    version = "0.3.0",
+)
+
+# Rocq/Coq formal verification support
+# See: https://github.com/pulseengine/rules_rocq_rust
+bazel_dep(name = "rules_rocq_rust", version = "0.1.0")
+
+# Override to fetch from GitHub since not yet in BCR
+git_override(
+    module_name = "rules_rocq_rust",
+    remote = "https://github.com/pulseengine/rules_rocq_rust.git",
+    commit = "c1886e0bbc09ac2f854b30493bc104d454b196a7",
+)
+
+rocq = use_extension("@rules_rocq_rust//rocq:extensions.bzl", "rocq")
+rocq.toolchain(
+    version = "2025.01.0",
+    strategy = "download",
+)
+use_repo(rocq, "rocq_toolchains")
+
+register_toolchains("@rocq_toolchains//:all")
