@@ -40,3 +40,13 @@ use_repo(
 )
 
 register_toolchains("@rocq_toolchains//:all")
+
+# rocq-of-rust toolchain for translating Rust to Rocq
+rocq_of_rust = use_extension("@rules_rocq_rust//coq_of_rust:extensions.bzl", "rocq_of_rust")
+rocq_of_rust.toolchain(
+    commit = "858907dbee116c51d7c6e87511bf5f92d6432ba4",  # Pinned for reproducibility
+    use_real_library = True,  # Full library with coqutil/hammer/smpl
+)
+use_repo(rocq_of_rust, "rocq_of_rust_toolchains", "rocq_of_rust_source")
+
+register_toolchains("@rocq_of_rust_toolchains//:toolchain")

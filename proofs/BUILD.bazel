@@ -43,6 +43,7 @@ filegroup(
         ":stack_proofs",
         ":codec_proofs",
         ":isle_proofs",
+        "//proofs/rust_verified:value_types",
     ],
     visibility = ["//visibility:public"],
 )

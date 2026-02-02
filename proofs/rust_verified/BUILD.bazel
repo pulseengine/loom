@@ -1,0 +1,33 @@
+# Rust-to-Rocq translation for formal verification
+#
+# This directory contains Rust code that gets translated to Rocq using rocq-of-rust,
+# allowing us to prove properties about LOOM's core types and algorithms.
+
+load("@rules_rocq_rust//coq_of_rust:defs.bzl", "coq_of_rust_library", "rocq_rust_verified_library")
+load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library")
+
+# RocqOfRust library - provides the core types needed by translated code
+alias(
+    name = "rocq_of_rust_lib",
+    actual = "@rocq_of_rust_source//:rocq_of_rust_main",
+)
+
+# =============================================================================
+# Value Types - Core LOOM type system
+# =============================================================================
+
+# Step 1: Translate Rust to Rocq
+coq_of_rust_library(
+    name = "value_types_translated",
+    rust_sources = ["value_types.rs"],
+    edition = "2021",
+)
+
+# Step 2: Compile the translated Rocq code
+rocq_library(
+    name = "value_types",
+    srcs = [":value_types_translated"],
+    deps = [":rocq_of_rust_lib"],
+    extra_flags = ["-impredicative-set"],
+    visibility = ["//proofs:__pkg__"],
+)
