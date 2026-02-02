@@ -36,10 +36,10 @@ rocq_proof_test(
     deps = [":isle_proofs"],
 )
 
-# All proofs combined
-rocq_library(
+# All proofs combined (filegroup for aggregation)
+filegroup(
     name = "all_proofs",
-    deps = [
+    srcs = [
         ":stack_proofs",
         ":codec_proofs",
         ":isle_proofs",
