@@ -83,3 +83,31 @@ rocq_library(
     srcs = ["stack_signature_proofs.v"],
     visibility = ["//proofs:__pkg__"],
 )
+
+# =============================================================================
+# ISLE Term Conversion - Instruction/Term bijection
+# =============================================================================
+
+# Translate isle_conversion.rs to Rocq
+coq_of_rust_library(
+    name = "isle_conversion_translated",
+    rust_sources = ["isle_conversion.rs"],
+    edition = "2021",
+)
+
+# Compile the translated ISLE conversion code
+rocq_library(
+    name = "isle_conversion",
+    srcs = [":isle_conversion_translated"],
+    deps = [":rocq_of_rust_lib"],
+    include_path = "loom",
+    extra_flags = ["-impredicative-set"],
+    visibility = ["//proofs:__pkg__"],
+)
+
+# Proofs about ISLE conversion bijection
+rocq_library(
+    name = "isle_conversion_proofs",
+    srcs = ["isle_conversion_proofs.v"],
+    visibility = ["//proofs:__pkg__"],
+)
