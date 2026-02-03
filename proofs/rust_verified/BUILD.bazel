@@ -55,3 +55,31 @@ rocq_library(
     extra_flags = ["-impredicative-set"],
     visibility = ["//proofs:__pkg__"],
 )
+
+# =============================================================================
+# Stack Signature - Core stack validation logic
+# =============================================================================
+
+# Translate stack_signature.rs to Rocq
+coq_of_rust_library(
+    name = "stack_signature_translated",
+    rust_sources = ["stack_signature.rs"],
+    edition = "2021",
+)
+
+# Compile the translated stack signature code
+rocq_library(
+    name = "stack_signature",
+    srcs = [":stack_signature_translated"],
+    deps = [":rocq_of_rust_lib"],
+    include_path = "loom",
+    extra_flags = ["-impredicative-set"],
+    visibility = ["//proofs:__pkg__"],
+)
+
+# Proofs about stack signature composition
+rocq_library(
+    name = "stack_signature_proofs",
+    srcs = ["stack_signature_proofs.v"],
+    visibility = ["//proofs:__pkg__"],
+)

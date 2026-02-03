@@ -46,6 +46,8 @@ filegroup(
         "//proofs/rust_verified:value_types",
         "//proofs/rust_verified:value_types_proofs",
         "//proofs/rust_verified:value_types_translated_proofs",
+        "//proofs/rust_verified:stack_signature",
+        "//proofs/rust_verified:stack_signature_proofs",
     ],
     visibility = ["//visibility:public"],
 )
