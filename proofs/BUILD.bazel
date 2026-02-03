@@ -44,6 +44,7 @@ filegroup(
         ":codec_proofs",
         ":isle_proofs",
         "//proofs/rust_verified:value_types",
+        "//proofs/rust_verified:value_types_proofs",
     ],
     visibility = ["//visibility:public"],
 )

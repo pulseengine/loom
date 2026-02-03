@@ -31,3 +31,12 @@ rocq_library(
     extra_flags = ["-impredicative-set"],
     visibility = ["//proofs:__pkg__"],
 )
+
+# Step 3: Proofs about ValueType properties
+# These proofs use a pure Rocq model that mirrors the Rust implementation,
+# proving key properties like is_float = !is_integer, same_repr symmetry, etc.
+rocq_library(
+    name = "value_types_proofs",
+    srcs = ["value_types_proofs.v"],
+    visibility = ["//proofs:__pkg__"],
+)
