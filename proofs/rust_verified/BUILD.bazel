@@ -28,15 +28,30 @@ rocq_library(
     name = "value_types",
     srcs = [":value_types_translated"],
     deps = [":rocq_of_rust_lib"],
+    include_path = "loom",  # Allow importing as "loom.value_types"
     extra_flags = ["-impredicative-set"],
     visibility = ["//proofs:__pkg__"],
 )
 
-# Step 3: Proofs about ValueType properties
+# Step 3: Proofs about ValueType properties (pure model)
 # These proofs use a pure Rocq model that mirrors the Rust implementation,
 # proving key properties like is_float = !is_integer, same_repr symmetry, etc.
 rocq_library(
     name = "value_types_proofs",
     srcs = ["value_types_proofs.v"],
+    visibility = ["//proofs:__pkg__"],
+)
+
+# Step 4: Proofs about the translated code structure
+# These proofs import the generated value_types.v and reason about
+# the actual translated functions, module structure, and trait implementations.
+rocq_library(
+    name = "value_types_translated_proofs",
+    srcs = ["value_types_translated_proofs.v"],
+    deps = [
+        ":value_types",
+        ":rocq_of_rust_lib",
+    ],
+    extra_flags = ["-impredicative-set"],
     visibility = ["//proofs:__pkg__"],
 )
