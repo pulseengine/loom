@@ -591,7 +591,9 @@ pub mod validation {
 
             // i64 shifts: pop i32 (shift amount), pop i64 (value), push i64
             I64Shl | I64ShrS | I64ShrU => {
-                pop_expected(stack, ValueType::I32)?;
+                // WebAssembly spec: i64 shifts take two i64 operands
+                // The shift amount is an i64 (only low 6 bits used, mod 64)
+                pop_expected(stack, ValueType::I64)?;
                 pop_expected(stack, ValueType::I64)?;
                 stack.push(ValueType::I64);
                 Ok(())
@@ -1718,7 +1720,8 @@ pub mod effects {
 
             // i64 shifts: [i64, i32] -> [i64]
             I64Shl | I64ShrS | I64ShrU => StackSignature::new(
-                vec![ValueType::I64, ValueType::I32],
+                // WebAssembly spec: i64 shifts take two i64 operands
+                vec![ValueType::I64, ValueType::I64],
                 vec![ValueType::I64],
                 SignatureKind::Fixed,
             ),

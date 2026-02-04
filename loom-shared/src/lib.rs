@@ -1722,20 +1722,20 @@ fn simplify_stateless(val: Value) -> Value {
                     isub64(iconst64(Imm64(0)), rhs_simplified)
                 }
                 // Strength reduction: x * power_of_2 → x << log2(power_of_2)
-                // Note: i64.shl takes i32 for the shift amount
+                // WebAssembly spec: i64.shl takes i64 for the shift amount
                 (_, ValueData::I64Const { val: rhs_val })
                     if is_power_of_two_i64(*rhs_val).is_some() =>
                 {
                     let shift_amount = log2_i64(*rhs_val);
-                    ishl64(lhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                    ishl64(lhs_simplified, iconst64(shift_amount))
                 }
                 // Strength reduction: power_of_2 * x → x << log2(power_of_2)
-                // Note: i64.shl takes i32 for the shift amount
+                // WebAssembly spec: i64.shl takes i64 for the shift amount
                 (ValueData::I64Const { val: lhs_val }, _)
                     if is_power_of_two_i64(*lhs_val).is_some() =>
                 {
                     let shift_amount = log2_i64(*lhs_val);
-                    ishl64(rhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                    ishl64(rhs_simplified, iconst64(shift_amount))
                 }
                 _ => imul64(lhs_simplified, rhs_simplified),
             }
@@ -1748,12 +1748,12 @@ fn simplify_stateless(val: Value) -> Value {
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Strength reduction: x / power_of_2 → x >> log2(power_of_2)
-                // Note: i64.shr_u takes i32 for the shift amount
+                // WebAssembly spec: i64.shr_u takes i64 for the shift amount
                 (_, ValueData::I64Const { val: rhs_val })
                     if is_power_of_two_i64(*rhs_val).is_some() =>
                 {
                     let shift_amount = log2_i64(*rhs_val);
-                    ishru64(lhs_simplified, iconst32(Imm32(shift_amount.0 as i32)))
+                    ishru64(lhs_simplified, iconst64(shift_amount))
                 }
                 // Algebraic: x / 1 = x
                 (_, ValueData::I64Const { val }) if val.value() == 1 => lhs_simplified,

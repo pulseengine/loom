@@ -5329,41 +5329,12 @@ pub mod optimize {
                 | Instruction::I32WrapI64
                 | Instruction::I64ExtendI32S
                 | Instruction::I64ExtendI32U
-                // I64 operations - INTENTIONALLY SKIPPED
-                // Reason: ISLE type tracking does not yet distinguish I32/I64, causing
-                // incorrect optimizations when types are mixed. Per our proof-first
-                // philosophy: we do not optimize what we cannot prove correct.
-                // Functions with I64 operations are passed through unoptimized.
-                | Instruction::I64Const(_)
-                | Instruction::I64Add
-                | Instruction::I64Sub
-                | Instruction::I64Mul
-                | Instruction::I64DivS
-                | Instruction::I64DivU
-                | Instruction::I64RemS
-                | Instruction::I64RemU
-                | Instruction::I64And
-                | Instruction::I64Or
-                | Instruction::I64Xor
-                | Instruction::I64Shl
-                | Instruction::I64ShrS
-                | Instruction::I64ShrU
-                | Instruction::I64Eq
-                | Instruction::I64Ne
-                | Instruction::I64LtS
-                | Instruction::I64LtU
-                | Instruction::I64GtS
-                | Instruction::I64GtU
-                | Instruction::I64LeS
-                | Instruction::I64LeU
-                | Instruction::I64GeS
-                | Instruction::I64GeU
-                | Instruction::I64Eqz
-                | Instruction::I64Clz
-                | Instruction::I64Ctz
-                | Instruction::I64Popcnt
-                | Instruction::I64Load { .. }
-                | Instruction::I64Store { .. }
+                // I64 operations - NOW SUPPORTED
+                // ISLE type tracking correctly distinguishes I32/I64 using separate
+                // constructors (iconst32 vs iconst64, iadd32 vs iadd64, etc.).
+                // Z3 verification also handles I64 operations.
+                // All I64 arithmetic, bitwise, comparison, and unary ops are supported.
+                //
                 // CallIndirect - can't statically verify (runtime type from table)
                 | Instruction::CallIndirect { .. }
                 // BrTable - not yet supported in ISLE terms
@@ -12063,7 +12034,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // INTENTIONALLY SKIPPED: I64 operations not optimized (cannot prove correctness with current ISLE type tracking)
     fn test_strength_reduction_i64() {
         let wat = r#"(module
             (func $test (param $x i64) (result i64)
