@@ -219,6 +219,26 @@ pub enum ValueData {
         rhs: Value,
     },
 
+    /// Rotation operations (i32)
+    I32Rotl {
+        lhs: Value,
+        rhs: Value,
+    },
+    I32Rotr {
+        lhs: Value,
+        rhs: Value,
+    },
+
+    /// Rotation operations (i64)
+    I64Rotl {
+        lhs: Value,
+        rhs: Value,
+    },
+    I64Rotr {
+        lhs: Value,
+        rhs: Value,
+    },
+
     /// Comparison operations (i32) - return i32 (0 or 1)
     I32Eq {
         lhs: Value,
@@ -656,6 +676,16 @@ pub fn ishru32(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I32ShrU { lhs, rhs }))
 }
 
+/// Construct an i32.rotl operation (rotate left)
+pub fn irotl32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::I32Rotl { lhs, rhs }))
+}
+
+/// Construct an i32.rotr operation (rotate right)
+pub fn irotr32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::I32Rotr { lhs, rhs }))
+}
+
 // Bitwise operation constructors (i64)
 
 /// Construct an i64.and operation
@@ -686,6 +716,16 @@ pub fn ishrs64(lhs: Value, rhs: Value) -> Value {
 /// Construct an i64.shr_u operation (logical/unsigned right shift)
 pub fn ishru64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I64ShrU { lhs, rhs }))
+}
+
+/// Construct an i64.rotl operation (rotate left)
+pub fn irotl64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::I64Rotl { lhs, rhs }))
+}
+
+/// Construct an i64.rotr operation (rotate right)
+pub fn irotr64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::I64Rotr { lhs, rhs }))
 }
 
 // Comparison operation constructors (i32) - return i32 (0 or 1)
@@ -2015,6 +2055,80 @@ fn simplify_stateless(val: Value) -> Value {
                 // Algebraic: x >> 0 = x
                 (_, ValueData::I64Const { val }) if (val.value() & 0x3F) == 0 => lhs_simplified,
                 _ => ishru64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // Rotation optimizations (i32)
+        ValueData::I32Rotl { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding
+                (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
+                    let lhs_u = lhs_val.value() as u32;
+                    let rhs_u = (rhs_val.value() as u32) & 0x1F; // Rotation amount mod 32
+                    let result = lhs_u.rotate_left(rhs_u);
+                    iconst32(Imm32(result as i32))
+                }
+                // Algebraic: x rotl 0 = x
+                (_, ValueData::I32Const { val }) if (val.value() & 0x1F) == 0 => lhs_simplified,
+                _ => irotl32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        ValueData::I32Rotr { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding
+                (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
+                    let lhs_u = lhs_val.value() as u32;
+                    let rhs_u = (rhs_val.value() as u32) & 0x1F; // Rotation amount mod 32
+                    let result = lhs_u.rotate_right(rhs_u);
+                    iconst32(Imm32(result as i32))
+                }
+                // Algebraic: x rotr 0 = x
+                (_, ValueData::I32Const { val }) if (val.value() & 0x1F) == 0 => lhs_simplified,
+                _ => irotr32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // Rotation optimizations (i64)
+        ValueData::I64Rotl { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding
+                (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
+                    let lhs_u = lhs_val.value() as u64;
+                    let rhs_u = (rhs_val.value() as u64) & 0x3F; // Rotation amount mod 64
+                    let result = lhs_u.rotate_left(rhs_u as u32);
+                    iconst64(Imm64(result as i64))
+                }
+                // Algebraic: x rotl 0 = x
+                (_, ValueData::I64Const { val }) if (val.value() & 0x3F) == 0 => lhs_simplified,
+                _ => irotl64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        ValueData::I64Rotr { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding
+                (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
+                    let lhs_u = lhs_val.value() as u64;
+                    let rhs_u = (rhs_val.value() as u64) & 0x3F; // Rotation amount mod 64
+                    let result = lhs_u.rotate_right(rhs_u as u32);
+                    iconst64(Imm64(result as i64))
+                }
+                // Algebraic: x rotr 0 = x
+                (_, ValueData::I64Const { val }) if (val.value() & 0x3F) == 0 => lhs_simplified,
+                _ => irotr64(lhs_simplified, rhs_simplified),
             }
         }
 

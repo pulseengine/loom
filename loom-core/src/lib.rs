@@ -3530,9 +3530,10 @@ pub mod terms {
         idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
         iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
         ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
-        ipopcnt64, irems32, irems64, iremu32, iremu64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
-        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
-        nop, return_val, select_instr, unreachable, Imm32, Imm64,
+        ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32,
+        ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get,
+        local_set, local_tee, loop_construct, nop, return_val, select_instr, unreachable, Imm32,
+        Imm64,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -3793,6 +3794,42 @@ pub mod terms {
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.shr_u lhs"))?;
                     stack.push(ishru64(lhs, rhs));
+                }
+                Instruction::I32Rotl => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.rotl rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.rotl lhs"))?;
+                    stack.push(irotl32(lhs, rhs));
+                }
+                Instruction::I32Rotr => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.rotr rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.rotr lhs"))?;
+                    stack.push(irotr32(lhs, rhs));
+                }
+                Instruction::I64Rotl => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.rotl rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.rotl lhs"))?;
+                    stack.push(irotl64(lhs, rhs));
+                }
+                Instruction::I64Rotr => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.rotr rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.rotr lhs"))?;
+                    stack.push(irotr64(lhs, rhs));
                 }
                 Instruction::I32Eq => {
                     let rhs = stack
@@ -4470,11 +4507,7 @@ pub mod terms {
                 | Instruction::I64Store16 { .. }
                 | Instruction::I64Store32 { .. }
                 | Instruction::MemorySize(_)
-                | Instruction::MemoryGrow(_)
-                | Instruction::I32Rotl
-                | Instruction::I32Rotr
-                | Instruction::I64Rotl
-                | Instruction::I64Rotr => {
+                | Instruction::MemoryGrow(_) => {
                     // These instructions don't have ISLE term representations
                     // They are passed through unchanged in the encoding phase
                     // ISLE optimization only applies to integer operations currently
@@ -4670,6 +4703,26 @@ pub mod terms {
                 term_to_instructions_recursive(lhs, instructions)?;
                 term_to_instructions_recursive(rhs, instructions)?;
                 instructions.push(Instruction::I64ShrU);
+            }
+            ValueData::I32Rotl { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::I32Rotl);
+            }
+            ValueData::I32Rotr { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::I32Rotr);
+            }
+            ValueData::I64Rotl { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::I64Rotl);
+            }
+            ValueData::I64Rotr { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::I64Rotr);
             }
             ValueData::I32Eq { lhs, rhs } => {
                 term_to_instructions_recursive(lhs, instructions)?;
@@ -5314,11 +5367,11 @@ pub mod optimize {
                 | Instruction::I64TruncSatF32U
                 | Instruction::I64TruncSatF64S
                 | Instruction::I64TruncSatF64U
-                // Rotation operations
-                | Instruction::I32Rotl
-                | Instruction::I32Rotr
-                | Instruction::I64Rotl
-                | Instruction::I64Rotr
+                // Rotation operations - NOW SUPPORTED
+                // ISLE type tracking correctly distinguishes I32/I64 using separate
+                // constructors (irotl32 vs irotl64, irotr32 vs irotr64, etc.).
+                // Z3 verification also handles rotation operations.
+                //
                 // Sign extension operations
                 | Instruction::I32Extend8S
                 | Instruction::I32Extend16S
