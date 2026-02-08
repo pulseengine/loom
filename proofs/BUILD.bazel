@@ -1,5 +1,129 @@
 load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 
+# =============================================================================
+# Core Semantic Model
+# =============================================================================
+
+# WebAssembly operational semantics
+rocq_library(
+    name = "wasm_semantics",
+    srcs = ["semantics/WasmSemantics.v"],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "wasm_semantics_test",
+    deps = [":wasm_semantics"],
+)
+
+# ISLE term denotational semantics
+rocq_library(
+    name = "term_semantics",
+    srcs = ["semantics/TermSemantics.v"],
+    deps = [":wasm_semantics"],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "term_semantics_test",
+    deps = [":term_semantics"],
+)
+
+# =============================================================================
+# Optimization Proofs
+# =============================================================================
+
+# Constant folding proofs
+rocq_library(
+    name = "constant_folding",
+    srcs = ["simplify/ConstantFolding.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "constant_folding_test",
+    deps = [":constant_folding"],
+)
+
+# Algebraic identity proofs
+rocq_library(
+    name = "identity",
+    srcs = ["simplify/Identity.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "identity_test",
+    deps = [":identity"],
+)
+
+# Bitwise optimization proofs
+rocq_library(
+    name = "bitwise",
+    srcs = ["simplify/Bitwise.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "bitwise_test",
+    deps = [":bitwise"],
+)
+
+# Strength reduction proofs
+rocq_library(
+    name = "strength_reduction",
+    srcs = ["simplify/StrengthReduction.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "strength_reduction_test",
+    deps = [":strength_reduction"],
+)
+
+# =============================================================================
+# Master Correctness Theorem
+# =============================================================================
+
+rocq_library(
+    name = "correctness",
+    srcs = ["Correctness.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+        ":constant_folding",
+        ":identity",
+        ":bitwise",
+        ":strength_reduction",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "correctness_test",
+    deps = [":correctness"],
+)
+
+# =============================================================================
+# Existing Proof Libraries
+# =============================================================================
+
 # Stack signature proofs
 rocq_library(
     name = "stack_proofs",
@@ -36,10 +160,45 @@ rocq_proof_test(
     deps = [":isle_proofs"],
 )
 
+# =============================================================================
+# Aggregated Targets
+# =============================================================================
+
+# All simplification/optimization proofs
+filegroup(
+    name = "simplify_proofs",
+    srcs = [
+        ":constant_folding",
+        ":identity",
+        ":bitwise",
+        ":strength_reduction",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# All semantic model proofs
+filegroup(
+    name = "semantics_proofs",
+    srcs = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 # All proofs combined (filegroup for aggregation)
 filegroup(
     name = "all_proofs",
     srcs = [
+        # New semantic and optimization proofs
+        ":wasm_semantics",
+        ":term_semantics",
+        ":constant_folding",
+        ":identity",
+        ":bitwise",
+        ":strength_reduction",
+        ":correctness",
+        # Existing proofs
         ":stack_proofs",
         ":codec_proofs",
         ":isle_proofs",
@@ -52,4 +211,21 @@ filegroup(
         "//proofs/rust_verified:isle_conversion_proofs",
     ],
     visibility = ["//visibility:public"],
+)
+
+# Test target for all proofs
+test_suite(
+    name = "all_proofs_test",
+    tests = [
+        ":wasm_semantics_test",
+        ":term_semantics_test",
+        ":constant_folding_test",
+        ":identity_test",
+        ":bitwise_test",
+        ":strength_reduction_test",
+        ":correctness_test",
+        ":stack_proofs_test",
+        ":codec_proofs_test",
+        ":isle_proofs_test",
+    ],
 )
