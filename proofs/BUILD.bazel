@@ -4,29 +4,32 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 # Core Semantic Model
 # =============================================================================
 
-# WebAssembly operational semantics
+# WebAssembly and Term semantics (combined for module resolution)
 rocq_library(
+    name = "semantics",
+    srcs = [
+        "semantics/WasmSemantics.v",
+        "semantics/TermSemantics.v",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Aliases for backwards compatibility
+alias(
     name = "wasm_semantics",
-    srcs = ["semantics/WasmSemantics.v"],
+    actual = ":semantics",
     visibility = ["//visibility:public"],
 )
 
-rocq_proof_test(
-    name = "wasm_semantics_test",
-    deps = [":wasm_semantics"],
-)
-
-# ISLE term denotational semantics
-rocq_library(
+alias(
     name = "term_semantics",
-    srcs = ["semantics/TermSemantics.v"],
-    deps = [":wasm_semantics"],
+    actual = ":semantics",
     visibility = ["//visibility:public"],
 )
 
 rocq_proof_test(
-    name = "term_semantics_test",
-    deps = [":term_semantics"],
+    name = "semantics_test",
+    deps = [":semantics"],
 )
 
 # =============================================================================

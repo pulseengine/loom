@@ -3525,15 +3525,17 @@ pub mod terms {
     use anyhow::{anyhow, Result};
     use loom_isle::{
         block, br, br_if, br_table, call, call_indirect, drop_instr, global_get, global_set,
-        i32_load, i32_store, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_load, i64_store,
-        iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64,
-        idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
-        iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
-        ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
-        ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32,
-        ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get,
-        local_set, local_tee, loop_construct, nop, return_val, select_instr, unreachable, Imm32,
-        Imm64,
+        i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s, i32_load16_u, i32_load8_s,
+        i32_load8_u, i32_store, i32_wrap_i64, i64_extend16_s, i64_extend32_s, i64_extend8_s,
+        i64_extend_i32_s, i64_extend_i32_u, i64_load, i64_load16_s, i64_load16_u, i64_load32_s,
+        i64_load32_u, i64_load8_s, i64_load8_u, i64_store, iadd32, iadd64, iand32, iand64, iclz32,
+        iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32,
+        ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64,
+        igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32,
+        imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32,
+        iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
+        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
+        nop, return_val, select_instr, unreachable, Imm32, Imm64,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -4150,6 +4152,37 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.extend_i32_u"))?;
                     stack.push(i64_extend_i32_u(val));
                 }
+                // Sign extension operations (in-place sign extension)
+                Instruction::I32Extend8S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.extend8_s"))?;
+                    stack.push(i32_extend8_s(val));
+                }
+                Instruction::I32Extend16S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.extend16_s"))?;
+                    stack.push(i32_extend16_s(val));
+                }
+                Instruction::I64Extend8S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.extend8_s"))?;
+                    stack.push(i64_extend8_s(val));
+                }
+                Instruction::I64Extend16S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.extend16_s"))?;
+                    stack.push(i64_extend16_s(val));
+                }
+                Instruction::I64Extend32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.extend32_s"))?;
+                    stack.push(i64_extend32_s(val));
+                }
                 Instruction::Select => {
                     let cond = stack
                         .pop()
@@ -4215,6 +4248,67 @@ pub mod terms {
                     // i64.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
                     side_effects.push(i64_store(addr, value, *offset, *align));
+                }
+                // Partial-width memory load operations
+                Instruction::I32Load8S { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.load8_s address"))?;
+                    stack.push(i32_load8_s(addr, *offset, *align));
+                }
+                Instruction::I32Load8U { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.load8_u address"))?;
+                    stack.push(i32_load8_u(addr, *offset, *align));
+                }
+                Instruction::I32Load16S { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.load16_s address"))?;
+                    stack.push(i32_load16_s(addr, *offset, *align));
+                }
+                Instruction::I32Load16U { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.load16_u address"))?;
+                    stack.push(i32_load16_u(addr, *offset, *align));
+                }
+                Instruction::I64Load8S { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load8_s address"))?;
+                    stack.push(i64_load8_s(addr, *offset, *align));
+                }
+                Instruction::I64Load8U { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load8_u address"))?;
+                    stack.push(i64_load8_u(addr, *offset, *align));
+                }
+                Instruction::I64Load16S { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load16_s address"))?;
+                    stack.push(i64_load16_s(addr, *offset, *align));
+                }
+                Instruction::I64Load16U { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load16_u address"))?;
+                    stack.push(i64_load16_u(addr, *offset, *align));
+                }
+                Instruction::I64Load32S { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load32_s address"))?;
+                    stack.push(i64_load32_s(addr, *offset, *align));
+                }
+                Instruction::I64Load32U { offset, align } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.load32_u address"))?;
+                    stack.push(i64_load32_u(addr, *offset, *align));
                 }
                 // Control flow instructions (Phase 14)
                 Instruction::Block { block_type, body } => {
@@ -4491,16 +4585,6 @@ pub mod terms {
                 | Instruction::F32Store { .. }
                 | Instruction::F64Load { .. }
                 | Instruction::F64Store { .. }
-                | Instruction::I32Load8S { .. }
-                | Instruction::I32Load8U { .. }
-                | Instruction::I32Load16S { .. }
-                | Instruction::I32Load16U { .. }
-                | Instruction::I64Load8S { .. }
-                | Instruction::I64Load8U { .. }
-                | Instruction::I64Load16S { .. }
-                | Instruction::I64Load16U { .. }
-                | Instruction::I64Load32S { .. }
-                | Instruction::I64Load32U { .. }
                 | Instruction::I32Store8 { .. }
                 | Instruction::I32Store16 { .. }
                 | Instruction::I64Store8 { .. }
@@ -4517,15 +4601,6 @@ pub mod terms {
                     // They are passed through unchanged in the encoding phase
                     // For optimization purposes, we treat them as unknown operations
                     // that we cannot reason about, so we don't push anything to the stack
-                }
-
-                // Sign extension instructions - pass through unchanged
-                Instruction::I32Extend8S
-                | Instruction::I32Extend16S
-                | Instruction::I64Extend8S
-                | Instruction::I64Extend16S
-                | Instruction::I64Extend32S => {
-                    // These don't have ISLE term representations yet
                 }
 
                 // Saturating truncation instructions - pass through unchanged
@@ -4909,6 +4984,27 @@ pub mod terms {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::I64ExtendI32U);
             }
+            // Sign extension operations
+            ValueData::I32Extend8S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32Extend8S);
+            }
+            ValueData::I32Extend16S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32Extend16S);
+            }
+            ValueData::I64Extend8S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64Extend8S);
+            }
+            ValueData::I64Extend16S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64Extend16S);
+            }
+            ValueData::I64Extend32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64Extend32S);
+            }
             ValueData::Select {
                 cond,
                 true_val,
@@ -4981,6 +5077,118 @@ pub mod terms {
                 term_to_instructions_recursive(addr, instructions)?;
                 term_to_instructions_recursive(value, instructions)?;
                 instructions.push(Instruction::I64Store {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+
+            // Partial-width memory load operations
+            ValueData::I32Load8S {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I32Load8S {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I32Load8U {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I32Load8U {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I32Load16S {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I32Load16S {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I32Load16U {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I32Load16U {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load8S {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load8S {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load8U {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load8U {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load16S {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load16S {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load16U {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load16U {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load32S {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load32S {
+                    offset: *offset,
+                    align: *align,
+                });
+            }
+            ValueData::I64Load32U {
+                addr,
+                offset,
+                align,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::I64Load32U {
                     offset: *offset,
                     align: *align,
                 });
@@ -5133,6 +5341,58 @@ pub mod terms {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::Drop);
             }
+
+            // Float constants
+            ValueData::F32Const { val } => {
+                instructions.push(Instruction::F32Const(val.0));
+            }
+            ValueData::F64Const { val } => {
+                instructions.push(Instruction::F64Const(val.0));
+            }
+
+            // Float arithmetic operations (f32)
+            ValueData::F32Add { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Add);
+            }
+            ValueData::F32Sub { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Sub);
+            }
+            ValueData::F32Mul { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Mul);
+            }
+            ValueData::F32Div { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Div);
+            }
+
+            // Float arithmetic operations (f64)
+            ValueData::F64Add { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Add);
+            }
+            ValueData::F64Sub { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Sub);
+            }
+            ValueData::F64Mul { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Mul);
+            }
+            ValueData::F64Div { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Div);
+            }
         }
 
         Ok(())
@@ -5263,14 +5523,11 @@ pub mod optimize {
                     }
                 }
 
-                // Float operations - not supported in ISLE terms
-                Instruction::F32Const(_)
-                | Instruction::F64Const(_)
-                | Instruction::F32Add
-                | Instruction::F32Sub
-                | Instruction::F32Mul
-                | Instruction::F32Div
-                | Instruction::F32Min
+                // Float operations - basic arithmetic now supported in ISLE terms
+                // F32Const, F64Const, F32Add, F32Sub, F32Mul, F32Div,
+                // F64Add, F64Sub, F64Mul, F64Div are now handled.
+                // Other float operations remain unsupported:
+                Instruction::F32Min
                 | Instruction::F32Max
                 | Instruction::F32Copysign
                 | Instruction::F32Abs
@@ -5286,10 +5543,6 @@ pub mod optimize {
                 | Instruction::F32Gt
                 | Instruction::F32Le
                 | Instruction::F32Ge
-                | Instruction::F64Add
-                | Instruction::F64Sub
-                | Instruction::F64Mul
-                | Instruction::F64Div
                 | Instruction::F64Min
                 | Instruction::F64Max
                 | Instruction::F64Copysign
@@ -5334,17 +5587,7 @@ pub mod optimize {
                 | Instruction::F32Store { .. }
                 | Instruction::F64Load { .. }
                 | Instruction::F64Store { .. }
-                // Partial-width memory operations
-                | Instruction::I32Load8S { .. }
-                | Instruction::I32Load8U { .. }
-                | Instruction::I32Load16S { .. }
-                | Instruction::I32Load16U { .. }
-                | Instruction::I64Load8S { .. }
-                | Instruction::I64Load8U { .. }
-                | Instruction::I64Load16S { .. }
-                | Instruction::I64Load16U { .. }
-                | Instruction::I64Load32S { .. }
-                | Instruction::I64Load32U { .. }
+                // Partial-width memory store operations (loads are now supported)
                 | Instruction::I32Store8 { .. }
                 | Instruction::I32Store16 { .. }
                 | Instruction::I64Store8 { .. }
@@ -5372,12 +5615,11 @@ pub mod optimize {
                 // constructors (irotl32 vs irotl64, irotr32 vs irotr64, etc.).
                 // Z3 verification also handles rotation operations.
                 //
-                // Sign extension operations
-                | Instruction::I32Extend8S
-                | Instruction::I32Extend16S
-                | Instruction::I64Extend8S
-                | Instruction::I64Extend16S
-                | Instruction::I64Extend32S
+                // Sign extension operations - NOW SUPPORTED
+                // ISLE type tracking supports in-place sign extension with separate
+                // constructors (i32_extend8_s, i32_extend16_s, etc.).
+                // Constant folding is implemented for sign extension of constants.
+                //
                 // Integer type conversion (changes stack types, complex to verify)
                 | Instruction::I32WrapI64
                 | Instruction::I64ExtendI32S

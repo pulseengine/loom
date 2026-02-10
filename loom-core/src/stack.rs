@@ -988,7 +988,9 @@ pub mod validation {
                 Ok(())
             }
             I64Rotl | I64Rotr => {
-                pop_expected(stack, ValueType::I32)?; // shift amount is i32
+                // WebAssembly spec: i64 rotations take two i64 operands
+                // The rotation amount is an i64 (only low 6 bits used, mod 64)
+                pop_expected(stack, ValueType::I64)?;
                 pop_expected(stack, ValueType::I64)?;
                 stack.push(ValueType::I64);
                 Ok(())
@@ -2143,7 +2145,8 @@ pub mod effects {
                 SignatureKind::Fixed,
             ),
             I64Rotl | I64Rotr => StackSignature::new(
-                vec![ValueType::I64, ValueType::I32],
+                // WebAssembly spec: i64 rotations take two i64 operands
+                vec![ValueType::I64, ValueType::I64],
                 vec![ValueType::I64],
                 SignatureKind::Fixed,
             ),

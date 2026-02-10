@@ -4229,10 +4229,8 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                // For i64, shift amount is still i32 in WASM, but Z3 needs same width
-                // Extend rhs to 64 bits
-                let rhs64 = rhs.zero_ext(32);
-                stack.push(lhs.bvrotl(&rhs64));
+                // WebAssembly spec: i64 rotations take i64 for rotation amount
+                stack.push(lhs.bvrotl(&rhs));
             }
 
             Instruction::I64Rotr => {
@@ -4241,8 +4239,8 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let rhs64 = rhs.zero_ext(32);
-                stack.push(lhs.bvrotr(&rhs64));
+                // WebAssembly spec: i64 rotations take i64 for rotation amount
+                stack.push(lhs.bvrotr(&rhs));
             }
 
             // Sign extension operations

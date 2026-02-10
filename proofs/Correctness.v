@@ -15,12 +15,12 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import List.
 From Stdlib Require Import ZArith.
 From Stdlib Require Import Lia.
-Require Import WasmSemantics.
-Require Import TermSemantics.
-Require Import ConstantFolding.
-Require Import Identity.
-Require Import Bitwise.
-Require Import StrengthReduction.
+From proofs Require Import WasmSemantics.
+From proofs Require Import TermSemantics.
+From proofs Require Import ConstantFolding.
+From proofs Require Import Identity.
+From proofs Require Import Bitwise.
+From proofs Require Import StrengthReduction.
 Import ListNotations.
 
 Open Scope Z_scope.
@@ -43,9 +43,8 @@ Theorem simplify_correct : forall t,
   eval_term t = eval_term (simplify t).
 Proof.
   intros t.
-  (* The proof is by structural induction and case analysis *)
-  (* We appeal to simplify_preserves_semantics from TermSemantics *)
-  symmetry.
+  (* Appeal to simplify_preserves_semantics: term_equiv t (simplify t) *)
+  (* which unfolds to: eval_term t = eval_term (simplify t) *)
   apply simplify_preserves_semantics.
 Qed.
 
@@ -64,24 +63,28 @@ Qed.
 
 (** ** Constant Folding Soundness *)
 
-Theorem constant_fold_sound : forall op a b result,
-  (* If constant folding produces a result... *)
-  (op = TI32Add /\ result = TI32Const (i32_add a b)) \/
-  (op = TI32Sub /\ result = TI32Const (i32_sub a b)) \/
-  (op = TI32Mul /\ result = TI32Const (i32_mul a b)) ->
-  (* ...the result is equivalent to the original *)
-  eval_term result =
-    eval_term (match op with
-               | TI32Add _ _ => TI32Add (TI32Const a) (TI32Const b)
-               | TI32Sub _ _ => TI32Sub (TI32Const a) (TI32Const b)
-               | TI32Mul _ _ => TI32Mul (TI32Const a) (TI32Const b)
-               | _ => result
-               end).
+(** Constant folding of addition *)
+Theorem constant_fold_add_sound : forall a b,
+  eval_term (TI32Const (i32_add a b)) =
+  eval_term (TI32Add (TI32Const a) (TI32Const b)).
 Proof.
-  intros op a b result [H1 | [H2 | H3]].
-  - destruct H1 as [Hop Hres]. subst. simpl. reflexivity.
-  - destruct H2 as [Hop Hres]. subst. simpl. reflexivity.
-  - destruct H3 as [Hop Hres]. subst. simpl. reflexivity.
+  intros a b. simpl. reflexivity.
+Qed.
+
+(** Constant folding of subtraction *)
+Theorem constant_fold_sub_sound : forall a b,
+  eval_term (TI32Const (i32_sub a b)) =
+  eval_term (TI32Sub (TI32Const a) (TI32Const b)).
+Proof.
+  intros a b. simpl. reflexivity.
+Qed.
+
+(** Constant folding of multiplication *)
+Theorem constant_fold_mul_sound : forall a b,
+  eval_term (TI32Const (i32_mul a b)) =
+  eval_term (TI32Mul (TI32Const a) (TI32Const b)).
+Proof.
+  intros a b. simpl. reflexivity.
 Qed.
 
 (** ** Identity Elimination Soundness *)
@@ -217,6 +220,10 @@ Qed.
 (** When multiple optimization rules could apply, any valid choice
     preserves semantics. *)
 
+(** Helper: 2^32 is nonzero (for modular arithmetic) *)
+Lemma pow2_32_nz : 2 ^ 32 <> 0.
+Proof. discriminate. Qed.
+
 (** Example: (x + 0) * 1 can be simplified by either rule first *)
 Theorem compose_add0_mul1 : forall x,
   eval_term (TI32Mul (TI32Add (TI32Const x) (TI32Const 0)) (TI32Const 1)) =
@@ -232,7 +239,7 @@ Proof.
   unfold wrap32.
   rewrite Z.mod_mod.
   - reflexivity.
-  - (* 2^32 > 0 *) apply Z.pow_pos_nonneg; lia.
+  - exact pow2_32_nz.
 Qed.
 
 (** * Safety Properties *)
@@ -245,7 +252,7 @@ Proof.
   intros t v Heval_term.
   exists v.
   rewrite <- Heval_term.
-  apply simplify_correct.
+  symmetry. apply simplify_correct.
 Qed.
 
 (** Simplification preserves the type of the result *)
@@ -255,7 +262,7 @@ Theorem simplify_preserves_type : forall t v,
 Proof.
   intros t v Heval_term.
   rewrite <- Heval_term.
-  apply simplify_correct.
+  symmetry. apply simplify_correct.
 Qed.
 
 (** * Complete Optimization Correctness *)
@@ -273,7 +280,7 @@ Proof.
   intros t.
   repeat split.
   - apply simplify_correct.
-  - apply simplify_n_correct.
+  - intros n. apply simplify_n_correct.
   - apply simplify_preserves_type.
 Qed.
 
@@ -286,11 +293,10 @@ Theorem compiled_optimization_correct : forall t s,
   exec_instrs (term_to_instrs t) s =
   exec_instrs (term_to_instrs (simplify t)) s.
 Proof.
-  intros t s.
-  (* This requires proving that term_to_instrs correctly implements eval_term,
-     which connects the denotational and operational semantics. *)
-  (* For now, we state this as a key property that bridges the gap. *)
-Admitted.
+  (* This follows directly from optimization_preserves_execution
+     in TermSemantics, which uses term_equiv_instrs_equiv. *)
+  apply optimization_preserves_execution.
+Qed.
 
 (** * Future Work *)
 
@@ -308,7 +314,7 @@ Admitted.
 *)
 
 (** Placeholder for bidirectional correctness *)
-Axiom term_instr_bijection : forall t,
+Axiom term_instr_bijection : forall (t : Term),
   (* Converting to instructions and back preserves the term *)
   True. (* TODO: Define instrs_to_terms and prove bijection *)
 

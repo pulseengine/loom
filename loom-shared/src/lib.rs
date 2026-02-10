@@ -86,6 +86,112 @@ impl Imm64 {
     }
 }
 
+/// Primitive type for 32-bit float immediates
+/// Stored as u32 bits to ensure Hash/Eq work correctly
+#[derive(Clone, Copy, Debug)]
+pub struct ImmF32(pub u32);
+
+impl From<f32> for ImmF32 {
+    fn from(val: f32) -> Self {
+        ImmF32(val.to_bits())
+    }
+}
+
+impl From<ImmF32> for f32 {
+    fn from(imm: ImmF32) -> Self {
+        f32::from_bits(imm.0)
+    }
+}
+
+impl ImmF32 {
+    /// Create a new ImmF32 from an f32
+    pub fn new(val: f32) -> Self {
+        ImmF32(val.to_bits())
+    }
+
+    /// Create a new ImmF32 from raw bits
+    pub fn from_bits(bits: u32) -> Self {
+        ImmF32(bits)
+    }
+
+    /// Get the float value
+    pub fn value(&self) -> f32 {
+        f32::from_bits(self.0)
+    }
+
+    /// Get the raw bits
+    pub fn bits(&self) -> u32 {
+        self.0
+    }
+}
+
+impl PartialEq for ImmF32 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ImmF32 {}
+
+impl std::hash::Hash for ImmF32 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+/// Primitive type for 64-bit float immediates
+/// Stored as u64 bits to ensure Hash/Eq work correctly
+#[derive(Clone, Copy, Debug)]
+pub struct ImmF64(pub u64);
+
+impl From<f64> for ImmF64 {
+    fn from(val: f64) -> Self {
+        ImmF64(val.to_bits())
+    }
+}
+
+impl From<ImmF64> for f64 {
+    fn from(imm: ImmF64) -> Self {
+        f64::from_bits(imm.0)
+    }
+}
+
+impl ImmF64 {
+    /// Create a new ImmF64 from an f64
+    pub fn new(val: f64) -> Self {
+        ImmF64(val.to_bits())
+    }
+
+    /// Create a new ImmF64 from raw bits
+    pub fn from_bits(bits: u64) -> Self {
+        ImmF64(bits)
+    }
+
+    /// Get the float value
+    pub fn value(&self) -> f64 {
+        f64::from_bits(self.0)
+    }
+
+    /// Get the raw bits
+    pub fn bits(&self) -> u64 {
+        self.0
+    }
+}
+
+impl PartialEq for ImmF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ImmF64 {}
+
+impl std::hash::Hash for ImmF64 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
 /// Optional string for block/loop labels
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OptionString(pub Option<String>);
@@ -441,6 +547,70 @@ pub enum ValueData {
     },
 
     // ========================================================================
+    // Partial-Width Memory Load Operations
+    // ========================================================================
+    /// i32.load8_s - Load 8 bits and sign-extend to i32
+    I32Load8S {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i32.load8_u - Load 8 bits and zero-extend to i32
+    I32Load8U {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i32.load16_s - Load 16 bits and sign-extend to i32
+    I32Load16S {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i32.load16_u - Load 16 bits and zero-extend to i32
+    I32Load16U {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load8_s - Load 8 bits and sign-extend to i64
+    I64Load8S {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load8_u - Load 8 bits and zero-extend to i64
+    I64Load8U {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load16_s - Load 16 bits and sign-extend to i64
+    I64Load16S {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load16_u - Load 16 bits and zero-extend to i64
+    I64Load16U {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load32_s - Load 32 bits and sign-extend to i64
+    I64Load32S {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+    /// i64.load32_u - Load 32 bits and zero-extend to i64
+    I64Load32U {
+        addr: Value,
+        offset: u32,
+        align: u32,
+    },
+
+    // ========================================================================
     // Control Flow Operations (Phase 14 - Control Flow Representation)
     // ========================================================================
     /// Block: structured control that can be branched to
@@ -554,6 +724,84 @@ pub enum ValueData {
     /// i64.extend_i32_u - zero-extends i32 to i64
     I64ExtendI32U {
         val: Value,
+    },
+
+    // ========================================================================
+    // Sign Extension Operations (in-place sign extension)
+    // ========================================================================
+    /// i32.extend8_s - sign-extend low 8 bits to 32 bits
+    I32Extend8S {
+        val: Value,
+    },
+    /// i32.extend16_s - sign-extend low 16 bits to 32 bits
+    I32Extend16S {
+        val: Value,
+    },
+    /// i64.extend8_s - sign-extend low 8 bits to 64 bits
+    I64Extend8S {
+        val: Value,
+    },
+    /// i64.extend16_s - sign-extend low 16 bits to 64 bits
+    I64Extend16S {
+        val: Value,
+    },
+    /// i64.extend32_s - sign-extend low 32 bits to 64 bits
+    I64Extend32S {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Floating-Point Operations
+    // ========================================================================
+    /// f32.const N
+    F32Const {
+        val: ImmF32,
+    },
+    /// f64.const N
+    F64Const {
+        val: ImmF64,
+    },
+
+    /// f32.add lhs rhs
+    F32Add {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.sub lhs rhs
+    F32Sub {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.mul lhs rhs
+    F32Mul {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.div lhs rhs
+    F32Div {
+        lhs: Value,
+        rhs: Value,
+    },
+
+    /// f64.add lhs rhs
+    F64Add {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.sub lhs rhs
+    F64Sub {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.mul lhs rhs
+    F64Mul {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.div lhs rhs
+    F64Div {
+        lhs: Value,
+        rhs: Value,
     },
 }
 
@@ -993,6 +1241,100 @@ pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
 }
 
 // ============================================================================
+// Partial-Width Memory Load Constructors
+// ============================================================================
+
+/// Construct an i32.load8_s operation (load 8 bits, sign-extend to i32)
+pub fn i32_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I32Load8S {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i32.load8_u operation (load 8 bits, zero-extend to i32)
+pub fn i32_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I32Load8U {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i32.load16_s operation (load 16 bits, sign-extend to i32)
+pub fn i32_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I32Load16S {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i32.load16_u operation (load 16 bits, zero-extend to i32)
+pub fn i32_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I32Load16U {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load8_s operation (load 8 bits, sign-extend to i64)
+pub fn i64_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load8S {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load8_u operation (load 8 bits, zero-extend to i64)
+pub fn i64_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load8U {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load16_s operation (load 16 bits, sign-extend to i64)
+pub fn i64_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load16S {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load16_u operation (load 16 bits, zero-extend to i64)
+pub fn i64_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load16U {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load32_s operation (load 32 bits, sign-extend to i64)
+pub fn i64_load32_s(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load32S {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+/// Construct an i64.load32_u operation (load 32 bits, zero-extend to i64)
+pub fn i64_load32_u(addr: Value, offset: u32, align: u32) -> Value {
+    Value(Box::new(ValueData::I64Load32U {
+        addr,
+        offset,
+        align,
+    }))
+}
+
+// ============================================================================
 // Control Flow Constructors (Phase 14)
 // ============================================================================
 
@@ -1191,6 +1533,89 @@ pub fn i64_extend_i32_s(val: Value) -> Value {
 /// i64.extend_i32_u constructor - zero-extends i32 to i64
 pub fn i64_extend_i32_u(val: Value) -> Value {
     Value(Box::new(ValueData::I64ExtendI32U { val }))
+}
+
+// ============================================================================
+// Sign Extension Constructors
+// ============================================================================
+
+/// i32.extend8_s constructor - sign-extend low 8 bits to 32 bits
+pub fn i32_extend8_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32Extend8S { val }))
+}
+
+/// i32.extend16_s constructor - sign-extend low 16 bits to 32 bits
+pub fn i32_extend16_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32Extend16S { val }))
+}
+
+/// i64.extend8_s constructor - sign-extend low 8 bits to 64 bits
+pub fn i64_extend8_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64Extend8S { val }))
+}
+
+/// i64.extend16_s constructor - sign-extend low 16 bits to 64 bits
+pub fn i64_extend16_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64Extend16S { val }))
+}
+
+/// i64.extend32_s constructor - sign-extend low 32 bits to 64 bits
+pub fn i64_extend32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64Extend32S { val }))
+}
+
+// ============================================================================
+// Floating-Point Constructors
+// ============================================================================
+
+/// Construct an f32.const value
+pub fn fconst32(val: ImmF32) -> Value {
+    Value(Box::new(ValueData::F32Const { val }))
+}
+
+/// Construct an f64.const value
+pub fn fconst64(val: ImmF64) -> Value {
+    Value(Box::new(ValueData::F64Const { val }))
+}
+
+/// Construct an f32.add operation
+pub fn fadd32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Add { lhs, rhs }))
+}
+
+/// Construct an f32.sub operation
+pub fn fsub32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Sub { lhs, rhs }))
+}
+
+/// Construct an f32.mul operation
+pub fn fmul32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Mul { lhs, rhs }))
+}
+
+/// Construct an f32.div operation
+pub fn fdiv32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Div { lhs, rhs }))
+}
+
+/// Construct an f64.add operation
+pub fn fadd64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Add { lhs, rhs }))
+}
+
+/// Construct an f64.sub operation
+pub fn fsub64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Sub { lhs, rhs }))
+}
+
+/// Construct an f64.mul operation
+pub fn fmul64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Mul { lhs, rhs }))
+}
+
+/// Construct an f64.div operation
+pub fn fdiv64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Div { lhs, rhs }))
 }
 
 /// BlockType::Empty constructor
@@ -1549,6 +1974,99 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             }
 
             i64_store(simplified_addr, simplified_value, *offset, *align)
+        }
+
+        // Partial-width memory load operations
+        // These simplify their address but don't participate in memory tracking
+        // because they load different widths than what might have been stored
+        ValueData::I32Load8S {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i32_load8_s(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I32Load8U {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i32_load8_u(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I32Load16S {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i32_load16_s(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I32Load16U {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i32_load16_u(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load8S {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load8_s(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load8U {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load8_u(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load16S {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load16_s(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load16U {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load16_u(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load32S {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load32_s(simplified_addr, *offset, *align)
+        }
+
+        ValueData::I64Load32U {
+            addr,
+            offset,
+            align,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            i64_load32_u(simplified_addr, *offset, *align)
         }
 
         // All other optimizations follow...
@@ -2612,6 +3130,277 @@ fn simplify_stateless(val: Value) -> Value {
                 // Constant folding: (select (i32.const N) true false) → true (N != 0)
                 ValueData::I32Const { .. } => true_simplified,
                 _ => select_instr(cond_simplified, true_simplified, false_simplified),
+            }
+        }
+
+        // Sign extension optimizations (i32)
+        ValueData::I32Extend8S { val } => {
+            let val_simplified = simplify(val.clone());
+            match val_simplified.data() {
+                // Constant folding: (i32.extend8_s (i32.const N)) → (i32.const sign_extend_8(N))
+                ValueData::I32Const { val: v } => {
+                    // Sign-extend low 8 bits to 32 bits
+                    let low8 = v.value() as i8;
+                    iconst32(Imm32(low8 as i32))
+                }
+                _ => i32_extend8_s(val_simplified),
+            }
+        }
+
+        ValueData::I32Extend16S { val } => {
+            let val_simplified = simplify(val.clone());
+            match val_simplified.data() {
+                // Constant folding: (i32.extend16_s (i32.const N)) → (i32.const sign_extend_16(N))
+                ValueData::I32Const { val: v } => {
+                    // Sign-extend low 16 bits to 32 bits
+                    let low16 = v.value() as i16;
+                    iconst32(Imm32(low16 as i32))
+                }
+                _ => i32_extend16_s(val_simplified),
+            }
+        }
+
+        // Sign extension optimizations (i64)
+        ValueData::I64Extend8S { val } => {
+            let val_simplified = simplify(val.clone());
+            match val_simplified.data() {
+                // Constant folding: (i64.extend8_s (i64.const N)) → (i64.const sign_extend_8(N))
+                ValueData::I64Const { val: v } => {
+                    // Sign-extend low 8 bits to 64 bits
+                    let low8 = v.value() as i8;
+                    iconst64(Imm64(low8 as i64))
+                }
+                _ => i64_extend8_s(val_simplified),
+            }
+        }
+
+        ValueData::I64Extend16S { val } => {
+            let val_simplified = simplify(val.clone());
+            match val_simplified.data() {
+                // Constant folding: (i64.extend16_s (i64.const N)) → (i64.const sign_extend_16(N))
+                ValueData::I64Const { val: v } => {
+                    // Sign-extend low 16 bits to 64 bits
+                    let low16 = v.value() as i16;
+                    iconst64(Imm64(low16 as i64))
+                }
+                _ => i64_extend16_s(val_simplified),
+            }
+        }
+
+        ValueData::I64Extend32S { val } => {
+            let val_simplified = simplify(val.clone());
+            match val_simplified.data() {
+                // Constant folding: (i64.extend32_s (i64.const N)) → (i64.const sign_extend_32(N))
+                ValueData::I64Const { val: v } => {
+                    // Sign-extend low 32 bits to 64 bits
+                    let low32 = v.value() as i32;
+                    iconst64(Imm64(low32 as i64))
+                }
+                _ => i64_extend32_s(val_simplified),
+            }
+        }
+
+        // ====================================================================
+        // Floating-Point Optimizations
+        // ====================================================================
+        // IMPORTANT: Float optimizations must be careful with NaN semantics.
+        // - NaN propagates through arithmetic operations
+        // - NaN != NaN (reflexivity does not hold for equality)
+        // - Operations with NaN inputs produce NaN outputs
+        // - We only fold constants when BOTH operands are not NaN
+        // - x + 0.0 = x and x * 1.0 = x hold for all x including NaN
+        // - Division by zero produces infinity (not a trap in WebAssembly)
+
+        // f32.add optimizations
+        ValueData::F32Add { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                // Constant folding when neither operand is NaN
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst32(ImmF32::new(lv + rv))
+                    } else {
+                        fadd32(lhs_simplified, rhs_simplified)
+                    }
+                }
+                // Algebraic: x + 0.0 = x (holds for all x including NaN)
+                (_, ValueData::F32Const { val })
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    lhs_simplified
+                }
+                (ValueData::F32Const { val }, _)
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    rhs_simplified
+                }
+                _ => fadd32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.sub optimizations
+        ValueData::F32Sub { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst32(ImmF32::new(lv - rv))
+                    } else {
+                        fsub32(lhs_simplified, rhs_simplified)
+                    }
+                }
+                // Algebraic: x - 0.0 = x
+                (_, ValueData::F32Const { val })
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    lhs_simplified
+                }
+                _ => fsub32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.mul optimizations
+        ValueData::F32Mul { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst32(ImmF32::new(lv * rv))
+                    } else {
+                        fmul32(lhs_simplified, rhs_simplified)
+                    }
+                }
+                // Algebraic: x * 1.0 = x (holds for all x including NaN)
+                (_, ValueData::F32Const { val }) if val.value() == 1.0 => lhs_simplified,
+                (ValueData::F32Const { val }, _) if val.value() == 1.0 => rhs_simplified,
+                _ => fmul32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.div optimizations
+        ValueData::F32Div { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst32(ImmF32::new(lv / rv))
+                    } else {
+                        fdiv32(lhs_simplified, rhs_simplified)
+                    }
+                }
+                // Algebraic: x / 1.0 = x
+                (_, ValueData::F32Const { val }) if val.value() == 1.0 => lhs_simplified,
+                _ => fdiv32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.add optimizations
+        ValueData::F64Add { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst64(ImmF64::new(lv + rv))
+                    } else {
+                        fadd64(lhs_simplified, rhs_simplified)
+                    }
+                }
+                (_, ValueData::F64Const { val })
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    lhs_simplified
+                }
+                (ValueData::F64Const { val }, _)
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    rhs_simplified
+                }
+                _ => fadd64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.sub optimizations
+        ValueData::F64Sub { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst64(ImmF64::new(lv - rv))
+                    } else {
+                        fsub64(lhs_simplified, rhs_simplified)
+                    }
+                }
+                (_, ValueData::F64Const { val })
+                    if val.value() == 0.0 && !val.value().is_sign_negative() =>
+                {
+                    lhs_simplified
+                }
+                _ => fsub64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.mul optimizations
+        ValueData::F64Mul { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst64(ImmF64::new(lv * rv))
+                    } else {
+                        fmul64(lhs_simplified, rhs_simplified)
+                    }
+                }
+                (_, ValueData::F64Const { val }) if val.value() == 1.0 => lhs_simplified,
+                (ValueData::F64Const { val }, _) if val.value() == 1.0 => rhs_simplified,
+                _ => fmul64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.div optimizations
+        ValueData::F64Div { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    let lv = l.value();
+                    let rv = r.value();
+                    if !lv.is_nan() && !rv.is_nan() {
+                        fconst64(ImmF64::new(lv / rv))
+                    } else {
+                        fdiv64(lhs_simplified, rhs_simplified)
+                    }
+                }
+                (_, ValueData::F64Const { val }) if val.value() == 1.0 => lhs_simplified,
+                _ => fdiv64(lhs_simplified, rhs_simplified),
             }
         }
 

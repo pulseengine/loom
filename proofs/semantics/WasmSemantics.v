@@ -627,11 +627,18 @@ Theorem exec_instrs_app : forall i1 i2 s s' s'',
   exec_instrs i2 s' = Some s'' ->
   exec_instrs (i1 ++ i2) s = Some s''.
 Proof.
-  induction i1; intros.
-  - simpl in H. injection H as H. subst. simpl. exact H0.
-  - simpl in H. simpl.
-    destruct (exec_instr a s) eqn:Ha; [|discriminate].
-    apply IHi1 with s0; assumption.
+  intros i1.
+  induction i1 as [|a i1' IH]; intros i2 st st' st'' H1 H2.
+  - (* Base case: i1 = [] *)
+    simpl in H1. simpl.
+    (* H1 : Some st = Some st', so st = st' *)
+    replace st' with st in H2 by (inversion H1; reflexivity).
+    exact H2.
+  - (* Inductive case: i1 = a :: i1' *)
+    simpl in H1. simpl.
+    destruct (exec_instr a st) as [st_mid|] eqn:Ha.
+    + eapply IH. exact H1. exact H2.
+    + discriminate.
 Qed.
 
 (** * Semantic Equivalence *)
@@ -741,48 +748,51 @@ Qed.
 Theorem i32_add_assoc : forall a b c,
   i32_add (i32_add a b) c = i32_add a (i32_add b c).
 Proof.
-  intros. unfold i32_add.
+  intros. unfold i32_add, wrap32.
   (* Modular arithmetic associativity *)
-  f_equal.
-  rewrite Z.add_mod_idemp_l.
-  rewrite Z.add_mod_idemp_r.
+  rewrite Zplus_mod_idemp_l.
+  rewrite Zplus_mod_idemp_r.
   f_equal. lia.
-  - apply Z.pow_pos_nonneg; lia.
-  - apply Z.pow_pos_nonneg; lia.
 Qed.
 
 (** i32.add with 0 is identity (right) *)
 Theorem i32_add_0_r : forall a, i32_add a 0 = wrap32 a.
 Proof.
-  intros. unfold i32_add. f_equal. lia.
+  intros. unfold i32_add, wrap32.
+  rewrite Z.add_0_r. reflexivity.
 Qed.
 
 (** i32.add with 0 is identity (left) *)
 Theorem i32_add_0_l : forall a, i32_add 0 a = wrap32 a.
 Proof.
-  intros. unfold i32_add. f_equal. lia.
+  intros. unfold i32_add, wrap32.
+  rewrite Z.add_0_l. reflexivity.
 Qed.
 
 (** i32.mul with 1 is identity *)
 Theorem i32_mul_1_r : forall a, i32_mul a 1 = wrap32 a.
 Proof.
-  intros. unfold i32_mul. f_equal. lia.
+  intros. unfold i32_mul, wrap32.
+  rewrite Z.mul_1_r. reflexivity.
 Qed.
 
 Theorem i32_mul_1_l : forall a, i32_mul 1 a = wrap32 a.
 Proof.
-  intros. unfold i32_mul. f_equal. lia.
+  intros. unfold i32_mul, wrap32.
+  rewrite Z.mul_1_l. reflexivity.
 Qed.
 
 (** i32.mul with 0 is 0 *)
 Theorem i32_mul_0_r : forall a, i32_mul a 0 = 0.
 Proof.
-  intros. unfold i32_mul, wrap32. simpl. reflexivity.
+  intros. unfold i32_mul, wrap32.
+  rewrite Z.mul_0_r. reflexivity.
 Qed.
 
 Theorem i32_mul_0_l : forall a, i32_mul 0 a = 0.
 Proof.
-  intros. unfold i32_mul, wrap32. simpl. reflexivity.
+  intros. unfold i32_mul, wrap32.
+  rewrite Z.mul_0_l. reflexivity.
 Qed.
 
 (** i32.sub with 0 is identity *)
@@ -804,23 +814,27 @@ Qed.
 (** x & 0 = 0 *)
 Theorem i32_and_0_r : forall a, i32_and a 0 = 0.
 Proof.
-  intros. unfold i32_and, wrap32. simpl. apply Z.land_0_r.
+  intros. unfold i32_and, wrap32.
+  rewrite Z.land_0_r. reflexivity.
 Qed.
 
 Theorem i32_and_0_l : forall a, i32_and 0 a = 0.
 Proof.
-  intros. unfold i32_and, wrap32. simpl. apply Z.land_0_l.
+  intros. unfold i32_and, wrap32.
+  rewrite Z.land_0_l. reflexivity.
 Qed.
 
 (** x | 0 = x *)
 Theorem i32_or_0_r : forall a, i32_or a 0 = wrap32 a.
 Proof.
-  intros. unfold i32_or, wrap32. simpl. apply Z.lor_0_r.
+  intros. unfold i32_or, wrap32.
+  rewrite Z.lor_0_r. reflexivity.
 Qed.
 
 Theorem i32_or_0_l : forall a, i32_or 0 a = wrap32 a.
 Proof.
-  intros. unfold i32_or, wrap32. simpl. apply Z.lor_0_l.
+  intros. unfold i32_or, wrap32.
+  rewrite Z.lor_0_l. reflexivity.
 Qed.
 
 (** x ^ 0 = x *)
