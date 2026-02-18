@@ -192,7 +192,8 @@ fn detect_adapters(module: &Module, num_imported_funcs: usize) -> Vec<AdapterInf
     // (This is always true for meld-generated adapters, but we verify for safety)
     adapters.retain(|adapter| {
         let adapter_sig = &module.functions[adapter.func_index].signature;
-        let target_sig = get_function_signature(module, adapter.target_func_idx, num_imported_funcs);
+        let target_sig =
+            get_function_signature(module, adapter.target_func_idx, num_imported_funcs);
         match target_sig {
             Some(sig) => sig == adapter_sig,
             None => false, // Target is an import without a known signature - skip
@@ -223,8 +224,8 @@ fn is_trivial_adapter(func: &Function) -> Option<u32> {
     }
 
     // Verify local.get sequence
-    for i in 0..param_count {
-        match &instructions[i] {
+    for (i, instr) in instructions.iter().enumerate().take(param_count) {
+        match instr {
             Instruction::LocalGet(idx) if *idx == i as u32 => {}
             _ => return None,
         }
@@ -437,8 +438,7 @@ fn remap_type_refs_in_block(instructions: &mut [Instruction], old_to_new: &[u32]
                     *type_idx = new_idx;
                 }
             }
-            Instruction::Block { body, .. }
-            | Instruction::Loop { body, .. } => {
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                 remap_type_refs_in_block(body, old_to_new);
             }
             Instruction::If {
@@ -981,11 +981,9 @@ mod tests {
         module.functions.push(make_target());
 
         // Function 1: adapter that forwards to function 0
-        module.functions.push(make_adapter(
-            &[ValueType::I32],
-            &[ValueType::I32],
-            0,
-        ));
+        module
+            .functions
+            .push(make_adapter(&[ValueType::I32], &[ValueType::I32], 0));
 
         // Function 2: caller that calls the adapter (function 1)
         // Uses I32Const + I32Add to NOT match the adapter pattern
@@ -1237,11 +1235,9 @@ mod tests {
         module.functions.push(make_target());
 
         // Function 1: adapter -> function 0
-        module.functions.push(make_adapter(
-            &[ValueType::I32],
-            &[ValueType::I32],
-            0,
-        ));
+        module
+            .functions
+            .push(make_adapter(&[ValueType::I32], &[ValueType::I32], 0));
 
         // Function 2: caller that calls adapter
         module.functions.push(make_caller(1));

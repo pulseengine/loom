@@ -25,7 +25,7 @@
     ## Connection to Meld
 
     Meld performs: Parse -> Resolve -> Merge -> Adapt -> Encode
-    LOOM performs: Fused Optim -> 12-Phase Pipeline
+    loom performs: Fused Optim -> 12-Phase Pipeline
 
     The fused optimizer runs on meld's output (a single core module) and
     targets the structural artifacts introduced by the fusion process.
@@ -325,9 +325,9 @@ Proof.
   apply Hpreserve. exact Hlive.
 Qed.
 
-(** * Integration with LOOM Correctness *)
+(** * Integration with loom Correctness *)
 
-(** The fused optimization pipeline composes with LOOM's standard
+(** The fused optimization pipeline composes with loom's standard
     optimization pipeline. If both preserve semantics individually,
     their composition preserves semantics. *)
 Theorem fused_then_standard_correct :
