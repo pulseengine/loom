@@ -13,7 +13,7 @@ Specialized optimization for WebAssembly modules produced by component fusion (e
   - [Pass 3: Dead Function Elimination](#pass-3-dead-function-elimination)
   - [Pass 4: Import Deduplication](#pass-4-import-deduplication)
 - [Correctness Proofs](#correctness-proofs)
-- [Integration with LOOM Pipeline](#integration-with-loom-pipeline)
+- [Integration with loom Pipeline](#integration-with-loom-pipeline)
 - [Usage](#usage)
 - [Architecture Decision Log](#architecture-decision-log)
 
@@ -21,7 +21,7 @@ Specialized optimization for WebAssembly modules produced by component fusion (e
 
 ## Overview
 
-When multiple P2/P3 WebAssembly components are **fused** into a single core module, the result contains characteristic patterns that standard optimization passes miss. The fused component optimizer targets these patterns specifically, achieving additional size and performance improvements beyond what LOOM's standard 12-phase pipeline provides.
+When multiple P2/P3 WebAssembly components are **fused** into a single core module, the result contains characteristic patterns that standard optimization passes miss. The fused component optimizer targets these patterns specifically, achieving additional size and performance improvements beyond what loom's standard 12-phase pipeline provides.
 
 ### What It Actually Does
 
@@ -52,7 +52,7 @@ P2/P3 Components          meld fuse            loom optimize
 
 **Meld** handles the structural transformation: resolving dependencies, merging index spaces, generating adapter trampolines, and producing a valid single-module output.
 
-**LOOM** handles the semantic optimization: devirtualizing adapters, eliminating dead code, folding constants, reducing strength, and verifying correctness.
+**loom** handles the semantic optimization: devirtualizing adapters, eliminating dead code, folding constants, reducing strength, and verifying correctness.
 
 Together they enable **whole-program optimization across former component boundaries** - something neither tool can achieve alone.
 
@@ -207,9 +207,9 @@ For types T_i and T_j where params(T_i) = params(T_j) and results(T_i) = results
 
 ---
 
-## Integration with LOOM Pipeline
+## Integration with loom Pipeline
 
-The fused optimizer runs **before** LOOM's standard 12-phase pipeline:
+The fused optimizer runs **before** loom's standard 12-phase pipeline:
 
 ```
 Input WASM Module (from meld)
@@ -225,7 +225,7 @@ Input WASM Module (from meld)
     |
     v
 +-------------------------------+
-|  LOOM 12-Phase Pipeline       |
+|  loom 12-Phase Pipeline       |
 |  1. Constant folding (ISLE)   |
 |  2. Advanced instructions     |
 |  3. Local simplification      |
@@ -257,7 +257,7 @@ meld fuse component_a.wasm component_b.wasm -o fused.wasm
 loom optimize fused.wasm -o optimized.wasm
 ```
 
-LOOM automatically detects fusion artifacts and applies the fused optimizer.
+loom automatically detects fusion artifacts and applies the fused optimizer.
 
 ### Programmatic API
 
@@ -274,7 +274,7 @@ println!("Types deduplicated: {}", stats.types_deduplicated);
 println!("Dead functions eliminated: {}", stats.dead_functions_eliminated);
 println!("Imports deduplicated: {}", stats.imports_deduplicated);
 
-// Then apply standard LOOM optimizations
+// Then apply standard loom optimizations
 optimize_module(&mut module)?;
 ```
 
@@ -284,15 +284,15 @@ optimize_module(&mut module)?;
 
 ### Why Devirtualize at the Module Level?
 
-**Decision**: Detect and eliminate adapter patterns in LOOM rather than in meld.
+**Decision**: Detect and eliminate adapter patterns in loom rather than in meld.
 
-**Rationale**: Meld must generate adapters for correctness (they handle Canonical ABI boundary crossing). Only after fusion is complete can we determine which adapters are trivial and can be bypassed. LOOM, as the optimizer, is the natural place for this analysis.
+**Rationale**: Meld must generate adapters for correctness (they handle Canonical ABI boundary crossing). Only after fusion is complete can we determine which adapters are trivial and can be bypassed. loom, as the optimizer, is the natural place for this analysis.
 
 ### Why Conservative Dead Function Elimination?
 
 **Decision**: Mark all functions as live when element segments exist.
 
-**Rationale**: Element segments populate indirect call tables (`call_indirect`). Without parsing the element section to extract exact function references, we cannot know which functions might be called indirectly. Per LOOM's philosophy: "a correct optimizer that handles 50% of cases is infinitely better than a fast optimizer that corrupts 1% of cases."
+**Rationale**: Element segments populate indirect call tables (`call_indirect`). Without parsing the element section to extract exact function references, we cannot know which functions might be called indirectly. Per loom's philosophy: "a correct optimizer that handles 50% of cases is infinitely better than a fast optimizer that corrupts 1% of cases."
 
 ### Why Import Deduplication Before the Standard Pipeline?
 
