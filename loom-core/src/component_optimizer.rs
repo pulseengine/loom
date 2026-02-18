@@ -194,6 +194,10 @@ struct CoreModule {
 }
 
 /// Optimize a single core module
+///
+/// Applies the full optimization pipeline:
+/// 1. Fused component optimizations (adapter devirtualization, type/import dedup, DCE)
+/// 2. Standard 12-phase pipeline (constant folding, strength reduction, DCE, etc.)
 fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // First validate the input module
     wasmparser::validate(module_bytes).context("Input module validation failed")?;
@@ -201,7 +205,44 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // Parse the module
     let mut module = crate::parse::parse_wasm(module_bytes)?;
 
-    // Apply optimization passes with validation after each pass
+    // Phase 0: Fused component optimizations (runs before standard pipeline)
+    // These passes target artifacts from component fusion (meld):
+    // - Adapter trampolines that just forward calls
+    // - Duplicate function types from multiple source components
+    // - Dead functions (unused adapters after devirtualization)
+    // - Duplicate imports (same external function imported by multiple components)
+    match crate::fused_optimizer::optimize_fused_module(&mut module) {
+        Ok(fused_stats) => {
+            if fused_stats.adapters_detected > 0
+                || fused_stats.types_deduplicated > 0
+                || fused_stats.dead_functions_eliminated > 0
+                || fused_stats.imports_deduplicated > 0
+            {
+                eprintln!(
+                    "  Fused optimization: {} adapters devirtualized, {} types deduped, {} dead funcs removed, {} imports deduped",
+                    fused_stats.calls_devirtualized,
+                    fused_stats.types_deduplicated,
+                    fused_stats.dead_functions_eliminated,
+                    fused_stats.imports_deduplicated,
+                );
+            }
+
+            // Validate after fused optimization
+            let bytes = crate::encode::encode_wasm(&module)?;
+            if let Err(e) = wasmparser::validate(&bytes) {
+                return Err(anyhow!(
+                    "Module became invalid after fused optimization pass: {}",
+                    e
+                ));
+            }
+        }
+        Err(e) => {
+            eprintln!("  Fused optimization skipped: {:?}", e);
+            // Non-fatal: continue with standard pipeline
+        }
+    }
+
+    // Standard optimization passes with validation after each pass
     // This provides detailed error messages showing which pass caused issues
     #[allow(clippy::type_complexity)]
     let passes: &[(&str, fn(&mut crate::Module) -> Result<()>)] = &[

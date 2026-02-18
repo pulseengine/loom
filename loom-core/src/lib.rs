@@ -5696,6 +5696,12 @@ pub mod optimize {
         // For backwards compatibility, this function applies the core optimizations
         // The full optimization pipeline is in loom-cli/src/main.rs lines 237-246
 
+        // Phase 0: Fused component optimizations (adapter devirtualization, type/import
+        // dedup, dead function elimination). These are safe no-ops on non-fused modules.
+        if let Err(_e) = super::fused_optimizer::optimize_fused_module(module) {
+            // Non-fatal: fused optimization is best-effort
+        }
+
         // Apply constant folding first
         constant_folding(module)?;
 
@@ -10368,6 +10374,19 @@ pub mod component_optimizer;
 /// - Canonical functions operate correctly
 /// - No validation errors occur after optimization
 pub mod component_executor;
+
+/// Fused component optimization
+///
+/// Specialized optimization passes for WebAssembly modules produced by component
+/// fusion tools (e.g., meld). Targets adapter trampolines, duplicate types/imports,
+/// and dead functions introduced by the fusion process.
+///
+/// See `fused_optimizer` module for implementation details and
+/// `docs/FUSED_COMPONENT_OPTIMIZATION.md` for the full design document.
+pub mod fused_optimizer;
+
+/// Re-export fused optimization API
+pub use fused_optimizer::{optimize_fused_module, FusedOptimizationStats};
 
 /// Re-export component optimization API
 pub use component_optimizer::{
