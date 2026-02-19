@@ -444,6 +444,6 @@ If optimized code is slower:
 
 ## Next Steps
 
-- Read [FORMAL_VERIFICATION_GUIDE.md](FORMAL_VERIFICATION_GUIDE.md) for detailed verification info
-- Check [WASM_BUILD.md](WASM_BUILD.md) for building LOOM to WebAssembly
+- Read [formal-verification.md](formal-verification.md) for detailed verification info
+- Check [wasm-build.md](wasm-build.md) for building loom to WebAssembly
 - Explore the fixtures in `tests/fixtures/` for real-world examples

@@ -278,7 +278,7 @@ Three phases:
 
 ## Related Documentation
 
-- **LOOM_SYNTH_ARCHITECTURE.md** - Overall architecture overview
+- **synth-architecture.md** - Overall architecture overview
 - **loom-core/src/lib.rs** - Core implementation (primary source)
 - **loom-shared/isle/wasm_terms.isle** - ISLE rules infrastructure
 - **loom-cli/src/main.rs** - CLI entry point and pipeline
@@ -288,13 +288,13 @@ Three phases:
 ## Verification & Research Documentation
 
 ### Formal Verification Architecture
-- **FORMAL_VERIFICATION_ARCHITECTURE.md** - Z3 verification strategy, e-graphs, proof assistants comparison
-- **Z3_VERIFICATION_STATUS.md** - Current Z3 verification coverage and status
-- **EXHAUSTIVE_VERIFICATION_RESEARCH.md** - Comprehensive research across 5 verification domains
+- **../architecture/formal-verification.md** - Z3 verification strategy, e-graphs, proof assistants comparison
+- **z3-status.md** - Current Z3 verification coverage and status
+- **exhaustive-verification-research.md** - Comprehensive research across 5 verification domains
 
 ### Verification Tools & Research Papers
-- **VERIFICATION_TOOLS_LANDSCAPE.md** - Comparison of Alive2, CBMC, Frama-C, SMACK/Boogie, Rosette
-- **RELEVANT_PAPERS_2021_2025.md** - **120+ papers** from PLDI, OOPSLA, CAV, CC, CGO, POPL (2021-2025)
+- **verification-tools.md** - Comparison of Alive2, CBMC, Frama-C, SMACK/Boogie, Rosette
+- **relevant-papers.md** - **120+ papers** from PLDI, OOPSLA, CAV, CC, CGO, POPL (2021-2025)
   - Compiler verification & translation validation
   - E-graphs & equality saturation (including EGRAPHS 2025)
   - WebAssembly formal methods

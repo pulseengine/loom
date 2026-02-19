@@ -50,7 +50,7 @@ The `loom-shared` crate provides a stable, reusable foundation that other WebAss
 
 This architecture enables both rapid prototyping in Loom and potential use in safety-critical applications through derived tools.
 
-📖 See [LOOM_SYNTH_ARCHITECTURE.md](LOOM_SYNTH_ARCHITECTURE.md) for detailed architecture documentation.
+See [architecture.md](docs/architecture.md) for detailed architecture documentation.
 
 ## 📦 Quick Start
 
@@ -171,7 +171,7 @@ cargo build --release --features verification
   📊 Verification coverage: 42 verified, 3 skipped (93.3%)
 ```
 
-Z3 verification proves mathematically that optimizations preserve program semantics via translation validation. The coverage report shows how many functions were fully verified vs. skipped (due to unsupported patterns like complex loops). See `docs/FORMAL_VERIFICATION_GUIDE.md` for details.
+Z3 verification proves mathematically that optimizations preserve program semantics via translation validation. The coverage report shows how many functions were fully verified vs. skipped (due to unsupported patterns like complex loops). See `docs/guides/formal-verification.md` for details.
 
 ## 💡 Examples
 
@@ -312,19 +312,18 @@ Z3 verification proves mathematically that optimizations preserve program semant
 ## 📚 Documentation
 
 ### User Guides
-- **[Usage Guide](docs/USAGE_GUIDE.md)** - Complete CLI reference, examples, and best practices
-- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Cheat sheet for common tasks
-- **[Performance Comparison](docs/PERFORMANCE_COMPARISON.md)** - LOOM vs wasm-opt benchmarks and analysis
+- **[Usage Guide](docs/guides/usage.md)** - Complete CLI reference, examples, and best practices
+- **[Quick Reference](docs/guides/quick-reference.md)** - Cheat sheet for common tasks
 
 ### Technical Documentation
-- **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into the 12-phase pipeline and implementation
-- **[Formal Verification Guide](docs/FORMAL_VERIFICATION_GUIDE.md)** - Z3 SMT verification internals
-- **[WASM Build Guide](docs/WASM_BUILD.md)** - Building LOOM to WebAssembly (wasm32-wasip2)
-- **[Implementation Details](docs/IMPLEMENTATION_ACHIEVEMENTS.md)** - Technical implementation notes
+- **[Architecture](docs/architecture.md)** - Deep dive into the 12-phase pipeline and implementation
+- **[Formal Verification Guide](docs/guides/formal-verification.md)** - Z3 SMT verification internals
+- **[WASM Build Guide](docs/guides/wasm-build.md)** - Building loom to WebAssembly (wasm32-wasip2)
+- **[Fused Component Optimization](docs/design/fused-component-optimization.md)** - meld-loom pipeline optimization
 
 ### For Contributors
-- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to LOOM
-- **[Design Documents](docs/)** - Individual optimization pass designs (CSE, DCE, LICM, etc.)
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to loom
+- **[Design Documents](docs/design/)** - Individual optimization pass designs (CSE, DCE, LICM, etc.)
 
 ## 🧪 Testing
 
@@ -368,8 +367,8 @@ loom/
 │   ├── matrix_multiply.wat
 │   └── ...
 └── docs/                     # Comprehensive documentation
-    ├── USAGE_GUIDE.md
-    ├── QUICK_REFERENCE.md
+    ├── guides/
+    ├── design/
     └── ...
 ```
 
@@ -394,7 +393,7 @@ cargo build --release --target wasm32-wasip2
 bazel build //loom-cli:loom_wasm --platforms=@rules_rust//rust/platform:wasm
 ```
 
-See [WASM_BUILD.md](docs/WASM_BUILD.md) for details.
+See [wasm-build.md](docs/guides/wasm-build.md) for details.
 
 ## 🚀 Use Cases
 

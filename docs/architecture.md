@@ -792,7 +792,7 @@ fn run_verification(original: &Module, optimized: &Module) -> Result<()> {
 ---
 
 **For more information**:
-- [Usage Guide](USAGE_GUIDE.md)
-- [Quick Reference](QUICK_REFERENCE.md)
-- [Formal Verification Guide](FORMAL_VERIFICATION_GUIDE.md)
-- [WASM Build Guide](WASM_BUILD.md)
+- [Usage Guide](guides/usage.md)
+- [Quick Reference](guides/quick-reference.md)
+- [Formal Verification Guide](guides/formal-verification.md)
+- [WASM Build Guide](guides/wasm-build.md)

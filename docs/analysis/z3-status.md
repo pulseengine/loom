@@ -275,7 +275,7 @@ Programs using:
 - loom-core/src/verify.rs - Z3 translation validation implementation
 - loom-core/tests/verification.rs - Property-based verification tests
 - loom-cli/src/main.rs:347-389 - CLI integration
-- docs/FORMAL_VERIFICATION_GUIDE.md - Verification approach documentation
+- docs/guides/formal-verification.md - Verification approach documentation
 
 **External**:
 - [Z3 Theorem Prover](https://github.com/Z3Prover/z3)

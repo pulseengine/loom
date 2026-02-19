@@ -1054,7 +1054,7 @@ jobs:
 - [Herbie](https://herbie.uwplse.org/)
 
 ### LOOM Documentation
-- [Z3 Verification Status](../analysis/Z3_VERIFICATION_STATUS.md)
-- [ISLE Investigation](../analysis/ISLE_INVESTIGATION.md)
-- [ISLE Deep Dive](../analysis/ISLE_DEEP_DIVE.md)
-- [Formal Verification Guide](../FORMAL_VERIFICATION_GUIDE.md)
+- [Z3 Verification Status](../analysis/z3-status.md)
+- [ISLE Investigation](../analysis/isle-investigation.md)
+- [ISLE Deep Dive](../analysis/isle-deep-dive.md)
+- [Formal Verification Guide](../guides/formal-verification.md)
