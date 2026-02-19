@@ -208,10 +208,9 @@ loom optimize input.wasm -o out.wasm --level=3
 
 ## Resources
 
-- **Full Guide**: [USAGE_GUIDE.md](USAGE_GUIDE.md)
-- **Verification**: [FORMAL_VERIFICATION_GUIDE.md](FORMAL_VERIFICATION_GUIDE.md)
-- **WASM Build**: [WASM_BUILD.md](WASM_BUILD.md)
-- **Implementation**: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+- **Full Guide**: [usage.md](usage.md)
+- **Verification**: [formal-verification.md](formal-verification.md)
+- **WASM Build**: [wasm-build.md](wasm-build.md)
 
 ## Quick Tips
 
