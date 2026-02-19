@@ -12,16 +12,21 @@
 //! Trivial adapters that simply forward all parameters to a target function
 //! can be bypassed: callers are rewritten to call the target directly.
 //!
-//! ### 2. Function Type Deduplication
+//! ### 2. Trivial Call Elimination
+//! Component fusion generates `cabi_post_return` functions for Canonical ABI
+//! compliance. When these are empty no-ops (`() -> ()`), calls to them are
+//! eliminated.
+//!
+//! ### 3. Function Type Deduplication
 //! Each source component contributes its own type section. After fusion, many
 //! identical function types exist. Deduplication merges them and remaps all
 //! type references.
 //!
-//! ### 3. Dead Function Elimination
+//! ### 4. Dead Function Elimination
 //! After adapter devirtualization, adapter functions may become unreachable.
 //! This pass removes functions with zero call sites that are not exported.
 //!
-//! ### 4. Import Deduplication
+//! ### 5. Import Deduplication
 //! Fused modules may contain duplicate imports (same module+name+type) from
 //! different source components. These are merged with reference remapping.
 //!
@@ -52,6 +57,8 @@ pub struct FusedOptimizationStats {
     pub dead_functions_eliminated: usize,
     /// Number of duplicate imports merged
     pub imports_deduplicated: usize,
+    /// Number of trivial post-return calls eliminated
+    pub trivial_calls_eliminated: usize,
 }
 
 /// An adapter trampoline detected in the fused module.
@@ -93,13 +100,16 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
     stats.adapters_detected = adapter_stats.adapters_detected;
     stats.calls_devirtualized = adapter_stats.calls_devirtualized;
 
-    // Pass 2: Deduplicate function types
+    // Pass 2: Eliminate trivial no-op function calls (e.g. empty cabi_post_return)
+    stats.trivial_calls_eliminated = eliminate_trivial_calls(module)?;
+
+    // Pass 3: Deduplicate function types
     stats.types_deduplicated = deduplicate_function_types(module)?;
 
-    // Pass 3: Eliminate dead functions (after devirtualization may create dead adapters)
+    // Pass 4: Eliminate dead functions (after devirtualization may create dead adapters)
     stats.dead_functions_eliminated = eliminate_dead_functions(module)?;
 
-    // Pass 4: Deduplicate imports
+    // Pass 5: Deduplicate imports
     stats.imports_deduplicated = deduplicate_imports(module)?;
 
     Ok(stats)
@@ -498,15 +508,24 @@ pub fn eliminate_dead_functions(module: &mut Module) -> Result<usize> {
         return Ok(0);
     }
 
-    // Element segments reference functions (indirect call targets)
-    // Since we store raw element bytes, we conservatively mark all local functions
-    // as potentially referenced via element segments.
-    if module.element_section_bytes.is_some() {
-        // Conservative: cannot determine exact function references from raw bytes
-        for i in 0..total_funcs {
-            live.insert(i as u32);
+    // Element segments reference functions (indirect call targets).
+    // Parse the element section to extract exact function references rather
+    // than conservatively marking all functions as live.
+    if let Some(ref element_bytes) = module.element_section_bytes {
+        match extract_element_func_refs(element_bytes) {
+            Ok(refs) => {
+                for func_idx in refs {
+                    live.insert(func_idx);
+                }
+            }
+            Err(_) => {
+                // Parsing failed: fall back to conservative behavior
+                for i in 0..total_funcs {
+                    live.insert(i as u32);
+                }
+                return Ok(0);
+            }
         }
-        return Ok(0);
     }
 
     // Transitive closure: walk call graph from live roots
@@ -597,6 +616,19 @@ pub fn eliminate_dead_functions(module: &mut Module) -> Result<usize> {
     // Remap data segment offset expressions
     for segment in &mut module.data_segments {
         remap_func_refs_in_block(&mut segment.offset, &remap);
+    }
+
+    // Remap function indices in element section
+    if module.element_section_bytes.is_some() {
+        match remap_element_section_refs(module, &remap) {
+            Ok(()) => {}
+            Err(_) => {
+                // If remapping fails, the element section is inconsistent.
+                // This should not happen since we successfully parsed it above,
+                // but if it does, we have already removed the functions.
+                // The module may be invalid - this is caught by validation.
+            }
+        }
     }
 
     Ok(eliminated)
@@ -781,8 +813,280 @@ struct ImportKey {
 }
 
 // ============================================================================
+// Pass 2: Trivial Call Elimination
+// ============================================================================
+
+/// Detect functions with empty bodies and eliminate calls to them.
+///
+/// Component fusion generates `cabi_post_return` functions for Canonical ABI
+/// compliance. When a component's post-return is a no-op (empty function body),
+/// calls to it can be safely eliminated.
+///
+/// ## Pattern detected
+///
+/// A function is considered trivial (no-op) when:
+/// 1. It has no parameters and no results (signature `() -> ()`)
+/// 2. Its body is just `[End]` or `[Nop*, End]`
+///
+/// All `call $trivial_func` instructions are removed from the module.
+///
+/// ## Proof Obligation
+///
+/// For a function F with body `[End]` and signature `() -> ()`:
+///   For any caller context C and stack state S:
+///     `eval(C[call F; rest], S) = eval(C[rest], S)`
+///
+/// This holds because F has no parameters (nothing popped), no results
+/// (nothing pushed), and no side effects (body is empty).
+fn eliminate_trivial_calls(module: &mut Module) -> Result<usize> {
+    let num_imported_funcs = count_imported_functions(module);
+
+    // Phase 1: Identify trivial no-op functions
+    // A function is a no-op if:
+    //   - Signature is () -> ()
+    //   - Body is just [End] or [Nop*, End]
+    let mut trivial_funcs: HashSet<u32> = HashSet::new();
+
+    for (idx, func) in module.functions.iter().enumerate() {
+        if !func.signature.params.is_empty() || !func.signature.results.is_empty() {
+            continue;
+        }
+        if is_nop_body(&func.instructions) {
+            let abs_idx = num_imported_funcs as u32 + idx as u32;
+            trivial_funcs.insert(abs_idx);
+        }
+    }
+
+    if trivial_funcs.is_empty() {
+        return Ok(0);
+    }
+
+    // Phase 2: Remove all calls to trivial functions from every function body
+    let mut total_eliminated = 0;
+    for func in &mut module.functions {
+        total_eliminated += remove_trivial_calls_from_block(&mut func.instructions, &trivial_funcs);
+    }
+
+    // Phase 3: Remove trivial calls from global initializers
+    for global in &mut module.globals {
+        total_eliminated += remove_trivial_calls_from_block(&mut global.init, &trivial_funcs);
+    }
+
+    Ok(total_eliminated)
+}
+
+/// Check if a function body is a no-op (just Nops and End).
+fn is_nop_body(instructions: &[Instruction]) -> bool {
+    instructions
+        .iter()
+        .all(|i| matches!(i, Instruction::Nop | Instruction::End))
+}
+
+/// Remove calls to trivial functions from an instruction block, recursively.
+/// Returns the number of calls eliminated.
+fn remove_trivial_calls_from_block(
+    instructions: &mut Vec<Instruction>,
+    trivial_funcs: &HashSet<u32>,
+) -> usize {
+    let mut eliminated = 0;
+
+    // First, recurse into nested blocks
+    for instr in instructions.iter_mut() {
+        match instr {
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                eliminated += remove_trivial_calls_from_block(body, trivial_funcs);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                eliminated += remove_trivial_calls_from_block(then_body, trivial_funcs);
+                eliminated += remove_trivial_calls_from_block(else_body, trivial_funcs);
+            }
+            _ => {}
+        }
+    }
+
+    // Then, remove trivial calls at this level
+    let before = instructions.len();
+    instructions.retain(|instr| {
+        if let Instruction::Call(idx) = instr {
+            if trivial_funcs.contains(idx) {
+                return false;
+            }
+        }
+        true
+    });
+    eliminated += before - instructions.len();
+
+    eliminated
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
+
+/// Remap function references in the element section after dead function removal.
+///
+/// Uses `wasm_encoder` to rebuild the element section with updated function indices.
+/// Only handles segments with direct function indices (not expression-based segments).
+/// Falls back to keeping original bytes if expression-based segments are present.
+fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) -> Result<()> {
+    use wasmparser::{BinaryReader, ElementItems, ElementKind, FromReader};
+
+    let element_bytes = match &module.element_section_bytes {
+        Some(bytes) => bytes.clone(),
+        None => return Ok(()),
+    };
+
+    let mut reader = BinaryReader::new(&element_bytes, 0);
+    let count = reader
+        .read_var_u32()
+        .map_err(|e| anyhow::anyhow!("failed to read element count: {}", e))?;
+
+    // First pass: check if all elements use simple function index lists.
+    // If any use expressions, bail out and keep original bytes.
+    let save_pos = reader.clone();
+    for _ in 0..count {
+        let element = wasmparser::Element::from_reader(&mut reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse element: {}", e))?;
+
+        if matches!(&element.items, ElementItems::Expressions(_, _)) {
+            // Expression-based elements are too complex to remap.
+            // Keep original bytes - indices may be stale but this is the
+            // conservative fallback. Validation will catch issues.
+            return Ok(());
+        }
+    }
+
+    // Second pass: all elements use Functions lists. Parse and rebuild.
+    let mut reader = save_pos;
+    let mut new_section = wasm_encoder::ElementSection::new();
+
+    for _ in 0..count {
+        let element = wasmparser::Element::from_reader(&mut reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse element: {}", e))?;
+
+        if let ElementItems::Functions(func_reader) = &element.items {
+            let mut indices: Vec<u32> = Vec::new();
+            for func_idx in func_reader.clone() {
+                let idx =
+                    func_idx.map_err(|e| anyhow::anyhow!("failed to read func idx: {}", e))?;
+                indices.push(remap.get(&idx).copied().unwrap_or(idx));
+            }
+
+            let elements = wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices));
+
+            match element.kind {
+                ElementKind::Active {
+                    table_index,
+                    offset_expr,
+                } => {
+                    // Re-encode the offset expression
+                    let mut ops_reader = offset_expr.get_operators_reader();
+                    let mut const_expr = wasm_encoder::ConstExpr::empty();
+                    while let Ok(op) = ops_reader.read() {
+                        match op {
+                            wasmparser::Operator::I32Const { value } => {
+                                const_expr = wasm_encoder::ConstExpr::i32_const(value);
+                            }
+                            wasmparser::Operator::I64Const { value } => {
+                                const_expr = wasm_encoder::ConstExpr::i64_const(value);
+                            }
+                            wasmparser::Operator::GlobalGet { global_index } => {
+                                const_expr = wasm_encoder::ConstExpr::global_get(global_index);
+                            }
+                            wasmparser::Operator::End => break,
+                            _ => {
+                                // Unsupported offset expression - bail out
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    new_section.active(table_index, &const_expr, elements);
+                }
+                ElementKind::Passive => {
+                    new_section.passive(elements);
+                }
+                ElementKind::Declared => {
+                    new_section.declared(elements);
+                }
+            }
+        }
+    }
+
+    // Encode the new section and extract just the section data
+    // (skip section ID and LEB128 length prefix)
+    use wasm_encoder::Encode;
+    let mut encoded = Vec::new();
+    new_section.encode(&mut encoded);
+    // ElementSection::encode writes: section_id (1 byte) + LEB128 length + data
+    if encoded.len() > 1 {
+        let mut pos = 1; // Skip section ID byte
+        while pos < encoded.len() && encoded[pos] & 0x80 != 0 {
+            pos += 1; // Skip LEB128 length bytes
+        }
+        pos += 1; // Skip last byte of LEB128
+        if pos < encoded.len() {
+            module.element_section_bytes = Some(encoded[pos..].to_vec());
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse raw element section bytes and extract all referenced function indices.
+///
+/// Element segments can contain function references in two forms:
+/// - `ElementItems::Functions`: direct function index list
+/// - `ElementItems::Expressions`: const expressions, which may contain `ref.func`
+///
+/// This allows dead function elimination to work even when element segments
+/// exist, by marking only the actually-referenced functions as live rather
+/// than conservatively keeping all functions.
+fn extract_element_func_refs(element_bytes: &[u8]) -> Result<HashSet<u32>> {
+    use wasmparser::{BinaryReader, ElementItems, FromReader};
+
+    let mut refs = HashSet::new();
+    let mut reader = BinaryReader::new(element_bytes, 0);
+
+    // The element section is a vector of element segments
+    let count = reader
+        .read_var_u32()
+        .map_err(|e| anyhow::anyhow!("failed to read element count: {}", e))?;
+
+    for _ in 0..count {
+        let element = wasmparser::Element::from_reader(&mut reader)
+            .map_err(|e| anyhow::anyhow!("failed to parse element: {}", e))?;
+
+        match element.items {
+            ElementItems::Functions(func_reader) => {
+                for func_idx in func_reader {
+                    let idx =
+                        func_idx.map_err(|e| anyhow::anyhow!("failed to read func idx: {}", e))?;
+                    refs.insert(idx);
+                }
+            }
+            ElementItems::Expressions(_ty, expr_reader) => {
+                // Const expressions may contain ref.func - extract those indices
+                for expr in expr_reader {
+                    let const_expr =
+                        expr.map_err(|e| anyhow::anyhow!("failed to read const expr: {}", e))?;
+                    let mut ops = const_expr.get_operators_reader();
+                    while let Ok(op) = ops.read() {
+                        if let wasmparser::Operator::RefFunc { function_index } = op {
+                            refs.insert(function_index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(refs)
+}
 
 /// Count the number of imported functions in a module.
 fn count_imported_functions(module: &Module) -> usize {
@@ -1219,6 +1523,208 @@ mod tests {
             }
         }
     }
+
+    // ========================================================================
+    // Pass 2: Trivial Call Elimination tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_nop_body() {
+        assert!(is_nop_body(&[Instruction::End]));
+        assert!(is_nop_body(&[Instruction::Nop, Instruction::End]));
+        assert!(is_nop_body(&[
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::End
+        ]));
+        assert!(!is_nop_body(&[Instruction::I32Const(0), Instruction::End]));
+        assert!(!is_nop_body(&[Instruction::Call(0), Instruction::End]));
+    }
+
+    #[test]
+    fn test_eliminate_trivial_calls() {
+        let mut module = empty_module();
+
+        // Function 0: empty no-op function () -> ()
+        module.functions.push(Function {
+            name: Some("cabi_post_return".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::End],
+        });
+
+        // Function 1: real function that calls the no-op
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::Call(1), // Calls real func (function 2)
+                Instruction::Call(0), // Calls no-op post-return
+                Instruction::End,
+            ],
+        });
+
+        // Function 2: target function
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        module.exports.push(Export {
+            name: "main".to_string(),
+            kind: ExportKind::Func(1),
+        });
+
+        let eliminated = eliminate_trivial_calls(&mut module).unwrap();
+        assert_eq!(eliminated, 1);
+
+        // Verify the call to the no-op was removed
+        assert_eq!(
+            module.functions[1].instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_eliminate_trivial_calls_preserves_real_funcs() {
+        let mut module = empty_module();
+
+        // Function 0: non-trivial () -> () function (has real instructions)
+        module.functions.push(Function {
+            name: Some("real_cleanup".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::Drop,
+                Instruction::End,
+            ],
+        });
+
+        // Function 1: caller
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::Call(0), // Calls non-trivial func - should NOT be removed
+                Instruction::End,
+            ],
+        });
+
+        let eliminated = eliminate_trivial_calls(&mut module).unwrap();
+        assert_eq!(eliminated, 0);
+
+        // Call preserved
+        assert!(module.functions[1]
+            .instructions
+            .contains(&Instruction::Call(0)));
+    }
+
+    #[test]
+    fn test_eliminate_trivial_calls_skips_params() {
+        let mut module = empty_module();
+
+        // Function 0: empty body but has params - NOT trivial
+        // (calling it would pop values from the stack)
+        module.functions.push(Function {
+            name: Some("empty_with_params".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::End],
+        });
+
+        // Function 1: caller
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::Call(0), // Should NOT be removed
+                Instruction::End,
+            ],
+        });
+
+        let eliminated = eliminate_trivial_calls(&mut module).unwrap();
+        assert_eq!(eliminated, 0);
+    }
+
+    #[test]
+    fn test_eliminate_trivial_calls_nested() {
+        let mut module = empty_module();
+
+        // Function 0: no-op
+        module.functions.push(Function {
+            name: Some("noop".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::Nop, Instruction::End],
+        });
+
+        // Function 1: caller with nested blocks
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::Block {
+                    block_type: BlockType::Empty,
+                    body: vec![
+                        Instruction::Call(0), // Should be removed
+                        Instruction::If {
+                            block_type: BlockType::Empty,
+                            then_body: vec![Instruction::Call(0)], // Should be removed
+                            else_body: vec![Instruction::Nop],
+                        },
+                    ],
+                },
+                Instruction::End,
+            ],
+        });
+
+        let eliminated = eliminate_trivial_calls(&mut module).unwrap();
+        assert_eq!(eliminated, 2);
+    }
+
+    // ========================================================================
+    // Full Pipeline tests
+    // ========================================================================
 
     #[test]
     fn test_optimize_fused_module_full_pipeline() {

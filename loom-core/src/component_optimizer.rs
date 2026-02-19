@@ -217,10 +217,12 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                 || fused_stats.types_deduplicated > 0
                 || fused_stats.dead_functions_eliminated > 0
                 || fused_stats.imports_deduplicated > 0
+                || fused_stats.trivial_calls_eliminated > 0
             {
                 eprintln!(
-                    "  Fused optimization: {} adapters devirtualized, {} types deduped, {} dead funcs removed, {} imports deduped",
+                    "  Fused optimization: {} adapters devirtualized, {} trivial calls eliminated, {} types deduped, {} dead funcs removed, {} imports deduped",
                     fused_stats.calls_devirtualized,
+                    fused_stats.trivial_calls_eliminated,
                     fused_stats.types_deduplicated,
                     fused_stats.dead_functions_eliminated,
                     fused_stats.imports_deduplicated,
