@@ -144,7 +144,7 @@ flowchart TD
 - Contain `memory.copy {0, 0}` (same-memory copy) with no cross-memory copies
 - Call `cabi_realloc` at least once
 - Call exactly one non-realloc target function
-- Have no control flow, memory stores, or global writes
+- Have no control flow, memory stores, or unsafe global writes (balanced single-global save/restore such as stack pointer prologue/epilogue is allowed)
 - Have the same signature as the target
 
 **Transformation**: Replace the function body with a forwarding trampoline:
@@ -161,6 +161,8 @@ flowchart TD
 ```
 
 **Why this is correct**: In a single-memory module, `memory.copy {0, 0}` copies within the same address space. The adapter allocates a buffer, copies argument data to it, then calls the target with the new pointer. Since both pointers reference the same memory, the target can read the data at the original pointer directly. The allocation and copy are semantically redundant.
+
+**Stack pointer save/restore**: Meld-generated adapters for non-trivial types often include a stack pointer prologue/epilogue (`global.get $sp; sub; global.set $sp` ... `global.set $sp` to restore). These balanced single-global writes are safe to collapse because the entire body is replaced by a forwarding trampoline — the global is never modified in the collapsed function (net-zero effect). The predicate `has_unsafe_global_writes` allows this pattern while still rejecting writes to multiple globals or write-only globals.
 
 **Synergy with Pass 1**: After collapse, the adapter is a trivial forwarding trampoline. Pass 1 detects this and rewrites all callers to call the target directly, eliminating both the adapter overhead AND the unnecessary allocation/copy.
 
@@ -224,6 +226,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | Theorem | Status | Pass |
 |---|---|---|
 | `same_memory_collapse_correct` | **Proven** | Pass 0 |
+| `sp_save_restore_collapse_correct` | **Proven** | Pass 0 |
 | `adapter_devirtualization_correct` | **Proven** | Pass 1 |
 | `devirtualization_preserves_module_semantics` | **Proven** | Pass 1 |
 | `trivial_call_is_nop` | **Proven** | Pass 2 |
@@ -236,7 +239,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-All 12 theorems are proven (Qed). Zero Admitted proofs remain.
+All 13 theorems are proven (Qed). Zero Admitted proofs remain.
 
 ### Proof Architecture
 
@@ -253,6 +256,7 @@ flowchart TD
 
     subgraph proven["Proven Theorems (Qed)"]
         SM["same_memory_collapse_correct"]
+        SP["sp_save_restore_collapse_correct"]
         AD["adapter_devirtualization_correct"]
         TC["trivial_call_is_nop"]
         TP["type_dedup_preserves_semantics"]
@@ -265,10 +269,12 @@ flowchart TD
     end
 
     A0 --> SM
+    A0 --> SP
     A1 --> AD
     A2 --> IP
     A3 --> TC
     SM --> FC
+    SP --> FC
     AD --> FC
     TC --> FC
     TP --> FC

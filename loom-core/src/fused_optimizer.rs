@@ -161,7 +161,7 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 /// - Exactly one call to a non-realloc target function
 /// - No control flow (Block, Loop, If, Br, BrIf, BrTable)
 /// - No memory stores (I32Store, I64Store, F32Store, F64Store, etc.)
-/// - No global writes (GlobalSet)
+/// - No unsafe global writes (balanced single-global save/restore is allowed)
 /// - Target function has the same signature as the adapter
 ///
 /// Returns the number of adapters collapsed.
@@ -281,7 +281,7 @@ fn find_realloc_functions(module: &Module) -> HashSet<u32> {
 /// 4. Contains exactly one call to a non-realloc function (the target)
 /// 5. No control flow instructions
 /// 6. No memory store instructions
-/// 7. No global write instructions
+/// 7. No unsafe global writes (balanced single-global save/restore is allowed)
 fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Option<u32> {
     // Must have locals (trivial adapters without locals are handled by Pass 1)
     if func.locals.is_empty() {
@@ -297,7 +297,7 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
     if has_memory_stores(instructions) {
         return None;
     }
-    if has_global_writes(instructions) {
+    if has_unsafe_global_writes(instructions) {
         return None;
     }
 
@@ -381,11 +381,41 @@ fn has_memory_stores(instructions: &[Instruction]) -> bool {
     })
 }
 
-/// Check if instructions contain global write operations.
-fn has_global_writes(instructions: &[Instruction]) -> bool {
-    instructions
-        .iter()
-        .any(|instr| matches!(instr, Instruction::GlobalSet(_)))
+/// Check if instructions contain unsafe global write operations.
+///
+/// A global write is **safe** (returns false) when:
+/// - No GlobalSet instructions exist, OR
+/// - ALL GlobalSet instructions target a single global index G, AND at least
+///   one GlobalGet reads from that same index G (balanced save/restore pattern,
+///   e.g. stack pointer prologue/epilogue in meld adapters)
+///
+/// A global write is **unsafe** (returns true) when:
+/// - Multiple distinct globals are written (not a single-SP pattern), OR
+/// - A global is written but never read (not the save/restore pattern)
+fn has_unsafe_global_writes(instructions: &[Instruction]) -> bool {
+    let mut global_set_indices: HashSet<u32> = HashSet::new();
+    let mut global_get_indices: HashSet<u32> = HashSet::new();
+
+    for instr in instructions {
+        match instr {
+            Instruction::GlobalSet(idx) => {
+                global_set_indices.insert(*idx);
+            }
+            Instruction::GlobalGet(idx) => {
+                global_get_indices.insert(*idx);
+            }
+            _ => {}
+        }
+    }
+
+    if global_set_indices.is_empty() {
+        return false; // No writes → safe
+    }
+    if global_set_indices.len() > 1 {
+        return true; // Multi-global → unsafe
+    }
+    let set_idx = *global_set_indices.iter().next().unwrap();
+    !global_get_indices.contains(&set_idx) // Write-only → unsafe
 }
 
 /// Rewrite a function body to a trivial forwarding trampoline.
@@ -2469,6 +2499,232 @@ mod tests {
         assert_eq!(
             collapsed, 0,
             "adapter with global writes should not be collapsed"
+        );
+    }
+
+    /// Helper: create a same-memory adapter with stack pointer save/restore prologue/epilogue.
+    ///
+    /// Simulates a meld-generated adapter for non-trivial types that saves and
+    /// restores the stack pointer global around the realloc+copy+call sequence.
+    fn make_same_memory_adapter_with_sp(
+        params: &[ValueType],
+        results: &[ValueType],
+        realloc_idx: u32,
+        target_idx: u32,
+        sp_global: u32,
+    ) -> Function {
+        let sp_local = params.len() as u32 + 1;
+        let ptr_local = params.len() as u32;
+
+        // SP prologue: save current stack pointer, subtract frame size
+        let mut instructions = vec![
+            Instruction::GlobalGet(sp_global),
+            Instruction::I32Const(16),
+            Instruction::I32Sub,
+            Instruction::LocalSet(sp_local),
+            Instruction::LocalGet(sp_local),
+            Instruction::GlobalSet(sp_global),
+            // Read first parameter
+            Instruction::LocalGet(0),
+        ];
+
+        if params.len() > 1 {
+            instructions.push(Instruction::LocalGet(1));
+        }
+
+        // Call cabi_realloc, memory.copy, call target
+        instructions.extend_from_slice(&[
+            Instruction::I32Const(0),
+            Instruction::I32Const(0),
+            Instruction::I32Const(1),
+            Instruction::I32Const(8),
+            Instruction::Call(realloc_idx),
+            Instruction::LocalSet(ptr_local),
+            Instruction::LocalGet(ptr_local),
+            Instruction::LocalGet(0),
+            Instruction::I32Const(8),
+            Instruction::MemoryCopy {
+                dst_mem: 0,
+                src_mem: 0,
+            },
+            Instruction::LocalGet(ptr_local),
+        ]);
+
+        if params.len() > 1 {
+            instructions.push(Instruction::LocalGet(1));
+        }
+
+        // Call target + SP epilogue: restore stack pointer
+        instructions.extend_from_slice(&[
+            Instruction::Call(target_idx),
+            Instruction::LocalGet(sp_local),
+            Instruction::I32Const(16),
+            Instruction::I32Add,
+            Instruction::GlobalSet(sp_global),
+            Instruction::End,
+        ]);
+
+        Function {
+            name: Some(format!("$adapter_sp_{}", target_idx)),
+            signature: FunctionSignature {
+                params: params.to_vec(),
+                results: results.to_vec(),
+            },
+            locals: vec![(2, ValueType::I32)], // new_ptr + saved SP
+            instructions,
+        }
+    }
+
+    #[test]
+    fn test_collapse_allows_sp_save_restore() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with SP save/restore (GlobalGet(0) + GlobalSet(0))
+        module.functions.push(make_same_memory_adapter_with_sp(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1, // target is abs idx 1
+            0, // stack pointer is global 0
+        ));
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "adapter with balanced SP save/restore should be collapsed"
+        );
+
+        // Verify it became a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty(), "locals should be cleared");
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+            "should be a forwarding trampoline"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_multiple_global_indices() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter writing to TWO distinct globals
+        module.functions.push(Function {
+            name: Some("adapter_multi_global".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::GlobalGet(0),
+                Instruction::GlobalSet(0), // Write global 0
+                Instruction::GlobalGet(1),
+                Instruction::GlobalSet(1), // Write global 1 — multi-global!
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter writing to multiple globals should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_write_only_global() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with GlobalSet(5) but no GlobalGet(5)
+        module.functions.push(Function {
+            name: Some("adapter_write_only_global".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(42),
+                Instruction::GlobalSet(5), // Write-only to global 5 — no read!
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter with write-only global should not be collapsed"
         );
     }
 
