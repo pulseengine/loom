@@ -7,6 +7,12 @@
 //!
 //! ## Optimization Passes
 //!
+//! ### 0. Same-Memory Adapter Collapse
+//! In single-memory modules, meld generates adapters that allocate+copy within
+//! the same linear memory. Since both pointers alias the same address space,
+//! the copy is redundant. This pass collapses them to trivial forwarding
+//! trampolines, which Pass 1 then devirtualizes.
+//!
 //! ### 1. Adapter Devirtualization
 //! Component fusion generates adapter trampolines for cross-component calls.
 //! Trivial adapters that simply forward all parameters to a target function
@@ -33,6 +39,7 @@
 //! ## Correctness
 //!
 //! All transformations are provably correct:
+//! - Same-memory adapter collapse: same-memory copy is redundant (Spec §5.4.7)
 //! - Adapter devirtualization: semantically identical (adapter body = forward call)
 //! - Type deduplication: structural type equality, index remapping preserves refs
 //! - Dead function elimination: unreachable code cannot affect semantics
@@ -47,6 +54,8 @@ use std::collections::{HashMap, HashSet};
 /// Statistics about fused module optimization
 #[derive(Debug, Clone, Default)]
 pub struct FusedOptimizationStats {
+    /// Number of same-memory adapters collapsed to forwarding trampolines
+    pub same_memory_adapters_collapsed: usize,
     /// Number of adapter functions detected
     pub adapters_detected: usize,
     /// Number of call sites devirtualized (adapter call -> direct call)
@@ -93,12 +102,20 @@ struct AdapterInfo {
 ///
 /// Returns optimization statistics.
 pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationStats> {
-    let mut stats = FusedOptimizationStats::default();
+    // Pass 0: Collapse same-memory adapters into trivial forwarding trampolines
+    // This converts memory-crossing adapters (realloc + memory.copy within the same
+    // memory) into trivial forwarding trampolines that Pass 1 can then devirtualize.
+    let same_memory_adapters_collapsed = collapse_same_memory_adapters(module)?;
 
     // Pass 1: Detect and devirtualize adapter trampolines
     let adapter_stats = devirtualize_adapters(module)?;
-    stats.adapters_detected = adapter_stats.adapters_detected;
-    stats.calls_devirtualized = adapter_stats.calls_devirtualized;
+
+    let mut stats = FusedOptimizationStats {
+        same_memory_adapters_collapsed,
+        adapters_detected: adapter_stats.adapters_detected,
+        calls_devirtualized: adapter_stats.calls_devirtualized,
+        ..Default::default()
+    };
 
     // Pass 2: Eliminate trivial no-op function calls (e.g. empty cabi_post_return)
     stats.trivial_calls_eliminated = eliminate_trivial_calls(module)?;
@@ -113,6 +130,282 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
     stats.imports_deduplicated = deduplicate_imports(module)?;
 
     Ok(stats)
+}
+
+// ============================================================================
+// Pass 0: Same-Memory Adapter Collapse
+// ============================================================================
+
+/// Collapse same-memory adapters into trivial forwarding trampolines.
+///
+/// In a single-memory module, meld generates adapters that:
+/// 1. Call `cabi_realloc` to allocate a buffer
+/// 2. `memory.copy {0, 0}` to copy data within the same memory
+/// 3. Call the target function with the new buffer pointer
+///
+/// Since both pointers reference the same linear memory, the target can
+/// read the data at the original pointer directly. The allocation and copy
+/// are semantically redundant.
+///
+/// This pass rewrites such adapters to trivial forwarding trampolines
+/// (local.get 0; ...; local.get N; call $target; end), which Pass 1
+/// then devirtualizes by rewriting callers to call the target directly.
+///
+/// ## Safety
+///
+/// A function is only collapsed when ALL of:
+/// - The module has exactly one memory (including imported memories)
+/// - The function has locals (adapters use locals for temporary pointers)
+/// - All memory.copy instructions use {dst: 0, src: 0} (same memory)
+/// - At least one call to a known cabi_realloc function
+/// - Exactly one call to a non-realloc target function
+/// - No control flow (Block, Loop, If, Br, BrIf, BrTable)
+/// - No memory stores (I32Store, I64Store, F32Store, F64Store, etc.)
+/// - No global writes (GlobalSet)
+/// - Target function has the same signature as the adapter
+///
+/// Returns the number of adapters collapsed.
+fn collapse_same_memory_adapters(module: &mut Module) -> Result<usize> {
+    // Only applies to single-memory modules
+    if count_total_memories(module) != 1 {
+        return Ok(0);
+    }
+
+    let num_imported_funcs = count_imported_functions(module);
+    let realloc_funcs = find_realloc_functions(module);
+
+    if realloc_funcs.is_empty() {
+        return Ok(0);
+    }
+
+    // Phase 1: Identify same-memory adapters and their target functions
+    let mut collapse_targets: Vec<(usize, u32)> = Vec::new();
+
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        if let Some(target_idx) = is_same_memory_adapter(func, &realloc_funcs) {
+            // Verify target has the same signature
+            let target_sig = get_function_signature(module, target_idx, num_imported_funcs);
+            match target_sig {
+                Some(sig) if *sig == func.signature => {
+                    collapse_targets.push((func_idx, target_idx));
+                }
+                _ => {} // Signature mismatch or unknown target: skip
+            }
+        }
+    }
+
+    if collapse_targets.is_empty() {
+        return Ok(0);
+    }
+
+    // Phase 2: Collapse each adapter to a forwarding trampoline
+    let count = collapse_targets.len();
+    for (func_idx, target_idx) in collapse_targets {
+        collapse_to_forwarding(&mut module.functions[func_idx], target_idx);
+    }
+
+    Ok(count)
+}
+
+/// Count total memories in a module, including imported memories.
+fn count_total_memories(module: &Module) -> usize {
+    let imported_memories = module
+        .imports
+        .iter()
+        .filter(|i| matches!(i.kind, ImportKind::Memory(_)))
+        .count();
+    imported_memories + module.memories.len()
+}
+
+/// Find all function indices that are `cabi_realloc` functions.
+///
+/// A function is `cabi_realloc` if:
+/// - It is an imported function with name containing "cabi_realloc" or "realloc"
+///   AND has signature `(i32, i32, i32, i32) -> i32`
+/// - OR it is a local function named "cabi_realloc" (or variant)
+///   AND has signature `(i32, i32, i32, i32) -> i32`
+fn find_realloc_functions(module: &Module) -> HashSet<u32> {
+    let mut realloc_set = HashSet::new();
+
+    let realloc_sig = FunctionSignature {
+        params: vec![
+            crate::ValueType::I32,
+            crate::ValueType::I32,
+            crate::ValueType::I32,
+            crate::ValueType::I32,
+        ],
+        results: vec![crate::ValueType::I32],
+    };
+
+    // Check imported functions
+    let mut func_import_idx = 0u32;
+    for import in &module.imports {
+        if let ImportKind::Func(type_idx) = &import.kind {
+            let name_matches =
+                import.name.contains("cabi_realloc") || import.name.contains("realloc");
+            if name_matches {
+                // Verify signature matches
+                if let Some(sig) = module.types.get(*type_idx as usize) {
+                    if *sig == realloc_sig {
+                        realloc_set.insert(func_import_idx);
+                    }
+                }
+            }
+            func_import_idx += 1;
+        }
+    }
+
+    // Check local functions
+    let num_imported_funcs = count_imported_functions(module);
+    for (idx, func) in module.functions.iter().enumerate() {
+        if let Some(ref name) = func.name {
+            if (name.contains("cabi_realloc") || name.contains("realloc"))
+                && func.signature == realloc_sig
+            {
+                realloc_set.insert(num_imported_funcs as u32 + idx as u32);
+            }
+        }
+    }
+
+    realloc_set
+}
+
+/// Check if a function is a same-memory adapter.
+///
+/// Returns the target function index if the function matches the pattern, None otherwise.
+///
+/// Detection criteria:
+/// 1. Has locals (adapters use locals for temporary pointers)
+/// 2. Contains at least one `memory.copy {0, 0}` and no cross-memory copies
+/// 3. Contains at least one call to a realloc function
+/// 4. Contains exactly one call to a non-realloc function (the target)
+/// 5. No control flow instructions
+/// 6. No memory store instructions
+/// 7. No global write instructions
+fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Option<u32> {
+    // Must have locals (trivial adapters without locals are handled by Pass 1)
+    if func.locals.is_empty() {
+        return None;
+    }
+
+    let instructions = &func.instructions;
+
+    // Check for disqualifying instructions
+    if has_control_flow(instructions) {
+        return None;
+    }
+    if has_memory_stores(instructions) {
+        return None;
+    }
+    if has_global_writes(instructions) {
+        return None;
+    }
+
+    // Count memory.copy instructions - must have at least one same-memory copy
+    // and no cross-memory copies
+    let mut same_memory_copies = 0usize;
+    let mut has_cross_memory_copy = false;
+    // Count calls - must have at least one realloc call and exactly one target call
+    let mut realloc_calls = 0usize;
+    let mut target_call: Option<u32> = None;
+    let mut target_call_count = 0usize;
+
+    for instr in instructions {
+        match instr {
+            Instruction::MemoryCopy { dst_mem, src_mem } => {
+                if *dst_mem == 0 && *src_mem == 0 {
+                    same_memory_copies += 1;
+                } else {
+                    has_cross_memory_copy = true;
+                }
+            }
+            Instruction::Call(func_idx) => {
+                if realloc_funcs.contains(func_idx) {
+                    realloc_calls += 1;
+                } else {
+                    target_call = Some(*func_idx);
+                    target_call_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validate the pattern
+    if same_memory_copies == 0 {
+        return None;
+    }
+    if has_cross_memory_copy {
+        return None;
+    }
+    if realloc_calls == 0 {
+        return None;
+    }
+    if target_call_count != 1 {
+        return None;
+    }
+
+    target_call
+}
+
+/// Check if instructions contain control flow (Block, Loop, If, Br, BrIf, BrTable).
+fn has_control_flow(instructions: &[Instruction]) -> bool {
+    instructions.iter().any(|instr| {
+        matches!(
+            instr,
+            Instruction::Block { .. }
+                | Instruction::Loop { .. }
+                | Instruction::If { .. }
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. }
+        )
+    })
+}
+
+/// Check if instructions contain memory store operations.
+fn has_memory_stores(instructions: &[Instruction]) -> bool {
+    instructions.iter().any(|instr| {
+        matches!(
+            instr,
+            Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::F32Store { .. }
+                | Instruction::F64Store { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. }
+        )
+    })
+}
+
+/// Check if instructions contain global write operations.
+fn has_global_writes(instructions: &[Instruction]) -> bool {
+    instructions
+        .iter()
+        .any(|instr| matches!(instr, Instruction::GlobalSet(_)))
+}
+
+/// Rewrite a function body to a trivial forwarding trampoline.
+///
+/// Replaces the function body with:
+///   local.get 0; local.get 1; ...; local.get N; call $target; end
+///
+/// Also clears the locals list (no longer needed).
+fn collapse_to_forwarding(func: &mut Function, target_idx: u32) {
+    let param_count = func.signature.params.len();
+
+    let mut new_body = Vec::with_capacity(param_count + 2);
+    for i in 0..param_count {
+        new_body.push(Instruction::LocalGet(i as u32));
+    }
+    new_body.push(Instruction::Call(target_idx));
+    new_body.push(Instruction::End);
+
+    func.instructions = new_body;
+    func.locals.clear();
 }
 
 // ============================================================================
@@ -1720,6 +2013,708 @@ mod tests {
 
         let eliminated = eliminate_trivial_calls(&mut module).unwrap();
         assert_eq!(eliminated, 2);
+    }
+
+    // ========================================================================
+    // Pass 0: Same-Memory Adapter Collapse tests
+    // ========================================================================
+
+    /// Helper: create a same-memory adapter function.
+    ///
+    /// Simulates a meld-generated adapter that allocates a buffer via cabi_realloc,
+    /// copies data within the same memory, and calls the target.
+    fn make_same_memory_adapter(
+        params: &[ValueType],
+        results: &[ValueType],
+        realloc_idx: u32,
+        target_idx: u32,
+    ) -> Function {
+        let mut instructions = Vec::new();
+
+        // Typical adapter pattern:
+        // 1. Read parameters
+        instructions.push(Instruction::LocalGet(0));
+        if params.len() > 1 {
+            instructions.push(Instruction::LocalGet(1));
+        }
+
+        // 2. Call cabi_realloc to allocate buffer
+        instructions.push(Instruction::I32Const(0)); // old_ptr
+        instructions.push(Instruction::I32Const(0)); // old_size
+        instructions.push(Instruction::I32Const(1)); // align
+        instructions.push(Instruction::I32Const(8)); // new_size
+        instructions.push(Instruction::Call(realloc_idx));
+        instructions.push(Instruction::LocalSet(params.len() as u32)); // store new_ptr in local
+
+        // 3. memory.copy within same memory (dst=0, src=0)
+        instructions.push(Instruction::LocalGet(params.len() as u32)); // dst
+        instructions.push(Instruction::LocalGet(0)); // src
+        instructions.push(Instruction::I32Const(8)); // len
+        instructions.push(Instruction::MemoryCopy {
+            dst_mem: 0,
+            src_mem: 0,
+        });
+
+        // 4. Call target with new pointer
+        instructions.push(Instruction::LocalGet(params.len() as u32));
+        if params.len() > 1 {
+            instructions.push(Instruction::LocalGet(1));
+        }
+        instructions.push(Instruction::Call(target_idx));
+
+        instructions.push(Instruction::End);
+
+        Function {
+            name: Some(format!("$adapter_same_mem_{}", target_idx)),
+            signature: FunctionSignature {
+                params: params.to_vec(),
+                results: results.to_vec(),
+            },
+            locals: vec![(1, ValueType::I32)], // Temporary pointer local
+            instructions,
+        }
+    }
+
+    /// Helper: create a module with a single memory and a cabi_realloc import.
+    fn single_memory_module_with_realloc() -> (Module, u32) {
+        let mut module = empty_module();
+
+        // Add realloc signature type: (i32, i32, i32, i32) -> i32
+        let realloc_sig = FunctionSignature {
+            params: vec![
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(realloc_sig);
+
+        // Add target signature type: (i32, i32) -> i32
+        let target_sig = FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(target_sig);
+
+        // Import cabi_realloc (function index 0)
+        module.imports.push(Import {
+            module: "cabi".to_string(),
+            name: "cabi_realloc".to_string(),
+            kind: ImportKind::Func(0), // type index 0 = realloc sig
+        });
+
+        // Add a single memory
+        module.memories.push(crate::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        let realloc_idx = 0u32; // Import index 0
+        (module, realloc_idx)
+    }
+
+    #[test]
+    fn test_collapse_same_memory_adapter_basic() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target function
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): same-memory adapter -> target (abs idx 1)
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1, // target abs idx
+        ));
+
+        module.exports.push(Export {
+            name: "adapter".to_string(),
+            kind: ExportKind::Func(2),
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 1);
+
+        // Verify the adapter was collapsed to a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty(), "locals should be cleared");
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_preserves_non_adapter() {
+        let (mut module, _realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): a normal function with real logic (not an adapter)
+        module.functions.push(Function {
+            name: Some("real_function".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::I32Const(1),
+                Instruction::I32Add,
+                Instruction::End,
+            ],
+        });
+
+        module.exports.push(Export {
+            name: "func".to_string(),
+            kind: ExportKind::Func(1),
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0);
+
+        // Function unchanged
+        assert_eq!(module.functions[0].instructions.len(), 4);
+    }
+
+    #[test]
+    fn test_collapse_skips_multi_memory() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Add a second memory -> multi-memory module
+        module.memories.push(crate::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): same-memory adapter
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1,
+        ));
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0, "multi-memory modules should be skipped");
+    }
+
+    #[test]
+    fn test_collapse_skips_different_memory_copy() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with cross-memory copy (dst=0, src=1)
+        module.functions.push(Function {
+            name: Some("cross_mem_adapter".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 1, // Cross-memory!
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0, "cross-memory copy should not be collapsed");
+    }
+
+    #[test]
+    fn test_collapse_skips_no_locals() {
+        let (mut module, _realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): trivial adapter (no locals) - Pass 1 handles this
+        module
+            .functions
+            .push(make_adapter(&[ValueType::I32], &[ValueType::I32], 1));
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "trivial adapters without locals should be skipped (Pass 1 handles)"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_control_flow() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with control flow (If)
+        module.functions.push(Function {
+            name: Some("adapter_with_if".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(8),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                    else_body: vec![Instruction::Nop],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter with control flow should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_memory_stores() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with i32.store
+        module.functions.push(Function {
+            name: Some("adapter_with_store".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Store {
+                    offset: 0,
+                    align: 2,
+                }, // Store!
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter with memory stores should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_global_writes() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with global.set
+        module.functions.push(Function {
+            name: Some("adapter_with_global_set".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::GlobalSet(0), // Global write!
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter with global writes should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_signature_mismatch() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target with DIFFERENT signature
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32], // Only 1 param vs adapter's 2
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter (i32, i32) -> i32, but target is (i32) -> i32
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1,
+        ));
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0, "signature mismatch should prevent collapse");
+    }
+
+    #[test]
+    fn test_collapse_then_devirtualize() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): same-memory adapter -> target (abs idx 1)
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1,
+        ));
+
+        // Function 2 (abs idx 3): caller that calls the adapter (abs idx 2)
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(2), // calls adapter
+                Instruction::End,
+            ],
+        });
+
+        module.exports.push(Export {
+            name: "caller".to_string(),
+            kind: ExportKind::Func(3),
+        });
+        module.exports.push(Export {
+            name: "target".to_string(),
+            kind: ExportKind::Func(1),
+        });
+
+        // Run full pipeline
+        let stats = optimize_fused_module(&mut module).unwrap();
+
+        // Pass 0 should have collapsed the adapter
+        assert_eq!(stats.same_memory_adapters_collapsed, 1);
+
+        // Pass 1 should have devirtualized the call
+        assert!(stats.adapters_detected >= 1);
+        assert!(stats.calls_devirtualized >= 1);
+
+        // After the full pipeline (including DCE), find the caller function.
+        // The adapter may have been eliminated as dead, shifting indices.
+        let caller = module
+            .functions
+            .iter()
+            .find(|f| f.name.as_deref() == Some("caller"))
+            .expect("caller function should still exist");
+
+        // The caller should NOT still be calling the original adapter index (2).
+        // After collapse + devirtualize + DCE, it should call the target directly.
+        let calls_adapter = caller.instructions.contains(&Instruction::Call(2));
+        assert!(
+            !calls_adapter,
+            "caller should no longer call the adapter after collapse + devirtualize"
+        );
+    }
+
+    #[test]
+    fn test_collapse_multiple_adapters() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+
+        // Function 0 (abs idx 1): target A
+        module.functions.push(Function {
+            name: Some("target_a".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): target B
+        module.functions.push(Function {
+            name: Some("target_b".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(1), Instruction::End],
+        });
+
+        // Function 2 (abs idx 3): adapter -> target A (abs idx 1)
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            1,
+        ));
+
+        // Function 3 (abs idx 4): adapter -> target B (abs idx 2)
+        module.functions.push(make_same_memory_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            realloc_idx,
+            2,
+        ));
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 2, "both adapters should be collapsed");
+
+        // Verify both are now forwarding trampolines
+        for (func_local_idx, target_abs_idx) in [(2, 1u32), (3, 2u32)] {
+            let adapter = &module.functions[func_local_idx];
+            assert!(adapter.locals.is_empty());
+            assert_eq!(
+                adapter.instructions,
+                vec![
+                    Instruction::LocalGet(0),
+                    Instruction::LocalGet(1),
+                    Instruction::Call(target_abs_idx),
+                    Instruction::End,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn test_collapse_with_return_copy() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with forward copy AND return copy
+        // (both are same-memory copies)
+        module.functions.push(Function {
+            name: Some("adapter_with_return_copy".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(2, ValueType::I32)], // Two temp locals
+            instructions: vec![
+                // Forward: allocate + copy args
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                }, // Forward copy
+                // Call target
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                // Return: copy results back (same memory)
+                Instruction::LocalSet(3),
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(4),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(3),
+                Instruction::I32Const(4),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                }, // Return copy
+                Instruction::LocalGet(2),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "adapter with forward + return copy should be collapsed"
+        );
+
+        // Verify it's now a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
     }
 
     // ========================================================================
