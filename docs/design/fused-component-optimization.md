@@ -7,6 +7,7 @@ Specialized optimization for WebAssembly modules produced by component fusion (e
 When multiple P2/P3 WebAssembly components are **fused** into a single core module, the result contains characteristic patterns that standard optimization passes miss. The fused component optimizer targets these patterns specifically, achieving additional size and performance improvements beyond what loom's standard 12-phase pipeline provides.
 
 Component fusion (performed by tools like meld) combines multiple components into one module. This process introduces:
+- **Same-memory adapters** that redundantly allocate+copy within a single linear memory
 - **Adapter trampolines** for cross-component calls
 - **Duplicate function types** from each source component
 - **Duplicate imports** where multiple components imported the same external function
@@ -124,7 +125,8 @@ Multiple components may import the same external function. These are merged and 
 
 ```mermaid
 flowchart TD
-    Input[Fused Module from meld] --> P1
+    Input[Fused Module from meld] --> P0
+    P0["Pass 0: Same-Memory Adapter Collapse"] --> P1
     P1["Pass 1: Adapter Devirtualization"] --> P2
     P2["Pass 2: Trivial Call Elimination"] --> P3
     P3["Pass 3: Function Type Deduplication"] --> P4
@@ -132,6 +134,35 @@ flowchart TD
     P5["Pass 5: Import Deduplication"] --> Output
     Output[Cleaned Module] --> Standard["loom 12-Phase Pipeline"]
 ```
+
+### Pass 0: Same-Memory Adapter Collapse
+
+**What**: Collapse same-memory adapters (realloc + memory.copy within one linear memory) into trivial forwarding trampolines.
+
+**Pattern detected**: Functions in single-memory modules that:
+- Have locals (temporary pointers for the copy)
+- Contain `memory.copy {0, 0}` (same-memory copy) with no cross-memory copies
+- Call `cabi_realloc` at least once
+- Call exactly one non-realloc target function
+- Have no control flow, memory stores, or global writes
+- Have the same signature as the target
+
+**Transformation**: Replace the function body with a forwarding trampoline:
+```wasm
+;; Before: allocate + copy + call target
+(func $adapter (param i32 i32) (result i32)
+  ... cabi_realloc ... memory.copy 0 0 ... call $target ...)
+
+;; After: trivial forwarding (Pass 1 then devirtualizes)
+(func $adapter (param i32 i32) (result i32)
+  local.get 0
+  local.get 1
+  call $target)
+```
+
+**Why this is correct**: In a single-memory module, `memory.copy {0, 0}` copies within the same address space. The adapter allocates a buffer, copies argument data to it, then calls the target with the new pointer. Since both pointers reference the same memory, the target can read the data at the original pointer directly. The allocation and copy are semantically redundant.
+
+**Synergy with Pass 1**: After collapse, the adapter is a trivial forwarding trampoline. Pass 1 detects this and rewrites all callers to call the target directly, eliminating both the adapter overhead AND the unnecessary allocation/copy.
 
 ### Pass 1: Adapter Devirtualization
 
@@ -192,6 +223,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 
 | Theorem | Status | Pass |
 |---|---|---|
+| `same_memory_collapse_correct` | **Proven** | Pass 0 |
 | `adapter_devirtualization_correct` | **Proven** | Pass 1 |
 | `devirtualization_preserves_module_semantics` | **Proven** | Pass 1 |
 | `trivial_call_is_nop` | **Proven** | Pass 2 |
@@ -204,21 +236,23 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-All 11 theorems are proven (Qed). Zero Admitted proofs remain.
+All 12 theorems are proven (Qed). Zero Admitted proofs remain.
 
 ### Proof Architecture
 
-The proofs rely on three well-justified semantic axioms from the WASM spec:
+The proofs rely on four well-justified semantic axioms from the WASM spec:
 
 ```mermaid
 flowchart TD
     subgraph axioms["Semantic Axioms (WASM Spec)"]
+        A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
         A1["trivial_adapter_equiv\n(Spec §4.4.8: call semantics)"]
         A2["identical_import_equiv\n(Spec §2.5.10: import resolution)"]
         A3["trivial_call_nop\n(Spec §4.4.8: void call = no-op)"]
     end
 
     subgraph proven["Proven Theorems (Qed)"]
+        SM["same_memory_collapse_correct"]
         AD["adapter_devirtualization_correct"]
         TC["trivial_call_is_nop"]
         TP["type_dedup_preserves_semantics"]
@@ -230,9 +264,11 @@ flowchart TD
         FS["fused_then_standard_correct"]
     end
 
+    A0 --> SM
     A1 --> AD
     A2 --> IP
     A3 --> TC
+    SM --> FC
     AD --> FC
     TC --> FC
     TP --> FC
@@ -262,12 +298,13 @@ flowchart TD
     Input --> Fused
 
     subgraph Fused["Fused Component Optimization"]
+        F0["0. Same-memory adapter collapse"]
         F1["1. Adapter devirtualization"]
         F2["2. Trivial call elimination"]
         F3["3. Type deduplication"]
         F4["4. Dead function elimination"]
         F5["5. Import deduplication"]
-        F1 --> F2 --> F3 --> F4 --> F5
+        F0 --> F1 --> F2 --> F3 --> F4 --> F5
     end
 
     Fused --> Standard
@@ -316,6 +353,7 @@ let mut module: Module = parse_wasm(&bytes)?;
 
 // Apply fused-specific optimizations first
 let stats: FusedOptimizationStats = optimize_fused_module(&mut module)?;
+println!("Same-memory adapters collapsed: {}", stats.same_memory_adapters_collapsed);
 println!("Adapters devirtualized: {}", stats.calls_devirtualized);
 println!("Trivial calls eliminated: {}", stats.trivial_calls_eliminated);
 println!("Types deduplicated: {}", stats.types_deduplicated);
@@ -334,12 +372,13 @@ optimize_module(&mut module)?;
 
 | Feature | Status | Coverage |
 |---|---|---|
+| Same-memory adapter collapse | Done | Single-memory modules with realloc+copy adapters |
 | Trivial adapter devirtualization | Done | All direct adapters |
 | Trivial call elimination | Done | () -> () no-op functions |
 | Function type deduplication | Done | Basic types (skips GC) |
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
-| Correctness proofs | Done | All 11 theorems proven (Qed) |
+| Correctness proofs | Done | All 12 theorems proven (Qed) |
 
 ### Planned
 
@@ -347,7 +386,6 @@ optimize_module(&mut module)?;
 flowchart TD
     subgraph tier1["Tier 1: Next Optimizations"]
         T1["Memory-crossing adapter simplification"]
-        T2["Same-memory adapter collapse"]
     end
 
     subgraph tier2["Tier 2: Advanced"]
@@ -361,7 +399,6 @@ flowchart TD
 | Feature | Priority | Impact | Effort |
 |---|---|---|---|
 | Memory-crossing adapter simplification | High | Eliminates entire adapters in shared-memory | High |
-| Same-memory adapter collapse | High | Reduces call overhead for co-located components | Medium |
 | String transcoding detection | Low | Rare but high savings when hit | Very High |
 | Multi-memory adapter inlining | Low | Reduces trampoline overhead in multi-memory mode | High |
 
