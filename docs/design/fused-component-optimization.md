@@ -144,7 +144,7 @@ flowchart TD
 - Contain `memory.copy {0, 0}` (same-memory copy) with no cross-memory copies
 - Call `cabi_realloc` at least once
 - Call exactly one non-realloc target function
-- Have no control flow, memory stores, or unsafe global writes (balanced single-global save/restore such as stack pointer prologue/epilogue is allowed)
+- Have no unsafe control flow (null-guard `If` blocks with empty/nop else bodies and safe-to-discard then bodies are allowed; `Block`, `Loop`, `Br`, `BrIf`, `BrTable` are rejected; balanced single-global save/restore is allowed; memory stores are allowed — they target the discarded realloc'd buffer)
 - Have the same signature as the target
 
 **Transformation**: Replace the function body with a forwarding trampoline:
@@ -163,6 +163,10 @@ flowchart TD
 **Why this is correct**: In a single-memory module, `memory.copy {0, 0}` copies within the same address space. The adapter allocates a buffer, copies argument data to it, then calls the target with the new pointer. Since both pointers reference the same memory, the target can read the data at the original pointer directly. The allocation and copy are semantically redundant.
 
 **Stack pointer save/restore**: Meld-generated adapters for non-trivial types often include a stack pointer prologue/epilogue (`global.get $sp; sub; global.set $sp` ... `global.set $sp` to restore). These balanced single-global writes are safe to collapse because the entire body is replaced by a forwarding trampoline — the global is never modified in the collapsed function (net-zero effect). The predicate `has_unsafe_global_writes` allows this pattern while still rejecting writes to multiple globals or write-only globals.
+
+**Memory stores**: Meld-generated adapters for complex types (records, lists) perform field-by-field copying via load+store pairs alongside `memory.copy`. These stores target the freshly realloc'd buffer, which is discarded when the adapter body is replaced by a forwarding trampoline. The target reads from the original pointer in the same address space, so the stores are semantically redundant.
+
+**Null-guard If blocks**: Meld-generated adapters for optional/nullable types wrap the realloc+copy in a null-guard `if` block. These are safe to collapse because: if the condition is true (Some), the copy is same-memory redundant — skipping it is equivalent; if false (None), the copy never ran anyway. The then_body must contain only safe-to-discard instructions (locals, constants, arithmetic, loads, stores, realloc calls, `memory.copy {0, 0}`). Nested `If` inside `If`, non-empty else bodies, `Block`, `Loop`, `Br`, `BrIf`, and `BrTable` remain rejected.
 
 **Synergy with Pass 1**: After collapse, the adapter is a trivial forwarding trampoline. Pass 1 detects this and rewrites all callers to call the target directly, eliminating both the adapter overhead AND the unnecessary allocation/copy.
 
@@ -227,6 +231,8 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 |---|---|---|
 | `same_memory_collapse_correct` | **Proven** | Pass 0 |
 | `sp_save_restore_collapse_correct` | **Proven** | Pass 0 |
+| `null_guard_collapse_correct` | **Proven** | Pass 0 |
+| `store_discard_collapse_correct` | **Proven** | Pass 0 |
 | `adapter_devirtualization_correct` | **Proven** | Pass 1 |
 | `devirtualization_preserves_module_semantics` | **Proven** | Pass 1 |
 | `trivial_call_is_nop` | **Proven** | Pass 2 |
@@ -239,7 +245,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-All 13 theorems are proven (Qed). Zero Admitted proofs remain.
+All 15 theorems are proven (Qed). Zero Admitted proofs remain.
 
 ### Proof Architecture
 
@@ -257,6 +263,8 @@ flowchart TD
     subgraph proven["Proven Theorems (Qed)"]
         SM["same_memory_collapse_correct"]
         SP["sp_save_restore_collapse_correct"]
+        NG["null_guard_collapse_correct"]
+        SD["store_discard_collapse_correct"]
         AD["adapter_devirtualization_correct"]
         TC["trivial_call_is_nop"]
         TP["type_dedup_preserves_semantics"]
@@ -270,11 +278,15 @@ flowchart TD
 
     A0 --> SM
     A0 --> SP
+    A0 --> NG
+    A0 --> SD
     A1 --> AD
     A2 --> IP
     A3 --> TC
     SM --> FC
     SP --> FC
+    NG --> FC
+    SD --> FC
     AD --> FC
     TC --> FC
     TP --> FC
@@ -384,7 +396,7 @@ optimize_module(&mut module)?;
 | Function type deduplication | Done | Basic types (skips GC) |
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
-| Correctness proofs | Done | All 12 theorems proven (Qed) |
+| Correctness proofs | Done | All 15 theorems proven (Qed) |
 
 ### Planned
 

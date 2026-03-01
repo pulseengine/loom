@@ -27,7 +27,7 @@ repos:
         pass_filenames: false
       - id: cargo-test
         name: cargo test
-        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo test --all'
+        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo test --release --all'
         language: system
         types: [rust]
         pass_filenames: false

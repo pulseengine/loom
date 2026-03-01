@@ -159,9 +159,10 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 /// - All memory.copy instructions use {dst: 0, src: 0} (same memory)
 /// - At least one call to a known cabi_realloc function
 /// - Exactly one call to a non-realloc target function
-/// - No control flow (Block, Loop, If, Br, BrIf, BrTable)
-/// - No memory stores (I32Store, I64Store, F32Store, F64Store, etc.)
+/// - No unsafe control flow (Block, Loop, Br, BrIf, BrTable rejected; safe null-guard
+///   If blocks with empty/nop else bodies and safe-to-discard then bodies are allowed)
 /// - No unsafe global writes (balanced single-global save/restore is allowed)
+/// - Memory stores are allowed (they target the realloc'd buffer which is discarded)
 /// - Target function has the same signature as the adapter
 ///
 /// Returns the number of adapters collapsed.
@@ -270,6 +271,73 @@ fn find_realloc_functions(module: &Module) -> HashSet<u32> {
     realloc_set
 }
 
+/// Recursively count MemoryCopy and Call instructions, including inside If/Block/Loop bodies.
+fn count_copies_and_calls(
+    instructions: &[Instruction],
+    realloc_funcs: &HashSet<u32>,
+    same_memory_copies: &mut usize,
+    has_cross_memory_copy: &mut bool,
+    realloc_calls: &mut usize,
+    target_call: &mut Option<u32>,
+    target_call_count: &mut usize,
+) {
+    for instr in instructions {
+        match instr {
+            Instruction::MemoryCopy { dst_mem, src_mem } => {
+                if *dst_mem == 0 && *src_mem == 0 {
+                    *same_memory_copies += 1;
+                } else {
+                    *has_cross_memory_copy = true;
+                }
+            }
+            Instruction::Call(func_idx) => {
+                if realloc_funcs.contains(func_idx) {
+                    *realloc_calls += 1;
+                } else {
+                    *target_call = Some(*func_idx);
+                    *target_call_count += 1;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count_copies_and_calls(
+                    then_body,
+                    realloc_funcs,
+                    same_memory_copies,
+                    has_cross_memory_copy,
+                    realloc_calls,
+                    target_call,
+                    target_call_count,
+                );
+                count_copies_and_calls(
+                    else_body,
+                    realloc_funcs,
+                    same_memory_copies,
+                    has_cross_memory_copy,
+                    realloc_calls,
+                    target_call,
+                    target_call_count,
+                );
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                count_copies_and_calls(
+                    body,
+                    realloc_funcs,
+                    same_memory_copies,
+                    has_cross_memory_copy,
+                    realloc_calls,
+                    target_call,
+                    target_call_count,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Check if a function is a same-memory adapter.
 ///
 /// Returns the target function index if the function matches the pattern, None otherwise.
@@ -279,9 +347,9 @@ fn find_realloc_functions(module: &Module) -> HashSet<u32> {
 /// 2. Contains at least one `memory.copy {0, 0}` and no cross-memory copies
 /// 3. Contains at least one call to a realloc function
 /// 4. Contains exactly one call to a non-realloc function (the target)
-/// 5. No control flow instructions
-/// 6. No memory store instructions
-/// 7. No unsafe global writes (balanced single-global save/restore is allowed)
+/// 5. No unsafe control flow (safe null-guard If blocks are allowed)
+/// 6. No unsafe global writes (balanced single-global save/restore is allowed)
+/// 7. Memory stores are allowed (they target the discarded realloc'd buffer)
 fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Option<u32> {
     // Must have locals (trivial adapters without locals are handled by Pass 1)
     if func.locals.is_empty() {
@@ -291,45 +359,29 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
     let instructions = &func.instructions;
 
     // Check for disqualifying instructions
-    if has_control_flow(instructions) {
-        return None;
-    }
-    if has_memory_stores(instructions) {
+    if has_unsafe_control_flow(instructions, realloc_funcs) {
         return None;
     }
     if has_unsafe_global_writes(instructions) {
         return None;
     }
 
-    // Count memory.copy instructions - must have at least one same-memory copy
-    // and no cross-memory copies
+    // Count memory.copy and call instructions recursively
     let mut same_memory_copies = 0usize;
     let mut has_cross_memory_copy = false;
-    // Count calls - must have at least one realloc call and exactly one target call
     let mut realloc_calls = 0usize;
     let mut target_call: Option<u32> = None;
     let mut target_call_count = 0usize;
 
-    for instr in instructions {
-        match instr {
-            Instruction::MemoryCopy { dst_mem, src_mem } => {
-                if *dst_mem == 0 && *src_mem == 0 {
-                    same_memory_copies += 1;
-                } else {
-                    has_cross_memory_copy = true;
-                }
-            }
-            Instruction::Call(func_idx) => {
-                if realloc_funcs.contains(func_idx) {
-                    realloc_calls += 1;
-                } else {
-                    target_call = Some(*func_idx);
-                    target_call_count += 1;
-                }
-            }
-            _ => {}
-        }
-    }
+    count_copies_and_calls(
+        instructions,
+        realloc_funcs,
+        &mut same_memory_copies,
+        &mut has_cross_memory_copy,
+        &mut realloc_calls,
+        &mut target_call,
+        &mut target_call_count,
+    );
 
     // Validate the pattern
     if same_memory_copies == 0 {
@@ -348,40 +400,296 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
     target_call
 }
 
-/// Check if instructions contain control flow (Block, Loop, If, Br, BrIf, BrTable).
-fn has_control_flow(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|instr| {
-        matches!(
-            instr,
-            Instruction::Block { .. }
-                | Instruction::Loop { .. }
-                | Instruction::If { .. }
-                | Instruction::Br(_)
-                | Instruction::BrIf(_)
-                | Instruction::BrTable { .. }
-        )
+/// Check if instructions contain unsafe control flow.
+///
+/// `Block`, `Loop`, `Br`, `BrIf`, `BrTable` are always unsafe.
+///
+/// `If` is safe ONLY when:
+/// - The else_body is empty or contains only Nop instructions, AND
+/// - The then_body passes `is_safe_copy_body` (all instructions are safe to discard)
+///
+/// This allows null-guard patterns generated by meld for optional/nullable types:
+/// the entire adapter body gets replaced by a forwarding trampoline, so the
+/// conditional copy is simply discarded.
+fn has_unsafe_control_flow(instructions: &[Instruction], realloc_funcs: &HashSet<u32>) -> bool {
+    instructions.iter().any(|instr| match instr {
+        Instruction::Block { .. }
+        | Instruction::Loop { .. }
+        | Instruction::Br(_)
+        | Instruction::BrIf(_)
+        | Instruction::BrTable { .. } => true,
+        Instruction::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            // Else body must be empty or nop-only
+            let else_safe = else_body.is_empty()
+                || else_body
+                    .iter()
+                    .all(|i| matches!(i, Instruction::Nop | Instruction::End));
+            if !else_safe {
+                return true;
+            }
+            // Then body must contain only safe-to-discard instructions
+            !is_safe_copy_body(then_body, realloc_funcs)
+        }
+        _ => false,
     })
 }
 
-/// Check if instructions contain memory store operations.
-fn has_memory_stores(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|instr| {
-        matches!(
-            instr,
-            Instruction::I32Store { .. }
-                | Instruction::I64Store { .. }
-                | Instruction::F32Store { .. }
-                | Instruction::F64Store { .. }
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
-        )
+/// Check if all instructions in a body are safe to discard during adapter collapse.
+///
+/// Used to validate the then_body of null-guard If blocks in same-memory adapters.
+/// Every instruction must be either pure (no observable side effects) or part of
+/// the redundant realloc+copy pattern that collapse eliminates.
+///
+/// Safe: locals, constants, arithmetic, comparisons, loads (read-only), GlobalGet,
+/// realloc Call, `MemoryCopy {0, 0}`, Drop, Select, Nop, End, conversions,
+/// extensions, rotations, float ops, MemorySize.
+///
+/// Unsafe: non-realloc Call, CallIndirect, all stores, GlobalSet, MemoryGrow/Fill/Init,
+/// DataDrop, cross-memory MemoryCopy, any control flow, Return, Unreachable, Unknown.
+fn is_safe_copy_body(instructions: &[Instruction], realloc_funcs: &HashSet<u32>) -> bool {
+    instructions.iter().all(|instr| match instr {
+        // Local operations: pure
+        Instruction::LocalGet(_) | Instruction::LocalSet(_) | Instruction::LocalTee(_) => true,
+
+        // Constants: pure
+        Instruction::I32Const(_)
+        | Instruction::I64Const(_)
+        | Instruction::F32Const(_)
+        | Instruction::F64Const(_) => true,
+
+        // Integer arithmetic: pure
+        Instruction::I32Add
+        | Instruction::I32Sub
+        | Instruction::I32Mul
+        | Instruction::I32DivS
+        | Instruction::I32DivU
+        | Instruction::I32RemS
+        | Instruction::I32RemU
+        | Instruction::I32And
+        | Instruction::I32Or
+        | Instruction::I32Xor
+        | Instruction::I32Shl
+        | Instruction::I32ShrS
+        | Instruction::I32ShrU
+        | Instruction::I32Rotl
+        | Instruction::I32Rotr
+        | Instruction::I32Clz
+        | Instruction::I32Ctz
+        | Instruction::I32Popcnt
+        | Instruction::I64Add
+        | Instruction::I64Sub
+        | Instruction::I64Mul
+        | Instruction::I64DivS
+        | Instruction::I64DivU
+        | Instruction::I64RemS
+        | Instruction::I64RemU
+        | Instruction::I64And
+        | Instruction::I64Or
+        | Instruction::I64Xor
+        | Instruction::I64Shl
+        | Instruction::I64ShrS
+        | Instruction::I64ShrU
+        | Instruction::I64Rotl
+        | Instruction::I64Rotr
+        | Instruction::I64Clz
+        | Instruction::I64Ctz
+        | Instruction::I64Popcnt => true,
+
+        // Integer comparisons: pure
+        Instruction::I32Eqz
+        | Instruction::I32Eq
+        | Instruction::I32Ne
+        | Instruction::I32LtS
+        | Instruction::I32LtU
+        | Instruction::I32GtS
+        | Instruction::I32GtU
+        | Instruction::I32LeS
+        | Instruction::I32LeU
+        | Instruction::I32GeS
+        | Instruction::I32GeU
+        | Instruction::I64Eqz
+        | Instruction::I64Eq
+        | Instruction::I64Ne
+        | Instruction::I64LtS
+        | Instruction::I64LtU
+        | Instruction::I64GtS
+        | Instruction::I64GtU
+        | Instruction::I64LeS
+        | Instruction::I64LeU
+        | Instruction::I64GeS
+        | Instruction::I64GeU => true,
+
+        // Float arithmetic: pure
+        Instruction::F32Add
+        | Instruction::F32Sub
+        | Instruction::F32Mul
+        | Instruction::F32Div
+        | Instruction::F32Min
+        | Instruction::F32Max
+        | Instruction::F32Copysign
+        | Instruction::F32Abs
+        | Instruction::F32Neg
+        | Instruction::F32Ceil
+        | Instruction::F32Floor
+        | Instruction::F32Trunc
+        | Instruction::F32Nearest
+        | Instruction::F32Sqrt
+        | Instruction::F64Add
+        | Instruction::F64Sub
+        | Instruction::F64Mul
+        | Instruction::F64Div
+        | Instruction::F64Min
+        | Instruction::F64Max
+        | Instruction::F64Copysign
+        | Instruction::F64Abs
+        | Instruction::F64Neg
+        | Instruction::F64Ceil
+        | Instruction::F64Floor
+        | Instruction::F64Trunc
+        | Instruction::F64Nearest
+        | Instruction::F64Sqrt => true,
+
+        // Float comparisons: pure
+        Instruction::F32Eq
+        | Instruction::F32Ne
+        | Instruction::F32Lt
+        | Instruction::F32Gt
+        | Instruction::F32Le
+        | Instruction::F32Ge
+        | Instruction::F64Eq
+        | Instruction::F64Ne
+        | Instruction::F64Lt
+        | Instruction::F64Gt
+        | Instruction::F64Le
+        | Instruction::F64Ge => true,
+
+        // Conversions: pure
+        Instruction::I32TruncF32S
+        | Instruction::I32TruncF32U
+        | Instruction::I32TruncF64S
+        | Instruction::I32TruncF64U
+        | Instruction::I64TruncF32S
+        | Instruction::I64TruncF32U
+        | Instruction::I64TruncF64S
+        | Instruction::I64TruncF64U
+        | Instruction::I32TruncSatF32S
+        | Instruction::I32TruncSatF32U
+        | Instruction::I32TruncSatF64S
+        | Instruction::I32TruncSatF64U
+        | Instruction::I64TruncSatF32S
+        | Instruction::I64TruncSatF32U
+        | Instruction::I64TruncSatF64S
+        | Instruction::I64TruncSatF64U
+        | Instruction::F32ConvertI32S
+        | Instruction::F32ConvertI32U
+        | Instruction::F32ConvertI64S
+        | Instruction::F32ConvertI64U
+        | Instruction::F64ConvertI32S
+        | Instruction::F64ConvertI32U
+        | Instruction::F64ConvertI64S
+        | Instruction::F64ConvertI64U
+        | Instruction::F32DemoteF64
+        | Instruction::F64PromoteF32
+        | Instruction::I32ReinterpretF32
+        | Instruction::I64ReinterpretF64
+        | Instruction::F32ReinterpretI32
+        | Instruction::F64ReinterpretI64 => true,
+
+        // Extensions: pure
+        Instruction::I64ExtendI32S
+        | Instruction::I64ExtendI32U
+        | Instruction::I32WrapI64
+        | Instruction::I32Extend8S
+        | Instruction::I32Extend16S
+        | Instruction::I64Extend8S
+        | Instruction::I64Extend16S
+        | Instruction::I64Extend32S => true,
+
+        // Loads: read-only (same memory, no side effects)
+        Instruction::I32Load { .. }
+        | Instruction::I64Load { .. }
+        | Instruction::F32Load { .. }
+        | Instruction::F64Load { .. }
+        | Instruction::I32Load8S { .. }
+        | Instruction::I32Load8U { .. }
+        | Instruction::I32Load16S { .. }
+        | Instruction::I32Load16U { .. }
+        | Instruction::I64Load8S { .. }
+        | Instruction::I64Load8U { .. }
+        | Instruction::I64Load16S { .. }
+        | Instruction::I64Load16U { .. }
+        | Instruction::I64Load32S { .. }
+        | Instruction::I64Load32U { .. } => true,
+
+        // GlobalGet: read-only
+        Instruction::GlobalGet(_) => true,
+
+        // Same-memory copy: redundant (the pattern we're collapsing)
+        Instruction::MemoryCopy { dst_mem, src_mem } => *dst_mem == 0 && *src_mem == 0,
+
+        // Realloc calls: part of the redundant pattern
+        Instruction::Call(idx) => realloc_funcs.contains(idx),
+
+        // MemorySize: read-only
+        Instruction::MemorySize(_) => true,
+
+        // Drop, Select, Nop, End: no side effects
+        Instruction::Drop | Instruction::Select | Instruction::Nop | Instruction::End => true,
+
+        // Stores: target the realloc'd buffer which is discarded when the adapter
+        // body is replaced by a forwarding trampoline (safe in same-memory collapse)
+        Instruction::I32Store { .. }
+        | Instruction::I64Store { .. }
+        | Instruction::F32Store { .. }
+        | Instruction::F64Store { .. }
+        | Instruction::I32Store8 { .. }
+        | Instruction::I32Store16 { .. }
+        | Instruction::I64Store8 { .. }
+        | Instruction::I64Store16 { .. }
+        | Instruction::I64Store32 { .. } => true,
+
+        // Everything else is unsafe (GlobalSet, control flow, MemoryGrow,
+        // MemoryFill, MemoryInit, DataDrop, CallIndirect, Return, Unreachable, Unknown)
+        _ => false,
     })
 }
 
-/// Check if instructions contain unsafe global write operations.
+/// Recursively collect GlobalSet and GlobalGet indices from instructions,
+/// including inside If/Block/Loop bodies.
+fn collect_global_ops(
+    instructions: &[Instruction],
+    set_indices: &mut HashSet<u32>,
+    get_indices: &mut HashSet<u32>,
+) {
+    for instr in instructions {
+        match instr {
+            Instruction::GlobalSet(idx) => {
+                set_indices.insert(*idx);
+            }
+            Instruction::GlobalGet(idx) => {
+                get_indices.insert(*idx);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_global_ops(then_body, set_indices, get_indices);
+                collect_global_ops(else_body, set_indices, get_indices);
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                collect_global_ops(body, set_indices, get_indices);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Check if instructions contain unsafe global write operations (recursively).
 ///
 /// A global write is **safe** (returns false) when:
 /// - No GlobalSet instructions exist, OR
@@ -395,18 +703,11 @@ fn has_memory_stores(instructions: &[Instruction]) -> bool {
 fn has_unsafe_global_writes(instructions: &[Instruction]) -> bool {
     let mut global_set_indices: HashSet<u32> = HashSet::new();
     let mut global_get_indices: HashSet<u32> = HashSet::new();
-
-    for instr in instructions {
-        match instr {
-            Instruction::GlobalSet(idx) => {
-                global_set_indices.insert(*idx);
-            }
-            Instruction::GlobalGet(idx) => {
-                global_get_indices.insert(*idx);
-            }
-            _ => {}
-        }
-    }
+    collect_global_ops(
+        instructions,
+        &mut global_set_indices,
+        &mut global_get_indices,
+    );
 
     if global_set_indices.is_empty() {
         return false; // No writes → safe
@@ -2335,7 +2636,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collapse_skips_control_flow() {
+    fn test_collapse_allows_null_guard_if() {
         let (mut module, realloc_idx) = single_memory_module_with_realloc();
 
         // Function 0 (abs idx 1): target
@@ -2349,7 +2650,9 @@ mod tests {
             instructions: vec![Instruction::LocalGet(0), Instruction::End],
         });
 
-        // Function 1 (abs idx 2): adapter with control flow (If)
+        // Function 1 (abs idx 2): adapter with null-guard If
+        // The If has a safe then_body (only safe-to-discard instructions)
+        // and a nop-only else_body → safe to collapse
         module.functions.push(Function {
             name: Some("adapter_with_if".to_string()),
             signature: FunctionSignature {
@@ -2387,13 +2690,26 @@ mod tests {
 
         let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
         assert_eq!(
-            collapsed, 0,
-            "adapter with control flow should not be collapsed"
+            collapsed, 1,
+            "adapter with safe null-guard If should be collapsed"
+        );
+
+        // Verify the adapter was collapsed to a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty(), "locals should be cleared");
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
         );
     }
 
     #[test]
-    fn test_collapse_skips_memory_stores() {
+    fn test_collapse_allows_memory_stores() {
         let (mut module, realloc_idx) = single_memory_module_with_realloc();
 
         // Function 0 (abs idx 1): target
@@ -2407,7 +2723,7 @@ mod tests {
             instructions: vec![Instruction::LocalGet(0), Instruction::End],
         });
 
-        // Function 1 (abs idx 2): adapter with i32.store
+        // Function 1 (abs idx 2): adapter with i32.store (field-by-field copy)
         module.functions.push(Function {
             name: Some("adapter_with_store".to_string()),
             signature: FunctionSignature {
@@ -2427,7 +2743,7 @@ mod tests {
                 Instruction::I32Store {
                     offset: 0,
                     align: 2,
-                }, // Store!
+                }, // Store to realloc'd buffer — safe to discard
                 Instruction::LocalGet(2),
                 Instruction::LocalGet(0),
                 Instruction::I32Const(8),
@@ -2444,8 +2760,20 @@ mod tests {
 
         let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
         assert_eq!(
-            collapsed, 0,
-            "adapter with memory stores should not be collapsed"
+            collapsed, 1,
+            "adapter with memory stores should be collapsed"
+        );
+        // Verify it became a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
         );
     }
 
@@ -2960,6 +3288,815 @@ mod tests {
         );
 
         // Verify it's now a forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_allows_null_guard_with_sp() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with SP save/restore AND null-guard If
+        let sp_global = 0u32;
+        module.functions.push(Function {
+            name: Some("adapter_sp_null_guard".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(3, ValueType::I32)], // ptr + sp_saved + extra
+            instructions: vec![
+                // SP prologue
+                Instruction::GlobalGet(sp_global),
+                Instruction::I32Const(16),
+                Instruction::I32Sub,
+                Instruction::LocalSet(3),
+                Instruction::LocalGet(3),
+                Instruction::GlobalSet(sp_global),
+                // Realloc
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                // Null-guard: only copy if non-null
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(8),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                    else_body: vec![],
+                },
+                // Call target
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                // SP epilogue
+                Instruction::LocalGet(3),
+                Instruction::I32Const(16),
+                Instruction::I32Add,
+                Instruction::GlobalSet(sp_global),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "null-guard + SP save/restore should be collapsed"
+        );
+
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_allows_multiple_null_guards() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with TWO null-guard If blocks
+        module.functions.push(Function {
+            name: Some("adapter_two_guards".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                // First null guard
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(4),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                    else_body: vec![],
+                },
+                // Second null guard
+                Instruction::LocalGet(1),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::I32Const(4),
+                        Instruction::I32Add,
+                        Instruction::LocalGet(1),
+                        Instruction::I32Const(4),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                    else_body: vec![],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 1, "multiple null-guard Ifs should be collapsed");
+    }
+
+    #[test]
+    fn test_collapse_rejects_if_with_nonempty_else() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with If that has non-empty else body
+        module.functions.push(Function {
+            name: Some("adapter_nonempty_else".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(8),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                    else_body: vec![
+                        Instruction::I32Const(0),
+                        Instruction::LocalSet(2), // Non-trivial else body
+                    ],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "If with non-empty else body should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_rejects_if_with_non_realloc_call() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with unknown call inside If body
+        module.functions.push(Function {
+            name: Some("adapter_unknown_call_in_if".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(8),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                        Instruction::Call(99), // Unknown function call — unsafe
+                        Instruction::Drop,
+                    ],
+                    else_body: vec![],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "If with non-realloc call should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_allows_stores_in_null_guard_if() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with I32Store inside null-guard If
+        module.functions.push(Function {
+            name: Some("adapter_store_in_if".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Store {
+                            offset: 0,
+                            align: 2,
+                        }, // Store inside null-guard — safe to discard
+                    ],
+                    else_body: vec![],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 1, "stores in null-guard If should be collapsed");
+        // Verify forwarding trampoline
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_rejects_if_with_nested_if() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with nested If inside If
+        module.functions.push(Function {
+            name: Some("adapter_nested_if".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::LocalGet(1),
+                        Instruction::If {
+                            // Nested If — unsafe
+                            block_type: BlockType::Empty,
+                            then_body: vec![
+                                Instruction::LocalGet(2),
+                                Instruction::LocalGet(0),
+                                Instruction::I32Const(8),
+                                Instruction::MemoryCopy {
+                                    dst_mem: 0,
+                                    src_mem: 0,
+                                },
+                            ],
+                            else_body: vec![],
+                        },
+                    ],
+                    else_body: vec![],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0, "nested If inside If should not be collapsed");
+    }
+
+    #[test]
+    fn test_collapse_rejects_if_with_global_set() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with GlobalSet inside If body
+        module.functions.push(Function {
+            name: Some("adapter_global_set_in_if".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::LocalGet(0),
+                Instruction::If {
+                    block_type: BlockType::Empty,
+                    then_body: vec![
+                        Instruction::I32Const(42),
+                        Instruction::GlobalSet(0), // GlobalSet — unsafe in If body
+                    ],
+                    else_body: vec![],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "If with GlobalSet in body should not be collapsed"
+        );
+    }
+
+    #[test]
+    fn test_collapse_rejects_loop() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with Loop
+        module.functions.push(Function {
+            name: Some("adapter_with_loop".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                Instruction::Loop {
+                    block_type: BlockType::Empty,
+                    body: vec![
+                        Instruction::LocalGet(2),
+                        Instruction::LocalGet(0),
+                        Instruction::I32Const(8),
+                        Instruction::MemoryCopy {
+                            dst_mem: 0,
+                            src_mem: 0,
+                        },
+                    ],
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(collapsed, 0, "Loop at top level should not be collapsed");
+    }
+
+    #[test]
+    fn test_collapse_allows_field_by_field_copy() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with load+store field copy alongside memory.copy
+        module.functions.push(Function {
+            name: Some("adapter_field_copy".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(4),
+                Instruction::I32Const(12),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                // Field 0: load from src, store to buf
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                Instruction::I32Store {
+                    offset: 0,
+                    align: 2,
+                },
+                // Field 1: load from src, store to buf
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Load {
+                    offset: 4,
+                    align: 2,
+                },
+                Instruction::I32Store {
+                    offset: 4,
+                    align: 2,
+                },
+                // Remaining data via memory.copy
+                Instruction::LocalGet(2),
+                Instruction::I32Const(8),
+                Instruction::I32Add,
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::I32Add,
+                Instruction::I32Const(4),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "field-by-field copy adapter should be collapsed"
+        );
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_allows_stores_with_sp_save_restore() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+        let sp_global = 0u32;
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with SP save/restore + stores + memory.copy
+        module.functions.push(Function {
+            name: Some("adapter_sp_stores".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(2, ValueType::I32)],
+            instructions: vec![
+                // SP prologue
+                Instruction::GlobalGet(sp_global),
+                Instruction::I32Const(16),
+                Instruction::I32Sub,
+                Instruction::LocalSet(1),
+                Instruction::LocalGet(1),
+                Instruction::GlobalSet(sp_global),
+                // Realloc
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(4),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                // Store field
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                Instruction::I32Store {
+                    offset: 0,
+                    align: 2,
+                },
+                // memory.copy
+                Instruction::LocalGet(2),
+                Instruction::I32Const(4),
+                Instruction::I32Add,
+                Instruction::LocalGet(0),
+                Instruction::I32Const(4),
+                Instruction::I32Add,
+                Instruction::I32Const(4),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                // Call target
+                Instruction::LocalGet(2),
+                Instruction::Call(1),
+                // SP epilogue
+                Instruction::LocalGet(1),
+                Instruction::I32Const(16),
+                Instruction::I32Add,
+                Instruction::GlobalSet(sp_global),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "SP save/restore + stores + memory.copy should collapse"
+        );
+        let adapter = &module.functions[1];
+        assert!(adapter.locals.is_empty());
+        assert_eq!(
+            adapter.instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::Call(1),
+                Instruction::End,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collapse_allows_multiple_store_types() {
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with mixed store types
+        module.functions.push(Function {
+            name: Some("adapter_mixed_stores".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(4),
+                Instruction::I32Const(24),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(2),
+                // I32Store8: store a flags byte
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I32Load8U {
+                    offset: 0,
+                    align: 0,
+                },
+                Instruction::I32Store8 {
+                    offset: 0,
+                    align: 0,
+                },
+                // I64Store: store a 64-bit field
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::I64Load {
+                    offset: 8,
+                    align: 3,
+                },
+                Instruction::I64Store {
+                    offset: 8,
+                    align: 3,
+                },
+                // F32Store: store a float field
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::F32Load {
+                    offset: 16,
+                    align: 2,
+                },
+                Instruction::F32Store {
+                    offset: 16,
+                    align: 2,
+                },
+                // memory.copy for remaining
+                Instruction::LocalGet(2),
+                Instruction::I32Const(20),
+                Instruction::I32Add,
+                Instruction::LocalGet(0),
+                Instruction::I32Const(20),
+                Instruction::I32Add,
+                Instruction::I32Const(4),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 0,
+                },
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "adapter with I32Store8 + I64Store + F32Store should be collapsed"
+        );
         let adapter = &module.functions[1];
         assert!(adapter.locals.is_empty());
         assert_eq!(
