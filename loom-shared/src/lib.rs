@@ -527,23 +527,61 @@ pub enum ValueData {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I32Store {
         addr: Value,
         value: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I64Load {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I64Store {
         addr: Value,
         value: Value,
         offset: u32,
         align: u32,
+        mem: u32,
+    },
+
+    // ========================================================================
+    // Float Memory Operations
+    // ========================================================================
+    /// f32.load - Load 32-bit float from memory
+    F32Load {
+        addr: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f32.store - Store 32-bit float to memory
+    F32Store {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f64.load - Load 64-bit float from memory
+    F64Load {
+        addr: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f64.store - Store 64-bit float to memory
+    F64Store {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
     },
 
     // ========================================================================
@@ -554,60 +592,114 @@ pub enum ValueData {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load8_u - Load 8 bits and zero-extend to i32
     I32Load8U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load16_s - Load 16 bits and sign-extend to i32
     I32Load16S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load16_u - Load 16 bits and zero-extend to i32
     I32Load16U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load8_s - Load 8 bits and sign-extend to i64
     I64Load8S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load8_u - Load 8 bits and zero-extend to i64
     I64Load8U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load16_s - Load 16 bits and sign-extend to i64
     I64Load16S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load16_u - Load 16 bits and zero-extend to i64
     I64Load16U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load32_s - Load 32 bits and sign-extend to i64
     I64Load32S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load32_u - Load 32 bits and zero-extend to i64
     I64Load32U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
+    },
+
+    // ========================================================================
+    // Partial-Width Memory Store Operations
+    // ========================================================================
+    /// i32.store8 - Store low 8 bits of i32
+    I32Store8 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i32.store16 - Store low 16 bits of i32
+    I32Store16 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store8 - Store low 8 bits of i64
+    I64Store8 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store16 - Store low 16 bits of i64
+    I64Store16 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store32 - Store low 32 bits of i64
+    I64Store32 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
     },
 
     // ========================================================================
@@ -1203,40 +1295,86 @@ pub fn global_set(idx: u32, val: Value) -> Value {
 }
 
 /// Construct an i32.load operation
-pub fn i32_load(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.store operation
-pub fn i32_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
+pub fn i32_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Store {
         addr,
         value,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load operation
-pub fn i64_load(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.store operation
-pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
+pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Store {
         addr,
         value,
         offset,
         align,
+        mem,
+    }))
+}
+
+/// Construct an f32.load operation
+pub fn f32_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F32Load {
+        addr,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f32.store operation
+pub fn f32_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F32Store {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f64.load operation
+pub fn f64_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F64Load {
+        addr,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f64.store operation
+pub fn f64_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F64Store {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
     }))
 }
 
@@ -1245,92 +1383,161 @@ pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
 // ============================================================================
 
 /// Construct an i32.load8_s operation (load 8 bits, sign-extend to i32)
-pub fn i32_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load8_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load8S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load8_u operation (load 8 bits, zero-extend to i32)
-pub fn i32_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load8_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load8U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load16_s operation (load 16 bits, sign-extend to i32)
-pub fn i32_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load16_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load16S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load16_u operation (load 16 bits, zero-extend to i32)
-pub fn i32_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load16_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load16U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load8_s operation (load 8 bits, sign-extend to i64)
-pub fn i64_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load8_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load8S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load8_u operation (load 8 bits, zero-extend to i64)
-pub fn i64_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load8_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load8U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load16_s operation (load 16 bits, sign-extend to i64)
-pub fn i64_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load16_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load16S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load16_u operation (load 16 bits, zero-extend to i64)
-pub fn i64_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load16_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load16U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load32_s operation (load 32 bits, sign-extend to i64)
-pub fn i64_load32_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load32_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load32S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load32_u operation (load 32 bits, zero-extend to i64)
-pub fn i64_load32_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load32_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load32U {
         addr,
         offset,
         align,
+        mem,
+    }))
+}
+
+// ============================================================================
+// Partial-Width Memory Store Constructors
+// ============================================================================
+
+/// Construct an i32.store8 operation (store low 8 bits of i32)
+pub fn i32_store8(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I32Store8 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i32.store16 operation (store low 16 bits of i32)
+pub fn i32_store16(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I32Store16 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store8 operation (store low 8 bits of i64)
+pub fn i64_store8(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store8 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store16 operation (store low 16 bits of i64)
+pub fn i64_store16(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store16 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store32 operation (store low 32 bits of i64)
+pub fn i64_store32(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store32 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
     }))
 }
 
@@ -1799,6 +2006,8 @@ pub struct MemoryLocation {
     base: Option<i32>,
     /// Static offset
     offset: u32,
+    /// Memory index (a load from memory 0 at offset X != memory 1 at offset X)
+    mem: u32,
 }
 
 /// Environment for dataflow analysis
@@ -1882,6 +2091,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
 
@@ -1890,6 +2100,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 // Redundant load elimination: check if we know this value!
@@ -1899,7 +2110,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 }
             }
 
-            i32_load(simplified_addr, *offset, *align)
+            i32_load(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Store {
@@ -1907,6 +2118,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             value,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
             let simplified_value = simplify_with_env(value.clone(), env);
@@ -1916,6 +2128,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 // Store the value in our memory tracking
@@ -1927,13 +2140,14 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.invalidate_memory();
             }
 
-            i32_store(simplified_addr, simplified_value, *offset, *align)
+            i32_store(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         ValueData::I64Load {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
 
@@ -1941,6 +2155,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 if let Some(known_value) = env.memory.get(&mem_loc) {
@@ -1948,7 +2163,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 }
             }
 
-            i64_load(simplified_addr, *offset, *align)
+            i64_load(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Store {
@@ -1956,6 +2171,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             value,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
             let simplified_value = simplify_with_env(value.clone(), env);
@@ -1964,6 +2180,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 if matches!(simplified_value.data(), ValueData::I64Const { .. }) {
@@ -1973,7 +2190,55 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.invalidate_memory();
             }
 
-            i64_store(simplified_addr, simplified_value, *offset, *align)
+            i64_store(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        // Float memory operations - simplify address, no memory tracking
+        ValueData::F32Load {
+            addr,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            f32_load(simplified_addr, *offset, *align, *mem)
+        }
+
+        ValueData::F32Store {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            // Unknown store type - invalidate conservatively
+            env.invalidate_memory();
+            f32_store(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::F64Load {
+            addr,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            f64_load(simplified_addr, *offset, *align, *mem)
+        }
+
+        ValueData::F64Store {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            f64_store(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         // Partial-width memory load operations
@@ -1983,90 +2248,167 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load8_s(simplified_addr, *offset, *align)
+            i32_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load8U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load8_u(simplified_addr, *offset, *align)
+            i32_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load16S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load16_s(simplified_addr, *offset, *align)
+            i32_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load16U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load16_u(simplified_addr, *offset, *align)
+            i32_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load8S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load8_s(simplified_addr, *offset, *align)
+            i64_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load8U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load8_u(simplified_addr, *offset, *align)
+            i64_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load16S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load16_s(simplified_addr, *offset, *align)
+            i64_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load16U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load16_u(simplified_addr, *offset, *align)
+            i64_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load32S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load32_s(simplified_addr, *offset, *align)
+            i64_load32_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load32U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load32_u(simplified_addr, *offset, *align)
+            i64_load32_u(simplified_addr, *offset, *align, *mem)
+        }
+
+        // Partial-width memory store operations - simplify address and value,
+        // invalidate memory conservatively (different width than full stores)
+        ValueData::I32Store8 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i32_store8(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I32Store16 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i32_store16(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store8 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store8(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store16 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store16(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store32 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store32(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         // All other optimizations follow...
@@ -3795,6 +4137,82 @@ mod tests {
                 }
             }
             _ => panic!("Expected (i64.sub 0 x) for x * -1"),
+        }
+    }
+
+    #[test]
+    fn test_cross_memory_store_load_not_redundant() {
+        // A store to memory 0 at (addr=0, offset=4) followed by a load from memory 1
+        // at the same address should NOT be treated as redundant — they are different memories.
+        let mut env = OptimizationEnv::default();
+
+        // Store i32.const 42 to memory 0 at address 0+4
+        let store = i32_store(
+            iconst32(Imm32::from(0)),
+            iconst32(Imm32::from(42)),
+            4, // offset
+            2, // align
+            0, // mem = 0
+        );
+        let _ = simplify_with_env(store, &mut env);
+
+        // Load from memory 1 at the same address (0+4)
+        let load = i32_load(
+            iconst32(Imm32::from(0)),
+            4, // offset
+            2, // align
+            1, // mem = 1 — different memory!
+        );
+        let result = simplify_with_env(load, &mut env);
+
+        // The load should NOT be simplified to i32.const 42 — it's a different memory
+        match result.data() {
+            ValueData::I32Const { val } if val.value() == 42 => {
+                panic!("Cross-memory load should NOT be eliminated as redundant");
+            }
+            ValueData::I32Load { mem, .. } => {
+                assert_eq!(*mem, 1, "Load should still reference memory 1");
+            }
+            _ => panic!("Expected I32Load, got {:?}", result.data()),
+        }
+    }
+
+    #[test]
+    fn test_same_memory_store_load_is_redundant() {
+        // Sanity check: a store to memory 0 followed by a load from memory 0
+        // at the same address SHOULD be eliminated.
+        let mut env = OptimizationEnv::default();
+
+        let store = i32_store(
+            iconst32(Imm32::from(0)),
+            iconst32(Imm32::from(42)),
+            4, // offset
+            2, // align
+            0, // mem = 0
+        );
+        let _ = simplify_with_env(store, &mut env);
+
+        let load = i32_load(
+            iconst32(Imm32::from(0)),
+            4, // offset
+            2, // align
+            0, // mem = 0 — same memory
+        );
+        let result = simplify_with_env(load, &mut env);
+
+        // The load SHOULD be simplified to i32.const 42
+        match result.data() {
+            ValueData::I32Const { val } => {
+                assert_eq!(
+                    val.value(),
+                    42,
+                    "Same-memory load should return stored value"
+                );
+            }
+            _ => panic!(
+                "Expected redundant load to be eliminated, got {:?}",
+                result.data()
+            ),
         }
     }
 }

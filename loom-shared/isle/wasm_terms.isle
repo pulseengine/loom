@@ -143,10 +143,35 @@
     (GlobalSet (idx u32) (val Value))
 
     ;; Memory operations (Phase 13 - Memory Optimization)
-    (I32Load (addr Value) (offset u32) (align u32))
-    (I32Store (addr Value) (value Value) (offset u32) (align u32))
-    (I64Load (addr Value) (offset u32) (align u32))
-    (I64Store (addr Value) (value Value) (offset u32) (align u32))
+    (I32Load (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Load (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+
+    ;; Float memory operations
+    (F32Load (addr Value) (offset u32) (align u32) (mem u32))
+    (F32Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (F64Load (addr Value) (offset u32) (align u32) (mem u32))
+    (F64Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+
+    ;; Partial-width memory load operations
+    (I32Load8S (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load8U (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load16S (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load16U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load8S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load8U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load16S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load16U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load32S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load32U (addr Value) (offset u32) (align u32) (mem u32))
+
+    ;; Partial-width memory store operations
+    (I32Store8 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I32Store16 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store8 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store16 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store32 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
 
     ;; Control flow operations (Issue #12)
     ;; Note: ISLE doesn't support nested lists well, so we use a workaround
@@ -388,17 +413,77 @@
 (extern constructor global_set global_set)
 
 ;; Memory operation constructors (Phase 13)
-(decl i32_load (Value u32 u32) Value)
+(decl i32_load (Value u32 u32 u32) Value)
 (extern constructor i32_load i32_load)
 
-(decl i32_store (Value Value u32 u32) Value)
+(decl i32_store (Value Value u32 u32 u32) Value)
 (extern constructor i32_store i32_store)
 
-(decl i64_load (Value u32 u32) Value)
+(decl i64_load (Value u32 u32 u32) Value)
 (extern constructor i64_load i64_load)
 
-(decl i64_store (Value Value u32 u32) Value)
+(decl i64_store (Value Value u32 u32 u32) Value)
 (extern constructor i64_store i64_store)
+
+;; Float memory operation constructors
+(decl f32_load (Value u32 u32 u32) Value)
+(extern constructor f32_load f32_load)
+
+(decl f32_store (Value Value u32 u32 u32) Value)
+(extern constructor f32_store f32_store)
+
+(decl f64_load (Value u32 u32 u32) Value)
+(extern constructor f64_load f64_load)
+
+(decl f64_store (Value Value u32 u32 u32) Value)
+(extern constructor f64_store f64_store)
+
+;; Partial-width memory load constructors
+(decl i32_load8_s (Value u32 u32 u32) Value)
+(extern constructor i32_load8_s i32_load8_s)
+
+(decl i32_load8_u (Value u32 u32 u32) Value)
+(extern constructor i32_load8_u i32_load8_u)
+
+(decl i32_load16_s (Value u32 u32 u32) Value)
+(extern constructor i32_load16_s i32_load16_s)
+
+(decl i32_load16_u (Value u32 u32 u32) Value)
+(extern constructor i32_load16_u i32_load16_u)
+
+(decl i64_load8_s (Value u32 u32 u32) Value)
+(extern constructor i64_load8_s i64_load8_s)
+
+(decl i64_load8_u (Value u32 u32 u32) Value)
+(extern constructor i64_load8_u i64_load8_u)
+
+(decl i64_load16_s (Value u32 u32 u32) Value)
+(extern constructor i64_load16_s i64_load16_s)
+
+(decl i64_load16_u (Value u32 u32 u32) Value)
+(extern constructor i64_load16_u i64_load16_u)
+
+(decl i64_load32_s (Value u32 u32 u32) Value)
+(extern constructor i64_load32_s i64_load32_s)
+
+(decl i64_load32_u (Value u32 u32 u32) Value)
+(extern constructor i64_load32_u i64_load32_u)
+
+;; Partial-width memory store constructors
+(decl i32_store8 (Value Value u32 u32 u32) Value)
+(extern constructor i32_store8 i32_store8)
+
+(decl i32_store16 (Value Value u32 u32 u32) Value)
+(extern constructor i32_store16 i32_store16)
+
+(decl i64_store8 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store8 i64_store8)
+
+(decl i64_store16 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store16 i64_store16)
+
+(decl i64_store32 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store32 i64_store32)
 
 ;; Control flow constructors (Issue #12)
 (decl block_instr (OptionString BlockType InstructionList) Value)

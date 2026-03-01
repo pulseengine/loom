@@ -7,7 +7,13 @@
 //!
 //! ## Optimization Passes
 //!
-//! ### 0. Same-Memory Adapter Collapse
+//! ### 0a. Memory Import Deduplication
+//! When meld fuses components sharing the same host memory, it emits multiple
+//! memory imports with the same (module, name) pair. Per WASM spec §2.5.10,
+//! these resolve to the same binding. This pass merges them, converting a
+//! multi-memory module to single-memory and enabling Pass 0b.
+//!
+//! ### 0b. Same-Memory Adapter Collapse
 //! In single-memory modules, meld generates adapters that allocate+copy within
 //! the same linear memory. Since both pointers alias the same address space,
 //! the copy is redundant. This pass collapses them to trivial forwarding
@@ -39,6 +45,7 @@
 //! ## Correctness
 //!
 //! All transformations are provably correct:
+//! - Memory import deduplication: identical imports resolve to same binding (Spec §2.5.10)
 //! - Same-memory adapter collapse: same-memory copy is redundant (Spec §5.4.7)
 //! - Adapter devirtualization: semantically identical (adapter body = forward call)
 //! - Type deduplication: structural type equality, index remapping preserves refs
@@ -47,13 +54,17 @@
 //!
 //! See `proofs/simplify/FusedOptimization.v` for formal Rocq proofs.
 
-use crate::{ExportKind, Function, FunctionSignature, Import, ImportKind, Instruction, Module};
+use crate::{
+    ExportKind, Function, FunctionSignature, Import, ImportKind, Instruction, Memory, Module,
+};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
 /// Statistics about fused module optimization
 #[derive(Debug, Clone, Default)]
 pub struct FusedOptimizationStats {
+    /// Number of duplicate memory imports merged
+    pub memory_imports_deduplicated: usize,
     /// Number of same-memory adapters collapsed to forwarding trampolines
     pub same_memory_adapters_collapsed: usize,
     /// Number of adapter functions detected
@@ -68,6 +79,8 @@ pub struct FusedOptimizationStats {
     pub imports_deduplicated: usize,
     /// Number of trivial post-return calls eliminated
     pub trivial_calls_eliminated: usize,
+    /// Number of cross-memory adapters detected (not collapsed, diagnostic only)
+    pub cross_memory_adapters_detected: usize,
 }
 
 /// An adapter trampoline detected in the fused module.
@@ -102,16 +115,27 @@ struct AdapterInfo {
 ///
 /// Returns optimization statistics.
 pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationStats> {
-    // Pass 0: Collapse same-memory adapters into trivial forwarding trampolines
+    // Pass 0a: Deduplicate memory imports (may convert multi-memory → single-memory)
+    // When meld fuses components sharing the same host memory, it emits multiple
+    // identical memory imports. Deduplicating them enables Pass 0b to fire.
+    let memory_imports_deduplicated = deduplicate_memory_imports(module)?;
+
+    // Pass 0b: Collapse same-memory adapters into trivial forwarding trampolines
     // This converts memory-crossing adapters (realloc + memory.copy within the same
     // memory) into trivial forwarding trampolines that Pass 1 can then devirtualize.
     let same_memory_adapters_collapsed = collapse_same_memory_adapters(module)?;
+
+    // Count cross-memory adapters (diagnostic only — adapters with mixed memory indices
+    // that could not be collapsed)
+    let cross_memory_adapters_detected = count_cross_memory_adapters(module);
 
     // Pass 1: Detect and devirtualize adapter trampolines
     let adapter_stats = devirtualize_adapters(module)?;
 
     let mut stats = FusedOptimizationStats {
+        memory_imports_deduplicated,
         same_memory_adapters_collapsed,
+        cross_memory_adapters_detected,
         adapters_detected: adapter_stats.adapters_detected,
         calls_devirtualized: adapter_stats.calls_devirtualized,
         ..Default::default()
@@ -138,14 +162,15 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 
 /// Collapse same-memory adapters into trivial forwarding trampolines.
 ///
-/// In a single-memory module, meld generates adapters that:
+/// Meld generates adapters that:
 /// 1. Call `cabi_realloc` to allocate a buffer
-/// 2. `memory.copy {0, 0}` to copy data within the same memory
+/// 2. `memory.copy {N, N}` to copy data within the same memory
 /// 3. Call the target function with the new buffer pointer
 ///
-/// Since both pointers reference the same linear memory, the target can
-/// read the data at the original pointer directly. The allocation and copy
-/// are semantically redundant.
+/// When all memory operations in the adapter target a single consistent memory
+/// index N, the copy is within the same address space and the target can read
+/// data at the original pointer directly. The allocation and copy are
+/// semantically redundant.
 ///
 /// This pass rewrites such adapters to trivial forwarding trampolines
 /// (local.get 0; ...; local.get N; call $target; end), which Pass 1
@@ -154,9 +179,9 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 /// ## Safety
 ///
 /// A function is only collapsed when ALL of:
-/// - The module has exactly one memory (including imported memories)
 /// - The function has locals (adapters use locals for temporary pointers)
-/// - All memory.copy instructions use {dst: 0, src: 0} (same memory)
+/// - All memory.copy instructions use {dst: N, src: N} (same memory, consistent index)
+/// - All load/store instructions target the same memory index N
 /// - At least one call to a known cabi_realloc function
 /// - Exactly one call to a non-realloc target function
 /// - No unsafe control flow (Block, Loop, Br, BrIf, BrTable rejected; safe null-guard
@@ -167,11 +192,6 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 ///
 /// Returns the number of adapters collapsed.
 fn collapse_same_memory_adapters(module: &mut Module) -> Result<usize> {
-    // Only applies to single-memory modules
-    if count_total_memories(module) != 1 {
-        return Ok(0);
-    }
-
     let num_imported_funcs = count_imported_functions(module);
     let realloc_funcs = find_realloc_functions(module);
 
@@ -208,14 +228,186 @@ fn collapse_same_memory_adapters(module: &mut Module) -> Result<usize> {
     Ok(count)
 }
 
-/// Count total memories in a module, including imported memories.
-fn count_total_memories(module: &Module) -> usize {
-    let imported_memories = module
+/// Remap memory indices in a block of instructions.
+///
+/// Follows the pattern of `remap_func_refs_in_block` but targets memory-indexed
+/// instructions: MemoryCopy (both dst and src), MemorySize, MemoryGrow,
+/// MemoryFill, and MemoryInit. Recurses into If/Block/Loop bodies.
+fn remap_memory_indices(instructions: &mut [Instruction], remap: &HashMap<u32, u32>) {
+    for instr in instructions.iter_mut() {
+        match instr {
+            Instruction::MemoryCopy {
+                ref mut dst_mem,
+                ref mut src_mem,
+            } => {
+                if let Some(&new_idx) = remap.get(dst_mem) {
+                    *dst_mem = new_idx;
+                }
+                if let Some(&new_idx) = remap.get(src_mem) {
+                    *src_mem = new_idx;
+                }
+            }
+            Instruction::MemorySize(ref mut mem)
+            | Instruction::MemoryGrow(ref mut mem)
+            | Instruction::MemoryFill(ref mut mem) => {
+                if let Some(&new_idx) = remap.get(mem) {
+                    *mem = new_idx;
+                }
+            }
+            Instruction::MemoryInit { ref mut mem, .. } => {
+                if let Some(&new_idx) = remap.get(mem) {
+                    *mem = new_idx;
+                }
+            }
+            // Load/store instructions carry a memory index
+            Instruction::I32Load { ref mut mem, .. }
+            | Instruction::I32Store { ref mut mem, .. }
+            | Instruction::I64Load { ref mut mem, .. }
+            | Instruction::I64Store { ref mut mem, .. }
+            | Instruction::F32Load { ref mut mem, .. }
+            | Instruction::F32Store { ref mut mem, .. }
+            | Instruction::F64Load { ref mut mem, .. }
+            | Instruction::F64Store { ref mut mem, .. }
+            | Instruction::I32Load8S { ref mut mem, .. }
+            | Instruction::I32Load8U { ref mut mem, .. }
+            | Instruction::I32Load16S { ref mut mem, .. }
+            | Instruction::I32Load16U { ref mut mem, .. }
+            | Instruction::I64Load8S { ref mut mem, .. }
+            | Instruction::I64Load8U { ref mut mem, .. }
+            | Instruction::I64Load16S { ref mut mem, .. }
+            | Instruction::I64Load16U { ref mut mem, .. }
+            | Instruction::I64Load32S { ref mut mem, .. }
+            | Instruction::I64Load32U { ref mut mem, .. }
+            | Instruction::I32Store8 { ref mut mem, .. }
+            | Instruction::I32Store16 { ref mut mem, .. }
+            | Instruction::I64Store8 { ref mut mem, .. }
+            | Instruction::I64Store16 { ref mut mem, .. }
+            | Instruction::I64Store32 { ref mut mem, .. } => {
+                if let Some(&new_idx) = remap.get(mem) {
+                    *mem = new_idx;
+                }
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                remap_memory_indices(body, remap);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                remap_memory_indices(then_body, remap);
+                remap_memory_indices(else_body, remap);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Deduplicate identical memory imports, remapping all memory references to index 0.
+///
+/// When meld fuses components that share the same host memory, it may produce a
+/// module with multiple memory imports that all reference the same underlying
+/// linear memory (identical `(module, name)` pair). Per WASM spec §2.5.10,
+/// the same import key resolves to the same binding.
+///
+/// This pass merges identical memory imports so the module becomes single-memory,
+/// enabling Pass 0b (same-memory adapter collapse) to fire on these modules.
+///
+/// ## Safety: All-or-Nothing
+///
+/// Since load/store instructions in LOOM's IR lack a memory index field
+/// (hardcoded to memory 0 in the encoder), we can ONLY safely dedup when
+/// ALL memory imports collapse to index 0. This is guaranteed when:
+/// - All memory imports are identical (same module, name, min, max, shared, memory64)
+/// - There are no local memories (module.memories is empty)
+///
+/// If any condition is not met, returns Ok(0) — no optimization, no risk.
+///
+/// Returns the number of duplicate memory imports removed.
+fn deduplicate_memory_imports(module: &mut Module) -> Result<usize> {
+    // Collect all memory imports with their positions in the import list
+    let memory_imports: Vec<(usize, &Import, &Memory)> = module
         .imports
         .iter()
-        .filter(|i| matches!(i.kind, ImportKind::Memory(_)))
-        .count();
-    imported_memories + module.memories.len()
+        .enumerate()
+        .filter_map(|(idx, imp)| {
+            if let ImportKind::Memory(ref mem) = imp.kind {
+                Some((idx, imp, mem))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Need at least 2 memory imports to dedup
+    if memory_imports.len() < 2 {
+        return Ok(0);
+    }
+
+    // Bail if there are local memories (mixing complicates index space)
+    if !module.memories.is_empty() {
+        return Ok(0);
+    }
+
+    // Check ALL memory imports are identical (module, name, min, max, shared, memory64)
+    let first = &memory_imports[0];
+    let all_identical = memory_imports[1..].iter().all(|(_, imp, mem)| {
+        imp.module == first.1.module
+            && imp.name == first.1.name
+            && mem.min == first.2.min
+            && mem.max == first.2.max
+            && mem.shared == first.2.shared
+            && mem.memory64 == first.2.memory64
+    });
+
+    if !all_identical {
+        return Ok(0);
+    }
+
+    // Build memory index remap: all memory indices → 0
+    // Memory indices are assigned sequentially to memory imports (in import order)
+    let mut remap = HashMap::new();
+    for (mem_idx, _) in memory_imports.iter().enumerate() {
+        if mem_idx > 0 {
+            remap.insert(mem_idx as u32, 0u32);
+        }
+    }
+
+    // Remap memory indices in all function instructions
+    for func in &mut module.functions {
+        remap_memory_indices(&mut func.instructions, &remap);
+    }
+
+    // Remap data segment memory indices (only active segments)
+    for segment in &mut module.data_segments {
+        if !segment.passive {
+            if let Some(&new_idx) = remap.get(&segment.memory_index) {
+                segment.memory_index = new_idx;
+            }
+        }
+    }
+
+    // Remap memory exports
+    for export in &mut module.exports {
+        if let ExportKind::Memory(ref mut idx) = export.kind {
+            if let Some(&new_idx) = remap.get(idx) {
+                *idx = new_idx;
+            }
+        }
+    }
+
+    // Remove duplicate memory imports (keep first, drop rest)
+    // Collect the import-list indices to remove (in reverse order for safe removal)
+    let mut import_indices_to_remove: Vec<usize> =
+        memory_imports[1..].iter().map(|(idx, _, _)| *idx).collect();
+    import_indices_to_remove.sort_unstable_by(|a, b| b.cmp(a)); // reverse order
+
+    let removed = import_indices_to_remove.len();
+    for idx in import_indices_to_remove {
+        module.imports.remove(idx);
+    }
+
+    Ok(removed)
 }
 
 /// Find all function indices that are `cabi_realloc` functions.
@@ -272,11 +464,14 @@ fn find_realloc_functions(module: &Module) -> HashSet<u32> {
 }
 
 /// Recursively count MemoryCopy and Call instructions, including inside If/Block/Loop bodies.
+/// Tracks a consistent memory index N (not hardcoded to 0) for generalized same-memory detection.
+#[allow(clippy::too_many_arguments)]
 fn count_copies_and_calls(
     instructions: &[Instruction],
     realloc_funcs: &HashSet<u32>,
     same_memory_copies: &mut usize,
     has_cross_memory_copy: &mut bool,
+    consistent_mem: &mut Option<u32>,
     realloc_calls: &mut usize,
     target_call: &mut Option<u32>,
     target_call_count: &mut usize,
@@ -284,8 +479,19 @@ fn count_copies_and_calls(
     for instr in instructions {
         match instr {
             Instruction::MemoryCopy { dst_mem, src_mem } => {
-                if *dst_mem == 0 && *src_mem == 0 {
-                    *same_memory_copies += 1;
+                if *dst_mem == *src_mem {
+                    match *consistent_mem {
+                        None => {
+                            *consistent_mem = Some(*dst_mem);
+                            *same_memory_copies += 1;
+                        }
+                        Some(m) if m == *dst_mem => {
+                            *same_memory_copies += 1;
+                        }
+                        _ => {
+                            *has_cross_memory_copy = true;
+                        }
+                    }
                 } else {
                     *has_cross_memory_copy = true;
                 }
@@ -308,6 +514,7 @@ fn count_copies_and_calls(
                     realloc_funcs,
                     same_memory_copies,
                     has_cross_memory_copy,
+                    consistent_mem,
                     realloc_calls,
                     target_call,
                     target_call_count,
@@ -317,6 +524,7 @@ fn count_copies_and_calls(
                     realloc_funcs,
                     same_memory_copies,
                     has_cross_memory_copy,
+                    consistent_mem,
                     realloc_calls,
                     target_call,
                     target_call_count,
@@ -328,6 +536,7 @@ fn count_copies_and_calls(
                     realloc_funcs,
                     same_memory_copies,
                     has_cross_memory_copy,
+                    consistent_mem,
                     realloc_calls,
                     target_call,
                     target_call_count,
@@ -338,18 +547,73 @@ fn count_copies_and_calls(
     }
 }
 
+/// Check if all load/store instructions in a function body target a specific memory index.
+/// Returns false if any load/store uses a different memory index.
+fn adapter_uses_single_memory(instructions: &[Instruction], expected_mem: u32) -> bool {
+    for instr in instructions {
+        match instr {
+            Instruction::I32Load { mem, .. }
+            | Instruction::I32Store { mem, .. }
+            | Instruction::I64Load { mem, .. }
+            | Instruction::I64Store { mem, .. }
+            | Instruction::F32Load { mem, .. }
+            | Instruction::F32Store { mem, .. }
+            | Instruction::F64Load { mem, .. }
+            | Instruction::F64Store { mem, .. }
+            | Instruction::I32Load8S { mem, .. }
+            | Instruction::I32Load8U { mem, .. }
+            | Instruction::I32Load16S { mem, .. }
+            | Instruction::I32Load16U { mem, .. }
+            | Instruction::I64Load8S { mem, .. }
+            | Instruction::I64Load8U { mem, .. }
+            | Instruction::I64Load16S { mem, .. }
+            | Instruction::I64Load16U { mem, .. }
+            | Instruction::I64Load32S { mem, .. }
+            | Instruction::I64Load32U { mem, .. }
+            | Instruction::I32Store8 { mem, .. }
+            | Instruction::I32Store16 { mem, .. }
+            | Instruction::I64Store8 { mem, .. }
+            | Instruction::I64Store16 { mem, .. }
+            | Instruction::I64Store32 { mem, .. } => {
+                if *mem != expected_mem {
+                    return false;
+                }
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                if !adapter_uses_single_memory(body, expected_mem) {
+                    return false;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if !adapter_uses_single_memory(then_body, expected_mem)
+                    || !adapter_uses_single_memory(else_body, expected_mem)
+                {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
 /// Check if a function is a same-memory adapter.
 ///
 /// Returns the target function index if the function matches the pattern, None otherwise.
 ///
 /// Detection criteria:
 /// 1. Has locals (adapters use locals for temporary pointers)
-/// 2. Contains at least one `memory.copy {0, 0}` and no cross-memory copies
-/// 3. Contains at least one call to a realloc function
-/// 4. Contains exactly one call to a non-realloc function (the target)
-/// 5. No unsafe control flow (safe null-guard If blocks are allowed)
-/// 6. No unsafe global writes (balanced single-global save/restore is allowed)
-/// 7. Memory stores are allowed (they target the discarded realloc'd buffer)
+/// 2. Contains at least one `memory.copy {N, N}` (same-memory, consistent index) and no cross-memory copies
+/// 3. All load/store instructions target the same memory index N
+/// 4. Contains at least one call to a realloc function
+/// 5. Contains exactly one call to a non-realloc function (the target)
+/// 6. No unsafe control flow (safe null-guard If blocks are allowed)
+/// 7. No unsafe global writes (balanced single-global save/restore is allowed)
+/// 8. Memory stores are allowed (they target the discarded realloc'd buffer)
 fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Option<u32> {
     // Must have locals (trivial adapters without locals are handled by Pass 1)
     if func.locals.is_empty() {
@@ -366,9 +630,10 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
         return None;
     }
 
-    // Count memory.copy and call instructions recursively
+    // Count memory.copy and call instructions recursively, tracking consistent memory index
     let mut same_memory_copies = 0usize;
     let mut has_cross_memory_copy = false;
+    let mut consistent_mem: Option<u32> = None;
     let mut realloc_calls = 0usize;
     let mut target_call: Option<u32> = None;
     let mut target_call_count = 0usize;
@@ -378,6 +643,7 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
         realloc_funcs,
         &mut same_memory_copies,
         &mut has_cross_memory_copy,
+        &mut consistent_mem,
         &mut realloc_calls,
         &mut target_call,
         &mut target_call_count,
@@ -397,7 +663,55 @@ fn is_same_memory_adapter(func: &Function, realloc_funcs: &HashSet<u32>) -> Opti
         return None;
     }
 
+    // Verify all load/store instructions also target the consistent memory index
+    if let Some(mem_idx) = consistent_mem {
+        if !adapter_uses_single_memory(instructions, mem_idx) {
+            return None;
+        }
+    }
+
     target_call
+}
+
+/// Count adapters with cross-memory operations (diagnostic only).
+/// These are functions that have locals, realloc calls, and memory.copy, but where
+/// the memory copies or load/stores use inconsistent memory indices.
+fn count_cross_memory_adapters(module: &Module) -> usize {
+    let realloc_funcs = find_realloc_functions(module);
+    if realloc_funcs.is_empty() {
+        return 0;
+    }
+
+    let mut count = 0;
+    for func in &module.functions {
+        if func.locals.is_empty() {
+            continue;
+        }
+
+        let mut same_memory_copies = 0usize;
+        let mut has_cross_memory_copy = false;
+        let mut consistent_mem: Option<u32> = None;
+        let mut realloc_calls = 0usize;
+        let mut target_call: Option<u32> = None;
+        let mut target_call_count = 0usize;
+
+        count_copies_and_calls(
+            &func.instructions,
+            &realloc_funcs,
+            &mut same_memory_copies,
+            &mut has_cross_memory_copy,
+            &mut consistent_mem,
+            &mut realloc_calls,
+            &mut target_call,
+            &mut target_call_count,
+        );
+
+        // It's a cross-memory adapter if it has the adapter pattern but with mixed memories
+        if realloc_calls > 0 && target_call_count == 1 && has_cross_memory_copy {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Check if instructions contain unsafe control flow.
@@ -1756,7 +2070,7 @@ fn get_function_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockType, Export, ValueType};
+    use crate::{BlockType, DataSegment, Export, ValueType};
 
     /// Create a minimal module for testing
     fn empty_module() -> Module {
@@ -2526,7 +2840,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collapse_skips_multi_memory() {
+    fn test_collapse_works_multi_memory_consistent_adapter() {
         let (mut module, realloc_idx) = single_memory_module_with_realloc();
 
         // Add a second memory -> multi-memory module
@@ -2548,7 +2862,7 @@ mod tests {
             instructions: vec![Instruction::LocalGet(0), Instruction::End],
         });
 
-        // Function 1 (abs idx 2): same-memory adapter
+        // Function 1 (abs idx 2): same-memory adapter using memory 0 consistently
         module.functions.push(make_same_memory_adapter(
             &[ValueType::I32, ValueType::I32],
             &[ValueType::I32],
@@ -2556,8 +2870,13 @@ mod tests {
             1,
         ));
 
+        // With generalized same-memory detection, an adapter that consistently
+        // uses memory 0 should be collapsed even in a multi-memory module
         let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
-        assert_eq!(collapsed, 0, "multi-memory modules should be skipped");
+        assert_eq!(
+            collapsed, 1,
+            "adapter consistently using memory 0 should collapse in multi-memory module"
+        );
     }
 
     #[test]
@@ -2743,6 +3062,7 @@ mod tests {
                 Instruction::I32Store {
                     offset: 0,
                     align: 2,
+                    mem: 0,
                 }, // Store to realloc'd buffer — safe to discard
                 Instruction::LocalGet(2),
                 Instruction::LocalGet(0),
@@ -3620,6 +3940,7 @@ mod tests {
                         Instruction::I32Store {
                             offset: 0,
                             align: 2,
+                            mem: 0,
                         }, // Store inside null-guard — safe to discard
                     ],
                     else_body: vec![],
@@ -3866,10 +4187,12 @@ mod tests {
                 Instruction::I32Load {
                     offset: 0,
                     align: 2,
+                    mem: 0,
                 },
                 Instruction::I32Store {
                     offset: 0,
                     align: 2,
+                    mem: 0,
                 },
                 // Field 1: load from src, store to buf
                 Instruction::LocalGet(2),
@@ -3877,10 +4200,12 @@ mod tests {
                 Instruction::I32Load {
                     offset: 4,
                     align: 2,
+                    mem: 0,
                 },
                 Instruction::I32Store {
                     offset: 4,
                     align: 2,
+                    mem: 0,
                 },
                 // Remaining data via memory.copy
                 Instruction::LocalGet(2),
@@ -3964,10 +4289,12 @@ mod tests {
                 Instruction::I32Load {
                     offset: 0,
                     align: 2,
+                    mem: 0,
                 },
                 Instruction::I32Store {
                     offset: 0,
                     align: 2,
+                    mem: 0,
                 },
                 // memory.copy
                 Instruction::LocalGet(2),
@@ -4046,10 +4373,12 @@ mod tests {
                 Instruction::I32Load8U {
                     offset: 0,
                     align: 0,
+                    mem: 0,
                 },
                 Instruction::I32Store8 {
                     offset: 0,
                     align: 0,
+                    mem: 0,
                 },
                 // I64Store: store a 64-bit field
                 Instruction::LocalGet(2),
@@ -4057,10 +4386,12 @@ mod tests {
                 Instruction::I64Load {
                     offset: 8,
                     align: 3,
+                    mem: 0,
                 },
                 Instruction::I64Store {
                     offset: 8,
                     align: 3,
+                    mem: 0,
                 },
                 // F32Store: store a float field
                 Instruction::LocalGet(2),
@@ -4068,10 +4399,12 @@ mod tests {
                 Instruction::F32Load {
                     offset: 16,
                     align: 2,
+                    mem: 0,
                 },
                 Instruction::F32Store {
                     offset: 16,
                     align: 2,
+                    mem: 0,
                 },
                 // memory.copy for remaining
                 Instruction::LocalGet(2),
@@ -4147,5 +4480,529 @@ mod tests {
         assert!(stats.adapters_detected >= 1);
         // Type duplicates removed
         assert!(stats.types_deduplicated >= 1);
+    }
+
+    // ========================================================================
+    // Memory Import Deduplication Tests (Pass 0a)
+    // ========================================================================
+
+    /// Helper: create an identical memory import
+    fn make_memory_import(module_name: &str, name: &str, min: u64, max: Option<u64>) -> Import {
+        Import {
+            module: module_name.to_string(),
+            name: name.to_string(),
+            kind: ImportKind::Memory(Memory {
+                min,
+                max,
+                shared: false,
+                memory64: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_memory_dedup_identical_imports() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 1);
+        // Only one memory import remains
+        let mem_imports: Vec<_> = module
+            .imports
+            .iter()
+            .filter(|i| matches!(i.kind, ImportKind::Memory(_)))
+            .collect();
+        assert_eq!(mem_imports.len(), 1);
+    }
+
+    #[test]
+    fn test_memory_dedup_different_names() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory0", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory1", 1, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_different_modules() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("host", "memory", 1, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_different_limits() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 2, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_with_local_memory() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module.memories.push(Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_three_identical() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 2);
+        let mem_imports: Vec<_> = module
+            .imports
+            .iter()
+            .filter(|i| matches!(i.kind, ImportKind::Memory(_)))
+            .collect();
+        assert_eq!(mem_imports.len(), 1);
+    }
+
+    #[test]
+    fn test_memory_dedup_single_import() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_remaps_memory_copy() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        // Function with MemoryCopy { dst: 1, src: 0 }
+        module.functions.push(Function {
+            name: None,
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32, ValueType::I32],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::LocalGet(2),
+                Instruction::MemoryCopy {
+                    dst_mem: 1,
+                    src_mem: 0,
+                },
+                Instruction::End,
+            ],
+        });
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 1);
+
+        // Verify MemoryCopy was remapped to { dst: 0, src: 0 }
+        match &module.functions[0].instructions[3] {
+            Instruction::MemoryCopy { dst_mem, src_mem } => {
+                assert_eq!(*dst_mem, 0);
+                assert_eq!(*src_mem, 0);
+            }
+            other => panic!("Expected MemoryCopy, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_memory_dedup_remaps_data_segments() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        module.data_segments.push(DataSegment {
+            memory_index: 1,
+            offset: vec![Instruction::I32Const(0), Instruction::End],
+            data: vec![0x00, 0x01],
+            passive: false,
+        });
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(module.data_segments[0].memory_index, 0);
+    }
+
+    #[test]
+    fn test_memory_dedup_remaps_memory_exports() {
+        let mut module = empty_module();
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        module.exports.push(Export {
+            name: "memory".to_string(),
+            kind: ExportKind::Memory(1),
+        });
+
+        let removed = deduplicate_memory_imports(&mut module).unwrap();
+        assert_eq!(removed, 1);
+        match &module.exports[0].kind {
+            ExportKind::Memory(idx) => assert_eq!(*idx, 0),
+            other => panic!("Expected Memory export, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_memory_dedup_enables_adapter_collapse() {
+        let mut module = empty_module();
+
+        // Two identical memory imports (simulating meld fusion)
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+        module
+            .imports
+            .push(make_memory_import("env", "memory", 1, None));
+
+        // Realloc function type: (i32, i32, i32, i32) -> i32
+        let realloc_sig = FunctionSignature {
+            params: vec![ValueType::I32; 4],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(realloc_sig.clone());
+
+        // Import a realloc function (func import index 0)
+        module.imports.push(Import {
+            module: "env".to_string(),
+            name: "cabi_realloc".to_string(),
+            kind: ImportKind::Func(0),
+        });
+
+        // Target function type: (i32, i32) -> i32
+        let target_sig = FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(target_sig.clone());
+
+        // Function 0 (abs index 1): target function
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: target_sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Add,
+                Instruction::End,
+            ],
+        });
+
+        // Function 1 (abs index 2): adapter with cross-memory copy (memory 1 -> 0)
+        // After dedup, this becomes same-memory (0 -> 0), enabling collapse
+        module.functions.push(Function {
+            name: Some("adapter".to_string()),
+            signature: target_sig.clone(),
+            locals: vec![(1, ValueType::I32)], // Has locals (required for same-memory adapter)
+            instructions: vec![
+                // Allocate buffer via realloc
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::LocalGet(0),
+                Instruction::Call(0), // call realloc (import idx 0)
+                Instruction::LocalSet(2),
+                // Copy from memory 1 to memory 0
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::MemoryCopy {
+                    dst_mem: 0,
+                    src_mem: 1,
+                },
+                // Call target with new buffer
+                Instruction::LocalGet(2),
+                Instruction::LocalGet(1),
+                Instruction::Call(1), // call target (abs idx 1)
+                Instruction::End,
+            ],
+        });
+
+        // Function 2 (abs index 3): caller
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: target_sig,
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(2), // call adapter (abs idx 2)
+                Instruction::End,
+            ],
+        });
+
+        // Export the caller
+        module.exports.push(Export {
+            name: "call".to_string(),
+            kind: ExportKind::Func(3),
+        });
+
+        let stats = optimize_fused_module(&mut module).unwrap();
+
+        // Pass 0a: one memory import deduplicated
+        assert_eq!(stats.memory_imports_deduplicated, 1);
+        // Pass 0b: the adapter should now be collapsed (was cross-memory, now same-memory)
+        assert_eq!(stats.same_memory_adapters_collapsed, 1);
+    }
+
+    #[test]
+    fn test_collapse_adapter_using_memory_1_only() {
+        // An adapter that consistently uses memory index 1 should collapse,
+        // even though it's not memory 0.
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Add a second memory
+        module.memories.push(crate::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): same-memory adapter using memory 1 consistently
+        let ptr_local = 2u32;
+        module.functions.push(Function {
+            name: Some("$adapter_mem1".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(ptr_local),
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 1,
+                    src_mem: 1, // Same memory, index 1
+                },
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(1),
+                Instruction::Call(1), // target
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 1,
+            "adapter consistently using memory 1 should collapse"
+        );
+    }
+
+    #[test]
+    fn test_collapse_skips_mixed_memory_load_store() {
+        // An adapter with memory.copy {1, 1} but loads from memory 0 should NOT collapse
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Add a second memory
+        module.memories.push(crate::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): adapter with memory.copy {1,1} but i32.load from mem 0
+        let ptr_local = 2u32;
+        module.functions.push(Function {
+            name: Some("$adapter_mixed_mem".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(ptr_local),
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 1,
+                    src_mem: 1, // Same memory index 1
+                },
+                // But a load from memory 0 — inconsistent!
+                Instruction::LocalGet(0),
+                Instruction::I32Load {
+                    offset: 0,
+                    align: 2,
+                    mem: 0, // Memory 0, but adapter uses memory 1 for copies
+                },
+                Instruction::Drop,
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let collapsed = collapse_same_memory_adapters(&mut module).unwrap();
+        assert_eq!(
+            collapsed, 0,
+            "adapter with mixed memory indices (copy on 1, load from 0) should not collapse"
+        );
+    }
+
+    #[test]
+    fn test_cross_memory_adapter_counted() {
+        // Cross-memory adapters should be detected and counted
+        let (mut module, realloc_idx) = single_memory_module_with_realloc();
+
+        // Add a second memory
+        module.memories.push(crate::Memory {
+            min: 1,
+            max: None,
+            shared: false,
+            memory64: false,
+        });
+
+        // Function 0 (abs idx 1): target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0), Instruction::End],
+        });
+
+        // Function 1 (abs idx 2): cross-memory adapter (copy from mem 0 to mem 1)
+        let ptr_local = 2u32;
+        module.functions.push(Function {
+            name: Some("$cross_mem_adapter".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32, ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Const(0),
+                Instruction::I32Const(0),
+                Instruction::I32Const(1),
+                Instruction::I32Const(8),
+                Instruction::Call(realloc_idx),
+                Instruction::LocalSet(ptr_local),
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(0),
+                Instruction::I32Const(8),
+                Instruction::MemoryCopy {
+                    dst_mem: 1,
+                    src_mem: 0, // Cross-memory
+                },
+                Instruction::LocalGet(ptr_local),
+                Instruction::LocalGet(1),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        let count = count_cross_memory_adapters(&module);
+        assert!(
+            count > 0,
+            "cross-memory adapter should be detected and counted"
+        );
     }
 }

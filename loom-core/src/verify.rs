@@ -2271,6 +2271,61 @@ pub enum TranslationResult {
     Unknown(String),
 }
 
+/// Check if any load/store instruction in a function targets a non-zero memory index.
+/// Z3 verification currently models a single memory as an Array; multi-memory requires
+/// separate Arrays per memory index, which is future work. Functions with mem != 0
+/// are conservatively skipped rather than producing incorrect proofs.
+#[cfg(feature = "verification")]
+fn has_multi_memory_ops(instructions: &[Instruction]) -> bool {
+    for instr in instructions {
+        match instr {
+            Instruction::I32Load { mem, .. }
+            | Instruction::I32Store { mem, .. }
+            | Instruction::I64Load { mem, .. }
+            | Instruction::I64Store { mem, .. }
+            | Instruction::F32Load { mem, .. }
+            | Instruction::F32Store { mem, .. }
+            | Instruction::F64Load { mem, .. }
+            | Instruction::F64Store { mem, .. }
+            | Instruction::I32Load8S { mem, .. }
+            | Instruction::I32Load8U { mem, .. }
+            | Instruction::I32Load16S { mem, .. }
+            | Instruction::I32Load16U { mem, .. }
+            | Instruction::I64Load8S { mem, .. }
+            | Instruction::I64Load8U { mem, .. }
+            | Instruction::I64Load16S { mem, .. }
+            | Instruction::I64Load16U { mem, .. }
+            | Instruction::I64Load32S { mem, .. }
+            | Instruction::I64Load32U { mem, .. }
+            | Instruction::I32Store8 { mem, .. }
+            | Instruction::I32Store16 { mem, .. }
+            | Instruction::I64Store8 { mem, .. }
+            | Instruction::I64Store16 { mem, .. }
+            | Instruction::I64Store32 { mem, .. } => {
+                if *mem != 0 {
+                    return true;
+                }
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                if has_multi_memory_ops(body) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if has_multi_memory_ops(then_body) || has_multi_memory_ops(else_body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Encode a WebAssembly function to an SMT formula
 ///
 /// This converts the instruction sequence into a symbolic execution that Z3 can reason about.
@@ -2325,6 +2380,14 @@ fn encode_function_to_smt_impl_inner(
     sig_ctx: Option<&VerificationSignatureContext>,
     shared_inputs: Option<&SharedSymbolicInputs>,
 ) -> Result<Option<BV>> {
+    // Conservative skip: functions using multi-memory (mem != 0) cannot be verified
+    // with our single-Array Z3 model. Return None to skip verification rather than
+    // produce incorrect proofs. Full multi-memory Z3 support (separate Array per
+    // memory) is future work.
+    if has_multi_memory_ops(&func.instructions) {
+        return Ok(None);
+    }
+
     // Create symbolic variables for parameters
     let mut stack: Vec<BV> = Vec::new();
     let mut locals: Vec<BV>;
