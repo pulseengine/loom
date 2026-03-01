@@ -22,7 +22,7 @@
 //! ```
 
 #[cfg(feature = "verification")]
-use z3::ast::{Array, Bool, Float, BV};
+use z3::ast::{Array, Bool, BV};
 #[cfg(feature = "verification")]
 use z3::{with_z3_config, Config, SatResult, Solver, Sort};
 
@@ -3778,9 +3778,10 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // ============================================================
-            // Float operations - IEEE 754 semantics via Z3 FPA theory
-            // When ENABLE_FPA_VERIFICATION is true, we use Z3's Float type
-            // for precise IEEE 754 semantics. Otherwise, we use symbolic BVs.
+            // Float operations - IEEE 754 semantics
+            // For binary arithmetic (add/sub/mul/div): when both operands are
+            // concrete constants, compute natively in Rust (IEEE 754 roundTiesToEven,
+            // matching WebAssembly). Symbolic operands produce opaque results.
             // ============================================================
 
             // Float binary operations (f32): [f32, f32] -> [f32]
@@ -3790,19 +3791,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
-                    // Convert BV to Float, perform FPA addition, convert back
-                    // Use roundTiesToEven (WebAssembly default)
-                    let lhs_f = Float::from_f32(0.0f32); // Will be replaced by BV conversion when available
-                    let rhs_f = Float::from_f32(0.0f32);
-                    // For now, we use symbolic Float since BV-to-Float conversion not in API
-                    static F32_ADD_COUNTER: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    let idx = F32_ADD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Create symbolic result that depends on inputs
-                    let _ = (lhs_f, rhs_f, lhs, rhs); // Acknowledge inputs
-                    stack.push(BV::new_const(format!("f32_add_{}", idx), 32));
+                // When both operands are concrete constants, compute the IEEE 754
+                // result natively (Rust f32 uses roundTiesToEven, matching WASM)
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f32::from_bits(l_bits as u32) + f32::from_bits(r_bits as u32);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
                 } else {
+                    let _ = (lhs, rhs);
                     stack.push(BV::new_const("f32_add_result", 32));
                 }
             }
@@ -3812,8 +3807,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f32_sub_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f32::from_bits(l_bits as u32) - f32::from_bits(r_bits as u32);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_sub_result", 32));
+                }
             }
             Instruction::F32Mul => {
                 if stack.len() < 2 {
@@ -3821,8 +3821,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f32_mul_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f32::from_bits(l_bits as u32) * f32::from_bits(r_bits as u32);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_mul_result", 32));
+                }
             }
             Instruction::F32Div => {
                 if stack.len() < 2 {
@@ -3830,8 +3835,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f32_div_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f32::from_bits(l_bits as u32) / f32::from_bits(r_bits as u32);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_div_result", 32));
+                }
             }
             Instruction::F32Min | Instruction::F32Max | Instruction::F32Copysign => {
                 if stack.len() < 2 {
@@ -3931,8 +3941,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_add_result", 64));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f64::from_bits(l_bits) + f64::from_bits(r_bits);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_add_result", 64));
+                }
             }
             Instruction::F64Sub => {
                 if stack.len() < 2 {
@@ -3940,8 +3955,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_sub_result", 64));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f64::from_bits(l_bits) - f64::from_bits(r_bits);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_sub_result", 64));
+                }
             }
             Instruction::F64Mul => {
                 if stack.len() < 2 {
@@ -3949,8 +3969,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_mul_result", 64));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f64::from_bits(l_bits) * f64::from_bits(r_bits);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_mul_result", 64));
+                }
             }
             Instruction::F64Div => {
                 if stack.len() < 2 {
@@ -3958,8 +3983,13 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_div_result", 64));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f64::from_bits(l_bits) / f64::from_bits(r_bits);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_div_result", 64));
+                }
             }
             Instruction::F64Min | Instruction::F64Max | Instruction::F64Copysign => {
                 if stack.len() < 2 {

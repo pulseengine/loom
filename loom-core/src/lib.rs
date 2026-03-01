@@ -3594,7 +3594,8 @@ pub mod terms {
     use anyhow::{anyhow, Result};
     use loom_isle::{
         block, br, br_if, br_table, call, call_indirect, drop_instr, f32_load, f32_store, f64_load,
-        f64_store, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s,
+        f64_store, fadd32, fadd64, fconst32, fconst64, fdiv32, fdiv64, fmul32, fmul64, fsub32,
+        fsub64, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s,
         i32_load16_u, i32_load8_s, i32_load8_u, i32_store, i32_store16, i32_store8, i32_wrap_i64,
         i64_extend16_s, i64_extend32_s, i64_extend8_s, i64_extend_i32_s, i64_extend_i32_u,
         i64_load, i64_load16_s, i64_load16_u, i64_load32_s, i64_load32_u, i64_load8_s, i64_load8_u,
@@ -3605,7 +3606,7 @@ pub mod terms {
         imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32,
         iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
         ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
-        nop, return_val, select_instr, unreachable, Imm32, Imm64,
+        nop, return_val, select_instr, unreachable, Imm32, Imm64, ImmF32, ImmF64,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -4651,26 +4652,90 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for global.set"))?;
                     side_effects.push(global_set(*idx, val));
                 }
-                Instruction::F32Const(_bits) => {
-                    // Float constants cannot be directly optimized in ISLE terms
-                    // They are passed through unchanged during optimization
-                    // We don't push anything to stack as we don't support float operations yet
+                Instruction::F32Const(bits) => {
+                    stack.push(fconst32(ImmF32::from_bits(*bits)));
                 }
-                Instruction::F64Const(_bits) => {
-                    // Float constants cannot be directly optimized in ISLE terms
-                    // They are passed through unchanged during optimization
-                    // We don't push anything to stack as we don't support float operations yet
+                Instruction::F64Const(bits) => {
+                    stack.push(fconst64(ImmF64::from_bits(*bits)));
                 }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
                 }
-                // Float, conversion, and memory operations don't have ISLE term representations yet
+                Instruction::F32Add => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.add rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.add lhs"))?;
+                    stack.push(fadd32(lhs, rhs));
+                }
+                Instruction::F32Sub => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sub rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sub lhs"))?;
+                    stack.push(fsub32(lhs, rhs));
+                }
+                Instruction::F32Mul => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.mul rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.mul lhs"))?;
+                    stack.push(fmul32(lhs, rhs));
+                }
+                Instruction::F32Div => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.div rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.div lhs"))?;
+                    stack.push(fdiv32(lhs, rhs));
+                }
+                Instruction::F64Add => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.add rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.add lhs"))?;
+                    stack.push(fadd64(lhs, rhs));
+                }
+                Instruction::F64Sub => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sub rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sub lhs"))?;
+                    stack.push(fsub64(lhs, rhs));
+                }
+                Instruction::F64Mul => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.mul rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.mul lhs"))?;
+                    stack.push(fmul64(lhs, rhs));
+                }
+                Instruction::F64Div => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.div rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.div lhs"))?;
+                    stack.push(fdiv64(lhs, rhs));
+                }
+                // Float comparison, unary, conversion, and memory operations don't have ISLE term representations yet
                 // They are passed through unchanged - stack effects tracked elsewhere for validation
-                Instruction::F32Add
-                | Instruction::F32Sub
-                | Instruction::F32Mul
-                | Instruction::F32Div
-                | Instruction::F32Min
+                Instruction::F32Min
                 | Instruction::F32Max
                 | Instruction::F32Copysign
                 | Instruction::F32Abs
@@ -4686,10 +4751,6 @@ pub mod terms {
                 | Instruction::F32Gt
                 | Instruction::F32Le
                 | Instruction::F32Ge
-                | Instruction::F64Add
-                | Instruction::F64Sub
-                | Instruction::F64Mul
-                | Instruction::F64Div
                 | Instruction::F64Min
                 | Instruction::F64Max
                 | Instruction::F64Copysign
@@ -13344,5 +13405,118 @@ mod tests {
             }
             _ => panic!("Expected I32Load instruction in round-tripped module"),
         }
+    }
+
+    #[test]
+    fn test_float_const_isle_round_trip() {
+        // F32Const and F64Const should survive instructions_to_terms → terms_to_instructions
+        let instructions = vec![
+            Instruction::F32Const(1.5_f32.to_bits()),
+            Instruction::F64Const(2.5_f64.to_bits()),
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 2);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 2);
+        assert_eq!(result_instrs[0], Instruction::F32Const(1.5_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F64Const(2.5_f64.to_bits()));
+    }
+
+    #[test]
+    fn test_float_constant_folding_f32_add() {
+        // f32.const 10.0, f32.const 32.0, f32.add → should fold to f32.const 42.0
+        let wat = r#"
+            (module
+              (func $add_f32_constants (result f32)
+                f32.const 10.0
+                f32.const 32.0
+                f32.add
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Verify original instructions
+        let func = &module.functions[0];
+        assert!(func
+            .instructions
+            .contains(&Instruction::F32Const(10.0_f32.to_bits())));
+        assert!(func
+            .instructions
+            .contains(&Instruction::F32Const(32.0_f32.to_bits())));
+        assert!(func.instructions.contains(&Instruction::F32Add));
+
+        // Apply optimization
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        // Should be folded to f32.const 42.0
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(42.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Add));
+    }
+
+    #[test]
+    fn test_float_nan_not_folded() {
+        // f32.const NaN + f32.const 1.0 should NOT be folded
+        let instructions = vec![
+            Instruction::F32Const(f32::NAN.to_bits()),
+            Instruction::F32Const(1.0_f32.to_bits()),
+            Instruction::F32Add,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // The term should still be an F32Add (not folded to a constant)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+
+        // Should still have the add — NaN operands prevent folding
+        // The instructions should round-trip: f32.const NaN, f32.const 1.0, f32.add
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F32Const(f32::NAN.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Const(1.0_f32.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F32Add);
+    }
+
+    #[test]
+    fn test_float_f32_arithmetic_isle_round_trip() {
+        // F32Const, F32Const, F32Sub round-trips through ISLE terms without loss
+        let instructions = vec![
+            Instruction::F32Const(5.0_f32.to_bits()),
+            Instruction::F32Const(3.0_f32.to_bits()),
+            Instruction::F32Sub,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // Round-trip back to instructions (no simplification at this stage)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F32Const(5.0_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Const(3.0_f32.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F32Sub);
+    }
+
+    #[test]
+    fn test_float_f64_arithmetic_isle_round_trip() {
+        // F64Const, F64Const, F64Mul round-trips through ISLE terms without loss
+        let instructions = vec![
+            Instruction::F64Const(3.0_f64.to_bits()),
+            Instruction::F64Const(7.0_f64.to_bits()),
+            Instruction::F64Mul,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // Round-trip back to instructions (no simplification at this stage)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F64Const(3.0_f64.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F64Const(7.0_f64.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F64Mul);
     }
 }
