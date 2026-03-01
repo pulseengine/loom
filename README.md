@@ -6,6 +6,7 @@
 
 &nbsp;
 
+[![CI](https://github.com/pulseengine/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/loom/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
 ![Formally Verified](https://img.shields.io/badge/Formally_Verified-00C853?style=flat-square&logoColor=white&labelColor=1a1b27)
@@ -72,7 +73,7 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline design.
 - **Function inlining** — Inline small functions to expose cross-function optimizations
 - **Dead code elimination** — Remove unreachable code and unused locals
 - **Loop-invariant code motion** — Hoist invariant expressions out of loops
-- **Component Model support** — Modern WebAssembly with wasm32-wasip2 build target
+- **Component Model support** — wasm32-wasip2 build target
 - **Stateful dataflow analysis** — Track locals and memory state across passes
 - **Idempotent passes** — Safe to run multiple times without degradation
 
