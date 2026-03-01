@@ -592,6 +592,7 @@ fn test_memory_load_store_verification() {
             Instruction::I32Load {
                 align: 2,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -622,11 +623,13 @@ fn test_memory_load_store_verification() {
             Instruction::I32Store {
                 align: 2,
                 offset: 0,
+                mem: 0,
             },
             Instruction::LocalGet(0), // address again
             Instruction::I32Load {
                 align: 2,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -845,6 +848,7 @@ fn test_function_summary_memory_write() {
             Instruction::I32Store {
                 align: 2,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -1191,6 +1195,7 @@ fn test_partial_store_i32store8() {
             Instruction::I32Store8 {
                 align: 0,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -1225,6 +1230,7 @@ fn test_partial_store_i32store16() {
             Instruction::I32Store16 {
                 align: 0,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -1259,6 +1265,7 @@ fn test_partial_store_i64store8() {
             Instruction::I64Store8 {
                 align: 0,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],
@@ -1293,6 +1300,7 @@ fn test_partial_store_i64store32() {
             Instruction::I64Store32 {
                 align: 0,
                 offset: 0,
+                mem: 0,
             },
             Instruction::End,
         ],

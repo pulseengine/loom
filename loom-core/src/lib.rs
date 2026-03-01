@@ -348,6 +348,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store
     I32Store {
@@ -355,6 +357,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load
     I64Load {
@@ -362,6 +366,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store
     I64Store {
@@ -369,6 +375,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
 
     // Float arithmetic operations (f32)
@@ -551,6 +559,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f32.store
     F32Store {
@@ -558,6 +568,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f64.load
     F64Load {
@@ -565,6 +577,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f64.store
     F64Store {
@@ -572,6 +586,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load8_s
     I32Load8S {
@@ -579,6 +595,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load8_u
     I32Load8U {
@@ -586,6 +604,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load16_s
     I32Load16S {
@@ -593,6 +613,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load16_u
     I32Load16U {
@@ -600,6 +622,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load8_s
     I64Load8S {
@@ -607,6 +631,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load8_u
     I64Load8U {
@@ -614,6 +640,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load16_s
     I64Load16S {
@@ -621,6 +649,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load16_u
     I64Load16U {
@@ -628,6 +658,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load32_s
     I64Load32S {
@@ -635,6 +667,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load32_u
     I64Load32U {
@@ -642,6 +676,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store8
     I32Store8 {
@@ -649,6 +685,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store16
     I32Store16 {
@@ -656,6 +694,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store8
     I64Store8 {
@@ -663,6 +703,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store16
     I64Store16 {
@@ -670,6 +712,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store32
     I64Store32 {
@@ -677,6 +721,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
 
     // Memory size/grow operations
@@ -1295,24 +1341,28 @@ pub mod parse {
                     instructions.push(Instruction::I32Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store { memarg } => {
                     instructions.push(Instruction::I32Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load { memarg } => {
                     instructions.push(Instruction::I64Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store { memarg } => {
                     instructions.push(Instruction::I64Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Control flow (Phase 14)
@@ -1503,24 +1553,28 @@ pub mod parse {
                     instructions.push(Instruction::F32Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F32Store { memarg } => {
                     instructions.push(Instruction::F32Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F64Load { memarg } => {
                     instructions.push(Instruction::F64Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F64Store { memarg } => {
                     instructions.push(Instruction::F64Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Additional load/store variants
@@ -1528,90 +1582,105 @@ pub mod parse {
                     instructions.push(Instruction::I32Load8S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load8U { memarg } => {
                     instructions.push(Instruction::I32Load8U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load16S { memarg } => {
                     instructions.push(Instruction::I32Load16S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load16U { memarg } => {
                     instructions.push(Instruction::I32Load16U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load8S { memarg } => {
                     instructions.push(Instruction::I64Load8S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load8U { memarg } => {
                     instructions.push(Instruction::I64Load8U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load16S { memarg } => {
                     instructions.push(Instruction::I64Load16S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load16U { memarg } => {
                     instructions.push(Instruction::I64Load16U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load32S { memarg } => {
                     instructions.push(Instruction::I64Load32S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load32U { memarg } => {
                     instructions.push(Instruction::I64Load32U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store8 { memarg } => {
                     instructions.push(Instruction::I32Store8 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store16 { memarg } => {
                     instructions.push(Instruction::I32Store16 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store8 { memarg } => {
                     instructions.push(Instruction::I64Store8 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store16 { memarg } => {
                     instructions.push(Instruction::I64Store16 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store32 { memarg } => {
                     instructions.push(Instruction::I64Store32 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Unknown/unsupported instructions - return error to fail fast
@@ -2122,35 +2191,35 @@ pub mod encode {
                     Instruction::GlobalSet(idx) => {
                         func_body.instruction(&EncoderInstruction::GlobalSet(*idx));
                     }
-                    Instruction::I32Load { offset, align } => {
+                    Instruction::I32Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::I32Store { offset, align } => {
+                    Instruction::I32Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load { offset, align } => {
+                    Instruction::I64Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::I64Store { offset, align } => {
+                    Instruction::I64Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
@@ -2433,171 +2502,171 @@ pub mod encode {
                         func_body.instruction(&EncoderInstruction::DataDrop(*data_idx));
                     }
                     // Float loads/stores
-                    Instruction::F32Load { offset, align } => {
+                    Instruction::F32Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::F32Store { offset, align } => {
+                    Instruction::F32Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F32Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::F64Load { offset, align } => {
+                    Instruction::F64Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::F64Store { offset, align } => {
+                    Instruction::F64Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F64Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
                     // Additional load/store variants
-                    Instruction::I32Load8S { offset, align } => {
+                    Instruction::I32Load8S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load8S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load8U { offset, align } => {
+                    Instruction::I32Load8U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load8U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load16S { offset, align } => {
+                    Instruction::I32Load16S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load16S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load16U { offset, align } => {
+                    Instruction::I32Load16U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load16U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load8S { offset, align } => {
+                    Instruction::I64Load8S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load8S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load8U { offset, align } => {
+                    Instruction::I64Load8U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load8U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load16S { offset, align } => {
+                    Instruction::I64Load16S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load16S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load16U { offset, align } => {
+                    Instruction::I64Load16U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load16U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load32S { offset, align } => {
+                    Instruction::I64Load32S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load32S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load32U { offset, align } => {
+                    Instruction::I64Load32U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load32U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Store8 { offset, align } => {
+                    Instruction::I32Store8 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store8(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Store16 { offset, align } => {
+                    Instruction::I32Store16 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store16(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store8 { offset, align } => {
+                    Instruction::I64Store8 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store8(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store16 { offset, align } => {
+                    Instruction::I64Store16 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store16(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store32 { offset, align } => {
+                    Instruction::I64Store32 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store32(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
@@ -2982,32 +3051,32 @@ pub mod encode {
             Instruction::LocalTee(idx) => {
                 func_body.instruction(&EncoderInstruction::LocalTee(*idx));
             }
-            Instruction::I32Load { offset, align } => {
+            Instruction::I32Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store { offset, align } => {
+            Instruction::I32Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load { offset, align } => {
+            Instruction::I64Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store { offset, align } => {
+            Instruction::I64Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Control flow instructions (Phase 14)
@@ -3337,138 +3406,138 @@ pub mod encode {
                 func_body.instruction(&EncoderInstruction::F64ReinterpretI64);
             }
             // Memory operations (float)
-            Instruction::F32Load { offset, align } => {
+            Instruction::F32Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F32Store { offset, align } => {
+            Instruction::F32Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F32Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F64Load { offset, align } => {
+            Instruction::F64Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F64Store { offset, align } => {
+            Instruction::F64Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F64Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Memory operations (integer variants)
-            Instruction::I32Load8S { offset, align } => {
+            Instruction::I32Load8S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load8S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load8U { offset, align } => {
+            Instruction::I32Load8U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load8U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load16S { offset, align } => {
+            Instruction::I32Load16S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load16S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load16U { offset, align } => {
+            Instruction::I32Load16U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load16U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load8S { offset, align } => {
+            Instruction::I64Load8S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load8S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load8U { offset, align } => {
+            Instruction::I64Load8U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load8U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load16S { offset, align } => {
+            Instruction::I64Load16S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load16S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load16U { offset, align } => {
+            Instruction::I64Load16U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load16U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load32S { offset, align } => {
+            Instruction::I64Load32S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load32S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load32U { offset, align } => {
+            Instruction::I64Load32U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load32U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store8 { offset, align } => {
+            Instruction::I32Store8 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store8(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store16 { offset, align } => {
+            Instruction::I32Store16 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store16(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store8 { offset, align } => {
+            Instruction::I64Store8 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store8(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store16 { offset, align } => {
+            Instruction::I64Store16 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store16(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store32 { offset, align } => {
+            Instruction::I64Store32 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store32(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Memory size/grow
@@ -3524,11 +3593,12 @@ pub mod terms {
     use super::{BlockType, FunctionSignature, Instruction, Module, Value, ValueType};
     use anyhow::{anyhow, Result};
     use loom_isle::{
-        block, br, br_if, br_table, call, call_indirect, drop_instr, global_get, global_set,
-        i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s, i32_load16_u, i32_load8_s,
-        i32_load8_u, i32_store, i32_wrap_i64, i64_extend16_s, i64_extend32_s, i64_extend8_s,
-        i64_extend_i32_s, i64_extend_i32_u, i64_load, i64_load16_s, i64_load16_u, i64_load32_s,
-        i64_load32_u, i64_load8_s, i64_load8_u, i64_store, iadd32, iadd64, iand32, iand64, iclz32,
+        block, br, br_if, br_table, call, call_indirect, drop_instr, f32_load, f32_store, f64_load,
+        f64_store, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s,
+        i32_load16_u, i32_load8_s, i32_load8_u, i32_store, i32_store16, i32_store8, i32_wrap_i64,
+        i64_extend16_s, i64_extend32_s, i64_extend8_s, i64_extend_i32_s, i64_extend_i32_u,
+        i64_load, i64_load16_s, i64_load16_u, i64_load32_s, i64_load32_u, i64_load8_s, i64_load8_u,
+        i64_store, i64_store16, i64_store32, i64_store8, iadd32, iadd64, iand32, iand64, iclz32,
         iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32,
         ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64,
         igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32,
@@ -4215,13 +4285,13 @@ pub mod terms {
                     stack.push(local_tee(*idx, val));
                 }
                 // Memory operations (Phase 13)
-                Instruction::I32Load { offset, align } => {
+                Instruction::I32Load { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load address"))?;
-                    stack.push(i32_load(addr, *offset, *align));
+                    stack.push(i32_load(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Store { offset, align } => {
+                Instruction::I32Store { offset, align, mem } => {
                     let value = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store value"))?;
@@ -4230,15 +4300,15 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store address"))?;
                     // i32.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i32_store(addr, value, *offset, *align));
+                    side_effects.push(i32_store(addr, value, *offset, *align, *mem));
                 }
-                Instruction::I64Load { offset, align } => {
+                Instruction::I64Load { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load address"))?;
-                    stack.push(i64_load(addr, *offset, *align));
+                    stack.push(i64_load(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Store { offset, align } => {
+                Instruction::I64Store { offset, align, mem } => {
                     let value = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store value"))?;
@@ -4247,68 +4317,145 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store address"))?;
                     // i64.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i64_store(addr, value, *offset, *align));
+                    side_effects.push(i64_store(addr, value, *offset, *align, *mem));
                 }
                 // Partial-width memory load operations
-                Instruction::I32Load8S { offset, align } => {
+                Instruction::I32Load8S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load8_s address"))?;
-                    stack.push(i32_load8_s(addr, *offset, *align));
+                    stack.push(i32_load8_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load8U { offset, align } => {
+                Instruction::I32Load8U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load8_u address"))?;
-                    stack.push(i32_load8_u(addr, *offset, *align));
+                    stack.push(i32_load8_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load16S { offset, align } => {
+                Instruction::I32Load16S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load16_s address"))?;
-                    stack.push(i32_load16_s(addr, *offset, *align));
+                    stack.push(i32_load16_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load16U { offset, align } => {
+                Instruction::I32Load16U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load16_u address"))?;
-                    stack.push(i32_load16_u(addr, *offset, *align));
+                    stack.push(i32_load16_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load8S { offset, align } => {
+                Instruction::I64Load8S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load8_s address"))?;
-                    stack.push(i64_load8_s(addr, *offset, *align));
+                    stack.push(i64_load8_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load8U { offset, align } => {
+                Instruction::I64Load8U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load8_u address"))?;
-                    stack.push(i64_load8_u(addr, *offset, *align));
+                    stack.push(i64_load8_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load16S { offset, align } => {
+                Instruction::I64Load16S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load16_s address"))?;
-                    stack.push(i64_load16_s(addr, *offset, *align));
+                    stack.push(i64_load16_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load16U { offset, align } => {
+                Instruction::I64Load16U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load16_u address"))?;
-                    stack.push(i64_load16_u(addr, *offset, *align));
+                    stack.push(i64_load16_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load32S { offset, align } => {
+                Instruction::I64Load32S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load32_s address"))?;
-                    stack.push(i64_load32_s(addr, *offset, *align));
+                    stack.push(i64_load32_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load32U { offset, align } => {
+                Instruction::I64Load32U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load32_u address"))?;
-                    stack.push(i64_load32_u(addr, *offset, *align));
+                    stack.push(i64_load32_u(addr, *offset, *align, *mem));
+                }
+                // Float memory operations
+                Instruction::F32Load { offset, align, mem } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.load address"))?;
+                    stack.push(f32_load(addr, *offset, *align, *mem));
+                }
+                Instruction::F32Store { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.store value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.store address"))?;
+                    side_effects.push(f32_store(addr, value, *offset, *align, *mem));
+                }
+                Instruction::F64Load { offset, align, mem } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.load address"))?;
+                    stack.push(f64_load(addr, *offset, *align, *mem));
+                }
+                Instruction::F64Store { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.store value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.store address"))?;
+                    side_effects.push(f64_store(addr, value, *offset, *align, *mem));
+                }
+                // Partial-width memory store operations
+                Instruction::I32Store8 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store8 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store8 address"))?;
+                    side_effects.push(i32_store8(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I32Store16 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store16 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store16 address"))?;
+                    side_effects.push(i32_store16(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store8 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store8 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store8 address"))?;
+                    side_effects.push(i64_store8(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store16 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store16 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store16 address"))?;
+                    side_effects.push(i64_store16(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store32 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store32 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store32 address"))?;
+                    side_effects.push(i64_store32(addr, value, *offset, *align, *mem));
                 }
                 // Control flow instructions (Phase 14)
                 Instruction::Block { block_type, body } => {
@@ -4581,15 +4728,6 @@ pub mod terms {
                 | Instruction::I64ReinterpretF64
                 | Instruction::F32ReinterpretI32
                 | Instruction::F64ReinterpretI64
-                | Instruction::F32Load { .. }
-                | Instruction::F32Store { .. }
-                | Instruction::F64Load { .. }
-                | Instruction::F64Store { .. }
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
                 | Instruction::MemorySize(_)
                 | Instruction::MemoryGrow(_) => {
                     // These instructions don't have ISLE term representations
@@ -5037,11 +5175,13 @@ pub mod terms {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Store {
@@ -5049,23 +5189,27 @@ pub mod terms {
                 value,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 term_to_instructions_recursive(value, instructions)?;
                 instructions.push(Instruction::I32Store {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Store {
@@ -5073,12 +5217,14 @@ pub mod terms {
                 value,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 term_to_instructions_recursive(value, instructions)?;
                 instructions.push(Instruction::I64Store {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
 
@@ -5087,110 +5233,265 @@ pub mod terms {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load8S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load8U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load8U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load16S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load16S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load16U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load16U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load8S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load8S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load8U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load8U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load16S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load16S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load16U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load16U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load32S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load32S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load32U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load32U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
+                });
+            }
+
+            // Float memory operations
+            ValueData::F32Load {
+                addr,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::F32Load {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F32Store {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::F32Store {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F64Load {
+                addr,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::F64Load {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F64Store {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::F64Store {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+
+            // Partial-width memory store operations
+            ValueData::I32Store8 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I32Store8 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I32Store16 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I32Store16 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store8 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store8 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store16 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store16 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store32 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store32 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
                 });
             }
 
@@ -5582,17 +5883,6 @@ pub mod optimize {
                 | Instruction::I64ReinterpretF64
                 | Instruction::F32ReinterpretI32
                 | Instruction::F64ReinterpretI64
-                // Float memory operations
-                | Instruction::F32Load { .. }
-                | Instruction::F32Store { .. }
-                | Instruction::F64Load { .. }
-                | Instruction::F64Store { .. }
-                // Partial-width memory store operations (loads are now supported)
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
                 // Memory operations
                 | Instruction::MemorySize(_)
                 | Instruction::MemoryGrow(_)
@@ -12634,5 +12924,425 @@ mod tests {
         // Verify validity
         let wasm_bytes = encode::encode_wasm(&module).unwrap();
         wasmparser::validate(&wasm_bytes).expect("Fully optimized module should be valid");
+    }
+
+    #[test]
+    fn test_load_isle_round_trip_all_14() {
+        // Test that all 14 load variants with mem field round-trip through
+        // instructions_to_terms → terms_to_instructions correctly.
+        // Loads push a value onto the stack, so they survive the round-trip.
+
+        let load_cases: Vec<(&str, Vec<Instruction>)> = vec![
+            (
+                "i32.load",
+                vec![
+                    Instruction::I32Const(100),
+                    Instruction::I32Load {
+                        offset: 4,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load {
+                        offset: 8,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f32.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::F32Load {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f64.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::F64Load {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load8_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load8S {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load8_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load8U {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load16_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load16S {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load16_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load16U {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load8_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load8S {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load8_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load8U {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load16_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load16S {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load16_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load16U {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load32_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load32S {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load32_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load32U {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+        ];
+
+        for (name, instructions) in &load_cases {
+            let terms = terms::instructions_to_terms(instructions)
+                .unwrap_or_else(|e| panic!("{}: instructions_to_terms failed: {}", name, e));
+
+            let result = terms::terms_to_instructions(&terms)
+                .unwrap_or_else(|e| panic!("{}: terms_to_instructions failed: {}", name, e));
+
+            assert_eq!(&result, instructions, "{}: round-trip mismatch", name);
+        }
+    }
+
+    #[test]
+    fn test_store_isle_conversion_all_9() {
+        // Test that all 9 store variants successfully convert to ISLE terms.
+        // Stores produce side effects (not stack values), so we verify
+        // instructions_to_terms succeeds without error.
+        // i32.store and i64.store use I32Const/I64Const for values (already on ISLE stack).
+        // Float stores use load results. Partial stores use I32Const/I64Const values.
+
+        let store_cases: Vec<(&str, Vec<Instruction>)> = vec![
+            (
+                "i32.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(42),
+                    Instruction::I32Store {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(999),
+                    Instruction::I64Store {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f32.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(0),
+                    Instruction::F32Load {
+                        offset: 8,
+                        align: 2,
+                        mem: 0,
+                    },
+                    Instruction::F32Store {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f64.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(0),
+                    Instruction::F64Load {
+                        offset: 8,
+                        align: 3,
+                        mem: 0,
+                    },
+                    Instruction::F64Store {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.store8",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(255),
+                    Instruction::I32Store8 {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.store16",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(65535),
+                    Instruction::I32Store16 {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store8",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(255),
+                    Instruction::I64Store8 {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store16",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(65535),
+                    Instruction::I64Store16 {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store32",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(0xFFFFFFFF),
+                    Instruction::I64Store32 {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+        ];
+
+        for (name, instructions) in &store_cases {
+            terms::instructions_to_terms(instructions)
+                .unwrap_or_else(|e| panic!("{}: instructions_to_terms failed: {}", name, e));
+        }
+    }
+
+    #[test]
+    fn test_load_store_mem_field_preserved_in_isle() {
+        // Verify the mem field is preserved (not dropped to 0) through ISLE conversion
+        let instructions = vec![
+            Instruction::I32Const(100),
+            Instruction::I32Load {
+                offset: 4,
+                align: 2,
+                mem: 3,
+            },
+        ];
+
+        let terms =
+            terms::instructions_to_terms(&instructions).expect("instructions_to_terms failed");
+
+        let result = terms::terms_to_instructions(&terms).expect("terms_to_instructions failed");
+
+        assert_eq!(result.len(), 2);
+        match &result[1] {
+            Instruction::I32Load { offset, align, mem } => {
+                assert_eq!(*offset, 4);
+                assert_eq!(*align, 2);
+                assert_eq!(
+                    *mem, 3,
+                    "mem field should be preserved through ISLE round-trip"
+                );
+            }
+            other => panic!("Expected I32Load, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_multi_memory_round_trip_parse_encode() {
+        // Multi-memory module: memory 0 and memory 1
+        // i32.load from memory 1 should preserve the memory index through parse → encode.
+        // We construct the module directly (WAT text format multi-memory syntax varies
+        // by tool version), then round-trip through encode → parse.
+        let instructions = vec![
+            Instruction::I32Const(0),
+            Instruction::I32Load {
+                offset: 0,
+                align: 2,
+                mem: 1,
+            },
+            Instruction::End,
+        ];
+
+        let module = Module {
+            functions: vec![Function {
+                name: None,
+                signature: FunctionSignature {
+                    params: vec![],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions,
+            }],
+            memories: vec![
+                crate::Memory {
+                    min: 1,
+                    max: None,
+                    shared: false,
+                    memory64: false,
+                },
+                crate::Memory {
+                    min: 1,
+                    max: None,
+                    shared: false,
+                    memory64: false,
+                },
+            ],
+            tables: vec![],
+            globals: vec![],
+            types: vec![FunctionSignature {
+                params: vec![],
+                results: vec![ValueType::I32],
+            }],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        };
+
+        let wasm_bytes =
+            encode::encode_wasm(&module).expect("Failed to encode multi-memory module");
+        let module2 =
+            parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse multi-memory module");
+
+        assert_eq!(module2.functions.len(), 1);
+        let func = &module2.functions[0];
+
+        // Find the I32Load and verify mem=1 survived round-trip
+        let load = func
+            .instructions
+            .iter()
+            .find(|i| matches!(i, Instruction::I32Load { .. }));
+        match load {
+            Some(Instruction::I32Load { mem, .. }) => {
+                assert_eq!(
+                    *mem, 1,
+                    "memory index should survive parse→encode round-trip"
+                );
+            }
+            _ => panic!("Expected I32Load instruction in round-tripped module"),
+        }
     }
 }
