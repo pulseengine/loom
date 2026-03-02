@@ -929,6 +929,19 @@ pub enum ValueData {
     },
 
     // ========================================================================
+    // Memory Size/Grow Operations
+    // ========================================================================
+    /// memory.size - returns current memory size in pages
+    MemorySize {
+        mem: u32,
+    },
+    /// memory.grow - grows memory by delta pages, returns previous size or -1
+    MemoryGrow {
+        val: Value,
+        mem: u32,
+    },
+
+    // ========================================================================
     // Sign Extension Operations (in-place sign extension)
     // ========================================================================
     /// i32.extend8_s - sign-extend low 8 bits to 32 bits
@@ -2112,6 +2125,16 @@ pub fn i64_trunc_sat_f64_s(val: Value) -> Value {
 }
 pub fn i64_trunc_sat_f64_u(val: Value) -> Value {
     Value(Box::new(ValueData::I64TruncSatF64U { val }))
+}
+
+// ============================================================================
+// Memory Size/Grow Constructors
+// ============================================================================
+pub fn memory_size(mem: u32) -> Value {
+    Value(Box::new(ValueData::MemorySize { mem }))
+}
+pub fn memory_grow(val: Value, mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryGrow { val, mem }))
 }
 
 // ============================================================================
@@ -4986,6 +5009,15 @@ fn simplify_stateless(val: Value) -> Value {
             } else {
                 i64_trunc_sat_f64_u(v)
             }
+        }
+
+        // ====================================================================
+        // Memory Size/Grow — side-effectful, cannot fold, simplify children
+        // ====================================================================
+        ValueData::MemorySize { .. } => val, // no children to simplify
+        ValueData::MemoryGrow { val: inner, mem } => {
+            let v = simplify(inner.clone());
+            memory_grow(v, *mem)
         }
 
         // Constants are already in simplest form

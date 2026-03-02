@@ -294,6 +294,10 @@
     (I64TruncSatF32U (val Value))
     (I64TruncSatF64S (val Value))
     (I64TruncSatF64U (val Value))
+
+    ;; Memory operations
+    (MemorySize (mem u32))
+    (MemoryGrow (val Value) (mem u32))
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -792,6 +796,12 @@
 (extern constructor i64_trunc_sat_f64_s i64_trunc_sat_f64_s)
 (decl i64_trunc_sat_f64_u (Value) Value)
 (extern constructor i64_trunc_sat_f64_u i64_trunc_sat_f64_u)
+
+;; Memory operations
+(decl memory_size (u32) Value)
+(extern constructor memory_size memory_size)
+(decl memory_grow (Value u32) Value)
+(extern constructor memory_grow memory_grow)
 
 ;; BlockType constructors
 (decl block_type_empty () BlockType)
