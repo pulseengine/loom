@@ -3593,17 +3593,17 @@ pub mod terms {
     use super::{BlockType, FunctionSignature, Instruction, Module, Value, ValueType};
     use anyhow::{Result, anyhow};
     use loom_isle::{
-        Imm32, Imm64, ImmF32, ImmF64, block, br, br_if, br_table, call, call_indirect, drop_instr,
-        f32_convert_i32_s, f32_convert_i32_u, f32_convert_i64_s, f32_convert_i64_u, f32_demote_f64,
-        f32_load, f32_reinterpret_i32, f32_store, f64_convert_i32_s, f64_convert_i32_u,
-        f64_convert_i64_s, f64_convert_i64_u, f64_load, f64_promote_f32, f64_reinterpret_i64,
-        f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32, fconst64,
-        fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64, fge32, fge64,
-        fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64, fmul32, fmul64,
-        fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64, fsub32, fsub64,
-        ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s, i32_extend16_s, i32_load,
-        i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_reinterpret_f32, i32_store,
-        i32_store8, i32_store16, i32_trunc_f32_s, i32_trunc_f32_u, i32_trunc_f64_s,
+        Imm32, Imm64, ImmF32, ImmF64, block, br, br_if, br_table, call, call_indirect, data_drop,
+        drop_instr, f32_convert_i32_s, f32_convert_i32_u, f32_convert_i64_s, f32_convert_i64_u,
+        f32_demote_f64, f32_load, f32_reinterpret_i32, f32_store, f64_convert_i32_s,
+        f64_convert_i32_u, f64_convert_i64_s, f64_convert_i64_u, f64_load, f64_promote_f32,
+        f64_reinterpret_i64, f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32,
+        fconst64, fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64,
+        fge32, fge64, fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64,
+        fmul32, fmul64, fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64,
+        fsub32, fsub64, ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s, i32_extend16_s,
+        i32_load, i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_reinterpret_f32,
+        i32_store, i32_store8, i32_store16, i32_trunc_f32_s, i32_trunc_f32_u, i32_trunc_f64_s,
         i32_trunc_f64_u, i32_trunc_sat_f32_s, i32_trunc_sat_f32_u, i32_trunc_sat_f64_s,
         i32_trunc_sat_f64_u, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_extend8_s,
         i64_extend16_s, i64_extend32_s, i64_load, i64_load8_s, i64_load8_u, i64_load16_s,
@@ -3616,8 +3616,8 @@ pub mod terms {
         iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64,
         ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64,
         irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64,
-        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, memory_grow, memory_size,
-        nop, return_val, select_instr, unreachable,
+        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, memory_copy, memory_fill,
+        memory_grow, memory_init, memory_size, nop, return_val, select_instr, unreachable,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -5196,12 +5196,45 @@ pub mod terms {
                     // They are passed through unchanged in the encoding phase
                 }
 
-                // Bulk memory instructions - pass through unchanged
-                Instruction::MemoryFill(_)
-                | Instruction::MemoryCopy { .. }
-                | Instruction::MemoryInit { .. }
-                | Instruction::DataDrop(_) => {
-                    // These don't have ISLE term representations yet
+                // Bulk memory instructions - side-effectful, no stack output
+                Instruction::MemoryFill(mem) => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill len"))?;
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill val"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill dst"))?;
+                    side_effects.push(memory_fill(dst, val, len, *mem));
+                }
+                Instruction::MemoryCopy { dst_mem, src_mem } => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy len"))?;
+                    let src = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy src"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy dst"))?;
+                    side_effects.push(memory_copy(dst, src, len, *dst_mem, *src_mem));
+                }
+                Instruction::MemoryInit { mem, data_idx } => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init len"))?;
+                    let src = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init src"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init dst"))?;
+                    side_effects.push(memory_init(dst, src, len, *mem, *data_idx));
+                }
+                Instruction::DataDrop(data_idx) => {
+                    side_effects.push(data_drop(*data_idx));
                 }
             }
         }
@@ -5697,6 +5730,46 @@ pub mod terms {
             ValueData::MemoryGrow { val, mem } => {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::MemoryGrow(*mem));
+            }
+            // Bulk memory operations (side-effectful)
+            ValueData::MemoryFill { dst, val, len, mem } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(val, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryFill(*mem));
+            }
+            ValueData::MemoryCopy {
+                dst,
+                src,
+                len,
+                dst_mem,
+                src_mem,
+            } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(src, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryCopy {
+                    dst_mem: *dst_mem,
+                    src_mem: *src_mem,
+                });
+            }
+            ValueData::MemoryInit {
+                dst,
+                src,
+                len,
+                mem,
+                data_idx,
+            } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(src, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryInit {
+                    mem: *mem,
+                    data_idx: *data_idx,
+                });
+            }
+            ValueData::DataDrop { data_idx } => {
+                instructions.push(Instruction::DataDrop(*data_idx));
             }
             // Sign extension operations
             ValueData::I32Extend8S { val } => {
@@ -6530,12 +6603,9 @@ pub mod optimize {
 
     /// Helper: Check if a function contains instructions not supported by ISLE term conversion
     ///
-    /// The instructions_to_terms function only handles a subset of WASM instructions.
-    /// For unsupported instructions (floats, conversions, rotations, etc.), it doesn't
-    /// properly simulate stack effects, which causes stack underflow errors.
-    ///
-    /// This function identifies functions that should skip ISLE-based optimization
-    /// to avoid corrupting the stack simulation.
+    /// Currently only `Unknown` instructions are unsupported — all standard WASM
+    /// instructions (integer, float, conversion, memory, control flow, call_indirect,
+    /// br_table, bulk memory) are fully wired into the ISLE pipeline.
     fn has_unsupported_isle_instructions(func: &Function) -> bool {
         has_unsupported_isle_instructions_in_block(&func.instructions)
     }
@@ -6544,13 +6614,16 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 // Recursively check nested blocks
-                Instruction::Block { body, .. }
-                | Instruction::Loop { body, .. } => {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     if has_unsupported_isle_instructions_in_block(body) {
                         return true;
                     }
                 }
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     if has_unsupported_isle_instructions_in_block(then_body)
                         || has_unsupported_isle_instructions_in_block(else_body)
                     {
@@ -6558,13 +6631,8 @@ pub mod optimize {
                     }
                 }
 
-                // Bulk memory operations (no ISLE term representation yet)
-                Instruction::MemoryFill(_)
-                | Instruction::MemoryCopy { .. }
-                | Instruction::MemoryInit { .. }
-                | Instruction::DataDrop(_)
-                // Unknown instructions
-                | Instruction::Unknown(_) => {
+                // Unknown instructions (opaque — cannot model stack effects)
+                Instruction::Unknown(_) => {
                     return true;
                 }
 
@@ -14516,5 +14584,50 @@ mod tests {
             "Expected constant folding to occur in function with call_indirect: {:?}",
             func.instructions
         );
+    }
+
+    #[test]
+    fn test_bulk_memory_not_skipped() {
+        // Functions with bulk memory ops should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (memory 1)
+              (data $d "hello")
+              (func $bulk_test
+                i32.const 1
+                i32.const 1
+                i32.add
+                i32.const 0
+                i32.const 5
+                memory.fill
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 1 + i32.const 1 should be folded to i32.const 2
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(2)),
+            "Expected constant folding to occur in function with memory.fill: {:?}",
+            func.instructions
+        );
+        // memory.fill should still be present
+        assert!(
+            func.instructions.contains(&Instruction::MemoryFill(0)),
+            "Expected memory.fill to be preserved: {:?}",
+            func.instructions
+        );
+    }
+
+    #[test]
+    fn test_data_drop_round_trip() {
+        // data.drop goes through ISLE terms and back unchanged
+        let instructions = vec![Instruction::DataDrop(0), Instruction::End];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(result, vec![Instruction::DataDrop(0)]);
     }
 }

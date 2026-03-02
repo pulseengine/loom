@@ -298,6 +298,12 @@
     ;; Memory operations
     (MemorySize (mem u32))
     (MemoryGrow (val Value) (mem u32))
+
+    ;; Bulk memory operations (side-effectful)
+    (MemoryFill (dst Value) (val Value) (len Value) (mem u32))
+    (MemoryCopy (dst Value) (src Value) (len Value) (dst_mem u32) (src_mem u32))
+    (MemoryInit (dst Value) (src Value) (len Value) (mem u32) (data_idx u32))
+    (DataDrop (data_idx u32))
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -802,6 +808,16 @@
 (extern constructor memory_size memory_size)
 (decl memory_grow (Value u32) Value)
 (extern constructor memory_grow memory_grow)
+
+;; Bulk memory operations
+(decl memory_fill (Value Value Value u32) Value)
+(extern constructor memory_fill memory_fill)
+(decl memory_copy (Value Value Value u32 u32) Value)
+(extern constructor memory_copy memory_copy)
+(decl memory_init (Value Value Value u32 u32) Value)
+(extern constructor memory_init memory_init)
+(decl data_drop (u32) Value)
+(extern constructor data_drop data_drop)
 
 ;; BlockType constructors
 (decl block_type_empty () BlockType)
