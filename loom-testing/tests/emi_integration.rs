@@ -3,7 +3,7 @@
 //! These tests run EMI testing on the test fixtures to verify
 //! that LOOM's optimizer doesn't have miscompilation bugs.
 
-use loom_testing::emi::{analyze_dead_code, emi_test, EmiConfig};
+use loom_testing::emi::{EmiConfig, analyze_dead_code, emi_test};
 
 /// Load a fixture as WASM bytes
 fn load_fixture(name: &str) -> Vec<u8> {

@@ -22,9 +22,9 @@
 //! ```
 
 #[cfg(feature = "verification")]
-use z3::ast::{Array, Bool, BV};
+use z3::ast::{Array, BV, Bool};
 #[cfg(feature = "verification")]
-use z3::{with_z3_config, Config, SatResult, Solver, Sort};
+use z3::{Config, SatResult, Solver, Sort, with_z3_config};
 
 /// Feature flag for IEEE 754 float verification using Z3 FPA theory
 /// When enabled, float operations are verified with proper IEEE 754 semantics
@@ -38,7 +38,7 @@ use crate::Module;
 use crate::{BlockType, Function, FunctionSignature, ImportKind, Instruction, Module};
 #[cfg(feature = "verification")]
 use anyhow::Context as AnyhowContext;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Signature context for verification - stores function and type signatures
 /// for proper Call/CallIndirect stack effect modeling.
@@ -4778,7 +4778,7 @@ fn encode_function_to_smt_impl_inner(
                 stack.pop(); // len
                 stack.pop(); // src/val
                 stack.pop(); // dst
-                             // No return value
+                // No return value
             }
             Instruction::DataDrop(_) => {
                 // No stack effect

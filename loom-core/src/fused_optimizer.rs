@@ -236,10 +236,7 @@ fn collapse_same_memory_adapters(module: &mut Module) -> Result<usize> {
 fn remap_memory_indices(instructions: &mut [Instruction], remap: &HashMap<u32, u32>) {
     for instr in instructions.iter_mut() {
         match instr {
-            Instruction::MemoryCopy {
-                ref mut dst_mem,
-                ref mut src_mem,
-            } => {
+            Instruction::MemoryCopy { dst_mem, src_mem } => {
                 if let Some(&new_idx) = remap.get(dst_mem) {
                     *dst_mem = new_idx;
                 }
@@ -247,42 +244,42 @@ fn remap_memory_indices(instructions: &mut [Instruction], remap: &HashMap<u32, u
                     *src_mem = new_idx;
                 }
             }
-            Instruction::MemorySize(ref mut mem)
-            | Instruction::MemoryGrow(ref mut mem)
-            | Instruction::MemoryFill(ref mut mem) => {
+            Instruction::MemorySize(mem)
+            | Instruction::MemoryGrow(mem)
+            | Instruction::MemoryFill(mem) => {
                 if let Some(&new_idx) = remap.get(mem) {
                     *mem = new_idx;
                 }
             }
-            Instruction::MemoryInit { ref mut mem, .. } => {
+            Instruction::MemoryInit { mem, .. } => {
                 if let Some(&new_idx) = remap.get(mem) {
                     *mem = new_idx;
                 }
             }
             // Load/store instructions carry a memory index
-            Instruction::I32Load { ref mut mem, .. }
-            | Instruction::I32Store { ref mut mem, .. }
-            | Instruction::I64Load { ref mut mem, .. }
-            | Instruction::I64Store { ref mut mem, .. }
-            | Instruction::F32Load { ref mut mem, .. }
-            | Instruction::F32Store { ref mut mem, .. }
-            | Instruction::F64Load { ref mut mem, .. }
-            | Instruction::F64Store { ref mut mem, .. }
-            | Instruction::I32Load8S { ref mut mem, .. }
-            | Instruction::I32Load8U { ref mut mem, .. }
-            | Instruction::I32Load16S { ref mut mem, .. }
-            | Instruction::I32Load16U { ref mut mem, .. }
-            | Instruction::I64Load8S { ref mut mem, .. }
-            | Instruction::I64Load8U { ref mut mem, .. }
-            | Instruction::I64Load16S { ref mut mem, .. }
-            | Instruction::I64Load16U { ref mut mem, .. }
-            | Instruction::I64Load32S { ref mut mem, .. }
-            | Instruction::I64Load32U { ref mut mem, .. }
-            | Instruction::I32Store8 { ref mut mem, .. }
-            | Instruction::I32Store16 { ref mut mem, .. }
-            | Instruction::I64Store8 { ref mut mem, .. }
-            | Instruction::I64Store16 { ref mut mem, .. }
-            | Instruction::I64Store32 { ref mut mem, .. } => {
+            Instruction::I32Load { mem, .. }
+            | Instruction::I32Store { mem, .. }
+            | Instruction::I64Load { mem, .. }
+            | Instruction::I64Store { mem, .. }
+            | Instruction::F32Load { mem, .. }
+            | Instruction::F32Store { mem, .. }
+            | Instruction::F64Load { mem, .. }
+            | Instruction::F64Store { mem, .. }
+            | Instruction::I32Load8S { mem, .. }
+            | Instruction::I32Load8U { mem, .. }
+            | Instruction::I32Load16S { mem, .. }
+            | Instruction::I32Load16U { mem, .. }
+            | Instruction::I64Load8S { mem, .. }
+            | Instruction::I64Load8U { mem, .. }
+            | Instruction::I64Load16S { mem, .. }
+            | Instruction::I64Load16U { mem, .. }
+            | Instruction::I64Load32S { mem, .. }
+            | Instruction::I64Load32U { mem, .. }
+            | Instruction::I32Store8 { mem, .. }
+            | Instruction::I32Store16 { mem, .. }
+            | Instruction::I64Store8 { mem, .. }
+            | Instruction::I64Store16 { mem, .. }
+            | Instruction::I64Store32 { mem, .. } => {
                 if let Some(&new_idx) = remap.get(mem) {
                     *mem = new_idx;
                 }
@@ -1605,7 +1602,7 @@ fn collect_function_refs_recursive(instructions: &[Instruction], refs: &mut Hash
 fn remap_func_refs_in_block(instructions: &mut [Instruction], remap: &HashMap<u32, u32>) {
     for instr in instructions.iter_mut() {
         match instr {
-            Instruction::Call(ref mut idx) => {
+            Instruction::Call(idx) => {
                 if let Some(&new_idx) = remap.get(idx) {
                     *idx = new_idx;
                 }
@@ -2261,9 +2258,11 @@ mod tests {
         assert_eq!(stats.calls_devirtualized, 1);
 
         // Verify the caller now calls function 0 directly
-        assert!(module.functions[2]
-            .instructions
-            .contains(&Instruction::Call(0)));
+        assert!(
+            module.functions[2]
+                .instructions
+                .contains(&Instruction::Call(0))
+        );
     }
 
     #[test]
@@ -2350,9 +2349,11 @@ mod tests {
 
         // Verify the function call was remapped
         // Import 1 (duplicate) -> Import 0 (canonical)
-        assert!(module.functions[0]
-            .instructions
-            .contains(&Instruction::Call(0)));
+        assert!(
+            module.functions[0]
+                .instructions
+                .contains(&Instruction::Call(0))
+        );
     }
 
     #[test]
@@ -2406,9 +2407,11 @@ mod tests {
         // Verify function references were remapped
         // Old: func 0 calls func 2
         // After removing func 1: func 0 calls func 1 (shifted)
-        assert!(module.functions[0]
-            .instructions
-            .contains(&Instruction::Call(1)));
+        assert!(
+            module.functions[0]
+                .instructions
+                .contains(&Instruction::Call(1))
+        );
     }
 
     #[test]
@@ -2577,9 +2580,11 @@ mod tests {
         assert_eq!(eliminated, 0);
 
         // Call preserved
-        assert!(module.functions[1]
-            .instructions
-            .contains(&Instruction::Call(0)));
+        assert!(
+            module.functions[1]
+                .instructions
+                .contains(&Instruction::Call(0))
+        );
     }
 
     #[test]

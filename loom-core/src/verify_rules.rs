@@ -37,7 +37,7 @@ use z3::ast::BV;
 use z3::{SatResult, Solver};
 
 #[allow(unused_imports)]
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
 // ============================================================================

@@ -40,7 +40,7 @@
 //! println!("Size reduction: {:.1}%", stats.reduction_percentage());
 //! ```
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload};
 
 /// Statistics about component optimization

@@ -8,9 +8,9 @@
 //!
 //! Future Work: Integrate Crocus for full SMT verification using Z3 solver.
 
-use loom_core::{encode, optimize, parse};
 use loom_core::{Function, FunctionSignature, Instruction, Module, ValueType};
-use loom_isle::{iadd32, iconst32, simplify, Imm32, ValueData};
+use loom_core::{encode, optimize, parse};
+use loom_isle::{Imm32, ValueData, iadd32, iconst32, simplify};
 use proptest::prelude::*;
 
 /// Property: Constant folding preserves WebAssembly semantics

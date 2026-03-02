@@ -2,7 +2,7 @@
 //!
 //! Command-line tool for optimizing WebAssembly modules
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::Path;
@@ -374,7 +374,7 @@ fn optimize_command(
     let should_run = |pass_name: &str| -> bool {
         enabled_passes
             .as_ref()
-            .map_or(true, |passes| passes.contains(&pass_name))
+            .is_none_or(|passes| passes.contains(&pass_name))
     };
 
     // Helper to track pass stats
@@ -563,7 +563,7 @@ fn optimize_command(
 /// Run property-based verification on the module
 fn run_verification(original: &loom_core::Module, optimized: &loom_core::Module) -> Result<()> {
     use loom_core::Instruction;
-    use loom_isle::{iadd32, iconst32, simplify, Imm32, ValueData};
+    use loom_isle::{Imm32, ValueData, iadd32, iconst32, simplify};
 
     // First, run Z3 SMT-based formal verification (if feature enabled)
     #[cfg(feature = "verification")]

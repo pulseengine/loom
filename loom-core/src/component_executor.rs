@@ -4,7 +4,7 @@
 //! It validates that optimization preserves component structure, exports, and canonical functions
 //! by parsing and analyzing the component binary format without requiring runtime instantiation.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 /// Execution result for a component after optimization
 #[derive(Debug, Clone)]

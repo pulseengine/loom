@@ -831,7 +831,7 @@ pub mod parse {
         BlockType, Export, ExportKind, Function, FunctionSignature, Import, ImportKind,
         Instruction, Memory, Module, Table, ValueType,
     };
-    use anyhow::{anyhow, Context, Result};
+    use anyhow::{Context, Result, anyhow};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
 
     /// Parse a WebAssembly binary module
@@ -3591,25 +3591,25 @@ pub mod encode {
 pub mod terms {
 
     use super::{BlockType, FunctionSignature, Instruction, Module, Value, ValueType};
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use loom_isle::{
-        block, br, br_if, br_table, call, call_indirect, drop_instr, f32_load, f32_store, f64_load,
-        f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32, fconst64,
-        fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64, fge32, fge64,
-        fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64, fmul32, fmul64,
-        fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64, fsub32, fsub64,
-        ftrunc32, ftrunc64, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load,
-        i32_load16_s, i32_load16_u, i32_load8_s, i32_load8_u, i32_store, i32_store16, i32_store8,
-        i32_wrap_i64, i64_extend16_s, i64_extend32_s, i64_extend8_s, i64_extend_i32_s,
-        i64_extend_i32_u, i64_load, i64_load16_s, i64_load16_u, i64_load32_s, i64_load32_u,
-        i64_load8_s, i64_load8_u, i64_store, i64_store16, i64_store32, i64_store8, iadd32, iadd64,
-        iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64,
-        idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32,
-        igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64,
-        iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32,
-        irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32,
-        ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee,
-        loop_construct, nop, return_val, select_instr, unreachable, Imm32, Imm64, ImmF32, ImmF64,
+        Imm32, Imm64, ImmF32, ImmF64, block, br, br_if, br_table, call, call_indirect, drop_instr,
+        f32_load, f32_store, f64_load, f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64,
+        fconst32, fconst64, fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32,
+        ffloor64, fge32, fge64, fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32,
+        fmin64, fmul32, fmul64, fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32,
+        fsqrt64, fsub32, fsub64, ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s,
+        i32_extend16_s, i32_load, i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_store,
+        i32_store8, i32_store16, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_extend8_s,
+        i64_extend16_s, i64_extend32_s, i64_load, i64_load8_s, i64_load8_u, i64_load16_s,
+        i64_load16_u, i64_load32_s, i64_load32_u, i64_store, i64_store8, i64_store16, i64_store32,
+        iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64,
+        idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
+        iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
+        ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
+        ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32,
+        ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get,
+        local_set, local_tee, loop_construct, nop, return_val, select_instr, unreachable,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -6453,10 +6453,10 @@ pub mod optimize {
     /// Apply ISLE-based constant folding optimization
     /// This uses ISLE pattern matching rules to fold constants (e.g., i32.const 100 + i32.const 200 → i32.const 300)
     pub fn constant_folding(module: &mut Module) -> Result<()> {
-        use super::terms::TermSignatureContext;
         use super::Value;
+        use super::terms::TermSignatureContext;
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         // Create signature contexts before mutating functions
         // TermSignatureContext for ISLE term conversion
@@ -6978,7 +6978,7 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 Instruction::Br { .. } | Instruction::BrIf { .. } | Instruction::BrTable { .. } => {
-                    return true
+                    return true;
                 }
 
                 // Recursively check nested structures
@@ -10078,8 +10078,8 @@ pub mod optimize {
     pub fn eliminate_common_subexpressions_enhanced(module: &mut Module) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
-        use std::collections::hash_map::DefaultHasher;
         use std::collections::HashMap;
+        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let ctx = ValidationContext::from_module(module);
@@ -10461,11 +10461,11 @@ pub mod optimize {
     /// These are simple pattern-based transformations that work on
     /// instruction sequences in stack-based form.
     pub fn optimize_advanced_instructions(module: &mut Module) -> Result<()> {
-        use super::terms::TermSignatureContext;
         use super::Value;
+        use super::terms::TermSignatureContext;
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         let ctx = ValidationContext::from_module(module);
         // Create signature contexts for proper Call/CallIndirect handling
@@ -11084,11 +11084,11 @@ pub mod component_executor;
 pub mod fused_optimizer;
 
 /// Re-export fused optimization API
-pub use fused_optimizer::{optimize_fused_module, FusedOptimizationStats};
+pub use fused_optimizer::{FusedOptimizationStats, optimize_fused_module};
 
 /// Re-export component optimization API
 pub use component_optimizer::{
-    analyze_component_structure, optimize_component, ComponentAnalysis, ComponentStats,
+    ComponentAnalysis, ComponentStats, analyze_component_structure, optimize_component,
 };
 
 /// Re-export component executor API
@@ -11103,7 +11103,7 @@ mod tests {
 
     #[test]
     fn test_value_construction() {
-        use loom_isle::{iconst32, Imm32};
+        use loom_isle::{Imm32, iconst32};
         let _val = iconst32(Imm32::from(42));
         // Just test that ISLE types are accessible
     }
@@ -11230,7 +11230,7 @@ mod tests {
 
     #[test]
     fn test_terms_to_instructions() {
-        use loom_isle::{iadd32, iconst32, Imm32};
+        use loom_isle::{Imm32, iadd32, iconst32};
 
         // Build term: I32Add(I32Const(10), I32Const(32))
         let term = iadd32(iconst32(Imm32::from(10)), iconst32(Imm32::from(32)));
@@ -12679,7 +12679,7 @@ mod tests {
     /// Debug test to identify which optimization phase causes stack mismatch
     #[test]
     fn debug_identify_problematic_pass() {
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         let wat = include_str!("../../tests/fixtures/bench_locals.wat");
 
@@ -13787,12 +13787,14 @@ mod tests {
 
         // Verify original instructions
         let func = &module.functions[0];
-        assert!(func
-            .instructions
-            .contains(&Instruction::F32Const(10.0_f32.to_bits())));
-        assert!(func
-            .instructions
-            .contains(&Instruction::F32Const(32.0_f32.to_bits())));
+        assert!(
+            func.instructions
+                .contains(&Instruction::F32Const(10.0_f32.to_bits()))
+        );
+        assert!(
+            func.instructions
+                .contains(&Instruction::F32Const(32.0_f32.to_bits()))
+        );
         assert!(func.instructions.contains(&Instruction::F32Add));
 
         // Apply optimization
@@ -13937,7 +13939,7 @@ mod tests {
     #[test]
     fn test_float_neg_involution() {
         // neg(neg(x)) should simplify to x
-        use loom_isle::{fconst32, fneg32, simplify, ImmF32};
+        use loom_isle::{ImmF32, fconst32, fneg32, simplify};
         let x = fconst32(ImmF32::new(42.0));
         let neg_neg = fneg32(fneg32(x.clone()));
         let simplified = simplify(neg_neg);
@@ -14012,7 +14014,7 @@ mod tests {
     #[test]
     fn test_float_comparison_nan_eq() {
         // f32.const NaN; f32.const 1.0; f32.eq → i32.const 0 (NaN != anything)
-        use loom_isle::{fconst32, feq32, simplify, ImmF32};
+        use loom_isle::{ImmF32, fconst32, feq32, simplify};
         let nan = fconst32(ImmF32::new(f32::NAN));
         let one = fconst32(ImmF32::new(1.0));
         let eq = feq32(nan, one);
@@ -14049,7 +14051,7 @@ mod tests {
     #[test]
     fn test_float_copysign_fold() {
         // f32.const 5.0; f32.const -1.0; f32.copysign → f32.const -5.0
-        use loom_isle::{fconst32, fcopysign32, simplify, ImmF32};
+        use loom_isle::{ImmF32, fconst32, fcopysign32, simplify};
         let mag = fconst32(ImmF32::new(5.0));
         let sign = fconst32(ImmF32::new(-1.0));
         let cs = fcopysign32(mag, sign);
@@ -14063,7 +14065,7 @@ mod tests {
     #[test]
     fn test_float_f64_comparison_fold() {
         // f64.const 10.0; f64.const 5.0; f64.ge → i32.const 1
-        use loom_isle::{fconst64, fge64, simplify, ImmF64};
+        use loom_isle::{ImmF64, fconst64, fge64, simplify};
         let a = fconst64(ImmF64::new(10.0));
         let b = fconst64(ImmF64::new(5.0));
         let ge = fge64(a, b);
