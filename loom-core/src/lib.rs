@@ -3594,19 +3594,22 @@ pub mod terms {
     use anyhow::{anyhow, Result};
     use loom_isle::{
         block, br, br_if, br_table, call, call_indirect, drop_instr, f32_load, f32_store, f64_load,
-        f64_store, fadd32, fadd64, fconst32, fconst64, fdiv32, fdiv64, fmul32, fmul64, fsub32,
-        fsub64, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s,
-        i32_load16_u, i32_load8_s, i32_load8_u, i32_store, i32_store16, i32_store8, i32_wrap_i64,
-        i64_extend16_s, i64_extend32_s, i64_extend8_s, i64_extend_i32_s, i64_extend_i32_u,
-        i64_load, i64_load16_s, i64_load16_u, i64_load32_s, i64_load32_u, i64_load8_s, i64_load8_u,
-        i64_store, i64_store16, i64_store32, i64_store8, iadd32, iadd64, iand32, iand64, iclz32,
-        iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32,
-        ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64,
-        igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32,
-        imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32,
-        iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
-        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
-        nop, return_val, select_instr, unreachable, Imm32, Imm64, ImmF32, ImmF64,
+        f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32, fconst64,
+        fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64, fge32, fge64,
+        fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64, fmul32, fmul64,
+        fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64, fsub32, fsub64,
+        ftrunc32, ftrunc64, global_get, global_set, i32_extend16_s, i32_extend8_s, i32_load,
+        i32_load16_s, i32_load16_u, i32_load8_s, i32_load8_u, i32_store, i32_store16, i32_store8,
+        i32_wrap_i64, i64_extend16_s, i64_extend32_s, i64_extend8_s, i64_extend_i32_s,
+        i64_extend_i32_u, i64_load, i64_load16_s, i64_load16_u, i64_load32_s, i64_load32_u,
+        i64_load8_s, i64_load8_u, i64_store, i64_store16, i64_store32, i64_store8, iadd32, iadd64,
+        iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64,
+        idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32,
+        igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64,
+        iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32,
+        irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32,
+        ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee,
+        loop_construct, nop, return_val, select_instr, unreachable, Imm32, Imm64, ImmF32, ImmF64,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -4733,41 +4736,261 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for f64.div lhs"))?;
                     stack.push(fdiv64(lhs, rhs));
                 }
-                // Float comparison, unary, conversion, and memory operations don't have ISLE term representations yet
+                // f32 unary operations
+                Instruction::F32Abs => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.abs"))?;
+                    stack.push(fabs32(val));
+                }
+                Instruction::F32Neg => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.neg"))?;
+                    stack.push(fneg32(val));
+                }
+                Instruction::F32Ceil => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ceil"))?;
+                    stack.push(fceil32(val));
+                }
+                Instruction::F32Floor => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.floor"))?;
+                    stack.push(ffloor32(val));
+                }
+                Instruction::F32Trunc => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.trunc"))?;
+                    stack.push(ftrunc32(val));
+                }
+                Instruction::F32Nearest => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.nearest"))?;
+                    stack.push(fnearest32(val));
+                }
+                Instruction::F32Sqrt => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sqrt"))?;
+                    stack.push(fsqrt32(val));
+                }
+                // f32 binary operations
+                Instruction::F32Min => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.min rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.min lhs"))?;
+                    stack.push(fmin32(lhs, rhs));
+                }
+                Instruction::F32Max => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.max rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.max lhs"))?;
+                    stack.push(fmax32(lhs, rhs));
+                }
+                Instruction::F32Copysign => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.copysign rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.copysign lhs"))?;
+                    stack.push(fcopysign32(lhs, rhs));
+                }
+                // f32 comparison operations
+                Instruction::F32Eq => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.eq rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.eq lhs"))?;
+                    stack.push(feq32(lhs, rhs));
+                }
+                Instruction::F32Ne => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ne rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ne lhs"))?;
+                    stack.push(fne32(lhs, rhs));
+                }
+                Instruction::F32Lt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.lt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.lt lhs"))?;
+                    stack.push(flt32(lhs, rhs));
+                }
+                Instruction::F32Gt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.gt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.gt lhs"))?;
+                    stack.push(fgt32(lhs, rhs));
+                }
+                Instruction::F32Le => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.le rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.le lhs"))?;
+                    stack.push(fle32(lhs, rhs));
+                }
+                Instruction::F32Ge => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ge rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ge lhs"))?;
+                    stack.push(fge32(lhs, rhs));
+                }
+                // f64 unary operations
+                Instruction::F64Abs => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.abs"))?;
+                    stack.push(fabs64(val));
+                }
+                Instruction::F64Neg => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.neg"))?;
+                    stack.push(fneg64(val));
+                }
+                Instruction::F64Ceil => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ceil"))?;
+                    stack.push(fceil64(val));
+                }
+                Instruction::F64Floor => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.floor"))?;
+                    stack.push(ffloor64(val));
+                }
+                Instruction::F64Trunc => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.trunc"))?;
+                    stack.push(ftrunc64(val));
+                }
+                Instruction::F64Nearest => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.nearest"))?;
+                    stack.push(fnearest64(val));
+                }
+                Instruction::F64Sqrt => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sqrt"))?;
+                    stack.push(fsqrt64(val));
+                }
+                // f64 binary operations
+                Instruction::F64Min => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.min rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.min lhs"))?;
+                    stack.push(fmin64(lhs, rhs));
+                }
+                Instruction::F64Max => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.max rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.max lhs"))?;
+                    stack.push(fmax64(lhs, rhs));
+                }
+                Instruction::F64Copysign => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.copysign rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.copysign lhs"))?;
+                    stack.push(fcopysign64(lhs, rhs));
+                }
+                // f64 comparison operations
+                Instruction::F64Eq => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.eq rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.eq lhs"))?;
+                    stack.push(feq64(lhs, rhs));
+                }
+                Instruction::F64Ne => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ne rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ne lhs"))?;
+                    stack.push(fne64(lhs, rhs));
+                }
+                Instruction::F64Lt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.lt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.lt lhs"))?;
+                    stack.push(flt64(lhs, rhs));
+                }
+                Instruction::F64Gt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.gt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.gt lhs"))?;
+                    stack.push(fgt64(lhs, rhs));
+                }
+                Instruction::F64Le => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.le rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.le lhs"))?;
+                    stack.push(fle64(lhs, rhs));
+                }
+                Instruction::F64Ge => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ge rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ge lhs"))?;
+                    stack.push(fge64(lhs, rhs));
+                }
+                // Float conversion and memory operations don't have ISLE term representations yet
                 // They are passed through unchanged - stack effects tracked elsewhere for validation
-                Instruction::F32Min
-                | Instruction::F32Max
-                | Instruction::F32Copysign
-                | Instruction::F32Abs
-                | Instruction::F32Neg
-                | Instruction::F32Ceil
-                | Instruction::F32Floor
-                | Instruction::F32Trunc
-                | Instruction::F32Nearest
-                | Instruction::F32Sqrt
-                | Instruction::F32Eq
-                | Instruction::F32Ne
-                | Instruction::F32Lt
-                | Instruction::F32Gt
-                | Instruction::F32Le
-                | Instruction::F32Ge
-                | Instruction::F64Min
-                | Instruction::F64Max
-                | Instruction::F64Copysign
-                | Instruction::F64Abs
-                | Instruction::F64Neg
-                | Instruction::F64Ceil
-                | Instruction::F64Floor
-                | Instruction::F64Trunc
-                | Instruction::F64Nearest
-                | Instruction::F64Sqrt
-                | Instruction::F64Eq
-                | Instruction::F64Ne
-                | Instruction::F64Lt
-                | Instruction::F64Gt
-                | Instruction::F64Le
-                | Instruction::F64Ge
-                | Instruction::I32TruncF32S
+                Instruction::I32TruncF32S
                 | Instruction::I32TruncF32U
                 | Instruction::I32TruncF64S
                 | Instruction::I32TruncF64U
@@ -5755,6 +5978,164 @@ pub mod terms {
                 term_to_instructions_recursive(rhs, instructions)?;
                 instructions.push(Instruction::F64Div);
             }
+
+            // f32 unary operations
+            ValueData::F32Abs { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Abs);
+            }
+            ValueData::F32Neg { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Neg);
+            }
+            ValueData::F32Ceil { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Ceil);
+            }
+            ValueData::F32Floor { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Floor);
+            }
+            ValueData::F32Trunc { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Trunc);
+            }
+            ValueData::F32Nearest { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Nearest);
+            }
+            ValueData::F32Sqrt { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Sqrt);
+            }
+
+            // f32 binary operations
+            ValueData::F32Min { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Min);
+            }
+            ValueData::F32Max { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Max);
+            }
+            ValueData::F32Copysign { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Copysign);
+            }
+
+            // f32 comparison operations
+            ValueData::F32Eq { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Eq);
+            }
+            ValueData::F32Ne { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Ne);
+            }
+            ValueData::F32Lt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Lt);
+            }
+            ValueData::F32Gt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Gt);
+            }
+            ValueData::F32Le { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Le);
+            }
+            ValueData::F32Ge { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Ge);
+            }
+
+            // f64 unary operations
+            ValueData::F64Abs { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Abs);
+            }
+            ValueData::F64Neg { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Neg);
+            }
+            ValueData::F64Ceil { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Ceil);
+            }
+            ValueData::F64Floor { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Floor);
+            }
+            ValueData::F64Trunc { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Trunc);
+            }
+            ValueData::F64Nearest { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Nearest);
+            }
+            ValueData::F64Sqrt { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Sqrt);
+            }
+
+            // f64 binary operations
+            ValueData::F64Min { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Min);
+            }
+            ValueData::F64Max { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Max);
+            }
+            ValueData::F64Copysign { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Copysign);
+            }
+
+            // f64 comparison operations
+            ValueData::F64Eq { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Eq);
+            }
+            ValueData::F64Ne { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Ne);
+            }
+            ValueData::F64Lt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Lt);
+            }
+            ValueData::F64Gt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Gt);
+            }
+            ValueData::F64Le { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Le);
+            }
+            ValueData::F64Ge { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Ge);
+            }
         }
 
         Ok(())
@@ -5885,44 +6266,10 @@ pub mod optimize {
                     }
                 }
 
-                // Float operations - basic arithmetic now supported in ISLE terms
-                // F32Const, F64Const, F32Add, F32Sub, F32Mul, F32Div,
-                // F64Add, F64Sub, F64Mul, F64Div are now handled.
-                // Other float operations remain unsupported:
-                Instruction::F32Min
-                | Instruction::F32Max
-                | Instruction::F32Copysign
-                | Instruction::F32Abs
-                | Instruction::F32Neg
-                | Instruction::F32Ceil
-                | Instruction::F32Floor
-                | Instruction::F32Trunc
-                | Instruction::F32Nearest
-                | Instruction::F32Sqrt
-                | Instruction::F32Eq
-                | Instruction::F32Ne
-                | Instruction::F32Lt
-                | Instruction::F32Gt
-                | Instruction::F32Le
-                | Instruction::F32Ge
-                | Instruction::F64Min
-                | Instruction::F64Max
-                | Instruction::F64Copysign
-                | Instruction::F64Abs
-                | Instruction::F64Neg
-                | Instruction::F64Ceil
-                | Instruction::F64Floor
-                | Instruction::F64Trunc
-                | Instruction::F64Nearest
-                | Instruction::F64Sqrt
-                | Instruction::F64Eq
-                | Instruction::F64Ne
-                | Instruction::F64Lt
-                | Instruction::F64Gt
-                | Instruction::F64Le
-                | Instruction::F64Ge
-                // Float conversion operations
-                | Instruction::I32TruncF32S
+                // Float operations - all float arithmetic, unary, comparison, and
+                // binary ops are now supported in ISLE terms.
+                // Float conversion operations remain unsupported:
+                Instruction::I32TruncF32S
                 | Instruction::I32TruncF32U
                 | Instruction::I32TruncF64S
                 | Instruction::I32TruncF64U
@@ -13546,5 +13893,184 @@ mod tests {
         assert_eq!(result_instrs[0], Instruction::F64Const(3.0_f64.to_bits()));
         assert_eq!(result_instrs[1], Instruction::F64Const(7.0_f64.to_bits()));
         assert_eq!(result_instrs[2], Instruction::F64Mul);
+    }
+
+    #[test]
+    fn test_float_unary_round_trip() {
+        // F32Const, F32Abs round-trips through ISLE terms
+        let instructions = vec![
+            Instruction::F32Const(3.0_f32.to_bits()),
+            Instruction::F32Abs,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 2);
+        assert_eq!(result_instrs[0], Instruction::F32Const(3.0_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Abs);
+    }
+
+    #[test]
+    fn test_float_neg_constant_fold() {
+        // f32.const -5.0; f32.abs → f32.const 5.0
+        let wat = r#"
+            (module
+              (func $abs_neg (result f32)
+                f32.const -5.0
+                f32.abs
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(5.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Abs));
+    }
+
+    #[test]
+    fn test_float_neg_involution() {
+        // neg(neg(x)) should simplify to x
+        use loom_isle::{fconst32, fneg32, simplify, ImmF32};
+        let x = fconst32(ImmF32::new(42.0));
+        let neg_neg = fneg32(fneg32(x.clone()));
+        let simplified = simplify(neg_neg);
+        // Should simplify back to the original constant
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const(42.0_f32.to_bits()));
+    }
+
+    #[test]
+    fn test_float_min_constant_fold() {
+        // f32.const 3.0; f32.const 7.0; f32.min → f32.const 3.0
+        let wat = r#"
+            (module
+              (func $min_consts (result f32)
+                f32.const 3.0
+                f32.const 7.0
+                f32.min
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(3.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Min));
+    }
+
+    #[test]
+    fn test_float_min_nan_not_folded() {
+        // f32.const NaN; f32.const 1.0; f32.min → NOT folded (NaN propagation)
+        let instructions = vec![
+            Instruction::F32Const(f32::NAN.to_bits()),
+            Instruction::F32Const(1.0_f32.to_bits()),
+            Instruction::F32Min,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        // Should NOT be folded — still 3 instructions
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[2], Instruction::F32Min);
+    }
+
+    #[test]
+    fn test_float_comparison_fold() {
+        // f32.const 3.0; f32.const 7.0; f32.lt → i32.const 1
+        let wat = r#"
+            (module
+              (func $lt_consts (result i32)
+                f32.const 3.0
+                f32.const 7.0
+                f32.lt
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(func.instructions[0], Instruction::I32Const(1));
+        assert!(!func.instructions.contains(&Instruction::F32Lt));
+    }
+
+    #[test]
+    fn test_float_comparison_nan_eq() {
+        // f32.const NaN; f32.const 1.0; f32.eq → i32.const 0 (NaN != anything)
+        use loom_isle::{fconst32, feq32, simplify, ImmF32};
+        let nan = fconst32(ImmF32::new(f32::NAN));
+        let one = fconst32(ImmF32::new(1.0));
+        let eq = feq32(nan, one);
+        let simplified = simplify(eq);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(0));
+    }
+
+    #[test]
+    fn test_float_f64_ceil_fold() {
+        // f64.const 2.3; f64.ceil → f64.const 3.0
+        let wat = r#"
+            (module
+              (func $ceil_const (result f64)
+                f64.const 2.3
+                f64.ceil
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F64Const(3.0_f64.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F64Ceil));
+    }
+
+    #[test]
+    fn test_float_copysign_fold() {
+        // f32.const 5.0; f32.const -1.0; f32.copysign → f32.const -5.0
+        use loom_isle::{fconst32, fcopysign32, simplify, ImmF32};
+        let mag = fconst32(ImmF32::new(5.0));
+        let sign = fconst32(ImmF32::new(-1.0));
+        let cs = fcopysign32(mag, sign);
+        let simplified = simplify(cs);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const((-5.0_f32).to_bits()));
+    }
+
+    #[test]
+    fn test_float_f64_comparison_fold() {
+        // f64.const 10.0; f64.const 5.0; f64.ge → i32.const 1
+        use loom_isle::{fconst64, fge64, simplify, ImmF64};
+        let a = fconst64(ImmF64::new(10.0));
+        let b = fconst64(ImmF64::new(5.0));
+        let ge = fge64(a, b);
+        let simplified = simplify(ge);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(1));
     }
 }

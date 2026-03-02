@@ -895,6 +895,158 @@ pub enum ValueData {
         lhs: Value,
         rhs: Value,
     },
+    // f32 unary operations
+    /// f32.abs val
+    F32Abs {
+        val: Value,
+    },
+    /// f32.neg val
+    F32Neg {
+        val: Value,
+    },
+    /// f32.ceil val
+    F32Ceil {
+        val: Value,
+    },
+    /// f32.floor val
+    F32Floor {
+        val: Value,
+    },
+    /// f32.trunc val
+    F32Trunc {
+        val: Value,
+    },
+    /// f32.nearest val
+    F32Nearest {
+        val: Value,
+    },
+    /// f32.sqrt val
+    F32Sqrt {
+        val: Value,
+    },
+    // f32 binary operations
+    /// f32.min lhs rhs
+    F32Min {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.max lhs rhs
+    F32Max {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.copysign lhs rhs
+    F32Copysign {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f32 comparison operations (produce i32)
+    /// f32.eq lhs rhs
+    F32Eq {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.ne lhs rhs
+    F32Ne {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.lt lhs rhs
+    F32Lt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.gt lhs rhs
+    F32Gt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.le lhs rhs
+    F32Le {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.ge lhs rhs
+    F32Ge {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f64 unary operations
+    /// f64.abs val
+    F64Abs {
+        val: Value,
+    },
+    /// f64.neg val
+    F64Neg {
+        val: Value,
+    },
+    /// f64.ceil val
+    F64Ceil {
+        val: Value,
+    },
+    /// f64.floor val
+    F64Floor {
+        val: Value,
+    },
+    /// f64.trunc val
+    F64Trunc {
+        val: Value,
+    },
+    /// f64.nearest val
+    F64Nearest {
+        val: Value,
+    },
+    /// f64.sqrt val
+    F64Sqrt {
+        val: Value,
+    },
+    // f64 binary operations
+    /// f64.min lhs rhs
+    F64Min {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.max lhs rhs
+    F64Max {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.copysign lhs rhs
+    F64Copysign {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f64 comparison operations (produce i32)
+    /// f64.eq lhs rhs
+    F64Eq {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.ne lhs rhs
+    F64Ne {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.lt lhs rhs
+    F64Lt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.gt lhs rhs
+    F64Gt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.le lhs rhs
+    F64Le {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.ge lhs rhs
+    F64Ge {
+        lhs: Value,
+        rhs: Value,
+    },
 }
 
 // Include the ISLE-generated code in a module so `super::*` works
@@ -1823,6 +1975,146 @@ pub fn fmul64(lhs: Value, rhs: Value) -> Value {
 /// Construct an f64.div operation
 pub fn fdiv64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::F64Div { lhs, rhs }))
+}
+
+// f32 unary operation constructors
+/// Construct an f32.abs operation
+pub fn fabs32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Abs { val }))
+}
+/// Construct an f32.neg operation
+pub fn fneg32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Neg { val }))
+}
+/// Construct an f32.ceil operation
+pub fn fceil32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Ceil { val }))
+}
+/// Construct an f32.floor operation
+pub fn ffloor32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Floor { val }))
+}
+/// Construct an f32.trunc operation
+pub fn ftrunc32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Trunc { val }))
+}
+/// Construct an f32.nearest operation
+pub fn fnearest32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Nearest { val }))
+}
+/// Construct an f32.sqrt operation
+pub fn fsqrt32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Sqrt { val }))
+}
+
+// f32 binary operation constructors
+/// Construct an f32.min operation
+pub fn fmin32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Min { lhs, rhs }))
+}
+/// Construct an f32.max operation
+pub fn fmax32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Max { lhs, rhs }))
+}
+/// Construct an f32.copysign operation
+pub fn fcopysign32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Copysign { lhs, rhs }))
+}
+
+// f32 comparison operation constructors
+/// Construct an f32.eq operation
+pub fn feq32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Eq { lhs, rhs }))
+}
+/// Construct an f32.ne operation
+pub fn fne32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Ne { lhs, rhs }))
+}
+/// Construct an f32.lt operation
+pub fn flt32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Lt { lhs, rhs }))
+}
+/// Construct an f32.gt operation
+pub fn fgt32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Gt { lhs, rhs }))
+}
+/// Construct an f32.le operation
+pub fn fle32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Le { lhs, rhs }))
+}
+/// Construct an f32.ge operation
+pub fn fge32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Ge { lhs, rhs }))
+}
+
+// f64 unary operation constructors
+/// Construct an f64.abs operation
+pub fn fabs64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Abs { val }))
+}
+/// Construct an f64.neg operation
+pub fn fneg64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Neg { val }))
+}
+/// Construct an f64.ceil operation
+pub fn fceil64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Ceil { val }))
+}
+/// Construct an f64.floor operation
+pub fn ffloor64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Floor { val }))
+}
+/// Construct an f64.trunc operation
+pub fn ftrunc64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Trunc { val }))
+}
+/// Construct an f64.nearest operation
+pub fn fnearest64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Nearest { val }))
+}
+/// Construct an f64.sqrt operation
+pub fn fsqrt64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Sqrt { val }))
+}
+
+// f64 binary operation constructors
+/// Construct an f64.min operation
+pub fn fmin64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Min { lhs, rhs }))
+}
+/// Construct an f64.max operation
+pub fn fmax64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Max { lhs, rhs }))
+}
+/// Construct an f64.copysign operation
+pub fn fcopysign64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Copysign { lhs, rhs }))
+}
+
+// f64 comparison operation constructors
+/// Construct an f64.eq operation
+pub fn feq64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Eq { lhs, rhs }))
+}
+/// Construct an f64.ne operation
+pub fn fne64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Ne { lhs, rhs }))
+}
+/// Construct an f64.lt operation
+pub fn flt64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Lt { lhs, rhs }))
+}
+/// Construct an f64.gt operation
+pub fn fgt64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Gt { lhs, rhs }))
+}
+/// Construct an f64.le operation
+pub fn fle64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Le { lhs, rhs }))
+}
+/// Construct an f64.ge operation
+pub fn fge64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Ge { lhs, rhs }))
 }
 
 /// BlockType::Empty constructor
@@ -3743,6 +4035,362 @@ fn simplify_stateless(val: Value) -> Value {
                 }
                 (_, ValueData::F64Const { val }) if val.value() == 1.0 => lhs_simplified,
                 _ => fdiv64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.abs optimizations — always safe (clears sign bit, well-defined for NaN)
+        ValueData::F32Abs { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } => fconst32(ImmF32::new(val.value().abs())),
+                ValueData::F32Abs { .. } => simplified,
+                ValueData::F32Neg { val: inner2 } => fabs32(simplify(inner2.clone())),
+                _ => fabs32(simplified),
+            }
+        }
+
+        // f32.neg optimizations — always safe (flips sign bit, well-defined for NaN)
+        ValueData::F32Neg { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } => fconst32(ImmF32::new(-val.value())),
+                ValueData::F32Neg { val: inner2 } => simplify(inner2.clone()),
+                _ => fneg32(simplified),
+            }
+        }
+
+        // f32.ceil optimizations
+        ValueData::F32Ceil { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().ceil()))
+                }
+                _ => fceil32(simplified),
+            }
+        }
+
+        // f32.floor optimizations
+        ValueData::F32Floor { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().floor()))
+                }
+                _ => ffloor32(simplified),
+            }
+        }
+
+        // f32.trunc optimizations
+        ValueData::F32Trunc { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().trunc()))
+                }
+                _ => ftrunc32(simplified),
+            }
+        }
+
+        // f32.nearest optimizations (round ties to even)
+        ValueData::F32Nearest { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().round_ties_even()))
+                }
+                _ => fnearest32(simplified),
+            }
+        }
+
+        // f32.sqrt optimizations
+        ValueData::F32Sqrt { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().sqrt()))
+                }
+                _ => fsqrt32(simplified),
+            }
+        }
+
+        // f32.min optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F32Min { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst32(ImmF32::new(l.value().min(r.value())))
+                }
+                _ => fmin32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.max optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F32Max { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst32(ImmF32::new(l.value().max(r.value())))
+                }
+                _ => fmax32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.copysign optimizations — always safe (pure bit manipulation)
+        ValueData::F32Copysign { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    fconst32(ImmF32::new(l.value().copysign(r.value())))
+                }
+                _ => fcopysign32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32 comparison optimizations — Rust IEEE 754 semantics match WASM
+        ValueData::F32Eq { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
+                }
+                _ => feq32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Ne { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
+                }
+                _ => fne32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Lt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
+                }
+                _ => flt32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Gt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
+                }
+                _ => fgt32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Le { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
+                }
+                _ => fle32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Ge { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
+                }
+                _ => fge32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.abs optimizations — always safe
+        ValueData::F64Abs { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } => fconst64(ImmF64::new(val.value().abs())),
+                ValueData::F64Abs { .. } => simplified,
+                ValueData::F64Neg { val: inner2 } => fabs64(simplify(inner2.clone())),
+                _ => fabs64(simplified),
+            }
+        }
+
+        // f64.neg optimizations — always safe
+        ValueData::F64Neg { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } => fconst64(ImmF64::new(-val.value())),
+                ValueData::F64Neg { val: inner2 } => simplify(inner2.clone()),
+                _ => fneg64(simplified),
+            }
+        }
+
+        // f64.ceil optimizations
+        ValueData::F64Ceil { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().ceil()))
+                }
+                _ => fceil64(simplified),
+            }
+        }
+
+        // f64.floor optimizations
+        ValueData::F64Floor { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().floor()))
+                }
+                _ => ffloor64(simplified),
+            }
+        }
+
+        // f64.trunc optimizations
+        ValueData::F64Trunc { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().trunc()))
+                }
+                _ => ftrunc64(simplified),
+            }
+        }
+
+        // f64.nearest optimizations (round ties to even)
+        ValueData::F64Nearest { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().round_ties_even()))
+                }
+                _ => fnearest64(simplified),
+            }
+        }
+
+        // f64.sqrt optimizations
+        ValueData::F64Sqrt { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().sqrt()))
+                }
+                _ => fsqrt64(simplified),
+            }
+        }
+
+        // f64.min optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F64Min { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst64(ImmF64::new(l.value().min(r.value())))
+                }
+                _ => fmin64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.max optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F64Max { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst64(ImmF64::new(l.value().max(r.value())))
+                }
+                _ => fmax64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.copysign optimizations — always safe
+        ValueData::F64Copysign { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    fconst64(ImmF64::new(l.value().copysign(r.value())))
+                }
+                _ => fcopysign64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64 comparison optimizations — Rust IEEE 754 semantics match WASM
+        ValueData::F64Eq { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
+                }
+                _ => feq64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Ne { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
+                }
+                _ => fne64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Lt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
+                }
+                _ => flt64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Gt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
+                }
+                _ => fgt64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Le { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
+                }
+                _ => fle64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Ge { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
+                }
+                _ => fge64(lhs_simplified, rhs_simplified),
             }
         }
 

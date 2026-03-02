@@ -14,7 +14,7 @@ authors = ["PulseEngine <https://github.com/pulseengine>"]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/pulseengine/loom"
-rust-version = "1.75"
+rust-version = "1.77"
 
 [workspace.dependencies]
 # WebAssembly parsing and encoding

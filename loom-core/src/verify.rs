@@ -3843,14 +3843,66 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f32_div_result", 32));
                 }
             }
-            Instruction::F32Min | Instruction::F32Max | Instruction::F32Copysign => {
+            Instruction::F32Min => {
                 if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in F32 binary op"));
+                    return Err(anyhow!("Stack underflow in F32Min"));
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f32_binary_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let lv = f32::from_bits(l_bits as u32);
+                    let rv = f32::from_bits(r_bits as u32);
+                    // WASM semantics: either NaN → result is NaN
+                    let result = if lv.is_nan() || rv.is_nan() {
+                        f32::NAN
+                    } else {
+                        lv.min(rv)
+                    };
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_min_result", 32));
+                }
+            }
+            Instruction::F32Max => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F32Max"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let lv = f32::from_bits(l_bits as u32);
+                    let rv = f32::from_bits(r_bits as u32);
+                    let result = if lv.is_nan() || rv.is_nan() {
+                        f32::NAN
+                    } else {
+                        lv.max(rv)
+                    };
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_max_result", 32));
+                }
+            }
+            Instruction::F32Copysign => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F32Copysign"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result =
+                        f32::from_bits(l_bits as u32).copysign(f32::from_bits(r_bits as u32));
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else if ENABLE_FPA_VERIFICATION {
+                    // copysign(x, y) = (x & 0x7FFFFFFF) | (y & 0x80000000)
+                    let mag_mask = BV::from_u64(0x7FFFFFFF, 32);
+                    let sign_mask = BV::from_u64(0x80000000, 32);
+                    stack.push(lhs.bvand(&mag_mask).bvor(rhs.bvand(&sign_mask)));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_copysign_result", 32));
+                }
             }
 
             // Float unary operations (f32): [f32] -> [f32]
@@ -3859,7 +3911,10 @@ fn encode_function_to_smt_impl_inner(
                     return Err(anyhow!("Stack underflow in F32Neg"));
                 }
                 let val = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let Some(bits) = val.as_u64() {
+                    let result = -f32::from_bits(bits as u32);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     // Negation flips the sign bit (bit 31 for f32)
                     let sign_mask = BV::from_u64(0x80000000, 32);
                     stack.push(val.bvxor(&sign_mask));
@@ -3872,7 +3927,10 @@ fn encode_function_to_smt_impl_inner(
                     return Err(anyhow!("Stack underflow in F32Abs"));
                 }
                 let val = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).abs();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     // Absolute value clears the sign bit (bit 31)
                     let abs_mask = BV::from_u64(0x7FFFFFFF, 32);
                     stack.push(val.bvand(&abs_mask));
@@ -3880,17 +3938,65 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f32_abs_result", 32));
                 }
             }
-            Instruction::F32Ceil
-            | Instruction::F32Floor
-            | Instruction::F32Trunc
-            | Instruction::F32Nearest
-            | Instruction::F32Sqrt => {
+            Instruction::F32Ceil => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in F32 unary op"));
+                    return Err(anyhow!("Stack underflow in F32Ceil"));
                 }
                 let val = stack.pop().unwrap();
-                let _ = val;
-                stack.push(BV::new_const("f32_unary_result", 32));
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).ceil();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_ceil_result", 32));
+                }
+            }
+            Instruction::F32Floor => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32Floor"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).floor();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_floor_result", 32));
+                }
+            }
+            Instruction::F32Trunc => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32Trunc"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).trunc();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_trunc_result", 32));
+                }
+            }
+            Instruction::F32Nearest => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32Nearest"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).round_ties_even();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_nearest_result", 32));
+                }
+            }
+            Instruction::F32Sqrt => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32Sqrt"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f32::from_bits(bits as u32).sqrt();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_sqrt_result", 32));
+                }
             }
 
             // Float comparison (f32): [f32, f32] -> [i32]
@@ -3900,8 +4006,14 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
-                    // For bitwise comparison (not IEEE equality with NaN handling)
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) == f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
                     stack.push(lhs.eq(&rhs).ite(&one, &zero));
@@ -3915,7 +4027,14 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) != f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
                     stack.push(lhs.eq(&rhs).not().ite(&one, &zero));
@@ -3923,15 +4042,77 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f32_ne_result", 32));
                 }
             }
-            Instruction::F32Lt | Instruction::F32Gt | Instruction::F32Le | Instruction::F32Ge => {
+            Instruction::F32Lt => {
                 if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in F32 comparison"));
+                    return Err(anyhow!("Stack underflow in F32Lt"));
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                // Comparison produces i32 (0 or 1)
-                stack.push(BV::new_const("f32_cmp_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) < f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_lt_result", 32));
+                }
+            }
+            Instruction::F32Gt => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F32Gt"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) > f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_gt_result", 32));
+                }
+            }
+            Instruction::F32Le => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F32Le"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) <= f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_le_result", 32));
+                }
+            }
+            Instruction::F32Ge => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F32Ge"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f32::from_bits(l_bits as u32) >= f32::from_bits(r_bits as u32) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f32_ge_result", 32));
+                }
             }
 
             // Float binary operations (f64): [f64, f64] -> [f64]
@@ -3991,14 +4172,64 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f64_div_result", 64));
                 }
             }
-            Instruction::F64Min | Instruction::F64Max | Instruction::F64Copysign => {
+            Instruction::F64Min => {
                 if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in F64 binary op"));
+                    return Err(anyhow!("Stack underflow in F64Min"));
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_binary_result", 64));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let lv = f64::from_bits(l_bits);
+                    let rv = f64::from_bits(r_bits);
+                    let result = if lv.is_nan() || rv.is_nan() {
+                        f64::NAN
+                    } else {
+                        lv.min(rv)
+                    };
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_min_result", 64));
+                }
+            }
+            Instruction::F64Max => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F64Max"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let lv = f64::from_bits(l_bits);
+                    let rv = f64::from_bits(r_bits);
+                    let result = if lv.is_nan() || rv.is_nan() {
+                        f64::NAN
+                    } else {
+                        lv.max(rv)
+                    };
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_max_result", 64));
+                }
+            }
+            Instruction::F64Copysign => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F64Copysign"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = f64::from_bits(l_bits).copysign(f64::from_bits(r_bits));
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else if ENABLE_FPA_VERIFICATION {
+                    // copysign(x, y) = (x & 0x7FFFFFFFFFFFFFFF) | (y & 0x8000000000000000)
+                    let mag_mask = BV::from_u64(0x7FFFFFFFFFFFFFFF, 64);
+                    let sign_mask = BV::from_u64(0x8000000000000000, 64);
+                    stack.push(lhs.bvand(&mag_mask).bvor(rhs.bvand(&sign_mask)));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_copysign_result", 64));
+                }
             }
 
             // Float unary operations (f64): [f64] -> [f64]
@@ -4007,7 +4238,10 @@ fn encode_function_to_smt_impl_inner(
                     return Err(anyhow!("Stack underflow in F64Neg"));
                 }
                 let val = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let Some(bits) = val.as_u64() {
+                    let result = -f64::from_bits(bits);
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else if ENABLE_FPA_VERIFICATION {
                     // Negation flips the sign bit (bit 63 for f64)
                     let sign_mask = BV::from_u64(0x8000000000000000, 64);
                     stack.push(val.bvxor(&sign_mask));
@@ -4020,7 +4254,10 @@ fn encode_function_to_smt_impl_inner(
                     return Err(anyhow!("Stack underflow in F64Abs"));
                 }
                 let val = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).abs();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else if ENABLE_FPA_VERIFICATION {
                     // Absolute value clears the sign bit (bit 63)
                     let abs_mask = BV::from_u64(0x7FFFFFFFFFFFFFFF, 64);
                     stack.push(val.bvand(&abs_mask));
@@ -4028,17 +4265,65 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f64_abs_result", 64));
                 }
             }
-            Instruction::F64Ceil
-            | Instruction::F64Floor
-            | Instruction::F64Trunc
-            | Instruction::F64Nearest
-            | Instruction::F64Sqrt => {
+            Instruction::F64Ceil => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in F64 unary op"));
+                    return Err(anyhow!("Stack underflow in F64Ceil"));
                 }
                 let val = stack.pop().unwrap();
-                let _ = val;
-                stack.push(BV::new_const("f64_unary_result", 64));
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).ceil();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_ceil_result", 64));
+                }
+            }
+            Instruction::F64Floor => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64Floor"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).floor();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_floor_result", 64));
+                }
+            }
+            Instruction::F64Trunc => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64Trunc"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).trunc();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_trunc_result", 64));
+                }
+            }
+            Instruction::F64Nearest => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64Nearest"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).round_ties_even();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_nearest_result", 64));
+                }
+            }
+            Instruction::F64Sqrt => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64Sqrt"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = f64::from_bits(bits).sqrt();
+                    stack.push(BV::from_i64(result.to_bits() as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_sqrt_result", 64));
+                }
             }
 
             // Float comparison (f64): [f64, f64] -> [i32]
@@ -4048,7 +4333,14 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) == f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
                     // Truncate to 32-bit for comparison then extend result
@@ -4069,7 +4361,14 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                if ENABLE_FPA_VERIFICATION {
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) != f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
                     let lhs32 = lhs.extract(31, 0);
@@ -4083,14 +4382,77 @@ fn encode_function_to_smt_impl_inner(
                     stack.push(BV::new_const("f64_ne_result", 32));
                 }
             }
-            Instruction::F64Lt | Instruction::F64Gt | Instruction::F64Le | Instruction::F64Ge => {
+            Instruction::F64Lt => {
                 if stack.len() < 2 {
-                    return Err(anyhow!("Stack underflow in F64 comparison"));
+                    return Err(anyhow!("Stack underflow in F64Lt"));
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                let _ = (lhs, rhs);
-                stack.push(BV::new_const("f64_cmp_result", 32));
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) < f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_lt_result", 32));
+                }
+            }
+            Instruction::F64Gt => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F64Gt"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) > f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_gt_result", 32));
+                }
+            }
+            Instruction::F64Le => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F64Le"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) <= f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_le_result", 32));
+                }
+            }
+            Instruction::F64Ge => {
+                if stack.len() < 2 {
+                    return Err(anyhow!("Stack underflow in F64Ge"));
+                }
+                let rhs = stack.pop().unwrap();
+                let lhs = stack.pop().unwrap();
+                if let (Some(l_bits), Some(r_bits)) = (lhs.as_u64(), rhs.as_u64()) {
+                    let result = if f64::from_bits(l_bits) >= f64::from_bits(r_bits) {
+                        1i64
+                    } else {
+                        0
+                    };
+                    stack.push(BV::from_i64(result, 32));
+                } else {
+                    let _ = (lhs, rhs);
+                    stack.push(BV::new_const("f64_ge_result", 32));
+                }
             }
 
             // ============================================================
