@@ -4,7 +4,7 @@
 //! and verifying that outputs remain unchanged after optimization.
 
 use anyhow::{Context, Result};
-use loom_testing::emi::{analyze_dead_code, emi_test, EmiConfig};
+use loom_testing::emi::{EmiConfig, analyze_dead_code, emi_test};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {

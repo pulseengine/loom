@@ -4,7 +4,7 @@
 //! These tests verify that optimized components maintain functional correctness by
 //! instantiating them with wasmtime and checking structure preservation.
 
-use loom_core::{optimize_component, ComponentExecutor};
+use loom_core::{ComponentExecutor, optimize_component};
 
 #[test]
 fn test_component_executor_creation() {
