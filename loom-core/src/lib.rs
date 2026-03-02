@@ -13461,6 +13461,34 @@ mod tests {
     }
 
     #[test]
+    fn test_float_constant_folding_f64_mul() {
+        // f64.const 3.0, f64.const 7.0, f64.mul → should fold to f64.const 21.0
+        let wat = r#"
+            (module
+              (func $mul_f64_constants (result f64)
+                f64.const 3.0
+                f64.const 7.0
+                f64.mul
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        let func = &module.functions[0];
+        assert!(func.instructions.contains(&Instruction::F64Mul));
+
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F64Const(21.0_f64.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F64Mul));
+    }
+
+    #[test]
     fn test_float_nan_not_folded() {
         // f32.const NaN + f32.const 1.0 should NOT be folded
         let instructions = vec![
