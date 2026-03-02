@@ -1088,6 +1088,9 @@ pub mod validation {
         /// Function signatures indexed by function index
         /// This allows us to validate Call instructions by looking up the callee's signature
         pub function_signatures: Vec<(Vec<ValueType>, Vec<ValueType>)>, // (params, results)
+        /// Type signatures indexed by type index
+        /// This allows us to validate CallIndirect instructions by looking up the type's signature
+        pub type_signatures: Vec<(Vec<ValueType>, Vec<ValueType>)>, // (params, results)
     }
 
     impl ValidationContext {
@@ -1128,8 +1131,22 @@ pub mod validation {
                 function_signatures.push((params, results));
             }
 
+            // Build type signature table for CallIndirect validation
+            let type_signatures: Vec<(Vec<ValueType>, Vec<ValueType>)> = module
+                .types
+                .iter()
+                .map(|sig| {
+                    let params: Vec<ValueType> =
+                        sig.params.iter().map(super::convert_value_type).collect();
+                    let results: Vec<ValueType> =
+                        sig.results.iter().map(super::convert_value_type).collect();
+                    (params, results)
+                })
+                .collect();
+
             ValidationContext {
                 function_signatures,
+                type_signatures,
             }
         }
 
@@ -1142,6 +1159,17 @@ pub mod validation {
             idx: u32,
         ) -> Option<&(Vec<ValueType>, Vec<ValueType>)> {
             self.function_signatures.get(idx as usize)
+        }
+
+        /// Get the signature of a type by index
+        ///
+        /// Used for CallIndirect validation — the type_idx determines the expected
+        /// stack signature (params consumed + table index, results produced).
+        pub fn get_type_signature(
+            &self,
+            type_idx: u32,
+        ) -> Option<&(Vec<ValueType>, Vec<ValueType>)> {
+            self.type_signatures.get(type_idx as usize)
         }
     }
 
@@ -1178,14 +1206,14 @@ pub mod validation {
 
         for instr in instructions {
             match instr {
-                // Call instructions need type context - only unanalyzable if we don't have it
-                Call(_) => {
+                // Call and CallIndirect need type context - only unanalyzable if we don't have it
+                // CallIndirect's stack signature is fully determined by type_idx (statically known),
+                // even though the target function is resolved at runtime from the table.
+                Call(_) | CallIndirect { .. } => {
                     if !has_context {
                         return true;
                     }
                 }
-                // CallIndirect always needs runtime type info we don't have
-                CallIndirect { .. } => return true,
                 // Unknown instructions have unknown stack effects - can't validate
                 Unknown(_) => return true,
                 // Recursively check nested bodies
@@ -1264,7 +1292,7 @@ pub mod validation {
                 .map(super::convert_value_type)
                 .collect();
 
-            // With context, we can validate Call instructions (but not CallIndirect or Unknown)
+            // With context, we can validate Call and CallIndirect instructions (but not Unknown)
             let skip_validation = contains_unanalyzable_instructions(&func.instructions, true);
 
             ValidationGuard {
@@ -1284,7 +1312,7 @@ pub mod validation {
             if self.skip_validation {
                 return Err(format!(
                     "Cannot validate {} pass for function '{}': contains unanalyzable instructions \
-                     (Unknown, CallIndirect, or Call without module context). \
+                     (Unknown, or Call/CallIndirect without module context). \
                      Optimization may produce invalid WASM.",
                     self.pass_name, func_name
                 ));
@@ -1356,8 +1384,8 @@ pub mod validation {
         /// Validation failures will abort the optimization pass and report the error.
         ///
         /// **PRODUCTION MODE**: This method now fails loudly when validation cannot be performed
-        /// (e.g., for functions with Unknown or CallIndirect instructions). Previously it would
-        /// silently skip validation for such cases.
+        /// (e.g., for functions with Unknown instructions, or Call/CallIndirect without module context).
+        /// Previously it would silently skip validation for such cases.
         pub fn validate(&self, func: &crate::Function) -> anyhow::Result<()> {
             self.validate_strict(func)
                 .map_err(|e| anyhow::anyhow!("{}", e))
@@ -1514,6 +1542,26 @@ pub mod validation {
                     Ok(())
                 } else {
                     Err(format!("Unknown function index {} in Call", idx))
+                }
+            }
+
+            // CallIndirect - look up type signature in context
+            // Stack: [params..., table_index(i32)] -> [results...]
+            CallIndirect { type_idx, .. } => {
+                if let Some((params, results)) = ctx.get_type_signature(*type_idx) {
+                    // Pop table index first (it's on top of stack)
+                    pop_expected(stack, ValueType::I32)?;
+                    // Pop params from stack (in reverse order)
+                    for param in params.iter().rev() {
+                        pop_expected(stack, *param)?;
+                    }
+                    // Push results onto stack
+                    for result in results {
+                        stack.push(*result);
+                    }
+                    Ok(())
+                } else {
+                    Err(format!("Unknown type index {} in CallIndirect", type_idx))
                 }
             }
 

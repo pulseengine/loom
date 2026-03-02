@@ -228,7 +228,11 @@ impl DifferentialTestResult {
             self.size_reduction_percent(),
             self.functions_matched,
             self.functions_tested,
-            if self.semantics_preserved { "PRESERVED" } else { "VIOLATED" }
+            if self.semantics_preserved {
+                "PRESERVED"
+            } else {
+                "VIOLATED"
+            }
         )
     }
 

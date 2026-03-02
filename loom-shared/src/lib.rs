@@ -527,23 +527,61 @@ pub enum ValueData {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I32Store {
         addr: Value,
         value: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I64Load {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     I64Store {
         addr: Value,
         value: Value,
         offset: u32,
         align: u32,
+        mem: u32,
+    },
+
+    // ========================================================================
+    // Float Memory Operations
+    // ========================================================================
+    /// f32.load - Load 32-bit float from memory
+    F32Load {
+        addr: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f32.store - Store 32-bit float to memory
+    F32Store {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f64.load - Load 64-bit float from memory
+    F64Load {
+        addr: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// f64.store - Store 64-bit float to memory
+    F64Store {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
     },
 
     // ========================================================================
@@ -554,60 +592,114 @@ pub enum ValueData {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load8_u - Load 8 bits and zero-extend to i32
     I32Load8U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load16_s - Load 16 bits and sign-extend to i32
     I32Load16S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i32.load16_u - Load 16 bits and zero-extend to i32
     I32Load16U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load8_s - Load 8 bits and sign-extend to i64
     I64Load8S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load8_u - Load 8 bits and zero-extend to i64
     I64Load8U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load16_s - Load 16 bits and sign-extend to i64
     I64Load16S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load16_u - Load 16 bits and zero-extend to i64
     I64Load16U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load32_s - Load 32 bits and sign-extend to i64
     I64Load32S {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
     },
     /// i64.load32_u - Load 32 bits and zero-extend to i64
     I64Load32U {
         addr: Value,
         offset: u32,
         align: u32,
+        mem: u32,
+    },
+
+    // ========================================================================
+    // Partial-Width Memory Store Operations
+    // ========================================================================
+    /// i32.store8 - Store low 8 bits of i32
+    I32Store8 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i32.store16 - Store low 16 bits of i32
+    I32Store16 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store8 - Store low 8 bits of i64
+    I64Store8 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store16 - Store low 16 bits of i64
+    I64Store16 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
+    },
+    /// i64.store32 - Store low 32 bits of i64
+    I64Store32 {
+        addr: Value,
+        value: Value,
+        offset: u32,
+        align: u32,
+        mem: u32,
     },
 
     // ========================================================================
@@ -727,6 +819,160 @@ pub enum ValueData {
     },
 
     // ========================================================================
+    // Float-to-Integer Truncation Operations (trapping)
+    // ========================================================================
+    I32TruncF32S {
+        val: Value,
+    },
+    I32TruncF32U {
+        val: Value,
+    },
+    I32TruncF64S {
+        val: Value,
+    },
+    I32TruncF64U {
+        val: Value,
+    },
+    I64TruncF32S {
+        val: Value,
+    },
+    I64TruncF32U {
+        val: Value,
+    },
+    I64TruncF64S {
+        val: Value,
+    },
+    I64TruncF64U {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Integer-to-Float Conversion Operations
+    // ========================================================================
+    F32ConvertI32S {
+        val: Value,
+    },
+    F32ConvertI32U {
+        val: Value,
+    },
+    F32ConvertI64S {
+        val: Value,
+    },
+    F32ConvertI64U {
+        val: Value,
+    },
+    F64ConvertI32S {
+        val: Value,
+    },
+    F64ConvertI32U {
+        val: Value,
+    },
+    F64ConvertI64S {
+        val: Value,
+    },
+    F64ConvertI64U {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Float Demote/Promote Operations
+    // ========================================================================
+    F32DemoteF64 {
+        val: Value,
+    },
+    F64PromoteF32 {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Reinterpret (bit-cast) Operations
+    // ========================================================================
+    I32ReinterpretF32 {
+        val: Value,
+    },
+    I64ReinterpretF64 {
+        val: Value,
+    },
+    F32ReinterpretI32 {
+        val: Value,
+    },
+    F64ReinterpretI64 {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Saturating Float-to-Integer Truncation Operations (non-trapping)
+    // ========================================================================
+    I32TruncSatF32S {
+        val: Value,
+    },
+    I32TruncSatF32U {
+        val: Value,
+    },
+    I32TruncSatF64S {
+        val: Value,
+    },
+    I32TruncSatF64U {
+        val: Value,
+    },
+    I64TruncSatF32S {
+        val: Value,
+    },
+    I64TruncSatF32U {
+        val: Value,
+    },
+    I64TruncSatF64S {
+        val: Value,
+    },
+    I64TruncSatF64U {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Memory Size/Grow Operations
+    // ========================================================================
+    /// memory.size - returns current memory size in pages
+    MemorySize {
+        mem: u32,
+    },
+    /// memory.grow - grows memory by delta pages, returns previous size or -1
+    MemoryGrow {
+        val: Value,
+        mem: u32,
+    },
+
+    // ========================================================================
+    // Bulk Memory Operations (side-effectful, no stack output)
+    // ========================================================================
+    /// memory.fill - fill memory region with a byte value
+    MemoryFill {
+        dst: Value,
+        val: Value,
+        len: Value,
+        mem: u32,
+    },
+    /// memory.copy - copy memory region from src to dst
+    MemoryCopy {
+        dst: Value,
+        src: Value,
+        len: Value,
+        dst_mem: u32,
+        src_mem: u32,
+    },
+    /// memory.init - initialize memory from a data segment
+    MemoryInit {
+        dst: Value,
+        src: Value,
+        len: Value,
+        mem: u32,
+        data_idx: u32,
+    },
+    /// data.drop - drop a data segment (no stack operands)
+    DataDrop {
+        data_idx: u32,
+    },
+
+    // ========================================================================
     // Sign Extension Operations (in-place sign extension)
     // ========================================================================
     /// i32.extend8_s - sign-extend low 8 bits to 32 bits
@@ -800,6 +1046,158 @@ pub enum ValueData {
     },
     /// f64.div lhs rhs
     F64Div {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f32 unary operations
+    /// f32.abs val
+    F32Abs {
+        val: Value,
+    },
+    /// f32.neg val
+    F32Neg {
+        val: Value,
+    },
+    /// f32.ceil val
+    F32Ceil {
+        val: Value,
+    },
+    /// f32.floor val
+    F32Floor {
+        val: Value,
+    },
+    /// f32.trunc val
+    F32Trunc {
+        val: Value,
+    },
+    /// f32.nearest val
+    F32Nearest {
+        val: Value,
+    },
+    /// f32.sqrt val
+    F32Sqrt {
+        val: Value,
+    },
+    // f32 binary operations
+    /// f32.min lhs rhs
+    F32Min {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.max lhs rhs
+    F32Max {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.copysign lhs rhs
+    F32Copysign {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f32 comparison operations (produce i32)
+    /// f32.eq lhs rhs
+    F32Eq {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.ne lhs rhs
+    F32Ne {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.lt lhs rhs
+    F32Lt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.gt lhs rhs
+    F32Gt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.le lhs rhs
+    F32Le {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f32.ge lhs rhs
+    F32Ge {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f64 unary operations
+    /// f64.abs val
+    F64Abs {
+        val: Value,
+    },
+    /// f64.neg val
+    F64Neg {
+        val: Value,
+    },
+    /// f64.ceil val
+    F64Ceil {
+        val: Value,
+    },
+    /// f64.floor val
+    F64Floor {
+        val: Value,
+    },
+    /// f64.trunc val
+    F64Trunc {
+        val: Value,
+    },
+    /// f64.nearest val
+    F64Nearest {
+        val: Value,
+    },
+    /// f64.sqrt val
+    F64Sqrt {
+        val: Value,
+    },
+    // f64 binary operations
+    /// f64.min lhs rhs
+    F64Min {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.max lhs rhs
+    F64Max {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.copysign lhs rhs
+    F64Copysign {
+        lhs: Value,
+        rhs: Value,
+    },
+    // f64 comparison operations (produce i32)
+    /// f64.eq lhs rhs
+    F64Eq {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.ne lhs rhs
+    F64Ne {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.lt lhs rhs
+    F64Lt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.gt lhs rhs
+    F64Gt {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.le lhs rhs
+    F64Le {
+        lhs: Value,
+        rhs: Value,
+    },
+    /// f64.ge lhs rhs
+    F64Ge {
         lhs: Value,
         rhs: Value,
     },
@@ -1203,40 +1601,86 @@ pub fn global_set(idx: u32, val: Value) -> Value {
 }
 
 /// Construct an i32.load operation
-pub fn i32_load(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.store operation
-pub fn i32_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
+pub fn i32_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Store {
         addr,
         value,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load operation
-pub fn i64_load(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.store operation
-pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
+pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Store {
         addr,
         value,
         offset,
         align,
+        mem,
+    }))
+}
+
+/// Construct an f32.load operation
+pub fn f32_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F32Load {
+        addr,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f32.store operation
+pub fn f32_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F32Store {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f64.load operation
+pub fn f64_load(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F64Load {
+        addr,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an f64.store operation
+pub fn f64_store(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::F64Store {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
     }))
 }
 
@@ -1245,92 +1689,161 @@ pub fn i64_store(addr: Value, value: Value, offset: u32, align: u32) -> Value {
 // ============================================================================
 
 /// Construct an i32.load8_s operation (load 8 bits, sign-extend to i32)
-pub fn i32_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load8_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load8S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load8_u operation (load 8 bits, zero-extend to i32)
-pub fn i32_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load8_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load8U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load16_s operation (load 16 bits, sign-extend to i32)
-pub fn i32_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load16_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load16S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i32.load16_u operation (load 16 bits, zero-extend to i32)
-pub fn i32_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i32_load16_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I32Load16U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load8_s operation (load 8 bits, sign-extend to i64)
-pub fn i64_load8_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load8_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load8S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load8_u operation (load 8 bits, zero-extend to i64)
-pub fn i64_load8_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load8_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load8U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load16_s operation (load 16 bits, sign-extend to i64)
-pub fn i64_load16_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load16_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load16S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load16_u operation (load 16 bits, zero-extend to i64)
-pub fn i64_load16_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load16_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load16U {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load32_s operation (load 32 bits, sign-extend to i64)
-pub fn i64_load32_s(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load32_s(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load32S {
         addr,
         offset,
         align,
+        mem,
     }))
 }
 
 /// Construct an i64.load32_u operation (load 32 bits, zero-extend to i64)
-pub fn i64_load32_u(addr: Value, offset: u32, align: u32) -> Value {
+pub fn i64_load32_u(addr: Value, offset: u32, align: u32, mem: u32) -> Value {
     Value(Box::new(ValueData::I64Load32U {
         addr,
         offset,
         align,
+        mem,
+    }))
+}
+
+// ============================================================================
+// Partial-Width Memory Store Constructors
+// ============================================================================
+
+/// Construct an i32.store8 operation (store low 8 bits of i32)
+pub fn i32_store8(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I32Store8 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i32.store16 operation (store low 16 bits of i32)
+pub fn i32_store16(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I32Store16 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store8 operation (store low 8 bits of i64)
+pub fn i64_store8(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store8 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store16 operation (store low 16 bits of i64)
+pub fn i64_store16(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store16 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
+    }))
+}
+
+/// Construct an i64.store32 operation (store low 32 bits of i64)
+pub fn i64_store32(addr: Value, value: Value, offset: u32, align: u32, mem: u32) -> Value {
+    Value(Box::new(ValueData::I64Store32 {
+        addr,
+        value,
+        offset,
+        align,
+        mem,
     }))
 }
 
@@ -1536,6 +2049,154 @@ pub fn i64_extend_i32_u(val: Value) -> Value {
 }
 
 // ============================================================================
+// Float-to-Integer Truncation Constructors (trapping)
+// ============================================================================
+pub fn i32_trunc_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF32S { val }))
+}
+pub fn i32_trunc_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF32U { val }))
+}
+pub fn i32_trunc_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF64S { val }))
+}
+pub fn i32_trunc_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF64U { val }))
+}
+pub fn i64_trunc_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF32S { val }))
+}
+pub fn i64_trunc_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF32U { val }))
+}
+pub fn i64_trunc_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF64S { val }))
+}
+pub fn i64_trunc_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF64U { val }))
+}
+
+// ============================================================================
+// Integer-to-Float Conversion Constructors
+// ============================================================================
+pub fn f32_convert_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI32S { val }))
+}
+pub fn f32_convert_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI32U { val }))
+}
+pub fn f32_convert_i64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI64S { val }))
+}
+pub fn f32_convert_i64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI64U { val }))
+}
+pub fn f64_convert_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI32S { val }))
+}
+pub fn f64_convert_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI32U { val }))
+}
+pub fn f64_convert_i64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI64S { val }))
+}
+pub fn f64_convert_i64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI64U { val }))
+}
+
+// ============================================================================
+// Float Demote/Promote Constructors
+// ============================================================================
+pub fn f32_demote_f64(val: Value) -> Value {
+    Value(Box::new(ValueData::F32DemoteF64 { val }))
+}
+pub fn f64_promote_f32(val: Value) -> Value {
+    Value(Box::new(ValueData::F64PromoteF32 { val }))
+}
+
+// ============================================================================
+// Reinterpret (bit-cast) Constructors
+// ============================================================================
+pub fn i32_reinterpret_f32(val: Value) -> Value {
+    Value(Box::new(ValueData::I32ReinterpretF32 { val }))
+}
+pub fn i64_reinterpret_f64(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ReinterpretF64 { val }))
+}
+pub fn f32_reinterpret_i32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ReinterpretI32 { val }))
+}
+pub fn f64_reinterpret_i64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ReinterpretI64 { val }))
+}
+
+// ============================================================================
+// Saturating Float-to-Integer Truncation Constructors (non-trapping)
+// ============================================================================
+pub fn i32_trunc_sat_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF32S { val }))
+}
+pub fn i32_trunc_sat_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF32U { val }))
+}
+pub fn i32_trunc_sat_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF64S { val }))
+}
+pub fn i32_trunc_sat_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF64U { val }))
+}
+pub fn i64_trunc_sat_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF32S { val }))
+}
+pub fn i64_trunc_sat_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF32U { val }))
+}
+pub fn i64_trunc_sat_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF64S { val }))
+}
+pub fn i64_trunc_sat_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF64U { val }))
+}
+
+// ============================================================================
+// Memory Size/Grow Constructors
+// ============================================================================
+pub fn memory_size(mem: u32) -> Value {
+    Value(Box::new(ValueData::MemorySize { mem }))
+}
+pub fn memory_grow(val: Value, mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryGrow { val, mem }))
+}
+
+// ============================================================================
+// Bulk Memory Constructors
+// ============================================================================
+pub fn memory_fill(dst: Value, val: Value, len: Value, mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryFill { dst, val, len, mem }))
+}
+pub fn memory_copy(dst: Value, src: Value, len: Value, dst_mem: u32, src_mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryCopy {
+        dst,
+        src,
+        len,
+        dst_mem,
+        src_mem,
+    }))
+}
+pub fn memory_init(dst: Value, src: Value, len: Value, mem: u32, data_idx: u32) -> Value {
+    Value(Box::new(ValueData::MemoryInit {
+        dst,
+        src,
+        len,
+        mem,
+        data_idx,
+    }))
+}
+pub fn data_drop(data_idx: u32) -> Value {
+    Value(Box::new(ValueData::DataDrop { data_idx }))
+}
+
+// ============================================================================
 // Sign Extension Constructors
 // ============================================================================
 
@@ -1616,6 +2277,146 @@ pub fn fmul64(lhs: Value, rhs: Value) -> Value {
 /// Construct an f64.div operation
 pub fn fdiv64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::F64Div { lhs, rhs }))
+}
+
+// f32 unary operation constructors
+/// Construct an f32.abs operation
+pub fn fabs32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Abs { val }))
+}
+/// Construct an f32.neg operation
+pub fn fneg32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Neg { val }))
+}
+/// Construct an f32.ceil operation
+pub fn fceil32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Ceil { val }))
+}
+/// Construct an f32.floor operation
+pub fn ffloor32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Floor { val }))
+}
+/// Construct an f32.trunc operation
+pub fn ftrunc32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Trunc { val }))
+}
+/// Construct an f32.nearest operation
+pub fn fnearest32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Nearest { val }))
+}
+/// Construct an f32.sqrt operation
+pub fn fsqrt32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32Sqrt { val }))
+}
+
+// f32 binary operation constructors
+/// Construct an f32.min operation
+pub fn fmin32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Min { lhs, rhs }))
+}
+/// Construct an f32.max operation
+pub fn fmax32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Max { lhs, rhs }))
+}
+/// Construct an f32.copysign operation
+pub fn fcopysign32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Copysign { lhs, rhs }))
+}
+
+// f32 comparison operation constructors
+/// Construct an f32.eq operation
+pub fn feq32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Eq { lhs, rhs }))
+}
+/// Construct an f32.ne operation
+pub fn fne32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Ne { lhs, rhs }))
+}
+/// Construct an f32.lt operation
+pub fn flt32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Lt { lhs, rhs }))
+}
+/// Construct an f32.gt operation
+pub fn fgt32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Gt { lhs, rhs }))
+}
+/// Construct an f32.le operation
+pub fn fle32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Le { lhs, rhs }))
+}
+/// Construct an f32.ge operation
+pub fn fge32(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F32Ge { lhs, rhs }))
+}
+
+// f64 unary operation constructors
+/// Construct an f64.abs operation
+pub fn fabs64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Abs { val }))
+}
+/// Construct an f64.neg operation
+pub fn fneg64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Neg { val }))
+}
+/// Construct an f64.ceil operation
+pub fn fceil64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Ceil { val }))
+}
+/// Construct an f64.floor operation
+pub fn ffloor64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Floor { val }))
+}
+/// Construct an f64.trunc operation
+pub fn ftrunc64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Trunc { val }))
+}
+/// Construct an f64.nearest operation
+pub fn fnearest64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Nearest { val }))
+}
+/// Construct an f64.sqrt operation
+pub fn fsqrt64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64Sqrt { val }))
+}
+
+// f64 binary operation constructors
+/// Construct an f64.min operation
+pub fn fmin64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Min { lhs, rhs }))
+}
+/// Construct an f64.max operation
+pub fn fmax64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Max { lhs, rhs }))
+}
+/// Construct an f64.copysign operation
+pub fn fcopysign64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Copysign { lhs, rhs }))
+}
+
+// f64 comparison operation constructors
+/// Construct an f64.eq operation
+pub fn feq64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Eq { lhs, rhs }))
+}
+/// Construct an f64.ne operation
+pub fn fne64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Ne { lhs, rhs }))
+}
+/// Construct an f64.lt operation
+pub fn flt64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Lt { lhs, rhs }))
+}
+/// Construct an f64.gt operation
+pub fn fgt64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Gt { lhs, rhs }))
+}
+/// Construct an f64.le operation
+pub fn fle64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Le { lhs, rhs }))
+}
+/// Construct an f64.ge operation
+pub fn fge64(lhs: Value, rhs: Value) -> Value {
+    Value(Box::new(ValueData::F64Ge { lhs, rhs }))
 }
 
 /// BlockType::Empty constructor
@@ -1799,6 +2600,8 @@ pub struct MemoryLocation {
     base: Option<i32>,
     /// Static offset
     offset: u32,
+    /// Memory index (a load from memory 0 at offset X != memory 1 at offset X)
+    mem: u32,
 }
 
 /// Environment for dataflow analysis
@@ -1882,6 +2685,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
 
@@ -1890,6 +2694,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 // Redundant load elimination: check if we know this value!
@@ -1899,7 +2704,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 }
             }
 
-            i32_load(simplified_addr, *offset, *align)
+            i32_load(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Store {
@@ -1907,6 +2712,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             value,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
             let simplified_value = simplify_with_env(value.clone(), env);
@@ -1916,6 +2722,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 // Store the value in our memory tracking
@@ -1927,13 +2734,14 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.invalidate_memory();
             }
 
-            i32_store(simplified_addr, simplified_value, *offset, *align)
+            i32_store(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         ValueData::I64Load {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
 
@@ -1941,6 +2749,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 if let Some(known_value) = env.memory.get(&mem_loc) {
@@ -1948,7 +2757,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 }
             }
 
-            i64_load(simplified_addr, *offset, *align)
+            i64_load(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Store {
@@ -1956,6 +2765,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             value,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
             let simplified_value = simplify_with_env(value.clone(), env);
@@ -1964,6 +2774,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 let mem_loc = MemoryLocation {
                     base: Some(addr_val.value()),
                     offset: *offset,
+                    mem: *mem,
                 };
 
                 if matches!(simplified_value.data(), ValueData::I64Const { .. }) {
@@ -1973,7 +2784,55 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.invalidate_memory();
             }
 
-            i64_store(simplified_addr, simplified_value, *offset, *align)
+            i64_store(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        // Float memory operations - simplify address, no memory tracking
+        ValueData::F32Load {
+            addr,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            f32_load(simplified_addr, *offset, *align, *mem)
+        }
+
+        ValueData::F32Store {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            // Unknown store type - invalidate conservatively
+            env.invalidate_memory();
+            f32_store(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::F64Load {
+            addr,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            f64_load(simplified_addr, *offset, *align, *mem)
+        }
+
+        ValueData::F64Store {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            f64_store(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         // Partial-width memory load operations
@@ -1983,90 +2842,167 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load8_s(simplified_addr, *offset, *align)
+            i32_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load8U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load8_u(simplified_addr, *offset, *align)
+            i32_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load16S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load16_s(simplified_addr, *offset, *align)
+            i32_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I32Load16U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i32_load16_u(simplified_addr, *offset, *align)
+            i32_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load8S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load8_s(simplified_addr, *offset, *align)
+            i64_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load8U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load8_u(simplified_addr, *offset, *align)
+            i64_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load16S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load16_s(simplified_addr, *offset, *align)
+            i64_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load16U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load16_u(simplified_addr, *offset, *align)
+            i64_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load32S {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load32_s(simplified_addr, *offset, *align)
+            i64_load32_s(simplified_addr, *offset, *align, *mem)
         }
 
         ValueData::I64Load32U {
             addr,
             offset,
             align,
+            mem,
         } => {
             let simplified_addr = simplify_with_env(addr.clone(), env);
-            i64_load32_u(simplified_addr, *offset, *align)
+            i64_load32_u(simplified_addr, *offset, *align, *mem)
+        }
+
+        // Partial-width memory store operations - simplify address and value,
+        // invalidate memory conservatively (different width than full stores)
+        ValueData::I32Store8 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i32_store8(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I32Store16 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i32_store16(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store8 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store8(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store16 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store16(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        ValueData::I64Store32 {
+            addr,
+            value,
+            offset,
+            align,
+            mem,
+        } => {
+            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_value = simplify_with_env(value.clone(), env);
+            env.invalidate_memory();
+            i64_store32(simplified_addr, simplified_value, *offset, *align, *mem)
         }
 
         // All other optimizations follow...
@@ -3404,6 +4340,787 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
 
+        // f32.abs optimizations — always safe (clears sign bit, well-defined for NaN)
+        ValueData::F32Abs { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } => fconst32(ImmF32::new(val.value().abs())),
+                ValueData::F32Abs { .. } => simplified,
+                ValueData::F32Neg { val: inner2 } => fabs32(simplify(inner2.clone())),
+                _ => fabs32(simplified),
+            }
+        }
+
+        // f32.neg optimizations — always safe (flips sign bit, well-defined for NaN)
+        ValueData::F32Neg { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } => fconst32(ImmF32::new(-val.value())),
+                ValueData::F32Neg { val: inner2 } => simplify(inner2.clone()),
+                _ => fneg32(simplified),
+            }
+        }
+
+        // f32.ceil optimizations
+        ValueData::F32Ceil { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().ceil()))
+                }
+                _ => fceil32(simplified),
+            }
+        }
+
+        // f32.floor optimizations
+        ValueData::F32Floor { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().floor()))
+                }
+                _ => ffloor32(simplified),
+            }
+        }
+
+        // f32.trunc optimizations
+        ValueData::F32Trunc { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().trunc()))
+                }
+                _ => ftrunc32(simplified),
+            }
+        }
+
+        // f32.nearest optimizations (round ties to even)
+        ValueData::F32Nearest { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().round_ties_even()))
+                }
+                _ => fnearest32(simplified),
+            }
+        }
+
+        // f32.sqrt optimizations
+        ValueData::F32Sqrt { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F32Const { val } if !val.value().is_nan() => {
+                    fconst32(ImmF32::new(val.value().sqrt()))
+                }
+                _ => fsqrt32(simplified),
+            }
+        }
+
+        // f32.min optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F32Min { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst32(ImmF32::new(l.value().min(r.value())))
+                }
+                _ => fmin32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.max optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F32Max { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst32(ImmF32::new(l.value().max(r.value())))
+                }
+                _ => fmax32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32.copysign optimizations — always safe (pure bit manipulation)
+        ValueData::F32Copysign { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    fconst32(ImmF32::new(l.value().copysign(r.value())))
+                }
+                _ => fcopysign32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f32 comparison optimizations — Rust IEEE 754 semantics match WASM
+        ValueData::F32Eq { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
+                }
+                _ => feq32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Ne { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
+                }
+                _ => fne32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Lt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
+                }
+                _ => flt32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Gt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
+                }
+                _ => fgt32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Le { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
+                }
+                _ => fle32(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F32Ge { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
+                }
+                _ => fge32(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.abs optimizations — always safe
+        ValueData::F64Abs { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } => fconst64(ImmF64::new(val.value().abs())),
+                ValueData::F64Abs { .. } => simplified,
+                ValueData::F64Neg { val: inner2 } => fabs64(simplify(inner2.clone())),
+                _ => fabs64(simplified),
+            }
+        }
+
+        // f64.neg optimizations — always safe
+        ValueData::F64Neg { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } => fconst64(ImmF64::new(-val.value())),
+                ValueData::F64Neg { val: inner2 } => simplify(inner2.clone()),
+                _ => fneg64(simplified),
+            }
+        }
+
+        // f64.ceil optimizations
+        ValueData::F64Ceil { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().ceil()))
+                }
+                _ => fceil64(simplified),
+            }
+        }
+
+        // f64.floor optimizations
+        ValueData::F64Floor { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().floor()))
+                }
+                _ => ffloor64(simplified),
+            }
+        }
+
+        // f64.trunc optimizations
+        ValueData::F64Trunc { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().trunc()))
+                }
+                _ => ftrunc64(simplified),
+            }
+        }
+
+        // f64.nearest optimizations (round ties to even)
+        ValueData::F64Nearest { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().round_ties_even()))
+                }
+                _ => fnearest64(simplified),
+            }
+        }
+
+        // f64.sqrt optimizations
+        ValueData::F64Sqrt { val: inner } => {
+            let simplified = simplify(inner.clone());
+            match simplified.data() {
+                ValueData::F64Const { val } if !val.value().is_nan() => {
+                    fconst64(ImmF64::new(val.value().sqrt()))
+                }
+                _ => fsqrt64(simplified),
+            }
+        }
+
+        // f64.min optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F64Min { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst64(ImmF64::new(l.value().min(r.value())))
+                }
+                _ => fmin64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.max optimizations — NaN propagation: fold only when both non-NaN
+        ValueData::F64Max { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
+                    if !l.value().is_nan() && !r.value().is_nan() =>
+                {
+                    fconst64(ImmF64::new(l.value().max(r.value())))
+                }
+                _ => fmax64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64.copysign optimizations — always safe
+        ValueData::F64Copysign { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    fconst64(ImmF64::new(l.value().copysign(r.value())))
+                }
+                _ => fcopysign64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // f64 comparison optimizations — Rust IEEE 754 semantics match WASM
+        ValueData::F64Eq { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
+                }
+                _ => feq64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Ne { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
+                }
+                _ => fne64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Lt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
+                }
+                _ => flt64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Gt { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
+                }
+                _ => fgt64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Le { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
+                }
+                _ => fle64(lhs_simplified, rhs_simplified),
+            }
+        }
+        ValueData::F64Ge { lhs, rhs } => {
+            let lhs_simplified = simplify(lhs.clone());
+            let rhs_simplified = simplify(rhs.clone());
+            match (lhs_simplified.data(), rhs_simplified.data()) {
+                (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
+                    iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
+                }
+                _ => fge64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // ====================================================================
+        // Float-to-Integer Truncation (trapping) — only fold when in-range
+        // WASM traps on NaN or out-of-range; we cannot represent traps, so
+        // we only fold when the conversion would succeed.
+        // ====================================================================
+        ValueData::I32TruncF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i32::MIN as f32 && f < (i32::MAX as f32 + 1.0) {
+                    iconst32(Imm32::new(f as i32))
+                } else {
+                    i32_trunc_f32_s(v)
+                }
+            } else {
+                i32_trunc_f32_s(v)
+            }
+        }
+        ValueData::I32TruncF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f32 + 1.0) {
+                    iconst32(Imm32::new(f as u32 as i32))
+                } else {
+                    i32_trunc_f32_u(v)
+                }
+            } else {
+                i32_trunc_f32_u(v)
+            }
+        }
+        ValueData::I32TruncF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i32::MIN as f64 && f < (i32::MAX as f64 + 1.0) {
+                    iconst32(Imm32::new(f as i32))
+                } else {
+                    i32_trunc_f64_s(v)
+                }
+            } else {
+                i32_trunc_f64_s(v)
+            }
+        }
+        ValueData::I32TruncF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f64 + 1.0) {
+                    iconst32(Imm32::new(f as u32 as i32))
+                } else {
+                    i32_trunc_f64_u(v)
+                }
+            } else {
+                i32_trunc_f64_u(v)
+            }
+        }
+        ValueData::I64TruncF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i64::MIN as f32 && f < (i64::MAX as f32) {
+                    iconst64(Imm64::new(f as i64))
+                } else {
+                    i64_trunc_f32_s(v)
+                }
+            } else {
+                i64_trunc_f32_s(v)
+            }
+        }
+        ValueData::I64TruncF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f32) {
+                    iconst64(Imm64::new(f as u64 as i64))
+                } else {
+                    i64_trunc_f32_u(v)
+                }
+            } else {
+                i64_trunc_f32_u(v)
+            }
+        }
+        ValueData::I64TruncF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i64::MIN as f64 && f < (i64::MAX as f64) {
+                    iconst64(Imm64::new(f as i64))
+                } else {
+                    i64_trunc_f64_s(v)
+                }
+            } else {
+                i64_trunc_f64_s(v)
+            }
+        }
+        ValueData::I64TruncF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f64) {
+                    iconst64(Imm64::new(f as u64 as i64))
+                } else {
+                    i64_trunc_f64_u(v)
+                }
+            } else {
+                i64_trunc_f64_u(v)
+            }
+        }
+
+        // ====================================================================
+        // Integer-to-Float Conversion — always safe to fold
+        // ====================================================================
+        ValueData::F32ConvertI32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_convert_i32_s(v)
+            }
+        }
+        ValueData::F32ConvertI32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as u32 as f32))
+            } else {
+                f32_convert_i32_u(v)
+            }
+        }
+        ValueData::F32ConvertI64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_convert_i64_s(v)
+            }
+        }
+        ValueData::F32ConvertI64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as u64 as f32))
+            } else {
+                f32_convert_i64_u(v)
+            }
+        }
+        ValueData::F64ConvertI32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_convert_i32_s(v)
+            }
+        }
+        ValueData::F64ConvertI32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as u32 as f64))
+            } else {
+                f64_convert_i32_u(v)
+            }
+        }
+        ValueData::F64ConvertI64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_convert_i64_s(v)
+            }
+        }
+        ValueData::F64ConvertI64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as u64 as f64))
+            } else {
+                f64_convert_i64_u(v)
+            }
+        }
+
+        // ====================================================================
+        // Float Demote/Promote — always safe to fold
+        // ====================================================================
+        ValueData::F32DemoteF64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_demote_f64(v)
+            }
+        }
+        ValueData::F64PromoteF32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_promote_f32(v)
+            }
+        }
+
+        // ====================================================================
+        // Reinterpret (bit-cast) — always safe, pure bit reinterpretation
+        // ====================================================================
+        ValueData::I32ReinterpretF32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                iconst32(Imm32::new(c.value().to_bits() as i32))
+            } else {
+                i32_reinterpret_f32(v)
+            }
+        }
+        ValueData::I64ReinterpretF64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                iconst64(Imm64::new(c.value().to_bits() as i64))
+            } else {
+                i64_reinterpret_f64(v)
+            }
+        }
+        ValueData::F32ReinterpretI32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(f32::from_bits(c.value() as u32)))
+            } else {
+                f32_reinterpret_i32(v)
+            }
+        }
+        ValueData::F64ReinterpretI64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(f64::from_bits(c.value() as u64)))
+            } else {
+                f64_reinterpret_i64(v)
+            }
+        }
+
+        // ====================================================================
+        // Saturating Truncation — always safe to fold (NaN→0, clamp on overflow)
+        // ====================================================================
+        ValueData::I32TruncSatF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0
+                } else if f >= (i32::MAX as f32 + 1.0) {
+                    i32::MAX
+                } else if f < i32::MIN as f32 {
+                    i32::MIN
+                } else {
+                    f as i32
+                };
+                iconst32(Imm32::new(result))
+            } else {
+                i32_trunc_sat_f32_s(v)
+            }
+        }
+        ValueData::I32TruncSatF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u32
+                } else if f >= (u32::MAX as f32 + 1.0) {
+                    u32::MAX
+                } else {
+                    f as u32
+                };
+                iconst32(Imm32::new(result as i32))
+            } else {
+                i32_trunc_sat_f32_u(v)
+            }
+        }
+        ValueData::I32TruncSatF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0
+                } else if f >= (i32::MAX as f64 + 1.0) {
+                    i32::MAX
+                } else if f < i32::MIN as f64 {
+                    i32::MIN
+                } else {
+                    f as i32
+                };
+                iconst32(Imm32::new(result))
+            } else {
+                i32_trunc_sat_f64_s(v)
+            }
+        }
+        ValueData::I32TruncSatF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u32
+                } else if f >= (u32::MAX as f64 + 1.0) {
+                    u32::MAX
+                } else {
+                    f as u32
+                };
+                iconst32(Imm32::new(result as i32))
+            } else {
+                i32_trunc_sat_f64_u(v)
+            }
+        }
+        ValueData::I64TruncSatF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0i64
+                } else if f >= i64::MAX as f32 {
+                    i64::MAX
+                } else if f < i64::MIN as f32 {
+                    i64::MIN
+                } else {
+                    f as i64
+                };
+                iconst64(Imm64::new(result))
+            } else {
+                i64_trunc_sat_f32_s(v)
+            }
+        }
+        ValueData::I64TruncSatF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u64
+                } else if f >= u64::MAX as f32 {
+                    u64::MAX
+                } else {
+                    f as u64
+                };
+                iconst64(Imm64::new(result as i64))
+            } else {
+                i64_trunc_sat_f32_u(v)
+            }
+        }
+        ValueData::I64TruncSatF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0i64
+                } else if f >= i64::MAX as f64 {
+                    i64::MAX
+                } else if f < i64::MIN as f64 {
+                    i64::MIN
+                } else {
+                    f as i64
+                };
+                iconst64(Imm64::new(result))
+            } else {
+                i64_trunc_sat_f64_s(v)
+            }
+        }
+        ValueData::I64TruncSatF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u64
+                } else if f >= u64::MAX as f64 {
+                    u64::MAX
+                } else {
+                    f as u64
+                };
+                iconst64(Imm64::new(result as i64))
+            } else {
+                i64_trunc_sat_f64_u(v)
+            }
+        }
+
+        // ====================================================================
+        // Memory Size/Grow — side-effectful, cannot fold, simplify children
+        // ====================================================================
+        ValueData::MemorySize { .. } => val, // no children to simplify
+        ValueData::MemoryGrow { val: inner, mem } => {
+            let v = simplify(inner.clone());
+            memory_grow(v, *mem)
+        }
+
+        // ====================================================================
+        // Bulk Memory — side-effectful, cannot fold, simplify children
+        // ====================================================================
+        ValueData::MemoryFill {
+            dst,
+            val: v,
+            len,
+            mem,
+        } => memory_fill(
+            simplify(dst.clone()),
+            simplify(v.clone()),
+            simplify(len.clone()),
+            *mem,
+        ),
+        ValueData::MemoryCopy {
+            dst,
+            src,
+            len,
+            dst_mem,
+            src_mem,
+        } => memory_copy(
+            simplify(dst.clone()),
+            simplify(src.clone()),
+            simplify(len.clone()),
+            *dst_mem,
+            *src_mem,
+        ),
+        ValueData::MemoryInit {
+            dst,
+            src,
+            len,
+            mem,
+            data_idx,
+        } => memory_init(
+            simplify(dst.clone()),
+            simplify(src.clone()),
+            simplify(len.clone()),
+            *mem,
+            *data_idx,
+        ),
+        ValueData::DataDrop { .. } => val, // no children to simplify
+
         // Constants are already in simplest form
         _ => val,
     }
@@ -3795,6 +5512,82 @@ mod tests {
                 }
             }
             _ => panic!("Expected (i64.sub 0 x) for x * -1"),
+        }
+    }
+
+    #[test]
+    fn test_cross_memory_store_load_not_redundant() {
+        // A store to memory 0 at (addr=0, offset=4) followed by a load from memory 1
+        // at the same address should NOT be treated as redundant — they are different memories.
+        let mut env = OptimizationEnv::default();
+
+        // Store i32.const 42 to memory 0 at address 0+4
+        let store = i32_store(
+            iconst32(Imm32::from(0)),
+            iconst32(Imm32::from(42)),
+            4, // offset
+            2, // align
+            0, // mem = 0
+        );
+        let _ = simplify_with_env(store, &mut env);
+
+        // Load from memory 1 at the same address (0+4)
+        let load = i32_load(
+            iconst32(Imm32::from(0)),
+            4, // offset
+            2, // align
+            1, // mem = 1 — different memory!
+        );
+        let result = simplify_with_env(load, &mut env);
+
+        // The load should NOT be simplified to i32.const 42 — it's a different memory
+        match result.data() {
+            ValueData::I32Const { val } if val.value() == 42 => {
+                panic!("Cross-memory load should NOT be eliminated as redundant");
+            }
+            ValueData::I32Load { mem, .. } => {
+                assert_eq!(*mem, 1, "Load should still reference memory 1");
+            }
+            _ => panic!("Expected I32Load, got {:?}", result.data()),
+        }
+    }
+
+    #[test]
+    fn test_same_memory_store_load_is_redundant() {
+        // Sanity check: a store to memory 0 followed by a load from memory 0
+        // at the same address SHOULD be eliminated.
+        let mut env = OptimizationEnv::default();
+
+        let store = i32_store(
+            iconst32(Imm32::from(0)),
+            iconst32(Imm32::from(42)),
+            4, // offset
+            2, // align
+            0, // mem = 0
+        );
+        let _ = simplify_with_env(store, &mut env);
+
+        let load = i32_load(
+            iconst32(Imm32::from(0)),
+            4, // offset
+            2, // align
+            0, // mem = 0 — same memory
+        );
+        let result = simplify_with_env(load, &mut env);
+
+        // The load SHOULD be simplified to i32.const 42
+        match result.data() {
+            ValueData::I32Const { val } => {
+                assert_eq!(
+                    val.value(),
+                    42,
+                    "Same-memory load should return stored value"
+                );
+            }
+            _ => panic!(
+                "Expected redundant load to be eliminated, got {:?}",
+                result.data()
+            ),
         }
     }
 }

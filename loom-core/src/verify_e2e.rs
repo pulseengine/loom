@@ -39,7 +39,7 @@ use z3::{Config, Context, SatResult, Solver};
 
 use crate::{Function, Instruction, Module};
 #[allow(unused_imports)]
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Verification confidence level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

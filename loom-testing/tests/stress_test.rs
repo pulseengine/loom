@@ -3,7 +3,7 @@
 //! This runs extensive verification against real WASM binaries
 //! to find miscompilation bugs that might not appear in small test cases.
 
-use loom_testing::emi::{analyze_dead_code, emi_test, EmiConfig, MutationStrategy};
+use loom_testing::emi::{EmiConfig, MutationStrategy, analyze_dead_code, emi_test};
 use rand::Rng;
 use std::time::Instant;
 

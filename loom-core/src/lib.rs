@@ -348,6 +348,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store
     I32Store {
@@ -355,6 +357,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load
     I64Load {
@@ -362,6 +366,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store
     I64Store {
@@ -369,6 +375,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
 
     // Float arithmetic operations (f32)
@@ -551,6 +559,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f32.store
     F32Store {
@@ -558,6 +568,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f64.load
     F64Load {
@@ -565,6 +577,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// f64.store
     F64Store {
@@ -572,6 +586,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load8_s
     I32Load8S {
@@ -579,6 +595,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load8_u
     I32Load8U {
@@ -586,6 +604,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load16_s
     I32Load16S {
@@ -593,6 +613,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.load16_u
     I32Load16U {
@@ -600,6 +622,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load8_s
     I64Load8S {
@@ -607,6 +631,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load8_u
     I64Load8U {
@@ -614,6 +640,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load16_s
     I64Load16S {
@@ -621,6 +649,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load16_u
     I64Load16U {
@@ -628,6 +658,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load32_s
     I64Load32S {
@@ -635,6 +667,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.load32_u
     I64Load32U {
@@ -642,6 +676,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store8
     I32Store8 {
@@ -649,6 +685,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i32.store16
     I32Store16 {
@@ -656,6 +694,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store8
     I64Store8 {
@@ -663,6 +703,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store16
     I64Store16 {
@@ -670,6 +712,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
     /// i64.store32
     I64Store32 {
@@ -677,6 +721,8 @@ pub enum Instruction {
         offset: u32,
         /// Memory alignment
         align: u32,
+        /// Memory index (0 for single-memory modules)
+        mem: u32,
     },
 
     // Memory size/grow operations
@@ -785,7 +831,7 @@ pub mod parse {
         BlockType, Export, ExportKind, Function, FunctionSignature, Import, ImportKind,
         Instruction, Memory, Module, Table, ValueType,
     };
-    use anyhow::{anyhow, Context, Result};
+    use anyhow::{Context, Result, anyhow};
     use wasmparser::{Operator, Parser, Payload, ValType, Validator};
 
     /// Parse a WebAssembly binary module
@@ -1295,24 +1341,28 @@ pub mod parse {
                     instructions.push(Instruction::I32Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store { memarg } => {
                     instructions.push(Instruction::I32Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load { memarg } => {
                     instructions.push(Instruction::I64Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store { memarg } => {
                     instructions.push(Instruction::I64Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Control flow (Phase 14)
@@ -1503,24 +1553,28 @@ pub mod parse {
                     instructions.push(Instruction::F32Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F32Store { memarg } => {
                     instructions.push(Instruction::F32Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F64Load { memarg } => {
                     instructions.push(Instruction::F64Load {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::F64Store { memarg } => {
                     instructions.push(Instruction::F64Store {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Additional load/store variants
@@ -1528,90 +1582,105 @@ pub mod parse {
                     instructions.push(Instruction::I32Load8S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load8U { memarg } => {
                     instructions.push(Instruction::I32Load8U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load16S { memarg } => {
                     instructions.push(Instruction::I32Load16S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Load16U { memarg } => {
                     instructions.push(Instruction::I32Load16U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load8S { memarg } => {
                     instructions.push(Instruction::I64Load8S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load8U { memarg } => {
                     instructions.push(Instruction::I64Load8U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load16S { memarg } => {
                     instructions.push(Instruction::I64Load16S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load16U { memarg } => {
                     instructions.push(Instruction::I64Load16U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load32S { memarg } => {
                     instructions.push(Instruction::I64Load32S {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Load32U { memarg } => {
                     instructions.push(Instruction::I64Load32U {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store8 { memarg } => {
                     instructions.push(Instruction::I32Store8 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I32Store16 { memarg } => {
                     instructions.push(Instruction::I32Store16 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store8 { memarg } => {
                     instructions.push(Instruction::I64Store8 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store16 { memarg } => {
                     instructions.push(Instruction::I64Store16 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 Operator::I64Store32 { memarg } => {
                     instructions.push(Instruction::I64Store32 {
                         offset: memarg.offset as u32,
                         align: memarg.align as u32,
+                        mem: memarg.memory,
                     });
                 }
                 // Unknown/unsupported instructions - return error to fail fast
@@ -2122,35 +2191,35 @@ pub mod encode {
                     Instruction::GlobalSet(idx) => {
                         func_body.instruction(&EncoderInstruction::GlobalSet(*idx));
                     }
-                    Instruction::I32Load { offset, align } => {
+                    Instruction::I32Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::I32Store { offset, align } => {
+                    Instruction::I32Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load { offset, align } => {
+                    Instruction::I64Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::I64Store { offset, align } => {
+                    Instruction::I64Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
@@ -2433,171 +2502,171 @@ pub mod encode {
                         func_body.instruction(&EncoderInstruction::DataDrop(*data_idx));
                     }
                     // Float loads/stores
-                    Instruction::F32Load { offset, align } => {
+                    Instruction::F32Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::F32Store { offset, align } => {
+                    Instruction::F32Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F32Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::F64Load { offset, align } => {
+                    Instruction::F64Load { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
                             offset: *offset as u64,
                             align: *align,
-                            memory_index: 0,
+                            memory_index: *mem,
                         }));
                     }
-                    Instruction::F64Store { offset, align } => {
+                    Instruction::F64Store { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::F64Store(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
                     // Additional load/store variants
-                    Instruction::I32Load8S { offset, align } => {
+                    Instruction::I32Load8S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load8S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load8U { offset, align } => {
+                    Instruction::I32Load8U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load8U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load16S { offset, align } => {
+                    Instruction::I32Load16S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load16S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Load16U { offset, align } => {
+                    Instruction::I32Load16U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Load16U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load8S { offset, align } => {
+                    Instruction::I64Load8S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load8S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load8U { offset, align } => {
+                    Instruction::I64Load8U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load8U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load16S { offset, align } => {
+                    Instruction::I64Load16S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load16S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load16U { offset, align } => {
+                    Instruction::I64Load16U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load16U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load32S { offset, align } => {
+                    Instruction::I64Load32S { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load32S(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Load32U { offset, align } => {
+                    Instruction::I64Load32U { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Load32U(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Store8 { offset, align } => {
+                    Instruction::I32Store8 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store8(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I32Store16 { offset, align } => {
+                    Instruction::I32Store16 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I32Store16(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store8 { offset, align } => {
+                    Instruction::I64Store8 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store8(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store16 { offset, align } => {
+                    Instruction::I64Store16 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store16(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
-                    Instruction::I64Store32 { offset, align } => {
+                    Instruction::I64Store32 { offset, align, mem } => {
                         func_body.instruction(&EncoderInstruction::I64Store32(
                             wasm_encoder::MemArg {
                                 offset: *offset as u64,
                                 align: *align,
-                                memory_index: 0,
+                                memory_index: *mem,
                             },
                         ));
                     }
@@ -2982,32 +3051,32 @@ pub mod encode {
             Instruction::LocalTee(idx) => {
                 func_body.instruction(&EncoderInstruction::LocalTee(*idx));
             }
-            Instruction::I32Load { offset, align } => {
+            Instruction::I32Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store { offset, align } => {
+            Instruction::I32Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load { offset, align } => {
+            Instruction::I64Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store { offset, align } => {
+            Instruction::I64Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Control flow instructions (Phase 14)
@@ -3337,138 +3406,138 @@ pub mod encode {
                 func_body.instruction(&EncoderInstruction::F64ReinterpretI64);
             }
             // Memory operations (float)
-            Instruction::F32Load { offset, align } => {
+            Instruction::F32Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F32Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F32Store { offset, align } => {
+            Instruction::F32Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F32Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F64Load { offset, align } => {
+            Instruction::F64Load { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F64Load(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::F64Store { offset, align } => {
+            Instruction::F64Store { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::F64Store(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Memory operations (integer variants)
-            Instruction::I32Load8S { offset, align } => {
+            Instruction::I32Load8S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load8S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load8U { offset, align } => {
+            Instruction::I32Load8U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load8U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load16S { offset, align } => {
+            Instruction::I32Load16S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load16S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Load16U { offset, align } => {
+            Instruction::I32Load16U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Load16U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load8S { offset, align } => {
+            Instruction::I64Load8S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load8S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load8U { offset, align } => {
+            Instruction::I64Load8U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load8U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load16S { offset, align } => {
+            Instruction::I64Load16S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load16S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load16U { offset, align } => {
+            Instruction::I64Load16U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load16U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load32S { offset, align } => {
+            Instruction::I64Load32S { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load32S(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Load32U { offset, align } => {
+            Instruction::I64Load32U { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Load32U(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store8 { offset, align } => {
+            Instruction::I32Store8 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store8(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I32Store16 { offset, align } => {
+            Instruction::I32Store16 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I32Store16(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store8 { offset, align } => {
+            Instruction::I64Store8 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store8(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store16 { offset, align } => {
+            Instruction::I64Store16 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store16(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
-            Instruction::I64Store32 { offset, align } => {
+            Instruction::I64Store32 { offset, align, mem } => {
                 func_body.instruction(&EncoderInstruction::I64Store32(wasm_encoder::MemArg {
                     offset: *offset as u64,
                     align: *align,
-                    memory_index: 0,
+                    memory_index: *mem,
                 }));
             }
             // Memory size/grow
@@ -3522,20 +3591,33 @@ pub mod encode {
 pub mod terms {
 
     use super::{BlockType, FunctionSignature, Instruction, Module, Value, ValueType};
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use loom_isle::{
-        block, br, br_if, br_table, call, call_indirect, drop_instr, global_get, global_set,
-        i32_extend16_s, i32_extend8_s, i32_load, i32_load16_s, i32_load16_u, i32_load8_s,
-        i32_load8_u, i32_store, i32_wrap_i64, i64_extend16_s, i64_extend32_s, i64_extend8_s,
-        i64_extend_i32_s, i64_extend_i32_u, i64_load, i64_load16_s, i64_load16_u, i64_load32_s,
-        i64_load32_u, i64_load8_s, i64_load8_u, i64_store, iadd32, iadd64, iand32, iand64, iclz32,
-        iclz64, iconst32, iconst64, ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32,
-        ieq64, ieqz32, ieqz64, if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64,
-        igtu32, igtu64, iles32, iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32,
-        imul64, ine32, ine64, ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32,
-        iremu64, irotl32, irotl64, irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32,
-        ishru64, isub32, isub64, ixor32, ixor64, local_get, local_set, local_tee, loop_construct,
-        nop, return_val, select_instr, unreachable, Imm32, Imm64,
+        Imm32, Imm64, ImmF32, ImmF64, block, br, br_if, br_table, call, call_indirect, data_drop,
+        drop_instr, f32_convert_i32_s, f32_convert_i32_u, f32_convert_i64_s, f32_convert_i64_u,
+        f32_demote_f64, f32_load, f32_reinterpret_i32, f32_store, f64_convert_i32_s,
+        f64_convert_i32_u, f64_convert_i64_s, f64_convert_i64_u, f64_load, f64_promote_f32,
+        f64_reinterpret_i64, f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32,
+        fconst64, fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64,
+        fge32, fge64, fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64,
+        fmul32, fmul64, fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64,
+        fsub32, fsub64, ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s, i32_extend16_s,
+        i32_load, i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_reinterpret_f32,
+        i32_store, i32_store8, i32_store16, i32_trunc_f32_s, i32_trunc_f32_u, i32_trunc_f64_s,
+        i32_trunc_f64_u, i32_trunc_sat_f32_s, i32_trunc_sat_f32_u, i32_trunc_sat_f64_s,
+        i32_trunc_sat_f64_u, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_extend8_s,
+        i64_extend16_s, i64_extend32_s, i64_load, i64_load8_s, i64_load8_u, i64_load16_s,
+        i64_load16_u, i64_load32_s, i64_load32_u, i64_reinterpret_f64, i64_store, i64_store8,
+        i64_store16, i64_store32, i64_trunc_f32_s, i64_trunc_f32_u, i64_trunc_f64_s,
+        i64_trunc_f64_u, i64_trunc_sat_f32_s, i64_trunc_sat_f32_u, i64_trunc_sat_f64_s,
+        i64_trunc_sat_f64_u, iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64,
+        ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64,
+        if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32,
+        iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64,
+        ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64,
+        irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64,
+        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, memory_copy, memory_fill,
+        memory_grow, memory_init, memory_size, nop, return_val, select_instr, unreachable,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -4152,6 +4234,191 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.extend_i32_u"))?;
                     stack.push(i64_extend_i32_u(val));
                 }
+                // Float-to-integer truncation (trapping)
+                Instruction::I32TruncF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f32_s"))?;
+                    stack.push(i32_trunc_f32_s(val));
+                }
+                Instruction::I32TruncF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f32_u"))?;
+                    stack.push(i32_trunc_f32_u(val));
+                }
+                Instruction::I32TruncF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f64_s"))?;
+                    stack.push(i32_trunc_f64_s(val));
+                }
+                Instruction::I32TruncF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f64_u"))?;
+                    stack.push(i32_trunc_f64_u(val));
+                }
+                Instruction::I64TruncF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f32_s"))?;
+                    stack.push(i64_trunc_f32_s(val));
+                }
+                Instruction::I64TruncF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f32_u"))?;
+                    stack.push(i64_trunc_f32_u(val));
+                }
+                Instruction::I64TruncF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f64_s"))?;
+                    stack.push(i64_trunc_f64_s(val));
+                }
+                Instruction::I64TruncF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f64_u"))?;
+                    stack.push(i64_trunc_f64_u(val));
+                }
+                // Integer-to-float conversion
+                Instruction::F32ConvertI32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i32_s"))?;
+                    stack.push(f32_convert_i32_s(val));
+                }
+                Instruction::F32ConvertI32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i32_u"))?;
+                    stack.push(f32_convert_i32_u(val));
+                }
+                Instruction::F32ConvertI64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i64_s"))?;
+                    stack.push(f32_convert_i64_s(val));
+                }
+                Instruction::F32ConvertI64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i64_u"))?;
+                    stack.push(f32_convert_i64_u(val));
+                }
+                Instruction::F64ConvertI32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i32_s"))?;
+                    stack.push(f64_convert_i32_s(val));
+                }
+                Instruction::F64ConvertI32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i32_u"))?;
+                    stack.push(f64_convert_i32_u(val));
+                }
+                Instruction::F64ConvertI64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i64_s"))?;
+                    stack.push(f64_convert_i64_s(val));
+                }
+                Instruction::F64ConvertI64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i64_u"))?;
+                    stack.push(f64_convert_i64_u(val));
+                }
+                // Float demote/promote
+                Instruction::F32DemoteF64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.demote_f64"))?;
+                    stack.push(f32_demote_f64(val));
+                }
+                Instruction::F64PromoteF32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.promote_f32"))?;
+                    stack.push(f64_promote_f32(val));
+                }
+                // Reinterpret (bit-cast)
+                Instruction::I32ReinterpretF32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.reinterpret_f32"))?;
+                    stack.push(i32_reinterpret_f32(val));
+                }
+                Instruction::I64ReinterpretF64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.reinterpret_f64"))?;
+                    stack.push(i64_reinterpret_f64(val));
+                }
+                Instruction::F32ReinterpretI32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.reinterpret_i32"))?;
+                    stack.push(f32_reinterpret_i32(val));
+                }
+                Instruction::F64ReinterpretI64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.reinterpret_i64"))?;
+                    stack.push(f64_reinterpret_i64(val));
+                }
+                // Saturating truncation (non-trapping)
+                Instruction::I32TruncSatF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f32_s"))?;
+                    stack.push(i32_trunc_sat_f32_s(val));
+                }
+                Instruction::I32TruncSatF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f32_u"))?;
+                    stack.push(i32_trunc_sat_f32_u(val));
+                }
+                Instruction::I32TruncSatF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f64_s"))?;
+                    stack.push(i32_trunc_sat_f64_s(val));
+                }
+                Instruction::I32TruncSatF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f64_u"))?;
+                    stack.push(i32_trunc_sat_f64_u(val));
+                }
+                Instruction::I64TruncSatF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f32_s"))?;
+                    stack.push(i64_trunc_sat_f32_s(val));
+                }
+                Instruction::I64TruncSatF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f32_u"))?;
+                    stack.push(i64_trunc_sat_f32_u(val));
+                }
+                Instruction::I64TruncSatF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f64_s"))?;
+                    stack.push(i64_trunc_sat_f64_s(val));
+                }
+                Instruction::I64TruncSatF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f64_u"))?;
+                    stack.push(i64_trunc_sat_f64_u(val));
+                }
                 // Sign extension operations (in-place sign extension)
                 Instruction::I32Extend8S => {
                     let val = stack
@@ -4215,13 +4482,13 @@ pub mod terms {
                     stack.push(local_tee(*idx, val));
                 }
                 // Memory operations (Phase 13)
-                Instruction::I32Load { offset, align } => {
+                Instruction::I32Load { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load address"))?;
-                    stack.push(i32_load(addr, *offset, *align));
+                    stack.push(i32_load(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Store { offset, align } => {
+                Instruction::I32Store { offset, align, mem } => {
                     let value = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store value"))?;
@@ -4230,15 +4497,15 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store address"))?;
                     // i32.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i32_store(addr, value, *offset, *align));
+                    side_effects.push(i32_store(addr, value, *offset, *align, *mem));
                 }
-                Instruction::I64Load { offset, align } => {
+                Instruction::I64Load { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load address"))?;
-                    stack.push(i64_load(addr, *offset, *align));
+                    stack.push(i64_load(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Store { offset, align } => {
+                Instruction::I64Store { offset, align, mem } => {
                     let value = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store value"))?;
@@ -4247,68 +4514,145 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store address"))?;
                     // i64.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i64_store(addr, value, *offset, *align));
+                    side_effects.push(i64_store(addr, value, *offset, *align, *mem));
                 }
                 // Partial-width memory load operations
-                Instruction::I32Load8S { offset, align } => {
+                Instruction::I32Load8S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load8_s address"))?;
-                    stack.push(i32_load8_s(addr, *offset, *align));
+                    stack.push(i32_load8_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load8U { offset, align } => {
+                Instruction::I32Load8U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load8_u address"))?;
-                    stack.push(i32_load8_u(addr, *offset, *align));
+                    stack.push(i32_load8_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load16S { offset, align } => {
+                Instruction::I32Load16S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load16_s address"))?;
-                    stack.push(i32_load16_s(addr, *offset, *align));
+                    stack.push(i32_load16_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I32Load16U { offset, align } => {
+                Instruction::I32Load16U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.load16_u address"))?;
-                    stack.push(i32_load16_u(addr, *offset, *align));
+                    stack.push(i32_load16_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load8S { offset, align } => {
+                Instruction::I64Load8S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load8_s address"))?;
-                    stack.push(i64_load8_s(addr, *offset, *align));
+                    stack.push(i64_load8_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load8U { offset, align } => {
+                Instruction::I64Load8U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load8_u address"))?;
-                    stack.push(i64_load8_u(addr, *offset, *align));
+                    stack.push(i64_load8_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load16S { offset, align } => {
+                Instruction::I64Load16S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load16_s address"))?;
-                    stack.push(i64_load16_s(addr, *offset, *align));
+                    stack.push(i64_load16_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load16U { offset, align } => {
+                Instruction::I64Load16U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load16_u address"))?;
-                    stack.push(i64_load16_u(addr, *offset, *align));
+                    stack.push(i64_load16_u(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load32S { offset, align } => {
+                Instruction::I64Load32S { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load32_s address"))?;
-                    stack.push(i64_load32_s(addr, *offset, *align));
+                    stack.push(i64_load32_s(addr, *offset, *align, *mem));
                 }
-                Instruction::I64Load32U { offset, align } => {
+                Instruction::I64Load32U { offset, align, mem } => {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.load32_u address"))?;
-                    stack.push(i64_load32_u(addr, *offset, *align));
+                    stack.push(i64_load32_u(addr, *offset, *align, *mem));
+                }
+                // Float memory operations
+                Instruction::F32Load { offset, align, mem } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.load address"))?;
+                    stack.push(f32_load(addr, *offset, *align, *mem));
+                }
+                Instruction::F32Store { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.store value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.store address"))?;
+                    side_effects.push(f32_store(addr, value, *offset, *align, *mem));
+                }
+                Instruction::F64Load { offset, align, mem } => {
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.load address"))?;
+                    stack.push(f64_load(addr, *offset, *align, *mem));
+                }
+                Instruction::F64Store { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.store value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.store address"))?;
+                    side_effects.push(f64_store(addr, value, *offset, *align, *mem));
+                }
+                // Partial-width memory store operations
+                Instruction::I32Store8 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store8 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store8 address"))?;
+                    side_effects.push(i32_store8(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I32Store16 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store16 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.store16 address"))?;
+                    side_effects.push(i32_store16(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store8 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store8 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store8 address"))?;
+                    side_effects.push(i64_store8(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store16 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store16 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store16 address"))?;
+                    side_effects.push(i64_store16(addr, value, *offset, *align, *mem));
+                }
+                Instruction::I64Store32 { offset, align, mem } => {
+                    let value = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store32 value"))?;
+                    let addr = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.store32 address"))?;
+                    side_effects.push(i64_store32(addr, value, *offset, *align, *mem));
                 }
                 // Control flow instructions (Phase 14)
                 Instruction::Block { block_type, body } => {
@@ -4504,123 +4848,393 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for global.set"))?;
                     side_effects.push(global_set(*idx, val));
                 }
-                Instruction::F32Const(_bits) => {
-                    // Float constants cannot be directly optimized in ISLE terms
-                    // They are passed through unchanged during optimization
-                    // We don't push anything to stack as we don't support float operations yet
+                Instruction::F32Const(bits) => {
+                    stack.push(fconst32(ImmF32::from_bits(*bits)));
                 }
-                Instruction::F64Const(_bits) => {
-                    // Float constants cannot be directly optimized in ISLE terms
-                    // They are passed through unchanged during optimization
-                    // We don't push anything to stack as we don't support float operations yet
+                Instruction::F64Const(bits) => {
+                    stack.push(fconst64(ImmF64::from_bits(*bits)));
                 }
                 Instruction::End => {
                     // End doesn't produce a value, just marks block end
                 }
-                // Float, conversion, and memory operations don't have ISLE term representations yet
-                // They are passed through unchanged - stack effects tracked elsewhere for validation
-                Instruction::F32Add
-                | Instruction::F32Sub
-                | Instruction::F32Mul
-                | Instruction::F32Div
-                | Instruction::F32Min
-                | Instruction::F32Max
-                | Instruction::F32Copysign
-                | Instruction::F32Abs
-                | Instruction::F32Neg
-                | Instruction::F32Ceil
-                | Instruction::F32Floor
-                | Instruction::F32Trunc
-                | Instruction::F32Nearest
-                | Instruction::F32Sqrt
-                | Instruction::F32Eq
-                | Instruction::F32Ne
-                | Instruction::F32Lt
-                | Instruction::F32Gt
-                | Instruction::F32Le
-                | Instruction::F32Ge
-                | Instruction::F64Add
-                | Instruction::F64Sub
-                | Instruction::F64Mul
-                | Instruction::F64Div
-                | Instruction::F64Min
-                | Instruction::F64Max
-                | Instruction::F64Copysign
-                | Instruction::F64Abs
-                | Instruction::F64Neg
-                | Instruction::F64Ceil
-                | Instruction::F64Floor
-                | Instruction::F64Trunc
-                | Instruction::F64Nearest
-                | Instruction::F64Sqrt
-                | Instruction::F64Eq
-                | Instruction::F64Ne
-                | Instruction::F64Lt
-                | Instruction::F64Gt
-                | Instruction::F64Le
-                | Instruction::F64Ge
-                | Instruction::I32TruncF32S
-                | Instruction::I32TruncF32U
-                | Instruction::I32TruncF64S
-                | Instruction::I32TruncF64U
-                | Instruction::I64TruncF32S
-                | Instruction::I64TruncF32U
-                | Instruction::I64TruncF64S
-                | Instruction::I64TruncF64U
-                | Instruction::F32ConvertI32S
-                | Instruction::F32ConvertI32U
-                | Instruction::F32ConvertI64S
-                | Instruction::F32ConvertI64U
-                | Instruction::F64ConvertI32S
-                | Instruction::F64ConvertI32U
-                | Instruction::F64ConvertI64S
-                | Instruction::F64ConvertI64U
-                | Instruction::F32DemoteF64
-                | Instruction::F64PromoteF32
-                | Instruction::I32ReinterpretF32
-                | Instruction::I64ReinterpretF64
-                | Instruction::F32ReinterpretI32
-                | Instruction::F64ReinterpretI64
-                | Instruction::F32Load { .. }
-                | Instruction::F32Store { .. }
-                | Instruction::F64Load { .. }
-                | Instruction::F64Store { .. }
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
-                | Instruction::MemorySize(_)
-                | Instruction::MemoryGrow(_) => {
-                    // These instructions don't have ISLE term representations
-                    // They are passed through unchanged in the encoding phase
-                    // ISLE optimization only applies to integer operations currently
+                Instruction::F32Add => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.add rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.add lhs"))?;
+                    stack.push(fadd32(lhs, rhs));
+                }
+                Instruction::F32Sub => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sub rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sub lhs"))?;
+                    stack.push(fsub32(lhs, rhs));
+                }
+                Instruction::F32Mul => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.mul rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.mul lhs"))?;
+                    stack.push(fmul32(lhs, rhs));
+                }
+                Instruction::F32Div => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.div rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.div lhs"))?;
+                    stack.push(fdiv32(lhs, rhs));
+                }
+                Instruction::F64Add => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.add rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.add lhs"))?;
+                    stack.push(fadd64(lhs, rhs));
+                }
+                Instruction::F64Sub => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sub rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sub lhs"))?;
+                    stack.push(fsub64(lhs, rhs));
+                }
+                Instruction::F64Mul => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.mul rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.mul lhs"))?;
+                    stack.push(fmul64(lhs, rhs));
+                }
+                Instruction::F64Div => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.div rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.div lhs"))?;
+                    stack.push(fdiv64(lhs, rhs));
+                }
+                // f32 unary operations
+                Instruction::F32Abs => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.abs"))?;
+                    stack.push(fabs32(val));
+                }
+                Instruction::F32Neg => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.neg"))?;
+                    stack.push(fneg32(val));
+                }
+                Instruction::F32Ceil => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ceil"))?;
+                    stack.push(fceil32(val));
+                }
+                Instruction::F32Floor => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.floor"))?;
+                    stack.push(ffloor32(val));
+                }
+                Instruction::F32Trunc => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.trunc"))?;
+                    stack.push(ftrunc32(val));
+                }
+                Instruction::F32Nearest => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.nearest"))?;
+                    stack.push(fnearest32(val));
+                }
+                Instruction::F32Sqrt => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.sqrt"))?;
+                    stack.push(fsqrt32(val));
+                }
+                // f32 binary operations
+                Instruction::F32Min => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.min rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.min lhs"))?;
+                    stack.push(fmin32(lhs, rhs));
+                }
+                Instruction::F32Max => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.max rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.max lhs"))?;
+                    stack.push(fmax32(lhs, rhs));
+                }
+                Instruction::F32Copysign => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.copysign rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.copysign lhs"))?;
+                    stack.push(fcopysign32(lhs, rhs));
+                }
+                // f32 comparison operations
+                Instruction::F32Eq => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.eq rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.eq lhs"))?;
+                    stack.push(feq32(lhs, rhs));
+                }
+                Instruction::F32Ne => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ne rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ne lhs"))?;
+                    stack.push(fne32(lhs, rhs));
+                }
+                Instruction::F32Lt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.lt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.lt lhs"))?;
+                    stack.push(flt32(lhs, rhs));
+                }
+                Instruction::F32Gt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.gt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.gt lhs"))?;
+                    stack.push(fgt32(lhs, rhs));
+                }
+                Instruction::F32Le => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.le rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.le lhs"))?;
+                    stack.push(fle32(lhs, rhs));
+                }
+                Instruction::F32Ge => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ge rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.ge lhs"))?;
+                    stack.push(fge32(lhs, rhs));
+                }
+                // f64 unary operations
+                Instruction::F64Abs => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.abs"))?;
+                    stack.push(fabs64(val));
+                }
+                Instruction::F64Neg => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.neg"))?;
+                    stack.push(fneg64(val));
+                }
+                Instruction::F64Ceil => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ceil"))?;
+                    stack.push(fceil64(val));
+                }
+                Instruction::F64Floor => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.floor"))?;
+                    stack.push(ffloor64(val));
+                }
+                Instruction::F64Trunc => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.trunc"))?;
+                    stack.push(ftrunc64(val));
+                }
+                Instruction::F64Nearest => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.nearest"))?;
+                    stack.push(fnearest64(val));
+                }
+                Instruction::F64Sqrt => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.sqrt"))?;
+                    stack.push(fsqrt64(val));
+                }
+                // f64 binary operations
+                Instruction::F64Min => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.min rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.min lhs"))?;
+                    stack.push(fmin64(lhs, rhs));
+                }
+                Instruction::F64Max => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.max rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.max lhs"))?;
+                    stack.push(fmax64(lhs, rhs));
+                }
+                Instruction::F64Copysign => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.copysign rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.copysign lhs"))?;
+                    stack.push(fcopysign64(lhs, rhs));
+                }
+                // f64 comparison operations
+                Instruction::F64Eq => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.eq rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.eq lhs"))?;
+                    stack.push(feq64(lhs, rhs));
+                }
+                Instruction::F64Ne => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ne rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ne lhs"))?;
+                    stack.push(fne64(lhs, rhs));
+                }
+                Instruction::F64Lt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.lt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.lt lhs"))?;
+                    stack.push(flt64(lhs, rhs));
+                }
+                Instruction::F64Gt => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.gt rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.gt lhs"))?;
+                    stack.push(fgt64(lhs, rhs));
+                }
+                Instruction::F64Le => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.le rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.le lhs"))?;
+                    stack.push(fle64(lhs, rhs));
+                }
+                Instruction::F64Ge => {
+                    let rhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ge rhs"))?;
+                    let lhs = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.ge lhs"))?;
+                    stack.push(fge64(lhs, rhs));
+                }
+                // Memory size/grow operations
+                Instruction::MemorySize(mem) => {
+                    stack.push(memory_size(*mem));
+                }
+                Instruction::MemoryGrow(mem) => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.grow"))?;
+                    stack.push(memory_grow(val, *mem));
                 }
                 Instruction::Unknown(_) => {
                     // Unknown instructions cannot be converted to ISLE terms
                     // They are passed through unchanged in the encoding phase
-                    // For optimization purposes, we treat them as unknown operations
-                    // that we cannot reason about, so we don't push anything to the stack
                 }
 
-                // Saturating truncation instructions - pass through unchanged
-                Instruction::I32TruncSatF32S
-                | Instruction::I32TruncSatF32U
-                | Instruction::I32TruncSatF64S
-                | Instruction::I32TruncSatF64U
-                | Instruction::I64TruncSatF32S
-                | Instruction::I64TruncSatF32U
-                | Instruction::I64TruncSatF64S
-                | Instruction::I64TruncSatF64U => {
-                    // These don't have ISLE term representations yet
+                // Bulk memory instructions - side-effectful, no stack output
+                Instruction::MemoryFill(mem) => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill len"))?;
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill val"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.fill dst"))?;
+                    side_effects.push(memory_fill(dst, val, len, *mem));
                 }
-
-                // Bulk memory instructions - pass through unchanged
-                Instruction::MemoryFill(_)
-                | Instruction::MemoryCopy { .. }
-                | Instruction::MemoryInit { .. }
-                | Instruction::DataDrop(_) => {
-                    // These don't have ISLE term representations yet
+                Instruction::MemoryCopy { dst_mem, src_mem } => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy len"))?;
+                    let src = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy src"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.copy dst"))?;
+                    side_effects.push(memory_copy(dst, src, len, *dst_mem, *src_mem));
+                }
+                Instruction::MemoryInit { mem, data_idx } => {
+                    let len = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init len"))?;
+                    let src = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init src"))?;
+                    let dst = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.init dst"))?;
+                    side_effects.push(memory_init(dst, src, len, *mem, *data_idx));
+                }
+                Instruction::DataDrop(data_idx) => {
+                    side_effects.push(data_drop(*data_idx));
                 }
             }
         }
@@ -4984,6 +5598,179 @@ pub mod terms {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::I64ExtendI32U);
             }
+            // Float-to-integer truncation (trapping)
+            ValueData::I32TruncF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF32S);
+            }
+            ValueData::I32TruncF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF32U);
+            }
+            ValueData::I32TruncF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF64S);
+            }
+            ValueData::I32TruncF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF64U);
+            }
+            ValueData::I64TruncF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF32S);
+            }
+            ValueData::I64TruncF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF32U);
+            }
+            ValueData::I64TruncF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF64S);
+            }
+            ValueData::I64TruncF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF64U);
+            }
+            // Integer-to-float conversion
+            ValueData::F32ConvertI32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI32S);
+            }
+            ValueData::F32ConvertI32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI32U);
+            }
+            ValueData::F32ConvertI64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI64S);
+            }
+            ValueData::F32ConvertI64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI64U);
+            }
+            ValueData::F64ConvertI32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI32S);
+            }
+            ValueData::F64ConvertI32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI32U);
+            }
+            ValueData::F64ConvertI64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI64S);
+            }
+            ValueData::F64ConvertI64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI64U);
+            }
+            // Float demote/promote
+            ValueData::F32DemoteF64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32DemoteF64);
+            }
+            ValueData::F64PromoteF32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64PromoteF32);
+            }
+            // Reinterpret (bit-cast)
+            ValueData::I32ReinterpretF32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32ReinterpretF32);
+            }
+            ValueData::I64ReinterpretF64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64ReinterpretF64);
+            }
+            ValueData::F32ReinterpretI32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ReinterpretI32);
+            }
+            ValueData::F64ReinterpretI64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ReinterpretI64);
+            }
+            // Saturating truncation (non-trapping)
+            ValueData::I32TruncSatF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF32S);
+            }
+            ValueData::I32TruncSatF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF32U);
+            }
+            ValueData::I32TruncSatF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF64S);
+            }
+            ValueData::I32TruncSatF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF64U);
+            }
+            ValueData::I64TruncSatF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF32S);
+            }
+            ValueData::I64TruncSatF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF32U);
+            }
+            ValueData::I64TruncSatF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF64S);
+            }
+            ValueData::I64TruncSatF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF64U);
+            }
+            // Memory operations
+            ValueData::MemorySize { mem } => {
+                instructions.push(Instruction::MemorySize(*mem));
+            }
+            ValueData::MemoryGrow { val, mem } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::MemoryGrow(*mem));
+            }
+            // Bulk memory operations (side-effectful)
+            ValueData::MemoryFill { dst, val, len, mem } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(val, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryFill(*mem));
+            }
+            ValueData::MemoryCopy {
+                dst,
+                src,
+                len,
+                dst_mem,
+                src_mem,
+            } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(src, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryCopy {
+                    dst_mem: *dst_mem,
+                    src_mem: *src_mem,
+                });
+            }
+            ValueData::MemoryInit {
+                dst,
+                src,
+                len,
+                mem,
+                data_idx,
+            } => {
+                term_to_instructions_recursive(dst, instructions)?;
+                term_to_instructions_recursive(src, instructions)?;
+                term_to_instructions_recursive(len, instructions)?;
+                instructions.push(Instruction::MemoryInit {
+                    mem: *mem,
+                    data_idx: *data_idx,
+                });
+            }
+            ValueData::DataDrop { data_idx } => {
+                instructions.push(Instruction::DataDrop(*data_idx));
+            }
             // Sign extension operations
             ValueData::I32Extend8S { val } => {
                 term_to_instructions_recursive(val, instructions)?;
@@ -5037,11 +5824,13 @@ pub mod terms {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Store {
@@ -5049,23 +5838,27 @@ pub mod terms {
                 value,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 term_to_instructions_recursive(value, instructions)?;
                 instructions.push(Instruction::I32Store {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Store {
@@ -5073,12 +5866,14 @@ pub mod terms {
                 value,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 term_to_instructions_recursive(value, instructions)?;
                 instructions.push(Instruction::I64Store {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
 
@@ -5087,110 +5882,265 @@ pub mod terms {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load8S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load8U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load8U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load16S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load16S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I32Load16U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I32Load16U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load8S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load8S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load8U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load8U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load16S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load16S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load16U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load16U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load32S {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load32S {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
                 });
             }
             ValueData::I64Load32U {
                 addr,
                 offset,
                 align,
+                mem,
             } => {
                 term_to_instructions_recursive(addr, instructions)?;
                 instructions.push(Instruction::I64Load32U {
                     offset: *offset,
                     align: *align,
+                    mem: *mem,
+                });
+            }
+
+            // Float memory operations
+            ValueData::F32Load {
+                addr,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::F32Load {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F32Store {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::F32Store {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F64Load {
+                addr,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                instructions.push(Instruction::F64Load {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::F64Store {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::F64Store {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+
+            // Partial-width memory store operations
+            ValueData::I32Store8 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I32Store8 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I32Store16 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I32Store16 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store8 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store8 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store16 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store16 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
+                });
+            }
+            ValueData::I64Store32 {
+                addr,
+                value,
+                offset,
+                align,
+                mem,
+            } => {
+                term_to_instructions_recursive(addr, instructions)?;
+                term_to_instructions_recursive(value, instructions)?;
+                instructions.push(Instruction::I64Store32 {
+                    offset: *offset,
+                    align: *align,
+                    mem: *mem,
                 });
             }
 
@@ -5393,6 +6343,164 @@ pub mod terms {
                 term_to_instructions_recursive(rhs, instructions)?;
                 instructions.push(Instruction::F64Div);
             }
+
+            // f32 unary operations
+            ValueData::F32Abs { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Abs);
+            }
+            ValueData::F32Neg { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Neg);
+            }
+            ValueData::F32Ceil { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Ceil);
+            }
+            ValueData::F32Floor { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Floor);
+            }
+            ValueData::F32Trunc { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Trunc);
+            }
+            ValueData::F32Nearest { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Nearest);
+            }
+            ValueData::F32Sqrt { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32Sqrt);
+            }
+
+            // f32 binary operations
+            ValueData::F32Min { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Min);
+            }
+            ValueData::F32Max { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Max);
+            }
+            ValueData::F32Copysign { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Copysign);
+            }
+
+            // f32 comparison operations
+            ValueData::F32Eq { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Eq);
+            }
+            ValueData::F32Ne { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Ne);
+            }
+            ValueData::F32Lt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Lt);
+            }
+            ValueData::F32Gt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Gt);
+            }
+            ValueData::F32Le { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Le);
+            }
+            ValueData::F32Ge { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F32Ge);
+            }
+
+            // f64 unary operations
+            ValueData::F64Abs { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Abs);
+            }
+            ValueData::F64Neg { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Neg);
+            }
+            ValueData::F64Ceil { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Ceil);
+            }
+            ValueData::F64Floor { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Floor);
+            }
+            ValueData::F64Trunc { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Trunc);
+            }
+            ValueData::F64Nearest { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Nearest);
+            }
+            ValueData::F64Sqrt { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64Sqrt);
+            }
+
+            // f64 binary operations
+            ValueData::F64Min { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Min);
+            }
+            ValueData::F64Max { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Max);
+            }
+            ValueData::F64Copysign { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Copysign);
+            }
+
+            // f64 comparison operations
+            ValueData::F64Eq { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Eq);
+            }
+            ValueData::F64Ne { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Ne);
+            }
+            ValueData::F64Lt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Lt);
+            }
+            ValueData::F64Gt { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Gt);
+            }
+            ValueData::F64Le { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Le);
+            }
+            ValueData::F64Ge { lhs, rhs } => {
+                term_to_instructions_recursive(lhs, instructions)?;
+                term_to_instructions_recursive(rhs, instructions)?;
+                instructions.push(Instruction::F64Ge);
+            }
         }
 
         Ok(())
@@ -5495,12 +6603,9 @@ pub mod optimize {
 
     /// Helper: Check if a function contains instructions not supported by ISLE term conversion
     ///
-    /// The instructions_to_terms function only handles a subset of WASM instructions.
-    /// For unsupported instructions (floats, conversions, rotations, etc.), it doesn't
-    /// properly simulate stack effects, which causes stack underflow errors.
-    ///
-    /// This function identifies functions that should skip ISLE-based optimization
-    /// to avoid corrupting the stack simulation.
+    /// Currently only `Unknown` instructions are unsupported — all standard WASM
+    /// instructions (integer, float, conversion, memory, control flow, call_indirect,
+    /// br_table, bulk memory) are fully wired into the ISLE pipeline.
     fn has_unsupported_isle_instructions(func: &Function) -> bool {
         has_unsupported_isle_instructions_in_block(&func.instructions)
     }
@@ -5509,13 +6614,16 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 // Recursively check nested blocks
-                Instruction::Block { body, .. }
-                | Instruction::Loop { body, .. } => {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                     if has_unsupported_isle_instructions_in_block(body) {
                         return true;
                     }
                 }
-                Instruction::If { then_body, else_body, .. } => {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     if has_unsupported_isle_instructions_in_block(then_body)
                         || has_unsupported_isle_instructions_in_block(else_body)
                     {
@@ -5523,120 +6631,8 @@ pub mod optimize {
                     }
                 }
 
-                // Float operations - basic arithmetic now supported in ISLE terms
-                // F32Const, F64Const, F32Add, F32Sub, F32Mul, F32Div,
-                // F64Add, F64Sub, F64Mul, F64Div are now handled.
-                // Other float operations remain unsupported:
-                Instruction::F32Min
-                | Instruction::F32Max
-                | Instruction::F32Copysign
-                | Instruction::F32Abs
-                | Instruction::F32Neg
-                | Instruction::F32Ceil
-                | Instruction::F32Floor
-                | Instruction::F32Trunc
-                | Instruction::F32Nearest
-                | Instruction::F32Sqrt
-                | Instruction::F32Eq
-                | Instruction::F32Ne
-                | Instruction::F32Lt
-                | Instruction::F32Gt
-                | Instruction::F32Le
-                | Instruction::F32Ge
-                | Instruction::F64Min
-                | Instruction::F64Max
-                | Instruction::F64Copysign
-                | Instruction::F64Abs
-                | Instruction::F64Neg
-                | Instruction::F64Ceil
-                | Instruction::F64Floor
-                | Instruction::F64Trunc
-                | Instruction::F64Nearest
-                | Instruction::F64Sqrt
-                | Instruction::F64Eq
-                | Instruction::F64Ne
-                | Instruction::F64Lt
-                | Instruction::F64Gt
-                | Instruction::F64Le
-                | Instruction::F64Ge
-                // Float conversion operations
-                | Instruction::I32TruncF32S
-                | Instruction::I32TruncF32U
-                | Instruction::I32TruncF64S
-                | Instruction::I32TruncF64U
-                | Instruction::I64TruncF32S
-                | Instruction::I64TruncF32U
-                | Instruction::I64TruncF64S
-                | Instruction::I64TruncF64U
-                | Instruction::F32ConvertI32S
-                | Instruction::F32ConvertI32U
-                | Instruction::F32ConvertI64S
-                | Instruction::F32ConvertI64U
-                | Instruction::F64ConvertI32S
-                | Instruction::F64ConvertI32U
-                | Instruction::F64ConvertI64S
-                | Instruction::F64ConvertI64U
-                | Instruction::F32DemoteF64
-                | Instruction::F64PromoteF32
-                | Instruction::I32ReinterpretF32
-                | Instruction::I64ReinterpretF64
-                | Instruction::F32ReinterpretI32
-                | Instruction::F64ReinterpretI64
-                // Float memory operations
-                | Instruction::F32Load { .. }
-                | Instruction::F32Store { .. }
-                | Instruction::F64Load { .. }
-                | Instruction::F64Store { .. }
-                // Partial-width memory store operations (loads are now supported)
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
-                // Memory operations
-                | Instruction::MemorySize(_)
-                | Instruction::MemoryGrow(_)
-                // Bulk memory operations
-                | Instruction::MemoryFill(_)
-                | Instruction::MemoryCopy { .. }
-                | Instruction::MemoryInit { .. }
-                | Instruction::DataDrop(_)
-                // Saturating truncation operations
-                | Instruction::I32TruncSatF32S
-                | Instruction::I32TruncSatF32U
-                | Instruction::I32TruncSatF64S
-                | Instruction::I32TruncSatF64U
-                | Instruction::I64TruncSatF32S
-                | Instruction::I64TruncSatF32U
-                | Instruction::I64TruncSatF64S
-                | Instruction::I64TruncSatF64U
-                // Rotation operations - NOW SUPPORTED
-                // ISLE type tracking correctly distinguishes I32/I64 using separate
-                // constructors (irotl32 vs irotl64, irotr32 vs irotr64, etc.).
-                // Z3 verification also handles rotation operations.
-                //
-                // Sign extension operations - NOW SUPPORTED
-                // ISLE type tracking supports in-place sign extension with separate
-                // constructors (i32_extend8_s, i32_extend16_s, etc.).
-                // Constant folding is implemented for sign extension of constants.
-                //
-                // Integer type conversion (changes stack types, complex to verify)
-                | Instruction::I32WrapI64
-                | Instruction::I64ExtendI32S
-                | Instruction::I64ExtendI32U
-                // I64 operations - NOW SUPPORTED
-                // ISLE type tracking correctly distinguishes I32/I64 using separate
-                // constructors (iconst32 vs iconst64, iadd32 vs iadd64, etc.).
-                // Z3 verification also handles I64 operations.
-                // All I64 arithmetic, bitwise, comparison, and unary ops are supported.
-                //
-                // CallIndirect - can't statically verify (runtime type from table)
-                | Instruction::CallIndirect { .. }
-                // BrTable - not yet supported in ISLE terms
-                // Note: BrIf and control flow have additional issues - see has_dataflow_unsafe_control_flow
-                | Instruction::BrTable { .. }
-                // Unknown instructions
-                | Instruction::Unknown(_) => {
+                // Unknown instructions (opaque — cannot model stack effects)
+                Instruction::Unknown(_) => {
                     return true;
                 }
 
@@ -5755,10 +6751,10 @@ pub mod optimize {
     /// Apply ISLE-based constant folding optimization
     /// This uses ISLE pattern matching rules to fold constants (e.g., i32.const 100 + i32.const 200 → i32.const 300)
     pub fn constant_folding(module: &mut Module) -> Result<()> {
-        use super::terms::TermSignatureContext;
         use super::Value;
+        use super::terms::TermSignatureContext;
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         // Create signature contexts before mutating functions
         // TermSignatureContext for ISLE term conversion
@@ -6280,7 +7276,7 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 Instruction::Br { .. } | Instruction::BrIf { .. } | Instruction::BrTable { .. } => {
-                    return true
+                    return true;
                 }
 
                 // Recursively check nested structures
@@ -9380,8 +10376,8 @@ pub mod optimize {
     pub fn eliminate_common_subexpressions_enhanced(module: &mut Module) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
-        use std::collections::hash_map::DefaultHasher;
         use std::collections::HashMap;
+        use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let ctx = ValidationContext::from_module(module);
@@ -9763,11 +10759,11 @@ pub mod optimize {
     /// These are simple pattern-based transformations that work on
     /// instruction sequences in stack-based form.
     pub fn optimize_advanced_instructions(module: &mut Module) -> Result<()> {
-        use super::terms::TermSignatureContext;
         use super::Value;
+        use super::terms::TermSignatureContext;
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         let ctx = ValidationContext::from_module(module);
         // Create signature contexts for proper Call/CallIndirect handling
@@ -10386,11 +11382,11 @@ pub mod component_executor;
 pub mod fused_optimizer;
 
 /// Re-export fused optimization API
-pub use fused_optimizer::{optimize_fused_module, FusedOptimizationStats};
+pub use fused_optimizer::{FusedOptimizationStats, optimize_fused_module};
 
 /// Re-export component optimization API
 pub use component_optimizer::{
-    analyze_component_structure, optimize_component, ComponentAnalysis, ComponentStats,
+    ComponentAnalysis, ComponentStats, analyze_component_structure, optimize_component,
 };
 
 /// Re-export component executor API
@@ -10405,7 +11401,7 @@ mod tests {
 
     #[test]
     fn test_value_construction() {
-        use loom_isle::{iconst32, Imm32};
+        use loom_isle::{Imm32, iconst32};
         let _val = iconst32(Imm32::from(42));
         // Just test that ISLE types are accessible
     }
@@ -10532,7 +11528,7 @@ mod tests {
 
     #[test]
     fn test_terms_to_instructions() {
-        use loom_isle::{iadd32, iconst32, Imm32};
+        use loom_isle::{Imm32, iadd32, iconst32};
 
         // Build term: I32Add(I32Const(10), I32Const(32))
         let term = iadd32(iconst32(Imm32::from(10)), iconst32(Imm32::from(32)));
@@ -11981,7 +12977,7 @@ mod tests {
     /// Debug test to identify which optimization phase causes stack mismatch
     #[test]
     fn debug_identify_problematic_pass() {
-        use loom_isle::{simplify_with_env, LocalEnv};
+        use loom_isle::{LocalEnv, simplify_with_env};
 
         let wat = include_str!("../../tests/fixtures/bench_locals.wat");
 
@@ -12634,5 +13630,1004 @@ mod tests {
         // Verify validity
         let wasm_bytes = encode::encode_wasm(&module).unwrap();
         wasmparser::validate(&wasm_bytes).expect("Fully optimized module should be valid");
+    }
+
+    #[test]
+    fn test_load_isle_round_trip_all_14() {
+        // Test that all 14 load variants with mem field round-trip through
+        // instructions_to_terms → terms_to_instructions correctly.
+        // Loads push a value onto the stack, so they survive the round-trip.
+
+        let load_cases: Vec<(&str, Vec<Instruction>)> = vec![
+            (
+                "i32.load",
+                vec![
+                    Instruction::I32Const(100),
+                    Instruction::I32Load {
+                        offset: 4,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load {
+                        offset: 8,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f32.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::F32Load {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f64.load",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::F64Load {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load8_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load8S {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load8_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load8U {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load16_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load16S {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.load16_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Load16U {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load8_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load8S {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load8_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load8U {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load16_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load16S {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load16_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load16U {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load32_s",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load32S {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.load32_u",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Load32U {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+        ];
+
+        for (name, instructions) in &load_cases {
+            let terms = terms::instructions_to_terms(instructions)
+                .unwrap_or_else(|e| panic!("{}: instructions_to_terms failed: {}", name, e));
+
+            let result = terms::terms_to_instructions(&terms)
+                .unwrap_or_else(|e| panic!("{}: terms_to_instructions failed: {}", name, e));
+
+            assert_eq!(&result, instructions, "{}: round-trip mismatch", name);
+        }
+    }
+
+    #[test]
+    fn test_store_isle_conversion_all_9() {
+        // Test that all 9 store variants successfully convert to ISLE terms.
+        // Stores produce side effects (not stack values), so we verify
+        // instructions_to_terms succeeds without error.
+        // i32.store and i64.store use I32Const/I64Const for values (already on ISLE stack).
+        // Float stores use load results. Partial stores use I32Const/I64Const values.
+
+        let store_cases: Vec<(&str, Vec<Instruction>)> = vec![
+            (
+                "i32.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(42),
+                    Instruction::I32Store {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(999),
+                    Instruction::I64Store {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f32.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(0),
+                    Instruction::F32Load {
+                        offset: 8,
+                        align: 2,
+                        mem: 0,
+                    },
+                    Instruction::F32Store {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "f64.store",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(0),
+                    Instruction::F64Load {
+                        offset: 8,
+                        align: 3,
+                        mem: 0,
+                    },
+                    Instruction::F64Store {
+                        offset: 0,
+                        align: 3,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.store8",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(255),
+                    Instruction::I32Store8 {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i32.store16",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I32Const(65535),
+                    Instruction::I32Store16 {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store8",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(255),
+                    Instruction::I64Store8 {
+                        offset: 0,
+                        align: 0,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store16",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(65535),
+                    Instruction::I64Store16 {
+                        offset: 0,
+                        align: 1,
+                        mem: 0,
+                    },
+                ],
+            ),
+            (
+                "i64.store32",
+                vec![
+                    Instruction::I32Const(0),
+                    Instruction::I64Const(0xFFFFFFFF),
+                    Instruction::I64Store32 {
+                        offset: 0,
+                        align: 2,
+                        mem: 0,
+                    },
+                ],
+            ),
+        ];
+
+        for (name, instructions) in &store_cases {
+            terms::instructions_to_terms(instructions)
+                .unwrap_or_else(|e| panic!("{}: instructions_to_terms failed: {}", name, e));
+        }
+    }
+
+    #[test]
+    fn test_load_store_mem_field_preserved_in_isle() {
+        // Verify the mem field is preserved (not dropped to 0) through ISLE conversion
+        let instructions = vec![
+            Instruction::I32Const(100),
+            Instruction::I32Load {
+                offset: 4,
+                align: 2,
+                mem: 3,
+            },
+        ];
+
+        let terms =
+            terms::instructions_to_terms(&instructions).expect("instructions_to_terms failed");
+
+        let result = terms::terms_to_instructions(&terms).expect("terms_to_instructions failed");
+
+        assert_eq!(result.len(), 2);
+        match &result[1] {
+            Instruction::I32Load { offset, align, mem } => {
+                assert_eq!(*offset, 4);
+                assert_eq!(*align, 2);
+                assert_eq!(
+                    *mem, 3,
+                    "mem field should be preserved through ISLE round-trip"
+                );
+            }
+            other => panic!("Expected I32Load, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_multi_memory_round_trip_parse_encode() {
+        // Multi-memory module: memory 0 and memory 1
+        // i32.load from memory 1 should preserve the memory index through parse → encode.
+        // We construct the module directly (WAT text format multi-memory syntax varies
+        // by tool version), then round-trip through encode → parse.
+        let instructions = vec![
+            Instruction::I32Const(0),
+            Instruction::I32Load {
+                offset: 0,
+                align: 2,
+                mem: 1,
+            },
+            Instruction::End,
+        ];
+
+        let module = Module {
+            functions: vec![Function {
+                name: None,
+                signature: FunctionSignature {
+                    params: vec![],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions,
+            }],
+            memories: vec![
+                crate::Memory {
+                    min: 1,
+                    max: None,
+                    shared: false,
+                    memory64: false,
+                },
+                crate::Memory {
+                    min: 1,
+                    max: None,
+                    shared: false,
+                    memory64: false,
+                },
+            ],
+            tables: vec![],
+            globals: vec![],
+            types: vec![FunctionSignature {
+                params: vec![],
+                results: vec![ValueType::I32],
+            }],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        };
+
+        let wasm_bytes =
+            encode::encode_wasm(&module).expect("Failed to encode multi-memory module");
+        let module2 =
+            parse::parse_wasm(&wasm_bytes).expect("Failed to re-parse multi-memory module");
+
+        assert_eq!(module2.functions.len(), 1);
+        let func = &module2.functions[0];
+
+        // Find the I32Load and verify mem=1 survived round-trip
+        let load = func
+            .instructions
+            .iter()
+            .find(|i| matches!(i, Instruction::I32Load { .. }));
+        match load {
+            Some(Instruction::I32Load { mem, .. }) => {
+                assert_eq!(
+                    *mem, 1,
+                    "memory index should survive parse→encode round-trip"
+                );
+            }
+            _ => panic!("Expected I32Load instruction in round-tripped module"),
+        }
+    }
+
+    #[test]
+    fn test_float_const_isle_round_trip() {
+        // F32Const and F64Const should survive instructions_to_terms → terms_to_instructions
+        let instructions = vec![
+            Instruction::F32Const(1.5_f32.to_bits()),
+            Instruction::F64Const(2.5_f64.to_bits()),
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 2);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 2);
+        assert_eq!(result_instrs[0], Instruction::F32Const(1.5_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F64Const(2.5_f64.to_bits()));
+    }
+
+    #[test]
+    fn test_float_constant_folding_f32_add() {
+        // f32.const 10.0, f32.const 32.0, f32.add → should fold to f32.const 42.0
+        let wat = r#"
+            (module
+              (func $add_f32_constants (result f32)
+                f32.const 10.0
+                f32.const 32.0
+                f32.add
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        // Verify original instructions
+        let func = &module.functions[0];
+        assert!(
+            func.instructions
+                .contains(&Instruction::F32Const(10.0_f32.to_bits()))
+        );
+        assert!(
+            func.instructions
+                .contains(&Instruction::F32Const(32.0_f32.to_bits()))
+        );
+        assert!(func.instructions.contains(&Instruction::F32Add));
+
+        // Apply optimization
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        // Should be folded to f32.const 42.0
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(42.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Add));
+    }
+
+    #[test]
+    fn test_float_constant_folding_f64_mul() {
+        // f64.const 3.0, f64.const 7.0, f64.mul → should fold to f64.const 21.0
+        let wat = r#"
+            (module
+              (func $mul_f64_constants (result f64)
+                f64.const 3.0
+                f64.const 7.0
+                f64.mul
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+
+        let func = &module.functions[0];
+        assert!(func.instructions.contains(&Instruction::F64Mul));
+
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F64Const(21.0_f64.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F64Mul));
+    }
+
+    #[test]
+    fn test_float_nan_not_folded() {
+        // f32.const NaN + f32.const 1.0 should NOT be folded
+        let instructions = vec![
+            Instruction::F32Const(f32::NAN.to_bits()),
+            Instruction::F32Const(1.0_f32.to_bits()),
+            Instruction::F32Add,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // The term should still be an F32Add (not folded to a constant)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+
+        // Should still have the add — NaN operands prevent folding
+        // The instructions should round-trip: f32.const NaN, f32.const 1.0, f32.add
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F32Const(f32::NAN.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Const(1.0_f32.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F32Add);
+    }
+
+    #[test]
+    fn test_float_f32_arithmetic_isle_round_trip() {
+        // F32Const, F32Const, F32Sub round-trips through ISLE terms without loss
+        let instructions = vec![
+            Instruction::F32Const(5.0_f32.to_bits()),
+            Instruction::F32Const(3.0_f32.to_bits()),
+            Instruction::F32Sub,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // Round-trip back to instructions (no simplification at this stage)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F32Const(5.0_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Const(3.0_f32.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F32Sub);
+    }
+
+    #[test]
+    fn test_float_f64_arithmetic_isle_round_trip() {
+        // F64Const, F64Const, F64Mul round-trips through ISLE terms without loss
+        let instructions = vec![
+            Instruction::F64Const(3.0_f64.to_bits()),
+            Instruction::F64Const(7.0_f64.to_bits()),
+            Instruction::F64Mul,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        // Round-trip back to instructions (no simplification at this stage)
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[0], Instruction::F64Const(3.0_f64.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F64Const(7.0_f64.to_bits()));
+        assert_eq!(result_instrs[2], Instruction::F64Mul);
+    }
+
+    #[test]
+    fn test_float_unary_round_trip() {
+        // F32Const, F32Abs round-trips through ISLE terms
+        let instructions = vec![
+            Instruction::F32Const(3.0_f32.to_bits()),
+            Instruction::F32Abs,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        assert_eq!(result_instrs.len(), 2);
+        assert_eq!(result_instrs[0], Instruction::F32Const(3.0_f32.to_bits()));
+        assert_eq!(result_instrs[1], Instruction::F32Abs);
+    }
+
+    #[test]
+    fn test_float_neg_constant_fold() {
+        // f32.const -5.0; f32.abs → f32.const 5.0
+        let wat = r#"
+            (module
+              (func $abs_neg (result f32)
+                f32.const -5.0
+                f32.abs
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(5.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Abs));
+    }
+
+    #[test]
+    fn test_float_neg_involution() {
+        // neg(neg(x)) should simplify to x
+        use loom_isle::{ImmF32, fconst32, fneg32, simplify};
+        let x = fconst32(ImmF32::new(42.0));
+        let neg_neg = fneg32(fneg32(x.clone()));
+        let simplified = simplify(neg_neg);
+        // Should simplify back to the original constant
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const(42.0_f32.to_bits()));
+    }
+
+    #[test]
+    fn test_float_min_constant_fold() {
+        // f32.const 3.0; f32.const 7.0; f32.min → f32.const 3.0
+        let wat = r#"
+            (module
+              (func $min_consts (result f32)
+                f32.const 3.0
+                f32.const 7.0
+                f32.min
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F32Const(3.0_f32.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F32Min));
+    }
+
+    #[test]
+    fn test_float_min_nan_not_folded() {
+        // f32.const NaN; f32.const 1.0; f32.min → NOT folded (NaN propagation)
+        let instructions = vec![
+            Instruction::F32Const(f32::NAN.to_bits()),
+            Instruction::F32Const(1.0_f32.to_bits()),
+            Instruction::F32Min,
+        ];
+        let stack = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(stack.len(), 1);
+
+        let result_instrs = terms::terms_to_instructions(&stack).unwrap();
+        // Should NOT be folded — still 3 instructions
+        assert_eq!(result_instrs.len(), 3);
+        assert_eq!(result_instrs[2], Instruction::F32Min);
+    }
+
+    #[test]
+    fn test_float_comparison_fold() {
+        // f32.const 3.0; f32.const 7.0; f32.lt → i32.const 1
+        let wat = r#"
+            (module
+              (func $lt_consts (result i32)
+                f32.const 3.0
+                f32.const 7.0
+                f32.lt
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(func.instructions[0], Instruction::I32Const(1));
+        assert!(!func.instructions.contains(&Instruction::F32Lt));
+    }
+
+    #[test]
+    fn test_float_comparison_nan_eq() {
+        // f32.const NaN; f32.const 1.0; f32.eq → i32.const 0 (NaN != anything)
+        use loom_isle::{ImmF32, fconst32, feq32, simplify};
+        let nan = fconst32(ImmF32::new(f32::NAN));
+        let one = fconst32(ImmF32::new(1.0));
+        let eq = feq32(nan, one);
+        let simplified = simplify(eq);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(0));
+    }
+
+    #[test]
+    fn test_float_f64_ceil_fold() {
+        // f64.const 2.3; f64.ceil → f64.const 3.0
+        let wat = r#"
+            (module
+              (func $ceil_const (result f64)
+                f64.const 2.3
+                f64.ceil
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        assert_eq!(
+            func.instructions[0],
+            Instruction::F64Const(3.0_f64.to_bits())
+        );
+        assert!(!func.instructions.contains(&Instruction::F64Ceil));
+    }
+
+    #[test]
+    fn test_float_copysign_fold() {
+        // f32.const 5.0; f32.const -1.0; f32.copysign → f32.const -5.0
+        use loom_isle::{ImmF32, fconst32, fcopysign32, simplify};
+        let mag = fconst32(ImmF32::new(5.0));
+        let sign = fconst32(ImmF32::new(-1.0));
+        let cs = fcopysign32(mag, sign);
+        let simplified = simplify(cs);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const((-5.0_f32).to_bits()));
+    }
+
+    #[test]
+    fn test_float_f64_comparison_fold() {
+        // f64.const 10.0; f64.const 5.0; f64.ge → i32.const 1
+        use loom_isle::{ImmF64, fconst64, fge64, simplify};
+        let a = fconst64(ImmF64::new(10.0));
+        let b = fconst64(ImmF64::new(5.0));
+        let ge = fge64(a, b);
+        let simplified = simplify(ge);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(1));
+    }
+
+    #[test]
+    fn test_conversion_round_trip() {
+        // f32.const 3.125; i32.trunc_f32_s round-trips through ISLE terms
+        let instructions = vec![
+            Instruction::F32Const(3.125_f32.to_bits()),
+            Instruction::I32TruncF32S,
+        ];
+        let terms = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(terms.len(), 1);
+
+        let result = terms::terms_to_instructions(&terms).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], Instruction::F32Const(3.125_f32.to_bits()));
+        assert_eq!(result[1], Instruction::I32TruncF32S);
+    }
+
+    #[test]
+    fn test_conversion_trunc_constant_fold() {
+        // i32.trunc_f32_s of in-range constant should fold
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        let val = fconst32(ImmF32::new(42.9));
+        let trunc = i32_trunc_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(42));
+    }
+
+    #[test]
+    fn test_conversion_trunc_nan_not_folded() {
+        // i32.trunc_f32_s of NaN should NOT fold (would trap at runtime)
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        let val = fconst32(ImmF32::new(f32::NAN));
+        let trunc = i32_trunc_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 2); // f32.const NaN, i32.trunc_f32_s
+        assert_eq!(instrs[1], Instruction::I32TruncF32S);
+    }
+
+    #[test]
+    fn test_conversion_trunc_sat_folds_nan_to_zero() {
+        // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        let val = fconst32(ImmF32::new(f32::NAN));
+        let trunc = i32_trunc_sat_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(0));
+    }
+
+    #[test]
+    fn test_conversion_trunc_sat_clamps_overflow() {
+        // i32.trunc_sat_f32_s of large value → i32.const i32::MAX
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        let val = fconst32(ImmF32::new(1.0e20));
+        let trunc = i32_trunc_sat_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(i32::MAX));
+    }
+
+    #[test]
+    fn test_conversion_f32_convert_i32_s_fold() {
+        // f32.convert_i32_s of constant → f32.const
+        use loom_isle::{Imm32, f32_convert_i32_s, iconst32, simplify};
+        let val = iconst32(Imm32::new(-10));
+        let convert = f32_convert_i32_s(val);
+        let simplified = simplify(convert);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const((-10.0_f32).to_bits()));
+    }
+
+    #[test]
+    fn test_conversion_reinterpret_fold() {
+        // i32.reinterpret_f32 of f32 constant → i32.const with same bits
+        use loom_isle::{ImmF32, fconst32, i32_reinterpret_f32, simplify};
+        let val = fconst32(ImmF32::new(1.0));
+        let reinterpret = i32_reinterpret_f32(val);
+        let simplified = simplify(reinterpret);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(1.0_f32.to_bits() as i32));
+    }
+
+    #[test]
+    fn test_conversion_demote_promote_fold() {
+        // f32.demote_f64 of f64 constant → f32 constant
+        use loom_isle::{ImmF64, f32_demote_f64, fconst64, simplify};
+        let val = fconst64(ImmF64::new(3.125));
+        let demote = f32_demote_f64(val);
+        let simplified = simplify(demote);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(
+            instrs[0],
+            Instruction::F32Const((3.125_f64 as f32).to_bits())
+        );
+    }
+
+    #[test]
+    fn test_conversion_full_pipeline() {
+        // Full pipeline test: function with conversions gets optimized
+        let wat = r#"
+            (module
+              (func $convert (result i32)
+                f32.const 42.7
+                i32.trunc_sat_f32_s
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // Should be folded to i32.const 42
+        assert_eq!(func.instructions[0], Instruction::I32Const(42));
+    }
+
+    #[test]
+    fn test_memory_size_round_trip() {
+        // memory.size goes through ISLE terms and back unchanged
+        let instructions = vec![Instruction::MemorySize(0), Instruction::End];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(result, vec![Instruction::MemorySize(0)]);
+    }
+
+    #[test]
+    fn test_memory_grow_round_trip() {
+        // memory.grow goes through ISLE terms and back unchanged
+        let instructions = vec![
+            Instruction::I32Const(1),
+            Instruction::MemoryGrow(0),
+            Instruction::End,
+        ];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(
+            result,
+            vec![Instruction::I32Const(1), Instruction::MemoryGrow(0)]
+        );
+    }
+
+    #[test]
+    fn test_memory_operations_not_skipped() {
+        // Functions with memory.size/grow should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (memory 1)
+              (func $mem_test (result i32)
+                i32.const 1
+                i32.const 1
+                i32.add
+                memory.size
+                i32.add
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 1 + i32.const 1 should be folded to i32.const 2
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(2)),
+            "Expected constant folding to occur in function with memory.size: {:?}",
+            func.instructions
+        );
+    }
+
+    #[test]
+    fn test_call_indirect_not_skipped() {
+        // Functions with call_indirect should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (type $sig (func (param i32) (result i32)))
+              (table 1 funcref)
+              (func $indirect_test (result i32)
+                i32.const 2
+                i32.const 3
+                i32.add
+                i32.const 0
+                call_indirect (type $sig)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 2 + i32.const 3 should be folded to i32.const 5
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(5)),
+            "Expected constant folding to occur in function with call_indirect: {:?}",
+            func.instructions
+        );
+    }
+
+    #[test]
+    fn test_bulk_memory_not_skipped() {
+        // Functions with bulk memory ops should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (memory 1)
+              (data $d "hello")
+              (func $bulk_test
+                i32.const 1
+                i32.const 1
+                i32.add
+                i32.const 0
+                i32.const 5
+                memory.fill
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 1 + i32.const 1 should be folded to i32.const 2
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(2)),
+            "Expected constant folding to occur in function with memory.fill: {:?}",
+            func.instructions
+        );
+        // memory.fill should still be present
+        assert!(
+            func.instructions.contains(&Instruction::MemoryFill(0)),
+            "Expected memory.fill to be preserved: {:?}",
+            func.instructions
+        );
+    }
+
+    #[test]
+    fn test_data_drop_round_trip() {
+        // data.drop goes through ISLE terms and back unchanged
+        let instructions = vec![Instruction::DataDrop(0), Instruction::End];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(result, vec![Instruction::DataDrop(0)]);
     }
 }
