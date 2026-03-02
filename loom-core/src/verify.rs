@@ -4487,75 +4487,266 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Int-to-float conversions: produce fresh symbolic (no IEEE 754 modeling)
-            Instruction::I32TruncF32S
-            | Instruction::I32TruncF32U
-            | Instruction::I32TruncF64S
-            | Instruction::I32TruncF64U => {
+            Instruction::I32TruncF32S => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in I32Trunc"));
+                    return Err(anyhow!("Stack underflow in I32TruncF32S"));
                 }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("i32_trunc_result", 32));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    if !f.is_nan() && f >= i32::MIN as f32 && f < (i32::MAX as f32 + 1.0) {
+                        stack.push(BV::from_i64(f as i32 as i64, 32));
+                    } else {
+                        stack.push(BV::new_const("i32_trunc_f32_s_result", 32));
+                    }
+                } else {
+                    stack.push(BV::new_const("i32_trunc_f32_s_result", 32));
+                }
+            }
+            Instruction::I32TruncF32U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32TruncF32U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f32 + 1.0) {
+                        stack.push(BV::from_i64(f as u32 as i64, 32));
+                    } else {
+                        stack.push(BV::new_const("i32_trunc_f32_u_result", 32));
+                    }
+                } else {
+                    stack.push(BV::new_const("i32_trunc_f32_u_result", 32));
+                }
+            }
+            Instruction::I32TruncF64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32TruncF64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    if !f.is_nan() && f >= i32::MIN as f64 && f < (i32::MAX as f64 + 1.0) {
+                        stack.push(BV::from_i64(f as i32 as i64, 32));
+                    } else {
+                        stack.push(BV::new_const("i32_trunc_f64_s_result", 32));
+                    }
+                } else {
+                    stack.push(BV::new_const("i32_trunc_f64_s_result", 32));
+                }
+            }
+            Instruction::I32TruncF64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32TruncF64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f64 + 1.0) {
+                        stack.push(BV::from_i64(f as u32 as i64, 32));
+                    } else {
+                        stack.push(BV::new_const("i32_trunc_f64_u_result", 32));
+                    }
+                } else {
+                    stack.push(BV::new_const("i32_trunc_f64_u_result", 32));
+                }
+            }
+            Instruction::I64TruncF32S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncF32S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    if !f.is_nan() && f >= i64::MIN as f32 && f < (i64::MAX as f32) {
+                        stack.push(BV::from_i64(f as i64, 64));
+                    } else {
+                        stack.push(BV::new_const("i64_trunc_f32_s_result", 64));
+                    }
+                } else {
+                    stack.push(BV::new_const("i64_trunc_f32_s_result", 64));
+                }
+            }
+            Instruction::I64TruncF32U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncF32U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f32) {
+                        stack.push(BV::from_i64(f as u64 as i64, 64));
+                    } else {
+                        stack.push(BV::new_const("i64_trunc_f32_u_result", 64));
+                    }
+                } else {
+                    stack.push(BV::new_const("i64_trunc_f32_u_result", 64));
+                }
+            }
+            Instruction::I64TruncF64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncF64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    if !f.is_nan() && f >= i64::MIN as f64 && f < (i64::MAX as f64) {
+                        stack.push(BV::from_i64(f as i64, 64));
+                    } else {
+                        stack.push(BV::new_const("i64_trunc_f64_s_result", 64));
+                    }
+                } else {
+                    stack.push(BV::new_const("i64_trunc_f64_s_result", 64));
+                }
+            }
+            Instruction::I64TruncF64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncF64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f64) {
+                        stack.push(BV::from_i64(f as u64 as i64, 64));
+                    } else {
+                        stack.push(BV::new_const("i64_trunc_f64_u_result", 64));
+                    }
+                } else {
+                    stack.push(BV::new_const("i64_trunc_f64_u_result", 64));
+                }
             }
 
-            Instruction::I64TruncF32S
-            | Instruction::I64TruncF32U
-            | Instruction::I64TruncF64S
-            | Instruction::I64TruncF64U => {
+            // Float-from-int conversions with concrete computation
+            Instruction::F32ConvertI32S => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in I64Trunc"));
+                    return Err(anyhow!("Stack underflow in F32ConvertI32S"));
                 }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("i64_trunc_result", 64));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as i32 as f32).to_bits();
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_convert_i32_s_result", 32));
+                }
+            }
+            Instruction::F32ConvertI32U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32ConvertI32U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as u32 as f32).to_bits();
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_convert_i32_u_result", 32));
+                }
+            }
+            Instruction::F32ConvertI64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32ConvertI64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as i64 as f32).to_bits();
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_convert_i64_s_result", 32));
+                }
+            }
+            Instruction::F32ConvertI64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F32ConvertI64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as f32).to_bits();
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_convert_i64_u_result", 32));
+                }
+            }
+            Instruction::F64ConvertI32S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64ConvertI32S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as i32 as f64).to_bits();
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_convert_i32_s_result", 64));
+                }
+            }
+            Instruction::F64ConvertI32U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64ConvertI32U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as u32 as f64).to_bits();
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_convert_i32_u_result", 64));
+                }
+            }
+            Instruction::F64ConvertI64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64ConvertI64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as i64 as f64).to_bits();
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_convert_i64_s_result", 64));
+                }
+            }
+            Instruction::F64ConvertI64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in F64ConvertI64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (bits as f64).to_bits();
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_convert_i64_u_result", 64));
+                }
             }
 
-            // Float-from-int conversions
-            Instruction::F32ConvertI32S
-            | Instruction::F32ConvertI32U
-            | Instruction::F32ConvertI64S
-            | Instruction::F32ConvertI64U => {
-                if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in F32Convert"));
-                }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("f32_convert_result", 32));
-            }
-
-            Instruction::F64ConvertI32S
-            | Instruction::F64ConvertI32U
-            | Instruction::F64ConvertI64S
-            | Instruction::F64ConvertI64U => {
-                if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in F64Convert"));
-                }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("f64_convert_result", 64));
-            }
-
-            // Float-to-float conversions
+            // Float-to-float conversions with concrete computation
             Instruction::F32DemoteF64 => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in F32DemoteF64"));
                 }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("f32_demote_result", 32));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (f64::from_bits(bits) as f32).to_bits();
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("f32_demote_result", 32));
+                }
             }
 
             Instruction::F64PromoteF32 => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in F64PromoteF32"));
                 }
-                let _val = stack.pop().unwrap();
-                stack.push(BV::new_const("f64_promote_result", 64));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let result = (f32::from_bits(bits as u32) as f64).to_bits();
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("f64_promote_result", 64));
+                }
             }
 
-            // Reinterpret operations - bit-cast (exact bitvector modeling)
+            // Reinterpret operations - bit-cast (no-op for bitvectors, bits are identical)
             Instruction::I32ReinterpretF32 => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32ReinterpretF32"));
                 }
                 // Bits don't change, just reinterpretation - no-op for BV
-                // Stack already has 32-bit value
             }
 
             Instruction::I64ReinterpretF64 => {
@@ -4747,25 +4938,165 @@ fn encode_function_to_smt_impl_inner(
 
             // Saturating truncation operations - produce symbolic values
             // These are conversion operations that don't trap
-            Instruction::I32TruncSatF32S
-            | Instruction::I32TruncSatF32U
-            | Instruction::I32TruncSatF64S
-            | Instruction::I32TruncSatF64U => {
+            Instruction::I32TruncSatF32S => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in saturating truncation"));
+                    return Err(anyhow!("Stack underflow in I32TruncSatF32S"));
                 }
-                stack.pop();
-                stack.push(BV::new_const("trunc_sat_result_i32", 32));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    let result = if f.is_nan() {
+                        0
+                    } else if f >= (i32::MAX as f32 + 1.0) {
+                        i32::MAX
+                    } else if f < i32::MIN as f32 {
+                        i32::MIN
+                    } else {
+                        f as i32
+                    };
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("i32_trunc_sat_f32_s_result", 32));
+                }
             }
-            Instruction::I64TruncSatF32S
-            | Instruction::I64TruncSatF32U
-            | Instruction::I64TruncSatF64S
-            | Instruction::I64TruncSatF64U => {
+            Instruction::I32TruncSatF32U => {
                 if stack.is_empty() {
-                    return Err(anyhow!("Stack underflow in saturating truncation"));
+                    return Err(anyhow!("Stack underflow in I32TruncSatF32U"));
                 }
-                stack.pop();
-                stack.push(BV::new_const("trunc_sat_result_i64", 64));
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    let result = if f.is_nan() || f < 0.0 {
+                        0u32
+                    } else if f >= (u32::MAX as f32 + 1.0) {
+                        u32::MAX
+                    } else {
+                        f as u32
+                    };
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("i32_trunc_sat_f32_u_result", 32));
+                }
+            }
+            Instruction::I32TruncSatF64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32TruncSatF64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    let result = if f.is_nan() {
+                        0
+                    } else if f >= (i32::MAX as f64 + 1.0) {
+                        i32::MAX
+                    } else if f < i32::MIN as f64 {
+                        i32::MIN
+                    } else {
+                        f as i32
+                    };
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("i32_trunc_sat_f64_s_result", 32));
+                }
+            }
+            Instruction::I32TruncSatF64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I32TruncSatF64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    let result = if f.is_nan() || f < 0.0 {
+                        0u32
+                    } else if f >= (u32::MAX as f64 + 1.0) {
+                        u32::MAX
+                    } else {
+                        f as u32
+                    };
+                    stack.push(BV::from_i64(result as i64, 32));
+                } else {
+                    stack.push(BV::new_const("i32_trunc_sat_f64_u_result", 32));
+                }
+            }
+            Instruction::I64TruncSatF32S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncSatF32S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    let result = if f.is_nan() {
+                        0i64
+                    } else if f >= i64::MAX as f32 {
+                        i64::MAX
+                    } else if f < i64::MIN as f32 {
+                        i64::MIN
+                    } else {
+                        f as i64
+                    };
+                    stack.push(BV::from_i64(result, 64));
+                } else {
+                    stack.push(BV::new_const("i64_trunc_sat_f32_s_result", 64));
+                }
+            }
+            Instruction::I64TruncSatF32U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncSatF32U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f32::from_bits(bits as u32);
+                    let result = if f.is_nan() || f < 0.0 {
+                        0u64
+                    } else if f >= u64::MAX as f32 {
+                        u64::MAX
+                    } else {
+                        f as u64
+                    };
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("i64_trunc_sat_f32_u_result", 64));
+                }
+            }
+            Instruction::I64TruncSatF64S => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncSatF64S"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    let result = if f.is_nan() {
+                        0i64
+                    } else if f >= i64::MAX as f64 {
+                        i64::MAX
+                    } else if f < i64::MIN as f64 {
+                        i64::MIN
+                    } else {
+                        f as i64
+                    };
+                    stack.push(BV::from_i64(result, 64));
+                } else {
+                    stack.push(BV::new_const("i64_trunc_sat_f64_s_result", 64));
+                }
+            }
+            Instruction::I64TruncSatF64U => {
+                if stack.is_empty() {
+                    return Err(anyhow!("Stack underflow in I64TruncSatF64U"));
+                }
+                let val = stack.pop().unwrap();
+                if let Some(bits) = val.as_u64() {
+                    let f = f64::from_bits(bits);
+                    let result = if f.is_nan() || f < 0.0 {
+                        0u64
+                    } else if f >= u64::MAX as f64 {
+                        u64::MAX
+                    } else {
+                        f as u64
+                    };
+                    stack.push(BV::from_i64(result as i64, 64));
+                } else {
+                    stack.push(BV::new_const("i64_trunc_sat_f64_u_result", 64));
+                }
             }
 
             // Bulk memory operations - these modify memory, no stack return value

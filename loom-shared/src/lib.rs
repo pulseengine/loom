@@ -819,6 +819,116 @@ pub enum ValueData {
     },
 
     // ========================================================================
+    // Float-to-Integer Truncation Operations (trapping)
+    // ========================================================================
+    I32TruncF32S {
+        val: Value,
+    },
+    I32TruncF32U {
+        val: Value,
+    },
+    I32TruncF64S {
+        val: Value,
+    },
+    I32TruncF64U {
+        val: Value,
+    },
+    I64TruncF32S {
+        val: Value,
+    },
+    I64TruncF32U {
+        val: Value,
+    },
+    I64TruncF64S {
+        val: Value,
+    },
+    I64TruncF64U {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Integer-to-Float Conversion Operations
+    // ========================================================================
+    F32ConvertI32S {
+        val: Value,
+    },
+    F32ConvertI32U {
+        val: Value,
+    },
+    F32ConvertI64S {
+        val: Value,
+    },
+    F32ConvertI64U {
+        val: Value,
+    },
+    F64ConvertI32S {
+        val: Value,
+    },
+    F64ConvertI32U {
+        val: Value,
+    },
+    F64ConvertI64S {
+        val: Value,
+    },
+    F64ConvertI64U {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Float Demote/Promote Operations
+    // ========================================================================
+    F32DemoteF64 {
+        val: Value,
+    },
+    F64PromoteF32 {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Reinterpret (bit-cast) Operations
+    // ========================================================================
+    I32ReinterpretF32 {
+        val: Value,
+    },
+    I64ReinterpretF64 {
+        val: Value,
+    },
+    F32ReinterpretI32 {
+        val: Value,
+    },
+    F64ReinterpretI64 {
+        val: Value,
+    },
+
+    // ========================================================================
+    // Saturating Float-to-Integer Truncation Operations (non-trapping)
+    // ========================================================================
+    I32TruncSatF32S {
+        val: Value,
+    },
+    I32TruncSatF32U {
+        val: Value,
+    },
+    I32TruncSatF64S {
+        val: Value,
+    },
+    I32TruncSatF64U {
+        val: Value,
+    },
+    I64TruncSatF32S {
+        val: Value,
+    },
+    I64TruncSatF32U {
+        val: Value,
+    },
+    I64TruncSatF64S {
+        val: Value,
+    },
+    I64TruncSatF64U {
+        val: Value,
+    },
+
+    // ========================================================================
     // Sign Extension Operations (in-place sign extension)
     // ========================================================================
     /// i32.extend8_s - sign-extend low 8 bits to 32 bits
@@ -1892,6 +2002,116 @@ pub fn i64_extend_i32_s(val: Value) -> Value {
 /// i64.extend_i32_u constructor - zero-extends i32 to i64
 pub fn i64_extend_i32_u(val: Value) -> Value {
     Value(Box::new(ValueData::I64ExtendI32U { val }))
+}
+
+// ============================================================================
+// Float-to-Integer Truncation Constructors (trapping)
+// ============================================================================
+pub fn i32_trunc_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF32S { val }))
+}
+pub fn i32_trunc_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF32U { val }))
+}
+pub fn i32_trunc_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF64S { val }))
+}
+pub fn i32_trunc_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncF64U { val }))
+}
+pub fn i64_trunc_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF32S { val }))
+}
+pub fn i64_trunc_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF32U { val }))
+}
+pub fn i64_trunc_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF64S { val }))
+}
+pub fn i64_trunc_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncF64U { val }))
+}
+
+// ============================================================================
+// Integer-to-Float Conversion Constructors
+// ============================================================================
+pub fn f32_convert_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI32S { val }))
+}
+pub fn f32_convert_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI32U { val }))
+}
+pub fn f32_convert_i64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI64S { val }))
+}
+pub fn f32_convert_i64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ConvertI64U { val }))
+}
+pub fn f64_convert_i32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI32S { val }))
+}
+pub fn f64_convert_i32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI32U { val }))
+}
+pub fn f64_convert_i64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI64S { val }))
+}
+pub fn f64_convert_i64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ConvertI64U { val }))
+}
+
+// ============================================================================
+// Float Demote/Promote Constructors
+// ============================================================================
+pub fn f32_demote_f64(val: Value) -> Value {
+    Value(Box::new(ValueData::F32DemoteF64 { val }))
+}
+pub fn f64_promote_f32(val: Value) -> Value {
+    Value(Box::new(ValueData::F64PromoteF32 { val }))
+}
+
+// ============================================================================
+// Reinterpret (bit-cast) Constructors
+// ============================================================================
+pub fn i32_reinterpret_f32(val: Value) -> Value {
+    Value(Box::new(ValueData::I32ReinterpretF32 { val }))
+}
+pub fn i64_reinterpret_f64(val: Value) -> Value {
+    Value(Box::new(ValueData::I64ReinterpretF64 { val }))
+}
+pub fn f32_reinterpret_i32(val: Value) -> Value {
+    Value(Box::new(ValueData::F32ReinterpretI32 { val }))
+}
+pub fn f64_reinterpret_i64(val: Value) -> Value {
+    Value(Box::new(ValueData::F64ReinterpretI64 { val }))
+}
+
+// ============================================================================
+// Saturating Float-to-Integer Truncation Constructors (non-trapping)
+// ============================================================================
+pub fn i32_trunc_sat_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF32S { val }))
+}
+pub fn i32_trunc_sat_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF32U { val }))
+}
+pub fn i32_trunc_sat_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF64S { val }))
+}
+pub fn i32_trunc_sat_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I32TruncSatF64U { val }))
+}
+pub fn i64_trunc_sat_f32_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF32S { val }))
+}
+pub fn i64_trunc_sat_f32_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF32U { val }))
+}
+pub fn i64_trunc_sat_f64_s(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF64S { val }))
+}
+pub fn i64_trunc_sat_f64_u(val: Value) -> Value {
+    Value(Box::new(ValueData::I64TruncSatF64U { val }))
 }
 
 // ============================================================================
@@ -4391,6 +4611,380 @@ fn simplify_stateless(val: Value) -> Value {
                     iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
                 }
                 _ => fge64(lhs_simplified, rhs_simplified),
+            }
+        }
+
+        // ====================================================================
+        // Float-to-Integer Truncation (trapping) — only fold when in-range
+        // WASM traps on NaN or out-of-range; we cannot represent traps, so
+        // we only fold when the conversion would succeed.
+        // ====================================================================
+        ValueData::I32TruncF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i32::MIN as f32 && f < (i32::MAX as f32 + 1.0) {
+                    iconst32(Imm32::new(f as i32))
+                } else {
+                    i32_trunc_f32_s(v)
+                }
+            } else {
+                i32_trunc_f32_s(v)
+            }
+        }
+        ValueData::I32TruncF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f32 + 1.0) {
+                    iconst32(Imm32::new(f as u32 as i32))
+                } else {
+                    i32_trunc_f32_u(v)
+                }
+            } else {
+                i32_trunc_f32_u(v)
+            }
+        }
+        ValueData::I32TruncF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i32::MIN as f64 && f < (i32::MAX as f64 + 1.0) {
+                    iconst32(Imm32::new(f as i32))
+                } else {
+                    i32_trunc_f64_s(v)
+                }
+            } else {
+                i32_trunc_f64_s(v)
+            }
+        }
+        ValueData::I32TruncF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f64 + 1.0) {
+                    iconst32(Imm32::new(f as u32 as i32))
+                } else {
+                    i32_trunc_f64_u(v)
+                }
+            } else {
+                i32_trunc_f64_u(v)
+            }
+        }
+        ValueData::I64TruncF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i64::MIN as f32 && f < (i64::MAX as f32) {
+                    iconst64(Imm64::new(f as i64))
+                } else {
+                    i64_trunc_f32_s(v)
+                }
+            } else {
+                i64_trunc_f32_s(v)
+            }
+        }
+        ValueData::I64TruncF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f32) {
+                    iconst64(Imm64::new(f as u64 as i64))
+                } else {
+                    i64_trunc_f32_u(v)
+                }
+            } else {
+                i64_trunc_f32_u(v)
+            }
+        }
+        ValueData::I64TruncF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= i64::MIN as f64 && f < (i64::MAX as f64) {
+                    iconst64(Imm64::new(f as i64))
+                } else {
+                    i64_trunc_f64_s(v)
+                }
+            } else {
+                i64_trunc_f64_s(v)
+            }
+        }
+        ValueData::I64TruncF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f64) {
+                    iconst64(Imm64::new(f as u64 as i64))
+                } else {
+                    i64_trunc_f64_u(v)
+                }
+            } else {
+                i64_trunc_f64_u(v)
+            }
+        }
+
+        // ====================================================================
+        // Integer-to-Float Conversion — always safe to fold
+        // ====================================================================
+        ValueData::F32ConvertI32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_convert_i32_s(v)
+            }
+        }
+        ValueData::F32ConvertI32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as u32 as f32))
+            } else {
+                f32_convert_i32_u(v)
+            }
+        }
+        ValueData::F32ConvertI64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_convert_i64_s(v)
+            }
+        }
+        ValueData::F32ConvertI64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as u64 as f32))
+            } else {
+                f32_convert_i64_u(v)
+            }
+        }
+        ValueData::F64ConvertI32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_convert_i32_s(v)
+            }
+        }
+        ValueData::F64ConvertI32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as u32 as f64))
+            } else {
+                f64_convert_i32_u(v)
+            }
+        }
+        ValueData::F64ConvertI64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_convert_i64_s(v)
+            }
+        }
+        ValueData::F64ConvertI64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as u64 as f64))
+            } else {
+                f64_convert_i64_u(v)
+            }
+        }
+
+        // ====================================================================
+        // Float Demote/Promote — always safe to fold
+        // ====================================================================
+        ValueData::F32DemoteF64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                fconst32(ImmF32::new(c.value() as f32))
+            } else {
+                f32_demote_f64(v)
+            }
+        }
+        ValueData::F64PromoteF32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                fconst64(ImmF64::new(c.value() as f64))
+            } else {
+                f64_promote_f32(v)
+            }
+        }
+
+        // ====================================================================
+        // Reinterpret (bit-cast) — always safe, pure bit reinterpretation
+        // ====================================================================
+        ValueData::I32ReinterpretF32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                iconst32(Imm32::new(c.value().to_bits() as i32))
+            } else {
+                i32_reinterpret_f32(v)
+            }
+        }
+        ValueData::I64ReinterpretF64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                iconst64(Imm64::new(c.value().to_bits() as i64))
+            } else {
+                i64_reinterpret_f64(v)
+            }
+        }
+        ValueData::F32ReinterpretI32 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I32Const { val: c } = v.data() {
+                fconst32(ImmF32::new(f32::from_bits(c.value() as u32)))
+            } else {
+                f32_reinterpret_i32(v)
+            }
+        }
+        ValueData::F64ReinterpretI64 { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::I64Const { val: c } = v.data() {
+                fconst64(ImmF64::new(f64::from_bits(c.value() as u64)))
+            } else {
+                f64_reinterpret_i64(v)
+            }
+        }
+
+        // ====================================================================
+        // Saturating Truncation — always safe to fold (NaN→0, clamp on overflow)
+        // ====================================================================
+        ValueData::I32TruncSatF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0
+                } else if f >= (i32::MAX as f32 + 1.0) {
+                    i32::MAX
+                } else if f < i32::MIN as f32 {
+                    i32::MIN
+                } else {
+                    f as i32
+                };
+                iconst32(Imm32::new(result))
+            } else {
+                i32_trunc_sat_f32_s(v)
+            }
+        }
+        ValueData::I32TruncSatF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u32
+                } else if f >= (u32::MAX as f32 + 1.0) {
+                    u32::MAX
+                } else {
+                    f as u32
+                };
+                iconst32(Imm32::new(result as i32))
+            } else {
+                i32_trunc_sat_f32_u(v)
+            }
+        }
+        ValueData::I32TruncSatF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0
+                } else if f >= (i32::MAX as f64 + 1.0) {
+                    i32::MAX
+                } else if f < i32::MIN as f64 {
+                    i32::MIN
+                } else {
+                    f as i32
+                };
+                iconst32(Imm32::new(result))
+            } else {
+                i32_trunc_sat_f64_s(v)
+            }
+        }
+        ValueData::I32TruncSatF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u32
+                } else if f >= (u32::MAX as f64 + 1.0) {
+                    u32::MAX
+                } else {
+                    f as u32
+                };
+                iconst32(Imm32::new(result as i32))
+            } else {
+                i32_trunc_sat_f64_u(v)
+            }
+        }
+        ValueData::I64TruncSatF32S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0i64
+                } else if f >= i64::MAX as f32 {
+                    i64::MAX
+                } else if f < i64::MIN as f32 {
+                    i64::MIN
+                } else {
+                    f as i64
+                };
+                iconst64(Imm64::new(result))
+            } else {
+                i64_trunc_sat_f32_s(v)
+            }
+        }
+        ValueData::I64TruncSatF32U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F32Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u64
+                } else if f >= u64::MAX as f32 {
+                    u64::MAX
+                } else {
+                    f as u64
+                };
+                iconst64(Imm64::new(result as i64))
+            } else {
+                i64_trunc_sat_f32_u(v)
+            }
+        }
+        ValueData::I64TruncSatF64S { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() {
+                    0i64
+                } else if f >= i64::MAX as f64 {
+                    i64::MAX
+                } else if f < i64::MIN as f64 {
+                    i64::MIN
+                } else {
+                    f as i64
+                };
+                iconst64(Imm64::new(result))
+            } else {
+                i64_trunc_sat_f64_s(v)
+            }
+        }
+        ValueData::I64TruncSatF64U { val } => {
+            let v = simplify(val.clone());
+            if let ValueData::F64Const { val: c } = v.data() {
+                let f = c.value();
+                let result = if f.is_nan() || f < 0.0 {
+                    0u64
+                } else if f >= u64::MAX as f64 {
+                    u64::MAX
+                } else {
+                    f as u64
+                };
+                iconst64(Imm64::new(result as i64))
+            } else {
+                i64_trunc_sat_f64_u(v)
             }
         }
 

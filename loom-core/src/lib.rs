@@ -3594,22 +3594,30 @@ pub mod terms {
     use anyhow::{Result, anyhow};
     use loom_isle::{
         Imm32, Imm64, ImmF32, ImmF64, block, br, br_if, br_table, call, call_indirect, drop_instr,
-        f32_load, f32_store, f64_load, f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64,
-        fconst32, fconst64, fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32,
-        ffloor64, fge32, fge64, fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32,
-        fmin64, fmul32, fmul64, fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32,
-        fsqrt64, fsub32, fsub64, ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s,
-        i32_extend16_s, i32_load, i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_store,
-        i32_store8, i32_store16, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_extend8_s,
+        f32_convert_i32_s, f32_convert_i32_u, f32_convert_i64_s, f32_convert_i64_u, f32_demote_f64,
+        f32_load, f32_reinterpret_i32, f32_store, f64_convert_i32_s, f64_convert_i32_u,
+        f64_convert_i64_s, f64_convert_i64_u, f64_load, f64_promote_f32, f64_reinterpret_i64,
+        f64_store, fabs32, fabs64, fadd32, fadd64, fceil32, fceil64, fconst32, fconst64,
+        fcopysign32, fcopysign64, fdiv32, fdiv64, feq32, feq64, ffloor32, ffloor64, fge32, fge64,
+        fgt32, fgt64, fle32, fle64, flt32, flt64, fmax32, fmax64, fmin32, fmin64, fmul32, fmul64,
+        fne32, fne64, fnearest32, fnearest64, fneg32, fneg64, fsqrt32, fsqrt64, fsub32, fsub64,
+        ftrunc32, ftrunc64, global_get, global_set, i32_extend8_s, i32_extend16_s, i32_load,
+        i32_load8_s, i32_load8_u, i32_load16_s, i32_load16_u, i32_reinterpret_f32, i32_store,
+        i32_store8, i32_store16, i32_trunc_f32_s, i32_trunc_f32_u, i32_trunc_f64_s,
+        i32_trunc_f64_u, i32_trunc_sat_f32_s, i32_trunc_sat_f32_u, i32_trunc_sat_f64_s,
+        i32_trunc_sat_f64_u, i32_wrap_i64, i64_extend_i32_s, i64_extend_i32_u, i64_extend8_s,
         i64_extend16_s, i64_extend32_s, i64_load, i64_load8_s, i64_load8_u, i64_load16_s,
-        i64_load16_u, i64_load32_s, i64_load32_u, i64_store, i64_store8, i64_store16, i64_store32,
-        iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64, ictz32, ictz64,
-        idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64, if_then_else, iges32,
-        iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32, iles64, ileu32, ileu64,
-        ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64, ior32, ior64, ipopcnt32,
-        ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64, irotr32, irotr64, ishl32,
-        ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64, ixor32, ixor64, local_get,
-        local_set, local_tee, loop_construct, nop, return_val, select_instr, unreachable,
+        i64_load16_u, i64_load32_s, i64_load32_u, i64_reinterpret_f64, i64_store, i64_store8,
+        i64_store16, i64_store32, i64_trunc_f32_s, i64_trunc_f32_u, i64_trunc_f64_s,
+        i64_trunc_f64_u, i64_trunc_sat_f32_s, i64_trunc_sat_f32_u, i64_trunc_sat_f64_s,
+        i64_trunc_sat_f64_u, iadd32, iadd64, iand32, iand64, iclz32, iclz64, iconst32, iconst64,
+        ictz32, ictz64, idivs32, idivs64, idivu32, idivu64, ieq32, ieq64, ieqz32, ieqz64,
+        if_then_else, iges32, iges64, igeu32, igeu64, igts32, igts64, igtu32, igtu64, iles32,
+        iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64,
+        ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64,
+        irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64,
+        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, nop, return_val,
+        select_instr, unreachable,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -4225,6 +4233,191 @@ pub mod terms {
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.extend_i32_u"))?;
                     stack.push(i64_extend_i32_u(val));
+                }
+                // Float-to-integer truncation (trapping)
+                Instruction::I32TruncF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f32_s"))?;
+                    stack.push(i32_trunc_f32_s(val));
+                }
+                Instruction::I32TruncF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f32_u"))?;
+                    stack.push(i32_trunc_f32_u(val));
+                }
+                Instruction::I32TruncF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f64_s"))?;
+                    stack.push(i32_trunc_f64_s(val));
+                }
+                Instruction::I32TruncF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_f64_u"))?;
+                    stack.push(i32_trunc_f64_u(val));
+                }
+                Instruction::I64TruncF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f32_s"))?;
+                    stack.push(i64_trunc_f32_s(val));
+                }
+                Instruction::I64TruncF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f32_u"))?;
+                    stack.push(i64_trunc_f32_u(val));
+                }
+                Instruction::I64TruncF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f64_s"))?;
+                    stack.push(i64_trunc_f64_s(val));
+                }
+                Instruction::I64TruncF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_f64_u"))?;
+                    stack.push(i64_trunc_f64_u(val));
+                }
+                // Integer-to-float conversion
+                Instruction::F32ConvertI32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i32_s"))?;
+                    stack.push(f32_convert_i32_s(val));
+                }
+                Instruction::F32ConvertI32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i32_u"))?;
+                    stack.push(f32_convert_i32_u(val));
+                }
+                Instruction::F32ConvertI64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i64_s"))?;
+                    stack.push(f32_convert_i64_s(val));
+                }
+                Instruction::F32ConvertI64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.convert_i64_u"))?;
+                    stack.push(f32_convert_i64_u(val));
+                }
+                Instruction::F64ConvertI32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i32_s"))?;
+                    stack.push(f64_convert_i32_s(val));
+                }
+                Instruction::F64ConvertI32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i32_u"))?;
+                    stack.push(f64_convert_i32_u(val));
+                }
+                Instruction::F64ConvertI64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i64_s"))?;
+                    stack.push(f64_convert_i64_s(val));
+                }
+                Instruction::F64ConvertI64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.convert_i64_u"))?;
+                    stack.push(f64_convert_i64_u(val));
+                }
+                // Float demote/promote
+                Instruction::F32DemoteF64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.demote_f64"))?;
+                    stack.push(f32_demote_f64(val));
+                }
+                Instruction::F64PromoteF32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.promote_f32"))?;
+                    stack.push(f64_promote_f32(val));
+                }
+                // Reinterpret (bit-cast)
+                Instruction::I32ReinterpretF32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.reinterpret_f32"))?;
+                    stack.push(i32_reinterpret_f32(val));
+                }
+                Instruction::I64ReinterpretF64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.reinterpret_f64"))?;
+                    stack.push(i64_reinterpret_f64(val));
+                }
+                Instruction::F32ReinterpretI32 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f32.reinterpret_i32"))?;
+                    stack.push(f32_reinterpret_i32(val));
+                }
+                Instruction::F64ReinterpretI64 => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for f64.reinterpret_i64"))?;
+                    stack.push(f64_reinterpret_i64(val));
+                }
+                // Saturating truncation (non-trapping)
+                Instruction::I32TruncSatF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f32_s"))?;
+                    stack.push(i32_trunc_sat_f32_s(val));
+                }
+                Instruction::I32TruncSatF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f32_u"))?;
+                    stack.push(i32_trunc_sat_f32_u(val));
+                }
+                Instruction::I32TruncSatF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f64_s"))?;
+                    stack.push(i32_trunc_sat_f64_s(val));
+                }
+                Instruction::I32TruncSatF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i32.trunc_sat_f64_u"))?;
+                    stack.push(i32_trunc_sat_f64_u(val));
+                }
+                Instruction::I64TruncSatF32S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f32_s"))?;
+                    stack.push(i64_trunc_sat_f32_s(val));
+                }
+                Instruction::I64TruncSatF32U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f32_u"))?;
+                    stack.push(i64_trunc_sat_f32_u(val));
+                }
+                Instruction::I64TruncSatF64S => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f64_s"))?;
+                    stack.push(i64_trunc_sat_f64_s(val));
+                }
+                Instruction::I64TruncSatF64U => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for i64.trunc_sat_f64_u"))?;
+                    stack.push(i64_trunc_sat_f64_u(val));
                 }
                 // Sign extension operations (in-place sign extension)
                 Instruction::I32Extend8S => {
@@ -4988,53 +5181,14 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for f64.ge lhs"))?;
                     stack.push(fge64(lhs, rhs));
                 }
-                // Float conversion and memory operations don't have ISLE term representations yet
-                // They are passed through unchanged - stack effects tracked elsewhere for validation
-                Instruction::I32TruncF32S
-                | Instruction::I32TruncF32U
-                | Instruction::I32TruncF64S
-                | Instruction::I32TruncF64U
-                | Instruction::I64TruncF32S
-                | Instruction::I64TruncF32U
-                | Instruction::I64TruncF64S
-                | Instruction::I64TruncF64U
-                | Instruction::F32ConvertI32S
-                | Instruction::F32ConvertI32U
-                | Instruction::F32ConvertI64S
-                | Instruction::F32ConvertI64U
-                | Instruction::F64ConvertI32S
-                | Instruction::F64ConvertI32U
-                | Instruction::F64ConvertI64S
-                | Instruction::F64ConvertI64U
-                | Instruction::F32DemoteF64
-                | Instruction::F64PromoteF32
-                | Instruction::I32ReinterpretF32
-                | Instruction::I64ReinterpretF64
-                | Instruction::F32ReinterpretI32
-                | Instruction::F64ReinterpretI64
-                | Instruction::MemorySize(_)
-                | Instruction::MemoryGrow(_) => {
+                // Memory operations don't have ISLE term representations
+                Instruction::MemorySize(_) | Instruction::MemoryGrow(_) => {
                     // These instructions don't have ISLE term representations
                     // They are passed through unchanged in the encoding phase
-                    // ISLE optimization only applies to integer operations currently
                 }
                 Instruction::Unknown(_) => {
                     // Unknown instructions cannot be converted to ISLE terms
                     // They are passed through unchanged in the encoding phase
-                    // For optimization purposes, we treat them as unknown operations
-                    // that we cannot reason about, so we don't push anything to the stack
-                }
-
-                // Saturating truncation instructions - pass through unchanged
-                Instruction::I32TruncSatF32S
-                | Instruction::I32TruncSatF32U
-                | Instruction::I32TruncSatF64S
-                | Instruction::I32TruncSatF64U
-                | Instruction::I64TruncSatF32S
-                | Instruction::I64TruncSatF32U
-                | Instruction::I64TruncSatF64S
-                | Instruction::I64TruncSatF64U => {
-                    // These don't have ISLE term representations yet
                 }
 
                 // Bulk memory instructions - pass through unchanged
@@ -5405,6 +5559,131 @@ pub mod terms {
             ValueData::I64ExtendI32U { val } => {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::I64ExtendI32U);
+            }
+            // Float-to-integer truncation (trapping)
+            ValueData::I32TruncF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF32S);
+            }
+            ValueData::I32TruncF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF32U);
+            }
+            ValueData::I32TruncF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF64S);
+            }
+            ValueData::I32TruncF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncF64U);
+            }
+            ValueData::I64TruncF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF32S);
+            }
+            ValueData::I64TruncF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF32U);
+            }
+            ValueData::I64TruncF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF64S);
+            }
+            ValueData::I64TruncF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncF64U);
+            }
+            // Integer-to-float conversion
+            ValueData::F32ConvertI32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI32S);
+            }
+            ValueData::F32ConvertI32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI32U);
+            }
+            ValueData::F32ConvertI64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI64S);
+            }
+            ValueData::F32ConvertI64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ConvertI64U);
+            }
+            ValueData::F64ConvertI32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI32S);
+            }
+            ValueData::F64ConvertI32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI32U);
+            }
+            ValueData::F64ConvertI64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI64S);
+            }
+            ValueData::F64ConvertI64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ConvertI64U);
+            }
+            // Float demote/promote
+            ValueData::F32DemoteF64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32DemoteF64);
+            }
+            ValueData::F64PromoteF32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64PromoteF32);
+            }
+            // Reinterpret (bit-cast)
+            ValueData::I32ReinterpretF32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32ReinterpretF32);
+            }
+            ValueData::I64ReinterpretF64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64ReinterpretF64);
+            }
+            ValueData::F32ReinterpretI32 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F32ReinterpretI32);
+            }
+            ValueData::F64ReinterpretI64 { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::F64ReinterpretI64);
+            }
+            // Saturating truncation (non-trapping)
+            ValueData::I32TruncSatF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF32S);
+            }
+            ValueData::I32TruncSatF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF32U);
+            }
+            ValueData::I32TruncSatF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF64S);
+            }
+            ValueData::I32TruncSatF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I32TruncSatF64U);
+            }
+            ValueData::I64TruncSatF32S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF32S);
+            }
+            ValueData::I64TruncSatF32U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF32U);
+            }
+            ValueData::I64TruncSatF64S { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF64S);
+            }
+            ValueData::I64TruncSatF64U { val } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::I64TruncSatF64U);
             }
             // Sign extension operations
             ValueData::I32Extend8S { val } => {
@@ -6266,68 +6545,14 @@ pub mod optimize {
                     }
                 }
 
-                // Float operations - all float arithmetic, unary, comparison, and
-                // binary ops are now supported in ISLE terms.
-                // Float conversion operations remain unsupported:
-                Instruction::I32TruncF32S
-                | Instruction::I32TruncF32U
-                | Instruction::I32TruncF64S
-                | Instruction::I32TruncF64U
-                | Instruction::I64TruncF32S
-                | Instruction::I64TruncF32U
-                | Instruction::I64TruncF64S
-                | Instruction::I64TruncF64U
-                | Instruction::F32ConvertI32S
-                | Instruction::F32ConvertI32U
-                | Instruction::F32ConvertI64S
-                | Instruction::F32ConvertI64U
-                | Instruction::F64ConvertI32S
-                | Instruction::F64ConvertI32U
-                | Instruction::F64ConvertI64S
-                | Instruction::F64ConvertI64U
-                | Instruction::F32DemoteF64
-                | Instruction::F64PromoteF32
-                | Instruction::I32ReinterpretF32
-                | Instruction::I64ReinterpretF64
-                | Instruction::F32ReinterpretI32
-                | Instruction::F64ReinterpretI64
                 // Memory operations
-                | Instruction::MemorySize(_)
+                Instruction::MemorySize(_)
                 | Instruction::MemoryGrow(_)
                 // Bulk memory operations
                 | Instruction::MemoryFill(_)
                 | Instruction::MemoryCopy { .. }
                 | Instruction::MemoryInit { .. }
                 | Instruction::DataDrop(_)
-                // Saturating truncation operations
-                | Instruction::I32TruncSatF32S
-                | Instruction::I32TruncSatF32U
-                | Instruction::I32TruncSatF64S
-                | Instruction::I32TruncSatF64U
-                | Instruction::I64TruncSatF32S
-                | Instruction::I64TruncSatF32U
-                | Instruction::I64TruncSatF64S
-                | Instruction::I64TruncSatF64U
-                // Rotation operations - NOW SUPPORTED
-                // ISLE type tracking correctly distinguishes I32/I64 using separate
-                // constructors (irotl32 vs irotl64, irotr32 vs irotr64, etc.).
-                // Z3 verification also handles rotation operations.
-                //
-                // Sign extension operations - NOW SUPPORTED
-                // ISLE type tracking supports in-place sign extension with separate
-                // constructors (i32_extend8_s, i32_extend16_s, etc.).
-                // Constant folding is implemented for sign extension of constants.
-                //
-                // Integer type conversion (changes stack types, complex to verify)
-                | Instruction::I32WrapI64
-                | Instruction::I64ExtendI32S
-                | Instruction::I64ExtendI32U
-                // I64 operations - NOW SUPPORTED
-                // ISLE type tracking correctly distinguishes I32/I64 using separate
-                // constructors (iconst32 vs iconst64, iadd32 vs iadd64, etc.).
-                // Z3 verification also handles I64 operations.
-                // All I64 arithmetic, bitwise, comparison, and unary ops are supported.
-                //
                 // CallIndirect - can't statically verify (runtime type from table)
                 | Instruction::CallIndirect { .. }
                 // BrTable - not yet supported in ISLE terms
@@ -14074,5 +14299,135 @@ mod tests {
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
         assert_eq!(instrs[0], Instruction::I32Const(1));
+    }
+
+    #[test]
+    fn test_conversion_round_trip() {
+        // f32.const 3.125; i32.trunc_f32_s round-trips through ISLE terms
+        let instructions = vec![
+            Instruction::F32Const(3.125_f32.to_bits()),
+            Instruction::I32TruncF32S,
+        ];
+        let terms = terms::instructions_to_terms(&instructions).unwrap();
+        assert_eq!(terms.len(), 1);
+
+        let result = terms::terms_to_instructions(&terms).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], Instruction::F32Const(3.125_f32.to_bits()));
+        assert_eq!(result[1], Instruction::I32TruncF32S);
+    }
+
+    #[test]
+    fn test_conversion_trunc_constant_fold() {
+        // i32.trunc_f32_s of in-range constant should fold
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        let val = fconst32(ImmF32::new(42.9));
+        let trunc = i32_trunc_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(42));
+    }
+
+    #[test]
+    fn test_conversion_trunc_nan_not_folded() {
+        // i32.trunc_f32_s of NaN should NOT fold (would trap at runtime)
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        let val = fconst32(ImmF32::new(f32::NAN));
+        let trunc = i32_trunc_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 2); // f32.const NaN, i32.trunc_f32_s
+        assert_eq!(instrs[1], Instruction::I32TruncF32S);
+    }
+
+    #[test]
+    fn test_conversion_trunc_sat_folds_nan_to_zero() {
+        // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        let val = fconst32(ImmF32::new(f32::NAN));
+        let trunc = i32_trunc_sat_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(0));
+    }
+
+    #[test]
+    fn test_conversion_trunc_sat_clamps_overflow() {
+        // i32.trunc_sat_f32_s of large value → i32.const i32::MAX
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        let val = fconst32(ImmF32::new(1.0e20));
+        let trunc = i32_trunc_sat_f32_s(val);
+        let simplified = simplify(trunc);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(i32::MAX));
+    }
+
+    #[test]
+    fn test_conversion_f32_convert_i32_s_fold() {
+        // f32.convert_i32_s of constant → f32.const
+        use loom_isle::{Imm32, f32_convert_i32_s, iconst32, simplify};
+        let val = iconst32(Imm32::new(-10));
+        let convert = f32_convert_i32_s(val);
+        let simplified = simplify(convert);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::F32Const((-10.0_f32).to_bits()));
+    }
+
+    #[test]
+    fn test_conversion_reinterpret_fold() {
+        // i32.reinterpret_f32 of f32 constant → i32.const with same bits
+        use loom_isle::{ImmF32, fconst32, i32_reinterpret_f32, simplify};
+        let val = fconst32(ImmF32::new(1.0));
+        let reinterpret = i32_reinterpret_f32(val);
+        let simplified = simplify(reinterpret);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(instrs[0], Instruction::I32Const(1.0_f32.to_bits() as i32));
+    }
+
+    #[test]
+    fn test_conversion_demote_promote_fold() {
+        // f32.demote_f64 of f64 constant → f32 constant
+        use loom_isle::{ImmF64, f32_demote_f64, fconst64, simplify};
+        let val = fconst64(ImmF64::new(3.125));
+        let demote = f32_demote_f64(val);
+        let simplified = simplify(demote);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(instrs.len(), 1);
+        assert_eq!(
+            instrs[0],
+            Instruction::F32Const((3.125_f64 as f32).to_bits())
+        );
+    }
+
+    #[test]
+    fn test_conversion_full_pipeline() {
+        // Full pipeline test: function with conversions gets optimized
+        let wat = r#"
+            (module
+              (func $convert (result i32)
+                f32.const 42.7
+                i32.trunc_sat_f32_s
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // Should be folded to i32.const 42
+        assert_eq!(func.instructions[0], Instruction::I32Const(42));
     }
 }
