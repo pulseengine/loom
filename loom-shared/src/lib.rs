@@ -942,6 +942,37 @@ pub enum ValueData {
     },
 
     // ========================================================================
+    // Bulk Memory Operations (side-effectful, no stack output)
+    // ========================================================================
+    /// memory.fill - fill memory region with a byte value
+    MemoryFill {
+        dst: Value,
+        val: Value,
+        len: Value,
+        mem: u32,
+    },
+    /// memory.copy - copy memory region from src to dst
+    MemoryCopy {
+        dst: Value,
+        src: Value,
+        len: Value,
+        dst_mem: u32,
+        src_mem: u32,
+    },
+    /// memory.init - initialize memory from a data segment
+    MemoryInit {
+        dst: Value,
+        src: Value,
+        len: Value,
+        mem: u32,
+        data_idx: u32,
+    },
+    /// data.drop - drop a data segment (no stack operands)
+    DataDrop {
+        data_idx: u32,
+    },
+
+    // ========================================================================
     // Sign Extension Operations (in-place sign extension)
     // ========================================================================
     /// i32.extend8_s - sign-extend low 8 bits to 32 bits
@@ -2135,6 +2166,34 @@ pub fn memory_size(mem: u32) -> Value {
 }
 pub fn memory_grow(val: Value, mem: u32) -> Value {
     Value(Box::new(ValueData::MemoryGrow { val, mem }))
+}
+
+// ============================================================================
+// Bulk Memory Constructors
+// ============================================================================
+pub fn memory_fill(dst: Value, val: Value, len: Value, mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryFill { dst, val, len, mem }))
+}
+pub fn memory_copy(dst: Value, src: Value, len: Value, dst_mem: u32, src_mem: u32) -> Value {
+    Value(Box::new(ValueData::MemoryCopy {
+        dst,
+        src,
+        len,
+        dst_mem,
+        src_mem,
+    }))
+}
+pub fn memory_init(dst: Value, src: Value, len: Value, mem: u32, data_idx: u32) -> Value {
+    Value(Box::new(ValueData::MemoryInit {
+        dst,
+        src,
+        len,
+        mem,
+        data_idx,
+    }))
+}
+pub fn data_drop(data_idx: u32) -> Value {
+    Value(Box::new(ValueData::DataDrop { data_idx }))
 }
 
 // ============================================================================
@@ -5019,6 +5078,48 @@ fn simplify_stateless(val: Value) -> Value {
             let v = simplify(inner.clone());
             memory_grow(v, *mem)
         }
+
+        // ====================================================================
+        // Bulk Memory — side-effectful, cannot fold, simplify children
+        // ====================================================================
+        ValueData::MemoryFill {
+            dst,
+            val: v,
+            len,
+            mem,
+        } => memory_fill(
+            simplify(dst.clone()),
+            simplify(v.clone()),
+            simplify(len.clone()),
+            *mem,
+        ),
+        ValueData::MemoryCopy {
+            dst,
+            src,
+            len,
+            dst_mem,
+            src_mem,
+        } => memory_copy(
+            simplify(dst.clone()),
+            simplify(src.clone()),
+            simplify(len.clone()),
+            *dst_mem,
+            *src_mem,
+        ),
+        ValueData::MemoryInit {
+            dst,
+            src,
+            len,
+            mem,
+            data_idx,
+        } => memory_init(
+            simplify(dst.clone()),
+            simplify(src.clone()),
+            simplify(len.clone()),
+            *mem,
+            *data_idx,
+        ),
+        ValueData::DataDrop { .. } => val, // no children to simplify
 
         // Constants are already in simplest form
         _ => val,
