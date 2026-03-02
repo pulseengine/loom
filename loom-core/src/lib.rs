@@ -3616,8 +3616,8 @@ pub mod terms {
         iles64, ileu32, ileu64, ilts32, ilts64, iltu32, iltu64, imul32, imul64, ine32, ine64,
         ior32, ior64, ipopcnt32, ipopcnt64, irems32, irems64, iremu32, iremu64, irotl32, irotl64,
         irotr32, irotr64, ishl32, ishl64, ishrs32, ishrs64, ishru32, ishru64, isub32, isub64,
-        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, nop, return_val,
-        select_instr, unreachable,
+        ixor32, ixor64, local_get, local_set, local_tee, loop_construct, memory_grow, memory_size,
+        nop, return_val, select_instr, unreachable,
     };
 
     /// Owned context for function signature lookup during ISLE term conversion.
@@ -5181,10 +5181,15 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for f64.ge lhs"))?;
                     stack.push(fge64(lhs, rhs));
                 }
-                // Memory operations don't have ISLE term representations
-                Instruction::MemorySize(_) | Instruction::MemoryGrow(_) => {
-                    // These instructions don't have ISLE term representations
-                    // They are passed through unchanged in the encoding phase
+                // Memory size/grow operations
+                Instruction::MemorySize(mem) => {
+                    stack.push(memory_size(*mem));
+                }
+                Instruction::MemoryGrow(mem) => {
+                    let val = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("Stack underflow for memory.grow"))?;
+                    stack.push(memory_grow(val, *mem));
                 }
                 Instruction::Unknown(_) => {
                     // Unknown instructions cannot be converted to ISLE terms
@@ -5684,6 +5689,14 @@ pub mod terms {
             ValueData::I64TruncSatF64U { val } => {
                 term_to_instructions_recursive(val, instructions)?;
                 instructions.push(Instruction::I64TruncSatF64U);
+            }
+            // Memory operations
+            ValueData::MemorySize { mem } => {
+                instructions.push(Instruction::MemorySize(*mem));
+            }
+            ValueData::MemoryGrow { val, mem } => {
+                term_to_instructions_recursive(val, instructions)?;
+                instructions.push(Instruction::MemoryGrow(*mem));
             }
             // Sign extension operations
             ValueData::I32Extend8S { val } => {
@@ -6545,19 +6558,11 @@ pub mod optimize {
                     }
                 }
 
-                // Memory operations
-                Instruction::MemorySize(_)
-                | Instruction::MemoryGrow(_)
-                // Bulk memory operations
-                | Instruction::MemoryFill(_)
+                // Bulk memory operations (no ISLE term representation yet)
+                Instruction::MemoryFill(_)
                 | Instruction::MemoryCopy { .. }
                 | Instruction::MemoryInit { .. }
                 | Instruction::DataDrop(_)
-                // CallIndirect - can't statically verify (runtime type from table)
-                | Instruction::CallIndirect { .. }
-                // BrTable - not yet supported in ISLE terms
-                // Note: BrIf and control flow have additional issues - see has_dataflow_unsafe_control_flow
-                | Instruction::BrTable { .. }
                 // Unknown instructions
                 | Instruction::Unknown(_) => {
                     return true;
@@ -14429,5 +14434,87 @@ mod tests {
         let func = &module.functions[0];
         // Should be folded to i32.const 42
         assert_eq!(func.instructions[0], Instruction::I32Const(42));
+    }
+
+    #[test]
+    fn test_memory_size_round_trip() {
+        // memory.size goes through ISLE terms and back unchanged
+        let instructions = vec![Instruction::MemorySize(0), Instruction::End];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(result, vec![Instruction::MemorySize(0)]);
+    }
+
+    #[test]
+    fn test_memory_grow_round_trip() {
+        // memory.grow goes through ISLE terms and back unchanged
+        let instructions = vec![
+            Instruction::I32Const(1),
+            Instruction::MemoryGrow(0),
+            Instruction::End,
+        ];
+        let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
+        let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
+        assert_eq!(
+            result,
+            vec![Instruction::I32Const(1), Instruction::MemoryGrow(0)]
+        );
+    }
+
+    #[test]
+    fn test_memory_operations_not_skipped() {
+        // Functions with memory.size/grow should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (memory 1)
+              (func $mem_test (result i32)
+                i32.const 1
+                i32.const 1
+                i32.add
+                memory.size
+                i32.add
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 1 + i32.const 1 should be folded to i32.const 2
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(2)),
+            "Expected constant folding to occur in function with memory.size: {:?}",
+            func.instructions
+        );
+    }
+
+    #[test]
+    fn test_call_indirect_not_skipped() {
+        // Functions with call_indirect should NOT be skipped from optimization
+        let wat = r#"
+            (module
+              (type $sig (func (param i32) (result i32)))
+              (table 1 funcref)
+              (func $indirect_test (result i32)
+                i32.const 2
+                i32.const 3
+                i32.add
+                i32.const 0
+                call_indirect (type $sig)
+              )
+            )
+        "#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse WAT");
+        optimize::optimize_module(&mut module).expect("Failed to optimize");
+
+        let func = &module.functions[0];
+        // i32.const 2 + i32.const 3 should be folded to i32.const 5
+        assert!(
+            func.instructions.contains(&Instruction::I32Const(5)),
+            "Expected constant folding to occur in function with call_indirect: {:?}",
+            func.instructions
+        );
     }
 }
