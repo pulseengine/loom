@@ -264,6 +264,10 @@ jobs:
         env:
           # pulseengine/z3.rs wasi-sdk-support branch handles Z3 build internally
           WASI_SDK_PREFIX: /opt/wasi-sdk
+          # Disable thread-local storage init to avoid __wasi_init_tp linker error
+          # with Rust 1.94+ and wasi-sdk-25 (wasip2 component model does not
+          # export this symbol). See: https://github.com/rust-lang/rust/issues/
+          RUSTFLAGS: "-C target-feature=-atomics,-bulk-memory,-mutable-globals"
         run: |
           cargo build --release --target wasm32-wasip2 --package loom-cli
 
