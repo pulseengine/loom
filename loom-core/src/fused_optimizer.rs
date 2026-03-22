@@ -49,7 +49,7 @@
 
 use crate::{ExportKind, Function, FunctionSignature, Import, ImportKind, Instruction, Module};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Statistics about fused module optimization
 #[derive(Debug, Clone, Default)]
@@ -778,7 +778,7 @@ fn devirtualize_adapters(module: &mut Module) -> Result<DevirtualizationStats> {
     }
 
     // Build mapping: adapter absolute index -> target absolute index
-    let mut adapter_to_target: HashMap<u32, u32> = HashMap::new();
+    let mut adapter_to_target: BTreeMap<u32, u32> = BTreeMap::new();
     for adapter in &adapters {
         let adapter_abs_idx = num_imported_funcs as u32 + adapter.func_index as u32;
         adapter_to_target.insert(adapter_abs_idx, adapter.target_func_idx);
@@ -885,7 +885,7 @@ fn is_trivial_adapter(func: &Function) -> Option<u32> {
 /// If adapter A -> adapter B -> target T, resolve to A -> T.
 /// This handles multi-hop adapter chains that can occur when components
 /// are fused in a chain (A imports from B, B imports from C).
-fn resolve_adapter_chains(adapter_to_target: &HashMap<u32, u32>) -> HashMap<u32, u32> {
+fn resolve_adapter_chains(adapter_to_target: &BTreeMap<u32, u32>) -> BTreeMap<u32, u32> {
     let mut resolved = adapter_to_target.clone();
 
     // Fixed-point iteration (terminates because chains are finite and acyclic)
@@ -915,7 +915,7 @@ fn resolve_adapter_chains(adapter_to_target: &HashMap<u32, u32>) -> HashMap<u32,
 /// Returns the rewritten instructions and the count of devirtualized calls.
 fn rewrite_calls(
     instructions: &[Instruction],
-    adapter_to_target: &HashMap<u32, u32>,
+    adapter_to_target: &BTreeMap<u32, u32>,
 ) -> (Vec<Instruction>, usize) {
     let mut result = Vec::with_capacity(instructions.len());
     let mut count = 0;
@@ -2099,7 +2099,7 @@ mod tests {
 
     #[test]
     fn test_adapter_chain_resolution() {
-        let mut chains: HashMap<u32, u32> = HashMap::new();
+        let mut chains: BTreeMap<u32, u32> = BTreeMap::new();
         chains.insert(10, 20); // Adapter 10 -> 20
         chains.insert(20, 30); // Adapter 20 -> 30
 
@@ -2111,7 +2111,7 @@ mod tests {
 
     #[test]
     fn test_rewrite_calls_nested() {
-        let mut adapter_map: HashMap<u32, u32> = HashMap::new();
+        let mut adapter_map: BTreeMap<u32, u32> = BTreeMap::new();
         adapter_map.insert(5, 10);
 
         let instructions = vec![
