@@ -169,6 +169,48 @@ hazards:
       correct at module initialization but wrong after mutation.
     losses: [L-1]
 
+  - id: H-17
+    title: Stack validation disabled, invalid sequences pass undetected
+    description: >
+      The post-optimization stack validation safety gate is disabled in code
+      (lib.rs lines 5732-5750, commented out pending bug fixes). Without this
+      gate, optimization passes that introduce stack discipline violations
+      are not caught before encoding. The comment acknowledges false positives
+      from compositional analysis but the workaround removes the safety net
+      entirely. CODE-VERIFIED: confirmed disabled on main branch.
+    losses: [L-2]
+
+  - id: H-18
+    title: Z3 verification not exercised in main CI test suite
+    description: >
+      The main CI test job builds and tests without --features verification.
+      Z3 verification only runs on a single fixture file (bench_compare.wat)
+      in a separate verify job. This means the TranslationValidator stub
+      (which always returns Ok) is used for all fixture tests. Optimization
+      bugs that Z3 would catch go undetected in normal CI. CODE-VERIFIED:
+      confirmed in ci.yml -- main test job has no verification feature.
+    losses: [L-3]
+
+  - id: H-19
+    title: Optimization skips too many functions due to unsupported instruction list
+    description: >
+      has_unsupported_isle_instructions() blocks a large number of instruction
+      types (all floats, conversions, memory ops, call_indirect, br_table,
+      bulk memory) on main branch. Functions containing any of these are
+      skipped entirely, significantly reducing optimization effectiveness.
+      PR #53 addresses this but is not yet merged.
+    losses: [L-4]
+
+  - id: H-20
+    title: HashMap iteration in CSE may cause non-deterministic optimization choices
+    description: >
+      CSE uses std::collections::HashMap for pattern grouping (lib.rs line
+      9086). HashMap iteration order is non-deterministic in Rust. When
+      multiple duplicate patterns exist, the choice of which pattern index
+      becomes "first" depends on iteration order. This may cause different
+      but semantically equivalent optimization choices across runs.
+    losses: [L-5]
+
 sub-hazards:
   # Refinements of H-1 (ISLE rewriting)
   - id: H-1.1

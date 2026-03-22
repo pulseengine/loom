@@ -142,3 +142,36 @@ system-constraints:
       globals must never be folded, regardless of whether mutation is
       observed in the current module (imported functions may mutate them).
     hazards: [H-16]
+
+  - id: SC-16
+    title: Stack validation must be active as post-optimization safety gate
+    description: >
+      Stack validation must run after all optimization passes and before
+      encoding. It must not be disabled or have its results ignored.
+      If the validator has false positives, the validator must be fixed --
+      not bypassed.
+    hazards: [H-17]
+
+  - id: SC-17
+    title: Z3 verification must be exercised on all test fixtures in CI
+    description: >
+      The CI test suite must build with --features verification and run
+      Z3 translation validation on all fixture files, not just a single
+      file. UNKNOWN results must be tracked and reported.
+    hazards: [H-18]
+
+  - id: SC-18
+    title: The optimizer must maximize function coverage
+    description: >
+      The unsupported instruction skip list must be minimized. As new
+      instruction support is added, the skip list must be updated.
+      Optimization effectiveness should be tracked as a metric.
+    hazards: [H-19]
+
+  - id: SC-19
+    title: All optimization passes must use deterministic data structures
+    description: >
+      HashMap and HashSet must not be used where iteration order affects
+      optimization output. Use BTreeMap, IndexMap, or sort iteration
+      results to ensure deterministic behavior.
+    hazards: [H-20]

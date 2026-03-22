@@ -1,0 +1,221 @@
+artifacts:
+  - id: FEAT-1
+    type: feature
+    title: ISLE pattern-matching optimization engine
+    status: approved
+    description: >
+      Declarative optimization via Cranelift ISLE rules. Converts instructions
+      to terms, applies rewrite rules, converts back. Supports constant folding,
+      algebraic simplification, and strength reduction for i32/i64 arithmetic,
+      bitwise, comparison, and unary operations.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-10
+
+  - id: FEAT-2
+    type: feature
+    title: Z3 translation validation per optimization pass
+    status: approved
+    description: >
+      Each optimization pass captures the original function, runs the
+      optimization, then verifies semantic equivalence via Z3 SMT. If Z3
+      finds a counterexample or returns UNKNOWN, the optimization is rejected.
+      Requires --features verification (default for CLI builds).
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-6
+
+  - id: FEAT-3
+    type: feature
+    title: Self-optimization (dogfooding) CI test
+    status: approved
+    description: >
+      CI compiles LOOM to wasm32-wasip2, then runs LOOM to optimize its own
+      WASM binary. The self-optimization test validates that the optimized
+      binary is valid WASM via wasm-tools validate.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-8
+      - type: satisfies
+        target: REQ-15
+
+  - id: FEAT-4
+    type: feature
+    title: Conservative function skip for unsupported instructions
+    status: approved
+    description: >
+      Functions containing instructions not supported by the ISLE pipeline
+      are skipped entirely. has_unsupported_isle_instructions() and
+      has_dataflow_unsafe_control_flow() gate all term-rewriting passes.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-4
+      - type: satisfies
+        target: REQ-5
+
+  - id: FEAT-5
+    type: feature
+    title: Dead code elimination with conservative terminator detection
+    status: approved
+    description: >
+      DCE only removes code after Return and Unreachable (unconditional
+      terminators). BrIf and BrTable are NOT treated as terminators, preserving
+      fall-through paths. Also removes trivial dead patterns (const+drop).
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-10
+
+  - id: FEAT-6
+    type: feature
+    title: CSE with side-effect safety checks
+    status: approved
+    description: >
+      Common subexpression elimination caches only pure expressions. The
+      is_safe_to_cse() guard rejects caching across control flow, calls,
+      local modifications to referenced locals, and any memory operations
+      (loads or stores) between expression occurrences.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-10
+
+  - id: FEAT-7
+    type: feature
+    title: Function inlining with local index remapping
+    status: approved
+    description: >
+      Inlining allocates callee parameters and locals at offsets beyond the
+      caller's locals, then remaps all local references in the inlined body.
+      Runs to fixed point with size limits (< 50 instructions, < 10 for
+      multi-call-site) preventing infinite expansion.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-10
+
+  - id: FEAT-8
+    type: feature
+    title: Precompute with immutability guard
+    status: approved
+    description: >
+      Global constant propagation only folds immutable globals. The
+      propagate_global_constants function explicitly checks global.mutable
+      and skips mutable globals.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-10
+
+  - id: FEAT-9
+    type: feature
+    title: WebAssembly Component Model optimization
+    status: approved
+    description: >
+      Supports optimizing Meld-fused component modules. Includes adapter
+      devirtualization, same-memory adapter collapse (with guard for
+      no-transformation cases), type/import deduplication, and dead
+      function elimination.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-11
+      - type: satisfies
+        target: REQ-17
+
+  - id: FEAT-10
+    type: feature
+    title: Differential testing framework against wasm-opt
+    status: draft
+    description: >
+      Infrastructure in loom-testing/ for comparing LOOM output against
+      Binaryen wasm-opt. Compares binary size, validates both outputs,
+      and optionally compares execution via wasmtime. NOT currently
+      exercised in CI.
+    fields:
+      phase: phase-2
+      acceptance-criteria:
+        - "Given a valid WASM module, When optimized by both LOOM and wasm-opt, Then both outputs must pass wasm-tools validate"
+        - "Given a WASM module with exported functions, When executed via wasmtime, Then LOOM-optimized and wasm-opt-optimized versions must produce identical results for identical inputs"
+        - "Given the differential test suite, When run in CI, Then all tests must pass on every PR"
+    links:
+      - type: satisfies
+        target: REQ-15
+      - type: satisfies
+        target: REQ-16
+
+  - id: FEAT-11
+    type: feature
+    title: Rocq mechanized proofs
+    status: approved
+    description: >
+      Rocq (Coq) proofs in proofs/ covering constant folding, algebraic
+      identities, bitwise optimizations, strength reduction, comparison
+      optimizations, multi-pass correctness, and type preservation.
+      Master theorem in Correctness.v composes all proofs.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-7
+
+  - id: FEAT-12
+    type: feature
+    title: Fuzzing targets
+    status: approved
+    description: >
+      Three fuzz targets in fuzz/: fuzz_optimize (validity), fuzz_roundtrip
+      (parse-optimize-encode-validate), fuzz_differential (compare with
+      reference). Daily scheduled fuzzing in CI via GitHub Actions.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-16
+
+  - id: FEAT-13
+    type: feature
+    title: Valid WASM binary output with wasm-tools validation
+    status: approved
+    description: >
+      CI validates all optimized output via wasm-tools validate. The
+      Validate WebAssembly Output job runs after optimization on all
+      fixture files. Release builds include multi-platform binaries.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-12
+      - type: satisfies
+        target: REQ-9
+
+  - id: FEAT-14
+    type: feature
+    title: WASM build target (wasm32-wasip2)
+    status: approved
+    description: >
+      LOOM compiles to wasm32-wasip2 target for self-optimization and
+      integration into WebAssembly-based build pipelines. Tested in CI
+      via WASM Build job.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-18
