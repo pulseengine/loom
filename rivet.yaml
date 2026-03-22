@@ -1,0 +1,31 @@
+project:
+  name: loom
+  version: "0.1.0"
+  description: >
+    Provably correct WebAssembly optimizer. Part of the PulseEngine
+    safety-critical toolchain (Kiln, Meld, Loom, Synth, Sigil, Gale).
+    Uses ISLE pattern matching, Z3 SMT verification, and Rocq mechanized
+    proofs to guarantee semantic preservation across 12 optimization phases.
+  schemas:
+    - common
+    - stpa
+    - dev
+
+sources:
+  - path: safety/stpa
+    format: stpa-yaml
+  - path: safety/requirements
+    format: generic-yaml
+
+docs:
+  - docs
+
+commits:
+  format: trailers
+  trailers:
+    Implements: implements
+    Fixes: fixes
+    Verifies: verifies
+    Trace: traces-to
+  exempt-types:
+    - chore

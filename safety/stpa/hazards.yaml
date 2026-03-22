@@ -1,0 +1,228 @@
+# STPA Step 1b: System-Level Hazards
+#
+# System: LOOM — provably correct WebAssembly optimizer
+
+hazards:
+  - id: H-1
+    title: ISLE term rewriting changes program semantics
+    description: >
+      An ISLE pattern-matching rule in wasm_terms.isle or wasm_opts.isle
+      rewrites a term to a non-equivalent term. The rewrite is sound for
+      some inputs but not all (e.g., division by zero edge cases, integer
+      overflow wraparound, NaN propagation in floats, trap-producing
+      conversions). The ISLE compiler accepts the rule, Z3 may not cover
+      the failing case, and the incorrect transformation propagates silently
+      through all downstream phases.
+    losses: [L-1, L-3]
+
+  - id: H-2
+    title: Instruction-to-term conversion loses information
+    description: >
+      The instructions_to_terms() conversion in lib.rs drops or misrepresents
+      instruction semantics when translating from the Instruction IR to ISLE
+      Value terms. Information loss includes: memory indices on load/store,
+      signedness of operations, alignment hints, multi-value results, or
+      control flow structure. The ISLE engine then optimizes based on an
+      incomplete model, producing transformations that are correct for the
+      term representation but incorrect for the actual instructions.
+    losses: [L-1]
+
+  - id: H-3
+    title: Term-to-instruction conversion introduces errors
+    description: >
+      The terms_to_instructions() conversion generates instructions that
+      do not faithfully represent the optimized ISLE terms. Wrong opcodes,
+      wrong immediate values, wrong local indices, or wrong block nesting.
+      The round-trip instructions_to_terms → simplify → terms_to_instructions
+      is not semantically bijective.
+    losses: [L-1, L-2]
+
+  - id: H-4
+    title: Stack validation accepts invalid instruction sequences
+    description: >
+      The stack checker in stack.rs approves an instruction sequence that
+      violates WebAssembly stack discipline. Possible causes: incorrect
+      instruction_signature() for an opcode, wrong stack effect in
+      apply_instruction_to_stack(), missing polymorphic stack handling,
+      or incorrect handling of unreachable code. The invalid sequence
+      passes LOOM's internal validation but fails wasm-tools validate
+      or causes Kiln runtime errors.
+    losses: [L-2]
+
+  - id: H-5
+    title: Dead code elimination removes live code
+    description: >
+      DCE (Phase 10) incorrectly classifies reachable code as dead and
+      removes it. Causes: incorrect unreachability analysis after
+      terminators (return, br, unreachable), failure to account for
+      br_table targets, or incorrect liveness across block boundaries.
+      The removed code was needed for correct execution.
+    losses: [L-1]
+
+  - id: H-6
+    title: Common subexpression elimination changes evaluation order
+    description: >
+      CSE (Phase 4) caches an expression result in a local variable and
+      replaces subsequent occurrences. If the expression has side effects
+      (memory load from a location that may be stored to between uses,
+      or a trapping operation), caching changes when the side effect occurs.
+      The cached value may be stale after an intervening store.
+    losses: [L-1]
+
+  - id: H-7
+    title: Function inlining violates calling conventions
+    description: >
+      Inlining (Phase 5) substitutes a call with the callee's body but
+      fails to correctly remap local indices, handle multi-value returns,
+      or preserve stack discipline at call boundaries. Recursive or
+      mutually recursive functions cause infinite inlining. The inlined
+      code uses locals that conflict with the caller's locals.
+    losses: [L-1, L-2]
+
+  - id: H-8
+    title: Branch simplification removes non-constant branches
+    description: >
+      Branch simplification (Phase 9) determines a condition is constant
+      when it is not, removing a live branch. Causes: incorrect constant
+      propagation through locals, failure to account for mutations inside
+      blocks, or wrong analysis of br_if/br_table conditions.
+    losses: [L-1]
+
+  - id: H-9
+    title: Loop-invariant code motion hoists dependent code
+    description: >
+      LICM (Phase 8) hoists an instruction out of a loop that depends on
+      a value modified inside the loop. Causes: incomplete tracking of
+      modified locals, failure to detect memory dependencies, or incorrect
+      classification of globals as invariant when they are modified by
+      calls within the loop.
+    losses: [L-1]
+
+  - id: H-10
+    title: Binary encoder produces malformed WASM
+    description: >
+      The encode_wasm function in lib.rs generates a binary that does not
+      conform to the WebAssembly binary format specification. Causes:
+      wrong section ordering, incorrect LEB128 encoding, mismatched type
+      indices, wrong function body lengths, or missing end opcodes.
+      The binary may be accepted by some runtimes but rejected by others.
+    losses: [L-2]
+
+  - id: H-11
+    title: Parser misinterprets input WASM
+    description: >
+      The parser translates a wasmparser Operator to the wrong Instruction
+      variant, or drops an operator entirely. Causes: incomplete match arms
+      in the parser, wrong field mapping (e.g., memory index, table index),
+      or silent fallthrough to a default case. The IR does not represent
+      the input program.
+    losses: [L-1]
+
+  - id: H-12
+    title: Z3 verification encodes wrong semantics
+    description: >
+      The Z3 SMT encoding in verify.rs does not faithfully represent
+      WebAssembly instruction semantics. The SMT formula is satisfiable
+      (correct) but the real instructions behave differently. Causes:
+      wrong bit-width in bitvector operations, missing overflow behavior,
+      incorrect encoding of traps, or incomplete control flow encoding.
+      Z3 says "equivalent" but the programs are not.
+    losses: [L-3]
+
+  - id: H-13
+    title: Component model optimizer breaks adapter semantics
+    description: >
+      The component_optimizer.rs transforms adapter functions in ways that
+      change their lifting/lowering behavior. Same-memory adapter collapse
+      removes a necessary copy. Fused module optimization changes the order
+      of adapter execution. The optimized component has a different external
+      interface than the original.
+    losses: [L-6]
+
+  - id: H-14
+    title: Strength reduction applies invalid transformation
+    description: >
+      Strength reduction (Phase 3) replaces an operation with a
+      non-equivalent cheaper operation. Examples: replacing signed division
+      by power-of-2 with arithmetic shift (wrong for negative numbers
+      unless adjustment applied), replacing modulo with bitwise AND (only
+      valid for unsigned and power-of-2), or replacing multiply with shift
+      when overflow behavior differs.
+    losses: [L-1]
+
+  - id: H-15
+    title: Code folding/block merging corrupts control flow
+    description: >
+      Code folding (Phase 7) or block merging (Phase 11) combines or
+      flattens blocks in ways that change branch target resolution.
+      A br or br_if that targeted a specific block depth now targets a
+      different block after merging. Loop structure is destroyed by
+      flattening.
+    losses: [L-1, L-2]
+
+  - id: H-16
+    title: Precompute replaces mutable global with stale constant
+    description: >
+      Precompute (Phase 1) replaces a global.get with a constant value
+      but the global is modified elsewhere (by another function, by an
+      imported function, or by a start function). The constant value is
+      correct at module initialization but wrong after mutation.
+    losses: [L-1]
+
+sub-hazards:
+  # Refinements of H-1 (ISLE rewriting)
+  - id: H-1.1
+    parent: H-1
+    title: Float constant folding produces wrong NaN bit pattern
+    description: >
+      ISLE folds a float operation at compile time using Rust's f32/f64
+      arithmetic, which may produce a different NaN bit pattern than the
+      WebAssembly specification requires. WASM mandates canonical NaN
+      propagation; host float arithmetic may produce non-canonical NaNs.
+
+  - id: H-1.2
+    parent: H-1
+    title: Trapping truncation folded for out-of-range value
+    description: >
+      ISLE folds i32.trunc_f64_s (or similar) when the float value is out
+      of the integer range. The real instruction would trap; the folded
+      constant silently produces a wrong value. The fold guard must check
+      range AND NaN before folding.
+
+  - id: H-1.3
+    parent: H-1
+    title: Integer division by zero not preserved as trap
+    description: >
+      ISLE folds i32.div_s(x, 0) to some value instead of preserving
+      the trap. Division and remainder operations must never be folded
+      when the divisor is zero.
+
+  # Refinements of H-2 (instruction-to-term)
+  - id: H-2.1
+    parent: H-2
+    title: Memory index dropped in multi-memory module
+    description: >
+      instructions_to_terms() drops the memory index field on load/store
+      instructions, defaulting to memory 0. In multi-memory modules, this
+      causes the optimizer to treat accesses to different memories as
+      equivalent, enabling invalid CSE or code motion.
+
+  # Refinements of H-4 (stack validation)
+  - id: H-4.1
+    parent: H-4
+    title: call_indirect stack effect computed without type_signatures
+    description: >
+      call_indirect's stack effect depends on the function type at the
+      given type index. If type_signatures is unavailable or the index
+      is out of bounds, the stack checker uses a wrong or default signature,
+      accepting invalid sequences.
+
+  # Refinements of H-13 (component model)
+  - id: H-13.1
+    parent: H-13
+    title: Same-memory adapter collapse removes necessary data copy
+    description: >
+      The fused component optimizer detects that two adapters share the
+      same linear memory and collapses them into a direct call. But the
+      adapters performed necessary data transformation (string encoding
+      conversion, list element reinterpretation) that the collapse skips.

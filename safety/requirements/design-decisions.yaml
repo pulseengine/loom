@@ -1,0 +1,169 @@
+artifacts:
+  - id: DD-1
+    type: design-decision
+    title: ISLE pattern matching for term rewriting
+    status: approved
+    description: >
+      Use Cranelift's ISLE (Instruction Selection/Lowering Expressions)
+      engine for declarative optimization rules rather than hand-coded
+      imperative transformations.
+    fields:
+      rationale: >
+        ISLE rules are declarative and auditable, making formal
+        verification tractable. Each rule can be independently verified
+        by Z3 or proved in Rocq. Hand-coded transformations are harder
+        to reason about and more prone to subtle bugs.
+      alternatives: >
+        Alternative 1: Hand-coded peephole optimizations (rejected:
+        harder to verify). Alternative 2: e-graphs/equality saturation
+        (rejected: more complex, less mature for WASM). Alternative 3:
+        Binaryen-style C++ passes (rejected: not amenable to formal
+        verification).
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-10
+
+  - id: DD-2
+    type: design-decision
+    title: Skip-function strategy for unsupported instructions
+    status: approved
+    description: >
+      When a function contains instructions that LOOM cannot correctly
+      handle, skip the entire function rather than attempting partial
+      optimization.
+    fields:
+      rationale: >
+        Partial optimization of a function with unsupported instructions
+        risks incorrect transformations around the unsupported code.
+        Skipping the entire function guarantees the original semantics
+        are preserved at the cost of missing optimization opportunities.
+        This is the correct trade-off per the "conservative over fast"
+        principle.
+      alternatives: >
+        Alternative: Partial optimization that treats unsupported
+        instructions as opaque barriers (rejected: too risky, barriers
+        may not correctly model all side effects).
+    links:
+      - type: satisfies
+        target: REQ-4
+      - type: satisfies
+        target: REQ-5
+
+  - id: DD-3
+    type: design-decision
+    title: Z3 translation validation approach
+    status: approved
+    description: >
+      Use Z3 SMT solver for translation validation (comparing original
+      and optimized function semantics) rather than rule-level verification.
+    fields:
+      rationale: >
+        Translation validation checks the result of optimization, not
+        the optimizer itself. This catches bugs in the implementation
+        even if the rule is correct. The approach works for any
+        optimization regardless of the transformation strategy. Z3 is
+        mature and handles bitvector arithmetic well.
+      alternatives: >
+        Alternative 1: Rule-level verification only (rejected: does not
+        catch implementation bugs). Alternative 2: Alive2-style
+        verification (rejected: designed for LLVM IR, not WASM).
+        Alternative 3: Random testing only (rejected: insufficient for
+        safety certification).
+    links:
+      - type: satisfies
+        target: REQ-6
+
+  - id: DD-4
+    type: design-decision
+    title: Fixed 12-phase pipeline ordering
+    status: approved
+    description: >
+      The optimization pipeline has a fixed, deterministic ordering of
+      12 phases. Phases are not reorderable or optional.
+    fields:
+      rationale: >
+        Fixed ordering ensures deterministic output (REQ-14) and makes
+        phase interactions predictable. The ordering is designed so that
+        earlier phases expose opportunities for later phases (e.g.,
+        constant folding before CSE, inlining before second constant
+        folding pass). A configurable pipeline would require verifying
+        all possible orderings.
+      alternatives: >
+        Alternative 1: Configurable phase selection (rejected: combinatorial
+        verification burden). Alternative 2: Fixed-point iteration until
+        no changes (rejected: may not terminate, harder to reason about).
+    links:
+      - type: satisfies
+        target: REQ-10
+      - type: satisfies
+        target: REQ-14
+
+  - id: DD-5
+    type: design-decision
+    title: Stack validation as post-optimization safety gate
+    status: approved
+    description: >
+      Run WebAssembly stack type checking after optimization and before
+      encoding, as a safety gate that catches optimization bugs.
+    fields:
+      rationale: >
+        Stack validation after optimization catches a broad class of
+        bugs (wrong stack effects, missing values, type mismatches)
+        regardless of which phase introduced them. This defense-in-depth
+        approach ensures that even if an optimization pass has a bug,
+        the invalid output is caught before it reaches the encoder.
+      alternatives: >
+        Alternative: Validate before encoding only via wasm-tools
+        (rejected: external tool may not catch all internal IR issues;
+        internal validation gives better error messages).
+    links:
+      - type: satisfies
+        target: REQ-13
+
+  - id: DD-6
+    type: design-decision
+    title: Dogfooding as ultimate integration test
+    status: approved
+    description: >
+      LOOM optimizes its own WebAssembly binary as the final validation
+      step. The optimized LOOM must produce identical optimization
+      results to the original.
+    fields:
+      rationale: >
+        Self-optimization exercises the complete pipeline on a complex,
+        real-world module. If the optimized LOOM produces different
+        results, it proves the optimization changed program semantics.
+        This is the strongest possible integration test because we are
+        literally betting output correctness on our own optimization.
+      alternatives: >
+        Alternative: Differential testing against wasm-opt only
+        (rejected: wasm-opt has its own bugs; self-optimization is a
+        stricter correctness criterion).
+    links:
+      - type: satisfies
+        target: REQ-8
+      - type: satisfies
+        target: REQ-15
+
+  - id: DD-7
+    type: design-decision
+    title: Same-memory adapter collapse for fused components
+    status: approved
+    description: >
+      When two component adapters share the same linear memory and
+      perform no data transformation, collapse them to a direct call
+      eliminating the adapter overhead.
+    fields:
+      rationale: >
+        In Meld-fused single-memory modules, most adapters are trivial
+        pass-throughs. Collapsing them significantly reduces code size
+        and call overhead. The safety constraint is that collapse only
+        occurs when adapters perform no data transformation.
+      alternatives: >
+        Alternative: Never collapse adapters (rejected: leaves significant
+        optimization on the table for the common single-memory case).
+    links:
+      - type: satisfies
+        target: REQ-11

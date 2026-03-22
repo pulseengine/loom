@@ -1,0 +1,206 @@
+# STPA Step 2: Control Structure
+#
+# System: LOOM -- provably correct WebAssembly optimizer
+#
+# LOOM is a build-time tool. Its control structure models the optimization
+# pipeline where each stage controls the data flowing to the next stage.
+# The "controlled process" is the WebAssembly module transformation itself.
+
+controllers:
+  - id: CTRL-1
+    name: Parser
+    type: automated
+    description: >
+      Translates WebAssembly binary (via wasmparser) into LOOM's internal
+      Module/Function/Instruction IR. Controls what enters the pipeline.
+    source-file: loom-core/src/lib.rs
+    control-actions:
+      - ca: CA-1
+        target: CP-1
+        action: Parse operator into Instruction variant
+      - ca: CA-2
+        target: CTRL-3
+        action: Report unsupported instructions in function
+    feedback:
+      - from: CP-1
+        info: Parsing errors, malformed binary detection
+    process-model:
+      - Input is a valid WebAssembly binary
+      - All Operator variants have corresponding Instruction mappings
+      - Unsupported operators are tracked for function-level skip decisions
+
+  - id: CTRL-2
+    name: ISLE term rewriter
+    type: automated
+    description: >
+      Converts instructions to ISLE Value terms, applies pattern-matching
+      rewrite rules (constant folding, algebraic simplification, strength
+      reduction), and converts back. The core optimization engine.
+    source-file: loom-shared/isle/wasm_terms.isle
+    control-actions:
+      - ca: CA-3
+        target: CP-2
+        action: Convert instructions to ISLE terms
+      - ca: CA-4
+        target: CP-2
+        action: Apply ISLE rewrite rule
+      - ca: CA-5
+        target: CP-1
+        action: Convert terms back to instructions
+      - ca: CA-17
+        target: CP-1
+        action: Replace operation with cheaper equivalent (strength reduction)
+    feedback:
+      - from: CP-2
+        info: Matched rules, applied transformations count
+    process-model:
+      - Terms faithfully represent instruction semantics
+      - Rewrite rules preserve equivalence
+      - Term environment tracks local variable bindings
+
+  - id: CTRL-3
+    name: Optimization pipeline orchestrator
+    type: automated
+    description: >
+      Sequences the 12 optimization phases, decides which functions to
+      optimize vs skip, and applies the skip-function heuristic based
+      on unsupported instructions.
+    source-file: loom-core/src/lib.rs
+    control-actions:
+      - ca: CA-6
+        target: CP-1
+        action: Skip function (mark as not optimizable)
+      - ca: CA-7
+        target: CP-1
+        action: Remove dead instruction (DCE)
+      - ca: CA-8
+        target: CP-1
+        action: Cache expression in local (CSE)
+      - ca: CA-9
+        target: CP-1
+        action: Inline function body at call site
+      - ca: CA-10
+        target: CP-1
+        action: Simplify branch condition
+      - ca: CA-11
+        target: CP-1
+        action: Hoist instruction out of loop (LICM)
+      - ca: CA-12
+        target: CP-1
+        action: Merge or flatten blocks
+      - ca: CA-13
+        target: CP-1
+        action: Replace global.get with constant (precompute)
+    feedback:
+      - from: CTRL-4
+        info: Stack validation pass/fail per function
+      - from: CTRL-5
+        info: Z3 equivalence verification result
+    process-model:
+      - Functions with unsupported instructions must be skipped entirely
+      - Phase ordering is fixed and deterministic
+      - Each phase receives output of previous phase
+
+  - id: CTRL-4
+    name: Stack validator
+    type: automated
+    description: >
+      Validates that optimized instruction sequences maintain WebAssembly
+      stack discipline. Acts as a safety gate between optimization and
+      encoding.
+    source-file: loom-core/src/stack.rs
+    control-actions:
+      - ca: CA-14
+        target: CTRL-3
+        action: Report stack validation result (accept/reject function)
+    feedback:
+      - from: CP-1
+        info: Instruction sequence and type signatures for validation
+    process-model:
+      - Every instruction has a known stack signature (inputs, outputs)
+      - Block/loop/if structures create stack frames
+      - Unreachable code has polymorphic stack behavior
+
+  - id: CTRL-5
+    name: Z3 SMT verifier
+    type: automated
+    description: >
+      Encodes original and optimized functions as SMT formulas and queries
+      Z3 for equivalence. Provides formal feedback on optimization
+      correctness.
+    source-file: loom-core/src/verify.rs
+    control-actions:
+      - ca: CA-15
+        target: CTRL-3
+        action: Report equivalence verification result (UNSAT/SAT/UNKNOWN)
+    feedback:
+      - from: CP-1
+        info: Original and optimized instruction sequences for comparison
+    process-model:
+      - SMT encoding faithfully represents WASM semantics
+      - UNSAT means functions are equivalent
+      - SAT means counterexample found
+      - UNKNOWN means inconclusive (timeout or too complex)
+
+  - id: CTRL-6
+    name: Binary encoder
+    type: automated
+    description: >
+      Translates the optimized Module IR back to WebAssembly binary format.
+      Must produce a valid binary that passes external validation.
+    source-file: loom-core/src/lib.rs
+    control-actions:
+      - ca: CA-16
+        target: CP-3
+        action: Encode Module IR to WebAssembly binary
+    feedback:
+      - from: CP-3
+        info: Encoding errors, section overflow
+    process-model:
+      - IR types map to valid WASM section encodings
+      - Function body byte lengths are computed correctly
+      - All indices (type, function, memory, table) are valid
+
+  - id: CTRL-7
+    name: Component model optimizer
+    type: automated
+    description: >
+      Optimizes WebAssembly Component Model modules including adapter
+      functions, import/export bindings, and fused module structure.
+    source-file: loom-core/src/component_optimizer.rs
+    control-actions:
+      - ca: CA-18
+        target: CP-1
+        action: Collapse same-memory adapter
+      - ca: CA-19
+        target: CP-1
+        action: Devirtualize adapter calls in fused modules
+    feedback:
+      - from: CP-1
+        info: Adapter analysis results, memory identity checks
+    process-model:
+      - Component external interface must be preserved
+      - Adapter collapse only valid for same-memory, no-transform cases
+      - Fused modules retain Meld/Kiln ABI compatibility
+
+controlled-processes:
+  - id: CP-1
+    name: Module IR (internal representation)
+    description: >
+      The in-memory Module struct containing types, functions, tables,
+      memories, globals, and exports. All optimization phases read and
+      modify this structure.
+
+  - id: CP-2
+    name: ISLE term environment
+    description: >
+      The term environment used during ISLE rewriting. Contains Value
+      terms representing instruction sequences, local variable bindings,
+      and the simplification context.
+
+  - id: CP-3
+    name: Output WASM binary
+    description: >
+      The final encoded WebAssembly binary. Once encoded, this is the
+      artifact consumed by downstream tools (Meld, Kiln, Synth, or
+      direct execution runtimes).

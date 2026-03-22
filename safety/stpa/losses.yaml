@@ -1,0 +1,81 @@
+# STPA Step 1a: Losses
+#
+# System: LOOM — provably correct WebAssembly optimizer
+# System boundary: LOOM accepts WebAssembly core modules and components,
+#   applies a 12-phase optimization pipeline (ISLE term rewriting, DCE,
+#   CSE, inlining, branch simplification, code folding, LICM, vacuum),
+#   verifies correctness via Z3 SMT and Rocq proofs, and encodes the
+#   result back to WebAssembly binary. The system boundary includes
+#   parsing, IR construction, all optimization passes, stack validation,
+#   Z3 verification, and binary encoding. It excludes upstream compilers
+#   (Rust/C → WASM), downstream tools (Meld, Kiln, Synth), and the
+#   WebAssembly specification itself.
+#
+# Stakeholders:
+#   - Developers building safety-critical systems with WebAssembly
+#   - Downstream toolchain (Kiln runtime, Meld linker, Synth AOT compiler)
+#   - Certification authorities (ISO 26262, DO-178C, IEC 61508)
+#   - End-users of systems whose behavior depends on correctly optimized WASM
+#
+# Relation to PulseEngine toolchain: LOOM sits between upstream compilers
+#   and Meld/Kiln. Incorrect optimization silently corrupts all downstream
+#   processing — Meld fuses a wrong module, Kiln executes wrong code,
+#   Synth compiles wrong instructions to ARM.
+
+losses:
+  - id: L-1
+    title: Loss of semantic preservation
+    description: >
+      The optimized WebAssembly module produces different observable behavior
+      than the original. Functions return wrong values, control flow diverges,
+      traps occur where none should (or vice versa), or side effects (memory
+      stores, global writes, table mutations) differ. This is the fundamental
+      loss — an optimizer that changes program meaning is worse than no
+      optimizer at all.
+    stakeholders: [developers, downstream-toolchain, end-users, certification-authorities]
+
+  - id: L-2
+    title: Loss of structural validity
+    description: >
+      The output WebAssembly binary is malformed or fails validation per
+      the WebAssembly specification. Downstream tools (wasm-tools validate,
+      Meld, Kiln) reject the output. This includes invalid type sections,
+      mismatched stack types, broken branch targets, invalid function
+      indices, or malformed encoding.
+    stakeholders: [developers, downstream-toolchain]
+
+  - id: L-3
+    title: Loss of verification integrity
+    description: >
+      The verification system (Z3 SMT or Rocq proofs) reports an optimization
+      as correct when it is not, or reports an optimization as incorrect when
+      it is correct. False negatives allow bugs to escape; false positives
+      cause valid optimizations to be rejected, reducing effectiveness.
+    stakeholders: [developers, certification-authorities]
+
+  - id: L-4
+    title: Loss of optimization effectiveness
+    description: >
+      The optimizer fails to apply valid transformations, producing output
+      that is larger or slower than necessary. While not a safety loss per se,
+      in resource-constrained embedded systems (via Kiln/Gale), oversized
+      WASM modules may exceed memory budgets, causing deployment failures.
+    stakeholders: [developers, downstream-toolchain]
+
+  - id: L-5
+    title: Loss of deterministic behavior
+    description: >
+      Identical inputs produce different optimization results across runs,
+      platforms, or configurations. Non-determinism in HashMap iteration,
+      floating-point folding edge cases, or instruction ordering prevents
+      reproducible builds — a requirement for safety certification.
+    stakeholders: [developers, certification-authorities]
+
+  - id: L-6
+    title: Loss of component model fidelity
+    description: >
+      The Component Model optimizer transforms adapter functions, import/export
+      bindings, or fused module structure in ways that change the component's
+      external interface or internal adapter semantics. Meld-fused modules
+      become incompatible with Kiln's host intrinsic expectations.
+    stakeholders: [developers, downstream-toolchain]

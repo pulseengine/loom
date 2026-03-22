@@ -1,0 +1,257 @@
+artifacts:
+  # ============================================================================
+  # Core philosophy requirements (from CLAUDE.md)
+  # ============================================================================
+  - id: REQ-1
+    type: requirement
+    title: Provably correct optimization
+    status: approved
+    description: >
+      Every optimization transformation must be formally verifiable as
+      semantics-preserving. An optimization without its proof is not
+      an optimization -- it is a bug waiting to happen.
+    fields:
+      priority: must
+      category: non-functional
+    links:
+      - type: mitigates
+        target: SC-1
+
+  - id: REQ-2
+    type: requirement
+    title: No temporary fixes
+    status: approved
+    description: >
+      If something does not work correctly, fix it properly or do not
+      implement it at all. There is no "we will fix it later."
+    fields:
+      priority: must
+      category: constraint
+
+  - id: REQ-3
+    type: requirement
+    title: No silent failures
+    status: approved
+    description: >
+      Every error condition must be handled explicitly with clear error
+      messages. The optimizer must never silently produce wrong output.
+    fields:
+      priority: must
+      category: non-functional
+    links:
+      - type: mitigates
+        target: SC-10
+
+  - id: REQ-4
+    type: requirement
+    title: No unproven assumptions
+    status: approved
+    description: >
+      If we cannot prove something is correct, we must not do it.
+      Functions with unsupported instructions are skipped entirely.
+    fields:
+      priority: must
+      category: constraint
+    links:
+      - type: mitigates
+        target: SC-4
+
+  - id: REQ-5
+    type: requirement
+    title: Conservative over fast
+    status: approved
+    description: >
+      When in doubt: skip the function rather than risk incorrect
+      optimization, return an error rather than produce potentially
+      wrong output, keep the original code rather than apply an
+      unverified transformation. A correct optimizer that handles 50%
+      of cases is infinitely better than a fast optimizer that corrupts
+      1% of cases.
+    fields:
+      priority: must
+      category: constraint
+
+  # ============================================================================
+  # Verification requirements
+  # ============================================================================
+  - id: REQ-6
+    type: requirement
+    title: Z3 SMT verification for all ISLE rules
+    status: approved
+    description: >
+      Every ISLE rewrite rule must be verifiable via Z3 SMT encoding.
+      The verification must check semantic equivalence for all input
+      values, including edge cases.
+    fields:
+      priority: must
+      category: non-functional
+    links:
+      - type: mitigates
+        target: SC-1
+      - type: mitigates
+        target: SC-11
+
+  - id: REQ-7
+    type: requirement
+    title: Rocq mechanized proofs for optimization rules
+    status: approved
+    description: >
+      Core optimization rules must have accompanying Rocq (Coq) proofs
+      of semantic preservation. The master correctness theorem must
+      compose all individual rule proofs.
+    fields:
+      priority: should
+      category: non-functional
+
+  - id: REQ-8
+    type: requirement
+    title: Self-optimization (dogfooding) test
+    status: approved
+    description: >
+      LOOM must be able to optimize its own WebAssembly binary and the
+      optimized version must produce identical results to the original.
+      This is the most rigorous correctness test.
+    fields:
+      priority: must
+      category: non-functional
+
+  # ============================================================================
+  # Functional requirements
+  # ============================================================================
+  - id: REQ-9
+    type: requirement
+    title: WebAssembly Core Spec instruction coverage
+    status: approved
+    description: >
+      The parser and encoder must support all WebAssembly Core Specification
+      instructions. Functions containing unsupported instructions must be
+      skipped entirely (not partially optimized).
+    fields:
+      priority: must
+      category: functional
+    links:
+      - type: mitigates
+        target: SC-10
+
+  - id: REQ-10
+    type: requirement
+    title: 12-phase optimization pipeline
+    status: approved
+    description: >
+      The optimizer must implement the following phases in order:
+      1. Precompute, 2. ISLE constant folding (pre-CSE), 3. Strength
+      reduction, 4. CSE, 5. Function inlining, 6. ISLE constant folding
+      (post-inline), 7. Code folding, 8. LICM, 9. Branch simplification,
+      10. DCE, 11. Block merging, 12. Vacuum and simplify locals.
+    fields:
+      priority: must
+      category: functional
+
+  - id: REQ-11
+    type: requirement
+    title: WebAssembly Component Model support
+    status: approved
+    description: >
+      The optimizer must support WebAssembly Component Model modules,
+      including adapter function optimization and fused module support
+      for Meld output.
+    fields:
+      priority: must
+      category: functional
+    links:
+      - type: mitigates
+        target: SC-12
+
+  - id: REQ-12
+    type: requirement
+    title: Valid WASM binary output
+    status: approved
+    description: >
+      All output must pass wasm-tools validate. The encoder must produce
+      a spec-conformant WebAssembly binary.
+    fields:
+      priority: must
+      category: functional
+    links:
+      - type: mitigates
+        target: SC-9
+
+  - id: REQ-13
+    type: requirement
+    title: Stack discipline preservation
+    status: approved
+    description: >
+      Every optimized function must maintain valid WebAssembly stack
+      discipline. Stack validation must run after optimization and
+      before encoding.
+    fields:
+      priority: must
+      category: functional
+    links:
+      - type: mitigates
+        target: SC-3
+
+  - id: REQ-14
+    type: requirement
+    title: Deterministic optimization output
+    status: approved
+    description: >
+      Identical inputs must produce identical outputs across runs and
+      platforms. No HashMap iteration order, non-deterministic float
+      operations, or timing-dependent behavior may affect output.
+    fields:
+      priority: must
+      category: non-functional
+
+  - id: REQ-15
+    type: requirement
+    title: Real-world test corpus validation
+    status: approved
+    description: >
+      Every optimization pass must work correctly on all test files in
+      the real-world test corpus. If an optimization fails on any
+      real-world file, it must be rejected.
+    fields:
+      priority: must
+      category: non-functional
+
+  - id: REQ-16
+    type: requirement
+    title: Fuzzing coverage
+    status: approved
+    description: >
+      The optimizer must be continuously fuzzed with at least three
+      targets: optimize (validity), roundtrip (parse-optimize-encode-validate),
+      and differential (compare with reference implementation).
+    fields:
+      priority: should
+      category: non-functional
+
+  # ============================================================================
+  # Toolchain integration requirements
+  # ============================================================================
+  - id: REQ-17
+    type: requirement
+    title: Meld/Kiln ABI compatibility
+    status: approved
+    description: >
+      Optimized component modules must remain compatible with Meld's
+      fusion pipeline and Kiln's runtime execution. Adapter semantics
+      and host intrinsic signatures must be preserved.
+    fields:
+      priority: must
+      category: interface
+    links:
+      - type: mitigates
+        target: SC-12
+
+  - id: REQ-18
+    type: requirement
+    title: WASM build target support
+    status: approved
+    description: >
+      LOOM must compile to wasm32-wasip2 to enable self-optimization
+      and integration into WebAssembly-based build pipelines.
+    fields:
+      priority: should
+      category: functional

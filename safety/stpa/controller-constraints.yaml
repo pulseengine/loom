@@ -1,0 +1,244 @@
+# STPA Step 3b: Controller Constraints
+#
+# System: LOOM -- provably correct WebAssembly optimizer
+#
+# Each controller constraint is derived by inverting one or more UCAs.
+
+controller-constraints:
+  # ── Parser constraints ──────────────────────────────────────────────
+  - id: CC-1
+    controller: CTRL-1
+    constraint: >
+      The parser must have an explicit match arm for every wasmparser
+      Operator variant it claims to support, mapping to the correct
+      Instruction variant with all fields (memory index, alignment,
+      signedness, immediate values) preserved.
+    ucas: [UCA-1, UCA-3]
+    hazards: [H-11]
+
+  - id: CC-2
+    controller: CTRL-1
+    constraint: >
+      Unrecognized operators must be recorded as Unknown instructions
+      and the function must be flagged for skip. No operator may be
+      silently dropped from the instruction stream.
+    ucas: [UCA-2]
+    hazards: [H-11]
+
+  # ── ISLE term rewriter constraints ──────────────────────────────────
+  - id: CC-3
+    controller: CTRL-2
+    constraint: >
+      Every ISLE rewrite rule must be accompanied by a Z3 verification
+      test or Rocq proof covering all edge cases: zero, MIN_INT, MAX_INT,
+      negative values, NaN, infinity, and subnormals where applicable.
+    ucas: [UCA-4]
+    hazards: [H-1]
+
+  - id: CC-4
+    controller: CTRL-2
+    constraint: >
+      Constant folding of trapping operations (div, rem, trunc) must
+      check for trap conditions (zero divisor, out-of-range, NaN) before
+      folding. If the trap condition is met, the fold must not occur.
+      If it cannot be determined statically, the fold must not occur.
+    ucas: [UCA-5]
+    hazards: [H-1]
+
+  - id: CC-5
+    controller: CTRL-2
+    constraint: >
+      instructions_to_terms() must preserve all semantically relevant
+      fields of each instruction. The term representation must carry
+      memory indices, signedness flags, and any other field that affects
+      the instruction's observable behavior.
+    ucas: [UCA-6]
+    hazards: [H-2]
+
+  - id: CC-6
+    controller: CTRL-2
+    constraint: >
+      terms_to_instructions() must emit the exact opcode and immediate
+      values that correspond to the optimized term. A test suite must
+      verify round-trip fidelity for every supported instruction type.
+    ucas: [UCA-7]
+    hazards: [H-3]
+
+  - id: CC-7
+    controller: CTRL-2
+    constraint: >
+      Strength reduction for signed operations must apply the correct
+      signed-division-by-shift adjustment (add dividend >> 31 before
+      shift for negative numbers), or must only apply to unsigned operations.
+    ucas: [UCA-8]
+    hazards: [H-14]
+
+  # ── Pipeline orchestrator constraints ───────────────────────────────
+  - id: CC-8
+    controller: CTRL-3
+    constraint: >
+      has_unsupported_isle_instructions must return true for any function
+      containing an instruction that LOOM cannot correctly optimize. The
+      check must be updated whenever new instruction support is added.
+    ucas: [UCA-9]
+    hazards: [H-1, H-2]
+
+  - id: CC-9
+    controller: CTRL-3
+    constraint: >
+      DCE must distinguish unconditional terminators (return, br,
+      unreachable) from conditional branches (br_if). Code after br_if
+      is live (the fall-through path). Code after br_table may be dead
+      only if all branch targets are covered.
+    ucas: [UCA-10]
+    hazards: [H-5]
+
+  - id: CC-10
+    controller: CTRL-3
+    constraint: >
+      CSE must not cache expressions involving memory loads, calls,
+      call_indirect, or any instruction classified as having side effects
+      in has_side_effects(). Only pure arithmetic and local operations
+      may be cached.
+    ucas: [UCA-11]
+    hazards: [H-6]
+
+  - id: CC-11
+    controller: CTRL-3
+    constraint: >
+      Function inlining must offset all callee local indices by the
+      number of caller locals, add callee local declarations to the
+      caller, and wrap the inlined body in a block to handle return
+      semantics correctly.
+    ucas: [UCA-12]
+    hazards: [H-7]
+
+  - id: CC-12
+    controller: CTRL-3
+    constraint: >
+      The inliner must maintain a recursion depth counter and refuse
+      to inline beyond a configurable maximum depth. It must also
+      enforce a maximum inlined body size to prevent code explosion.
+    ucas: [UCA-13]
+    hazards: [H-7]
+
+  - id: CC-13
+    controller: CTRL-3
+    constraint: >
+      Branch simplification must only treat a condition as constant if
+      there is no instruction between the constant assignment and the
+      branch that could modify the local (including calls, which may
+      have arbitrary effects via imported functions).
+    ucas: [UCA-14]
+    hazards: [H-8]
+
+  - id: CC-14
+    controller: CTRL-3
+    constraint: >
+      LICM must compute the full set of locals modified inside a loop
+      body, including modifications by any call instruction. An instruction
+      is loop-invariant only if none of its operand locals appear in the
+      modified set and it does not access memory or globals.
+    ucas: [UCA-15]
+    hazards: [H-9]
+
+  - id: CC-15
+    controller: CTRL-3
+    constraint: >
+      When merging blocks, all br, br_if, and br_table target depths
+      in contained instructions must be adjusted to account for removed
+      block layers. Loop blocks must never be merged away.
+    ucas: [UCA-16]
+    hazards: [H-15]
+
+  - id: CC-16
+    controller: CTRL-3
+    constraint: >
+      Precompute must check the global's mutability flag. Only globals
+      declared as immutable (mutability = false / const) may have their
+      global.get replaced with a constant.
+    ucas: [UCA-17]
+    hazards: [H-16]
+
+  # ── Stack validator constraints ─────────────────────────────────────
+  - id: CC-17
+    controller: CTRL-4
+    constraint: >
+      The stack validator must resolve the function type for call_indirect
+      via the type_signatures table. If the type index is out of bounds
+      or the table is unavailable, the function must fail validation
+      rather than using a default signature.
+    ucas: [UCA-18]
+    hazards: [H-4]
+
+  - id: CC-18
+    controller: CTRL-4
+    constraint: >
+      After encountering an unconditional terminator in a block, the
+      stack validator must enter polymorphic mode where any instruction
+      is accepted until the end of the current block, per the WebAssembly
+      validation algorithm.
+    ucas: [UCA-19]
+    hazards: [H-4]
+
+  # ── Z3 verifier constraints ─────────────────────────────────────────
+  - id: CC-19
+    controller: CTRL-5
+    constraint: >
+      The Z3 encoding must use bitvectors of exactly the correct width:
+      32 bits for i32 operations, 64 bits for i64 operations. Signed
+      operations must use signed bitvector operations (bvsle, bvslt,
+      bvsdiv, bvsrem).
+    ucas: [UCA-20]
+    hazards: [H-12]
+
+  - id: CC-20
+    controller: CTRL-5
+    constraint: >
+      The Z3 encoding for every trapping operation must include the trap
+      condition as a distinct formula. Verification must check that trap
+      conditions are identical between original and optimized code, not
+      just that non-trapping results match.
+    ucas: [UCA-21]
+    hazards: [H-12]
+
+  # ── Binary encoder constraints ──────────────────────────────────────
+  - id: CC-21
+    controller: CTRL-6
+    constraint: >
+      LEB128 encoding must handle values up to the maximum range allowed
+      by the WebAssembly specification. The encoder must be tested with
+      boundary values (127, 128, 16383, 16384, etc.) to verify multi-byte
+      encoding correctness.
+    ucas: [UCA-22]
+    hazards: [H-10]
+
+  - id: CC-22
+    controller: CTRL-6
+    constraint: >
+      Function body byte length must be computed by first encoding the
+      body to a temporary buffer, measuring the actual byte length, and
+      then emitting the length prefix. Pre-computation of length without
+      actual encoding is not acceptable.
+    ucas: [UCA-23]
+    hazards: [H-10]
+
+  # ── Component model optimizer constraints ───────────────────────────
+  - id: CC-23
+    controller: CTRL-7
+    constraint: >
+      Same-memory adapter collapse must verify that neither adapter
+      performs data transformation (string encoding, list reinterpretation,
+      variant discriminant mapping). Collapse is only valid for pass-through
+      adapters where source and destination types are identical.
+    ucas: [UCA-24]
+    hazards: [H-13]
+
+  - id: CC-24
+    controller: CTRL-7
+    constraint: >
+      The component optimizer must not reorder adapter execution when
+      adapters have observable side effects on shared state (memory writes,
+      resource handle allocation, table mutations).
+    ucas: [UCA-25]
+    hazards: [H-13]

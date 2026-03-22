@@ -1,0 +1,144 @@
+# STPA Step 1c: System-Level Constraints
+#
+# System: LOOM -- provably correct WebAssembly optimizer
+#
+# Each constraint is the inversion of one or more hazards.
+
+system-constraints:
+  - id: SC-1
+    title: Every ISLE rewrite rule must preserve semantic equivalence
+    description: >
+      For every ISLE rewrite rule lhs => rhs, for all possible input
+      values, the result of evaluating lhs must equal the result of
+      evaluating rhs. This must hold for edge cases including zero,
+      MIN_INT, MAX_INT, NaN, infinity, and subnormals. Rules involving
+      trapping operations must preserve trap behavior.
+    hazards: [H-1]
+
+  - id: SC-2
+    title: Instruction-to-term and term-to-instruction conversions must be semantically faithful
+    description: >
+      The round-trip from instructions to terms to simplified terms back
+      to instructions must produce instructions with identical observable
+      behavior to the original. No instruction field (memory index,
+      alignment, signedness, immediate values) may be lost or
+      misrepresented during conversion.
+    hazards: [H-2, H-3]
+
+  - id: SC-3
+    title: Stack validation must reject all type-invalid sequences
+    description: >
+      The stack checker must correctly compute the stack effect of every
+      supported instruction, including polymorphic instructions, multi-value
+      blocks, and call_indirect with type lookup. No instruction sequence
+      that violates WebAssembly stack discipline may pass validation.
+    hazards: [H-4]
+
+  - id: SC-4
+    title: DCE must only remove provably unreachable code
+    description: >
+      Dead code elimination must only remove instructions that are provably
+      unreachable -- after unconditional terminators (return, br, unreachable)
+      with all branch targets accounted for. Code reachable via any
+      control flow path must never be removed.
+    hazards: [H-5]
+
+  - id: SC-5
+    title: CSE must not cache expressions with observable side effects
+    description: >
+      Common subexpression elimination must not cache expressions that
+      may trap, load from memory that may be modified between uses, or
+      have any other observable side effect that depends on evaluation
+      position. Only pure, side-effect-free expressions may be cached.
+    hazards: [H-6]
+
+  - id: SC-6
+    title: Function inlining must correctly remap all local indices and preserve stack discipline
+    description: >
+      Inlining must remap callee locals to non-conflicting indices in the
+      caller, preserve return semantics, handle recursion by bounding
+      inlining depth, and produce an instruction sequence that satisfies
+      stack validation.
+    hazards: [H-7]
+
+  - id: SC-7
+    title: Branch simplification must only eliminate provably constant conditions
+    description: >
+      A branch may only be simplified when its condition is a compile-time
+      constant that cannot be modified between the point where the constant
+      is established and the branch instruction. Locals modified inside
+      blocks, by calls, or by memory operations must not be treated as
+      constants.
+    hazards: [H-8]
+
+  - id: SC-8
+    title: LICM must only hoist instructions independent of loop-modified state
+    description: >
+      Loop-invariant code motion must track all locals modified within
+      the loop body (including by calls), all memory operations, and all
+      global mutations. Only instructions that depend solely on values
+      provably unmodified by the loop body may be hoisted.
+    hazards: [H-9]
+
+  - id: SC-9
+    title: The binary encoder must produce spec-conformant WASM
+    description: >
+      The encoder must produce a valid WebAssembly binary per the
+      specification: correct section ordering, valid LEB128 encoding,
+      matching type indices, correct function body byte lengths, and
+      proper end opcodes. Output must pass wasm-tools validate.
+    hazards: [H-10]
+
+  - id: SC-10
+    title: The parser must faithfully translate all supported operators
+    description: >
+      Every wasmparser Operator variant that LOOM claims to support must
+      be translated to the correct Instruction variant with all fields
+      preserved. Unsupported operators must cause the function to be
+      skipped entirely -- never silently dropped.
+    hazards: [H-11]
+
+  - id: SC-11
+    title: Z3 verification must faithfully encode WebAssembly semantics
+    description: >
+      The SMT encoding must use correct bit-widths, model overflow and
+      wraparound behavior, encode trap conditions, and represent control
+      flow accurately. The encoding must be conservative -- if Z3 reports
+      equivalence, the programs must actually be equivalent.
+    hazards: [H-12]
+
+  - id: SC-12
+    title: Component model optimization must preserve adapter semantics
+    description: >
+      Adapter function transformations must preserve the lifting/lowering
+      contract. Same-memory collapse may only occur when the adapters
+      perform no data transformation. The external interface of the
+      component must be identical before and after optimization.
+    hazards: [H-13]
+
+  - id: SC-13
+    title: Strength reduction must be algebraically valid for all inputs
+    description: >
+      Every strength reduction transformation must be equivalent for all
+      possible input values, including edge cases for signed/unsigned
+      operations. Division-to-shift must account for negative number
+      rounding. Modulo-to-AND must verify unsigned and power-of-2.
+    hazards: [H-14]
+
+  - id: SC-14
+    title: Code folding and block merging must preserve branch target semantics
+    description: >
+      When blocks are flattened or merged, all branch targets (br, br_if,
+      br_table) must be adjusted to refer to the correct destination.
+      Loop structure must be preserved. Block depth changes must be
+      propagated to all contained branch instructions.
+    hazards: [H-15]
+
+  - id: SC-15
+    title: Precompute must only fold truly immutable globals
+    description: >
+      Global constant propagation may only replace global.get with a
+      constant when the global is declared as immutable (const). Mutable
+      globals must never be folded, regardless of whether mutation is
+      observed in the current module (imported functions may mutate them).
+    hazards: [H-16]
