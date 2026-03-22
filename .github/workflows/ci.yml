@@ -245,12 +245,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pin to Rust 1.93.1 for WASM build — Rust 1.94.0 bundles a
+      # wasm-component-ld that generates __wasi_init_tp imports which the
+      # wasip2 component model cannot resolve with wasi-sdk-25.
+      # Last known working: 1.93.1 (2026-02-11), confirmed in CI run 22541892477.
+      # TODO: Unpin when Rust stable + wasi-sdk resolves the wasip2 thread init issue.
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
-          key: wasm-z3-build
+          key: wasm-z3-build-1.93.1
 
       - name: Install wasi-sdk
         run: |
@@ -264,12 +269,8 @@ jobs:
         env:
           # pulseengine/z3.rs wasi-sdk-support branch handles Z3 build internally
           WASI_SDK_PREFIX: /opt/wasi-sdk
-          # Disable thread-local storage init to avoid __wasi_init_tp linker error
-          # with Rust 1.94+ and wasi-sdk-25 (wasip2 component model does not
-          # export this symbol). See: https://github.com/rust-lang/rust/issues/
-          RUSTFLAGS: "-C target-feature=-atomics,-bulk-memory,-mutable-globals"
         run: |
-          cargo build --release --target wasm32-wasip2 --package loom-cli
+          cargo +1.93.1 build --release --target wasm32-wasip2 --package loom-cli
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
