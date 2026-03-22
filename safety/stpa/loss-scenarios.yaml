@@ -4,6 +4,23 @@
 #
 # Causal pathways describing how UCAs could occur or how control actions
 # could be improperly executed.
+#
+# CODE-VERIFICATION STATUS (2026-03-22):
+#   LS-1: Not yet code-verified (ISLE rule edge cases)
+#   LS-2: CONFIRMED — loom-shared/src/lib.rs:3214-3404, partial NaN guard
+#   LS-3: NOT APPLICABLE — truncation ops in unsupported skip list
+#   LS-4: Not yet code-verified (wasmparser wildcard)
+#   LS-5: Not yet code-verified (multi-memory parser paths)
+#   LS-6: MITIGATED — lib.rs:6017-6021, only Return/Unreachable terminate
+#   LS-7: MITIGATED — no Load variant in Expr, stack cleared, is_pure() guard
+#   LS-8: MITIGATED — lib.rs:9937-9971, proper local offset + remap
+#   LS-9: Not yet code-verified (LICM call tracking)
+#   LS-10: Not yet code-verified (encoder dual paths)
+#   LS-11: Not yet code-verified (Z3 signed encoding)
+#   LS-12: PARTIALLY CONFIRMED — main path rejects, loop K-induction silent
+#   LS-13: Not yet code-verified (adapter collapse check)
+#   LS-14: PARTIALLY CONFIRMED — dogfooding exists, no combinatorial testing
+#   LS-15: CONFIRMED — lib.rs:9868 + fused_optimizer.rs:899 HashMap iteration
 
 loss-scenarios:
 

@@ -259,6 +259,28 @@ sub-hazards:
       is out of bounds, the stack checker uses a wrong or default signature,
       accepting invalid sequences.
 
+  # Refinements of H-1 — float folding (CODE-VERIFIED 2026-03-22)
+  - id: H-1.4
+    parent: H-1
+    title: Float fold result produces non-canonical NaN (CODE-VERIFIED)
+    description: >
+      When neither operand is NaN but the operation produces NaN (e.g.,
+      0.0/0.0, inf-inf), Rust's f32/f64 arithmetic produces a host-specific
+      NaN bit pattern. The code uses ImmF32::new(result) which calls
+      result.to_bits() with no canonicalization. WebAssembly requires
+      canonical NaN (0x7fc00000 for f32). Verified at loom-shared/src/lib.rs
+      lines 3214-3404 and ImmF32::new at lines 108-109.
+
+  - id: H-1.5
+    parent: H-1
+    title: Float fold may flush subnormals on some host platforms (CODE-VERIFIED)
+    description: >
+      Float constant folding uses native Rust f32/f64 arithmetic which
+      delegates to the host FPU. On ARM with FTZ enabled, subnormals are
+      flushed to zero. WebAssembly specifies gradual underflow. No
+      subnormal guard exists. Verified at loom-shared/src/lib.rs lines
+      3225, 3255, 3280, 3302 (f32) and 3323, 3352, 3376, 3397 (f64).
+
   # Refinements of H-13 (component model)
   - id: H-13.1
     parent: H-13
