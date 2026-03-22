@@ -9065,7 +9065,7 @@ pub mod optimize {
     pub fn eliminate_common_subexpressions(module: &mut Module) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         let ctx = ValidationContext::from_module(module);
 
@@ -9083,7 +9083,7 @@ pub mod optimize {
             let patterns = find_expression_patterns(&func.instructions);
 
             // Phase 2: Group patterns by hash to find duplicates
-            let mut pattern_map: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut pattern_map: BTreeMap<String, Vec<usize>> = BTreeMap::new();
             for (idx, pattern) in patterns.iter().enumerate() {
                 pattern_map
                     .entry(pattern.hash.clone())
@@ -9381,7 +9381,7 @@ pub mod optimize {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
         use std::collections::hash_map::DefaultHasher;
-        use std::collections::HashMap;
+        use std::collections::{BTreeMap, HashMap};
         use std::hash::{Hash, Hasher};
 
         let ctx = ValidationContext::from_module(module);
@@ -9493,7 +9493,7 @@ pub mod optimize {
             // Simulate stack to build expression trees
             let mut stack: Vec<Expr> = Vec::new();
             let mut expr_at_position: HashMap<usize, (Expr, u64)> = HashMap::new();
-            let mut hash_to_positions: HashMap<u64, Vec<usize>> = HashMap::new();
+            let mut hash_to_positions: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
 
             // Phase 1: Build expression trees and detect duplicates
             for (pos, instr) in func.instructions.iter().enumerate() {
@@ -9662,7 +9662,7 @@ pub mod optimize {
             let base_local_idx = func.signature.params.len() as u32
                 + func.locals.iter().map(|(count, _)| count).sum::<u32>();
 
-            let mut hash_to_local: HashMap<u64, u32> = HashMap::new();
+            let mut hash_to_local: BTreeMap<u64, u32> = BTreeMap::new();
             for (idx, (hash, _)) in duplicates_to_eliminate.iter().enumerate() {
                 let local_idx = base_local_idx + idx as u32;
                 hash_to_local.insert(*hash, local_idx);
@@ -9841,7 +9841,7 @@ pub mod optimize {
     pub fn inline_functions(module: &mut Module) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         // Run inlining to fixed point to ensure idempotence
         // Keep inlining until no more candidates are found
@@ -9849,8 +9849,8 @@ pub mod optimize {
             // Build context at start of each iteration (after possible function changes)
             let ctx = ValidationContext::from_module(module);
             // Phase 1: Build call graph and analyze functions
-            let mut call_counts: HashMap<u32, usize> = HashMap::new();
-            let mut function_sizes: HashMap<u32, usize> = HashMap::new();
+            let mut call_counts: BTreeMap<u32, usize> = BTreeMap::new();
+            let mut function_sizes: BTreeMap<u32, usize> = BTreeMap::new();
 
             // Calculate function sizes (instruction count)
             for (idx, func) in module.functions.iter().enumerate() {
@@ -10137,7 +10137,7 @@ pub mod optimize {
     /// Count function calls recursively
     fn count_calls_recursive(
         instructions: &[Instruction],
-        call_counts: &mut std::collections::HashMap<u32, usize>,
+        call_counts: &mut std::collections::BTreeMap<u32, usize>,
     ) {
         for instr in instructions {
             match instr {

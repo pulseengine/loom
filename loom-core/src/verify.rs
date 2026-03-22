@@ -1061,7 +1061,8 @@ fn verify_loops_kinduction(
                     return Ok(false);
                 }
                 SatResult::Unknown => {
-                    // Z3 couldn't decide - fall back to assuming equivalent
+                    // Z3 couldn't decide - cannot prove equivalence
+                    return Ok(false);
                 }
             }
 
@@ -1620,8 +1621,8 @@ pub fn verify_function_equivalence(
                     return Ok(false);
                 }
                 Err(_) => {
-                    // K-induction failed - fall back to assuming equivalent
-                    return Ok(true);
+                    // K-induction error - cannot prove equivalence
+                    return Ok(false);
                 }
             }
         } else {
@@ -1899,8 +1900,8 @@ pub fn verify_function_equivalence_with_context(
                     return Ok(false);
                 }
                 Err(_) => {
-                    // K-induction couldn't complete - fall back to assuming equivalent
-                    return Ok(true);
+                    // K-induction error - cannot prove equivalence
+                    return Ok(false);
                 }
             }
         } else {

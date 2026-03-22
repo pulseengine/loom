@@ -1,0 +1,269 @@
+# STPA Step 4: Loss Scenarios
+#
+# System: LOOM -- provably correct WebAssembly optimizer
+#
+# Causal pathways describing how UCAs could occur or how control actions
+# could be improperly executed.
+#
+# CODE-VERIFICATION STATUS (2026-03-22):
+#   LS-1: Not yet code-verified (ISLE rule edge cases)
+#   LS-2: CONFIRMED — loom-shared/src/lib.rs:3214-3404, partial NaN guard
+#   LS-3: NOT APPLICABLE — truncation ops in unsupported skip list
+#   LS-4: Not yet code-verified (wasmparser wildcard)
+#   LS-5: Not yet code-verified (multi-memory parser paths)
+#   LS-6: MITIGATED — lib.rs:6017-6021, only Return/Unreachable terminate
+#   LS-7: MITIGATED — no Load variant in Expr, stack cleared, is_pure() guard
+#   LS-8: MITIGATED — lib.rs:9937-9971, proper local offset + remap
+#   LS-9: Not yet code-verified (LICM call tracking)
+#   LS-10: Not yet code-verified (encoder dual paths)
+#   LS-11: Not yet code-verified (Z3 signed encoding)
+#   LS-12: PARTIALLY CONFIRMED — main path rejects, loop K-induction silent
+#   LS-13: Not yet code-verified (adapter collapse check)
+#   LS-14: PARTIALLY CONFIRMED — dogfooding exists, no combinatorial testing
+#   LS-15: CONFIRMED — lib.rs:9868 + fused_optimizer.rs:899 HashMap iteration
+
+loss-scenarios:
+
+  # ── Scenarios for ISLE rewriting failures ────────────────────────────
+  - id: LS-1
+    title: ISLE rule author writes rule valid only for positive integers
+    uca: UCA-4
+    hazards: [H-1, H-14]
+    type: inadequate-control-algorithm
+    scenario: >
+      A developer adds an ISLE rule like "x / 2 => x >> 1" for i32.div_s.
+      This is correct for non-negative x but wrong for negative odd x
+      (e.g., -3 / 2 should be -1, but -3 >> 1 is -2 in two's complement
+      arithmetic right shift). The rule is not caught during review because
+      positive test cases pass [UCA-4], producing wrong results for negative
+      inputs [H-1].
+    causal-factors:
+      - Insufficient edge-case testing in rule development
+      - No systematic enumeration of signed/unsigned operation pairs
+      - Z3 verification may not be run for all new rules
+
+  - id: LS-2
+    title: Float constant folding uses host platform arithmetic
+    uca: UCA-4
+    hazards: [H-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      LOOM folds float operations using Rust's native f32/f64 arithmetic,
+      which delegates to the host CPU's FPU. The host may produce a
+      different NaN bit pattern than the WebAssembly canonical NaN, or
+      may flush subnormals to zero when the WASM spec requires preserving
+      them. The folded constant is wrong for some platforms [UCA-4], leading
+      to non-deterministic results [H-1].
+    causal-factors:
+      - Rust does not guarantee WASM-compatible float semantics
+      - Different host CPUs have different NaN canonicalization
+      - Subnormal handling varies by platform and compiler flags
+
+  - id: LS-3
+    title: Trapping truncation guard checks range but not NaN
+    uca: UCA-5
+    hazards: [H-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      The constant-folding guard for i32.trunc_f64_s checks whether the
+      float value is in the i32 range but does not check for NaN. NaN
+      truncation should trap per the WASM spec, but the guard allows
+      folding NaN to some implementation-defined integer value [UCA-5],
+      suppressing the required trap [H-1].
+    causal-factors:
+      - Guard condition is incomplete (range check without NaN check)
+      - NaN is not in range but is also not outside range in IEEE 754
+
+  # ── Scenarios for parser failures ────────────────────────────────────
+  - id: LS-4
+    title: New wasmparser version adds Operator variant not in match
+    uca: UCA-2
+    hazards: [H-11]
+    type: inadequate-feedback
+    scenario: >
+      A dependency update bumps wasmparser to a version that adds new
+      Operator variants. The parser's match statement uses a wildcard
+      fallback. New operators are silently classified as Unknown instead
+      of being properly translated [UCA-2]. Functions using the new
+      operators may not be correctly skipped [H-11].
+    causal-factors:
+      - Wildcard match arm hides missing cases
+      - Dependency updates are not always accompanied by parser audit
+      - No compile-time enforcement of exhaustive operator coverage
+
+  - id: LS-5
+    title: Multi-memory support added but parser hardcodes memory 0
+    uca: UCA-3
+    hazards: [H-11, H-2]
+    type: process-model-flaw
+    scenario: >
+      When multi-memory support was initially implemented, some load/store
+      parser paths were missed and still default to memory index 0. The
+      process model assumed single-memory modules [UCA-3]. Multi-memory
+      modules have their accesses silently redirected to memory 0 [H-11],
+      causing incorrect optimization across memories [H-2].
+    causal-factors:
+      - Incremental feature addition without full audit
+      - Multiple code paths for memory instruction parsing
+      - No test corpus with multi-memory modules
+
+  # ── Scenarios for DCE failures ───────────────────────────────────────
+  - id: LS-6
+    title: DCE treats br_if as unconditional terminator
+    uca: UCA-10
+    hazards: [H-5]
+    type: inadequate-control-algorithm
+    scenario: >
+      The DCE pass checks for terminator instructions after which code
+      is dead. It includes br_if in the terminator list, but br_if is
+      conditional -- the fall-through path is live. Code after br_if
+      is incorrectly removed [UCA-10], changing function behavior [H-5].
+    causal-factors:
+      - br_if resembles br but has different control flow semantics
+      - The terminator check is a simple pattern match on opcode
+
+  # ── Scenarios for CSE failures ───────────────────────────────────────
+  - id: LS-7
+    title: CSE hash function treats memory loads as pure
+    uca: UCA-11
+    hazards: [H-6]
+    type: inadequate-process-model
+    scenario: >
+      The CSE expression hash includes the opcode and operands but does
+      not distinguish memory loads from arithmetic. Two i32.load instructions
+      with the same address are hashed identically. If a store occurs
+      between them, the cached value is stale [UCA-11]. The process model
+      does not track memory mutation between expression occurrences [H-6].
+    causal-factors:
+      - Memory load appears syntactically identical to a pure computation
+      - No alias analysis to track store-load dependencies
+      - CSE operates on instruction sequences, not a proper SSA/dataflow IR
+
+  # ── Scenarios for inlining failures ──────────────────────────────────
+  - id: LS-8
+    title: Inliner reuses callee local indices in caller scope
+    uca: UCA-12
+    hazards: [H-7]
+    type: inadequate-control-algorithm
+    scenario: >
+      The inliner copies the callee body into the caller but does not
+      offset local indices. Callee local 0 (its first parameter) collides
+      with caller local 0 (the caller's first parameter) [UCA-12]. The
+      inlined code reads the caller's parameter instead of the callee's
+      argument [H-7].
+    causal-factors:
+      - Local index remapping is a separate step that can be omitted
+      - Simple copy-paste of instruction sequences is tempting
+
+  # ── Scenarios for LICM failures ──────────────────────────────────────
+  - id: LS-9
+    title: LICM does not track locals modified by calls inside loop
+    uca: UCA-15
+    hazards: [H-9]
+    type: inadequate-process-model
+    scenario: >
+      LICM tracks explicitly modified locals (via local.set/local.tee)
+      inside the loop but does not account for calls. A call instruction
+      may modify any global state, and if the callee writes to a global
+      that the hoisted instruction reads, the hoisted instruction uses
+      a stale value [UCA-15]. The conservative approach should be to
+      never hoist past calls [H-9].
+    causal-factors:
+      - Call instructions are treated as black boxes for side effects
+      - LOOM does not perform interprocedural analysis
+      - The conservative approach should be to never hoist past calls
+
+  # ── Scenarios for encoder failures ───────────────────────────────────
+  - id: LS-10
+    title: Encoder has two encoding paths that diverge
+    uca: UCA-22
+    hazards: [H-10]
+    type: coordination-failure
+    scenario: >
+      The encoder has two code paths for writing function bodies (one in
+      encode_wasm and one in a helper). A bug fix applied to one path is
+      not applied to the other [UCA-22]. Certain instruction types are
+      encoded correctly by one path but incorrectly by the other [H-10].
+    causal-factors:
+      - Code duplication in encoder
+      - No systematic test that exercises both paths
+
+  # ── Scenarios for Z3 verification failures ───────────────────────────
+  - id: LS-11
+    title: Z3 encoding treats signed division as unsigned
+    uca: UCA-20
+    hazards: [H-12]
+    type: inadequate-control-algorithm
+    scenario: >
+      The Z3 encoding for i32.div_s uses bvudiv (unsigned division)
+      instead of bvsdiv (signed division). Z3 proves "equivalence" but
+      the proof is for unsigned semantics [UCA-20]. A signed-specific bug
+      in the optimizer (e.g., wrong strength reduction for negative
+      numbers) is not detected [H-12].
+    causal-factors:
+      - BV operations in Z3 have separate signed/unsigned variants
+      - The signed/unsigned distinction is easy to miss in encoding
+
+  - id: LS-12
+    title: Z3 verification timeout causes silent pass
+    uca: UCA-20
+    hazards: [H-12]
+    type: inadequate-feedback
+    scenario: >
+      Z3 times out on a complex function and returns UNKNOWN. The
+      verification harness treats UNKNOWN as "not a counterexample"
+      rather than "inconclusive" [UCA-20]. The function is considered
+      verified when it was never actually checked [H-12].
+    causal-factors:
+      - UNKNOWN is not the same as UNSAT but may be conflated
+      - Timeout behavior depends on function complexity
+      - No metric tracking how many functions get UNKNOWN results
+
+  # ── Scenarios for component model failures ───────────────────────────
+  - id: LS-13
+    title: Same-memory check does not verify data transformation absence
+    uca: UCA-24
+    hazards: [H-13]
+    type: inadequate-process-model
+    scenario: >
+      The component optimizer checks that two adapters share the same
+      linear memory and concludes collapse is safe. But the adapters
+      perform string encoding conversion (UTF-8 to UTF-16) that the
+      collapse check does not detect [UCA-24]. The collapsed adapter
+      passes raw bytes without conversion [H-13].
+    causal-factors:
+      - Same-memory is necessary but not sufficient for collapse
+      - Adapter semantics depend on more than memory identity
+      - The check was designed for simple pass-through adapters
+
+  # ── Cross-cutting scenarios ──────────────────────────────────────────
+  - id: LS-14
+    title: Optimization phase ordering creates emergent bug
+    hazards: [H-1]
+    type: coordination-failure
+    scenario: >
+      Each optimization phase is correct in isolation, but the combination
+      of phases creates an incorrect result. For example: CSE caches an
+      expression, then inlining introduces new code that modifies the
+      cached value, then the second ISLE pass does not re-check the cache.
+      No single phase is wrong, but the pipeline as a whole produces an
+      incorrect result [H-1].
+    causal-factors:
+      - Phases are tested independently but not all orderings
+      - Phase interactions are combinatorially complex
+      - Self-optimization (dogfooding) is the main integration test
+
+  - id: LS-15
+    title: Non-deterministic HashMap iteration causes flaky results
+    hazards: [H-5]
+    type: process-model-flaw
+    scenario: >
+      An optimization pass (CSE, inlining heuristic, or local renaming)
+      iterates over a HashMap whose iteration order varies between runs.
+      Different orderings produce different optimization choices (e.g.,
+      which duplicate to keep in CSE). The output is semantically correct
+      but binary-non-deterministic, preventing reproducible builds [H-5].
+    causal-factors:
+      - Rust HashMap uses randomized hashing by default
+      - Non-determinism may not manifest in small test cases
+      - Reproducible builds require deterministic tool output
