@@ -6643,49 +6643,6 @@ pub mod optimize {
         false
     }
 
-    /// Check if a function has control flow that makes dataflow-based ISLE optimization unsafe.
-    ///
-    /// The ISLE term-based optimization with dataflow analysis (simplify_with_env) can incorrectly
-    /// move side effects outside of control flow blocks. For example, a LocalSet after a BrIf
-    /// may be moved to execute unconditionally. This is a semantic violation.
-    ///
-    /// Functions with BrIf or BrTable should skip ISLE dataflow optimization until the
-    /// optimization is made control-flow aware.
-    fn has_dataflow_unsafe_control_flow(func: &Function) -> bool {
-        has_dataflow_unsafe_control_flow_in_block(&func.instructions)
-    }
-
-    fn has_dataflow_unsafe_control_flow_in_block(instructions: &[Instruction]) -> bool {
-        for instr in instructions {
-            match instr {
-                // BrIf and BrTable create multiple execution paths that our dataflow
-                // analysis doesn't handle correctly
-                Instruction::BrIf { .. } | Instruction::BrTable { .. } => {
-                    return true;
-                }
-                // Recursively check nested blocks
-                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    if has_dataflow_unsafe_control_flow_in_block(body) {
-                        return true;
-                    }
-                }
-                Instruction::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => {
-                    if has_dataflow_unsafe_control_flow_in_block(then_body)
-                        || has_dataflow_unsafe_control_flow_in_block(else_body)
-                    {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        false
-    }
-
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
