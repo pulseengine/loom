@@ -6779,11 +6779,10 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip functions with control flow that makes dataflow-based optimization unsafe
-            // BrIf/BrTable can cause our optimization to move LocalSet outside control flow
-            if has_dataflow_unsafe_control_flow(func) {
-                continue;
-            }
+            // BrIf/BrTable now handled: simplify_with_env recursively descends
+            // into Block/Loop/If bodies with proper env save/restore, and clears
+            // env at loop entry (preventing stale back-edge values) and at all
+            // control flow exit points. See loom-shared simplify_with_env.
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
             // Use context-aware validator for proper Call/CallIndirect verification
@@ -10787,11 +10786,7 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip functions with control flow that makes dataflow-based optimization unsafe
-            // BrIf/BrTable can cause our optimization to move LocalSet outside control flow
-            if has_dataflow_unsafe_control_flow(func) {
-                continue;
-            }
+            // BrIf/BrTable now handled by recursive env-aware simplify_with_env.
 
             let guard =
                 ValidationGuard::with_context(func, "optimize_advanced_instructions", ctx.clone());
