@@ -6724,25 +6724,34 @@ pub mod optimize {
         // Optimize added constants
         optimize_added_constants(module)?;
 
-        // Phase 5: Validate stack properties after optimizations
-        // NOTE: Stack validation is currently DISABLED pending bug fixes.
-        // The compositional stack analysis produces false positives when
-        // optimizations reorder or eliminate dead code. The validation
-        // reports mismatches between identical signatures, indicating the
-        // composition logic needs refinement.
+        // Phase 5: Post-optimization stack validation (defense-in-depth)
         //
-        // Per our proof-first philosophy, we acknowledge this limitation
-        // rather than silently skipping. Z3 verification still validates
-        // semantic equivalence for supported instructions.
+        // Each optimization pass already runs guard.validate(func)? which catches
+        // per-pass stack discipline violations. This module-level check is an
+        // additional safety gate that validates all functions after the full pipeline.
         //
-        // TODO: Fix stack validation composition for:
-        // - Dead code after unconditional branches
-        // - Optimizations that change instruction count
-        // - Local coalescing transformations
-        #[cfg(feature = "verification")]
+        // Note: validate_module_blocks (compositional block analysis) has known
+        // false positives with dead code and instruction count changes. We use
+        // validate_function instead, which checks the whole function without
+        // compositional decomposition. Functions with unanalyzable instructions
+        // (Unknown, CallIndirect) are skipped — these are also skipped by the
+        // optimizer itself, so they are unmodified.
         {
-            let _ = super::verify::validate_module_blocks(module);
-            // Validation result intentionally ignored until composition bugs are fixed
+            use crate::stack::validation::{validate_function_with_context, ValidationContext};
+            let ctx = ValidationContext::from_module(module);
+            for func in &module.functions {
+                // Skip functions the optimizer also skips
+                if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                    continue;
+                }
+                if let Err(e) = validate_function_with_context(func, &ctx) {
+                    return Err(anyhow::anyhow!(
+                        "Post-optimization stack validation failed for '{}': {}",
+                        func.name.as_deref().unwrap_or("<anonymous>"),
+                        e
+                    ));
+                }
+            }
         }
 
         Ok(())
