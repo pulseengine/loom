@@ -6594,28 +6594,20 @@ pub mod optimize {
     use super::{BlockType, Function, Instruction, Module}; // Value unused with ISLE disabled
     use anyhow::Result;
 
-    /// Helper: Check if a function contains Unknown instructions (optimization barrier)
-    fn has_unknown_instructions(func: &Function) -> bool {
-        func.instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::Unknown(_)))
-    }
-
-    /// Helper: Check if a function contains instructions not supported by ISLE term conversion
+    /// Check if a function contains Unknown instructions (optimization barrier).
     ///
-    /// Currently only `Unknown` instructions are unsupported — all standard WASM
-    /// instructions (integer, float, conversion, memory, control flow, call_indirect,
-    /// br_table, bulk memory) are fully wired into the ISLE pipeline.
-    fn has_unsupported_isle_instructions(func: &Function) -> bool {
-        has_unsupported_isle_instructions_in_block(&func.instructions)
+    /// Recursively checks nested blocks. All standard WASM instructions are
+    /// supported — only `Unknown` (unrecognized opcodes) triggers a skip.
+    fn has_unknown_instructions(func: &Function) -> bool {
+        has_unknown_instructions_in_block(&func.instructions)
     }
 
-    fn has_unsupported_isle_instructions_in_block(instructions: &[Instruction]) -> bool {
+    fn has_unknown_instructions_in_block(instructions: &[Instruction]) -> bool {
         for instr in instructions {
             match instr {
-                // Recursively check nested blocks
+                Instruction::Unknown(_) => return true,
                 Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    if has_unsupported_isle_instructions_in_block(body) {
+                    if has_unknown_instructions_in_block(body) {
                         return true;
                     }
                 }
@@ -6624,19 +6616,12 @@ pub mod optimize {
                     else_body,
                     ..
                 } => {
-                    if has_unsupported_isle_instructions_in_block(then_body)
-                        || has_unsupported_isle_instructions_in_block(else_body)
+                    if has_unknown_instructions_in_block(then_body)
+                        || has_unknown_instructions_in_block(else_body)
                     {
                         return true;
                     }
                 }
-
-                // Unknown instructions (opaque — cannot model stack effects)
-                Instruction::Unknown(_) => {
-                    return true;
-                }
-
-                // All other instructions are supported
                 _ => {}
             }
         }
@@ -6741,7 +6726,7 @@ pub mod optimize {
             let ctx = ValidationContext::from_module(module);
             for func in &module.functions {
                 // Skip functions the optimizer also skips
-                if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                if has_unknown_instructions(func) {
                     continue;
                 }
                 if let Err(e) = validate_function_with_context(func, &ctx) {
@@ -6775,7 +6760,7 @@ pub mod optimize {
             // Skip optimization for functions with unsupported instructions
             // This includes floats, conversions, rotations, and unknown opcodes
             // which would corrupt the stack simulation in instructions_to_terms
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -6841,7 +6826,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -7041,7 +7026,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -7170,7 +7155,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -7353,7 +7338,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -7536,7 +7521,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -8255,7 +8240,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -8637,7 +8622,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -9379,7 +9364,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -9493,7 +9478,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -10076,7 +10061,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -10483,7 +10468,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -10783,7 +10768,7 @@ pub mod optimize {
             // Skip optimization for functions with unsupported instructions
             // This includes floats, conversions, rotations, and unknown opcodes
             // which would corrupt the stack simulation in instructions_to_terms
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
@@ -10899,7 +10884,7 @@ pub mod optimize {
 
             for func in &mut module.functions {
                 // Skip functions with unsupported instructions (can't verify)
-                if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                if has_unknown_instructions(func) {
                     continue;
                 }
 
@@ -11183,7 +11168,7 @@ pub mod optimize {
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
-            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+            if has_unknown_instructions(func) {
                 continue;
             }
 
