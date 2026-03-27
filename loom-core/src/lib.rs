@@ -6643,6 +6643,42 @@ pub mod optimize {
         false
     }
 
+    /// Check if a function has control flow that makes dataflow-based ISLE optimization unsafe.
+    ///
+    /// Functions with BrIf or BrTable are skipped for ISLE dataflow optimization because
+    /// simplify_with_env's linear env tracking cannot correctly handle multiple execution
+    /// paths, loop back-edges, or early block exits. Z3 confirms counterexamples exist
+    /// (e.g., matrix_multiply). Full fix requires basic block splitting or SSA (#56).
+    fn has_dataflow_unsafe_control_flow(func: &Function) -> bool {
+        has_dataflow_unsafe_control_flow_in_block(&func.instructions)
+    }
+
+    fn has_dataflow_unsafe_control_flow_in_block(instructions: &[Instruction]) -> bool {
+        for instr in instructions {
+            match instr {
+                Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    if has_dataflow_unsafe_control_flow_in_block(body) {
+                        return true;
+                    }
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    if has_dataflow_unsafe_control_flow_in_block(then_body)
+                        || has_dataflow_unsafe_control_flow_in_block(else_body)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
@@ -6694,7 +6730,7 @@ pub mod optimize {
         // (Unknown, CallIndirect) are skipped — these are also skipped by the
         // optimizer itself, so they are unmodified.
         {
-            use crate::stack::validation::{validate_function_with_context, ValidationContext};
+            use crate::stack::validation::{ValidationContext, validate_function_with_context};
             let ctx = ValidationContext::from_module(module);
             for func in &module.functions {
                 // Skip functions the optimizer also skips
@@ -6736,10 +6772,14 @@ pub mod optimize {
                 continue;
             }
 
-            // BrIf/BrTable now handled: simplify_with_env recursively descends
-            // into Block/Loop/If bodies with proper env save/restore, and clears
-            // env at loop entry (preventing stale back-edge values) and at all
-            // control flow exit points. See loom-shared simplify_with_env.
+            // Skip functions with BrIf/BrTable for ISLE dataflow optimization.
+            // simplify_with_env has env clearing at control flow boundaries but
+            // Z3 still finds counterexamples for some patterns (e.g., matrix_multiply).
+            // Full fix requires basic block splitting or SSA conversion (#56).
+            // The env clearing in simplify_with_env is defense-in-depth for future work.
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
             // Use context-aware validator for proper Call/CallIndirect verification
@@ -10743,7 +10783,10 @@ pub mod optimize {
                 continue;
             }
 
-            // BrIf/BrTable now handled by recursive env-aware simplify_with_env.
+            // Skip functions with BrIf/BrTable — see comment in constant_folding.
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
 
             let guard =
                 ValidationGuard::with_context(func, "optimize_advanced_instructions", ctx.clone());

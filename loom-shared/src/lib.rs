@@ -3010,19 +3010,21 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         // env save/restore semantics. This is the key enabler for optimizing
         // functions with BrIf/BrTable — we descend into each body with the
         // correct env state rather than skipping the entire function.
-
         ValueData::Block {
             label,
             block_type,
             body,
         } => {
-            // Optimize body terms with current env
+            // Clear env at block entry. A block can be the target of a br from
+            // an inner loop, meaning it can be reached with different local values
+            // than the linear env tracks. Conservative: start fresh.
+            env.locals.clear();
+            env.invalidate_memory();
             let optimized_body: Vec<Value> = body
                 .iter()
                 .map(|term| simplify_with_env(term.clone(), env))
                 .collect();
-            // After block: clear env conservatively. A br/br_if inside the
-            // block can exit early, so local.set after a branch may not execute.
+            // After block: clear env. A br/br_if inside can exit early.
             env.locals.clear();
             env.invalidate_memory();
             Value(Box::new(ValueData::Block {
@@ -3087,6 +3089,32 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
                 condition: simplified_cond,
                 then_body: optimized_then,
                 else_body: optimized_else,
+            }))
+        }
+
+        // Unconditional branch and return: code after these is dead.
+        // Clear env so dead code doesn't pollute tracked state.
+        ValueData::Br { depth, value } => {
+            let simplified_val = value
+                .as_ref()
+                .map(|v| Box::new(simplify_with_env(v.as_ref().clone(), env)));
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Br {
+                depth: *depth,
+                value: simplified_val,
+            }))
+        }
+
+        ValueData::Return { values } => {
+            let simplified_vals: Vec<Value> = values
+                .iter()
+                .map(|v| simplify_with_env(v.clone(), env))
+                .collect();
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Return {
+                values: simplified_vals,
             }))
         }
 
