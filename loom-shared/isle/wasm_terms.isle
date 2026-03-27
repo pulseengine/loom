@@ -143,10 +143,95 @@
     (GlobalSet (idx u32) (val Value))
 
     ;; Memory operations (Phase 13 - Memory Optimization)
-    (I32Load (addr Value) (offset u32) (align u32))
-    (I32Store (addr Value) (value Value) (offset u32) (align u32))
-    (I64Load (addr Value) (offset u32) (align u32))
-    (I64Store (addr Value) (value Value) (offset u32) (align u32))
+    (I32Load (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Load (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+
+    ;; Float memory operations
+    (F32Load (addr Value) (offset u32) (align u32) (mem u32))
+    (F32Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (F64Load (addr Value) (offset u32) (align u32) (mem u32))
+    (F64Store (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+
+    ;; Float constant operations
+    (F32Const (val ImmF32))
+    (F64Const (val ImmF64))
+
+    ;; Float arithmetic operations (f32)
+    (F32Add (lhs Value) (rhs Value))
+    (F32Sub (lhs Value) (rhs Value))
+    (F32Mul (lhs Value) (rhs Value))
+    (F32Div (lhs Value) (rhs Value))
+
+    ;; Float arithmetic operations (f64)
+    (F64Add (lhs Value) (rhs Value))
+    (F64Sub (lhs Value) (rhs Value))
+    (F64Mul (lhs Value) (rhs Value))
+    (F64Div (lhs Value) (rhs Value))
+
+    ;; Float unary operations (f32)
+    (F32Abs (val Value))
+    (F32Neg (val Value))
+    (F32Ceil (val Value))
+    (F32Floor (val Value))
+    (F32Trunc (val Value))
+    (F32Nearest (val Value))
+    (F32Sqrt (val Value))
+
+    ;; Float unary operations (f64)
+    (F64Abs (val Value))
+    (F64Neg (val Value))
+    (F64Ceil (val Value))
+    (F64Floor (val Value))
+    (F64Trunc (val Value))
+    (F64Nearest (val Value))
+    (F64Sqrt (val Value))
+
+    ;; Float binary operations (f32)
+    (F32Min (lhs Value) (rhs Value))
+    (F32Max (lhs Value) (rhs Value))
+    (F32Copysign (lhs Value) (rhs Value))
+
+    ;; Float binary operations (f64)
+    (F64Min (lhs Value) (rhs Value))
+    (F64Max (lhs Value) (rhs Value))
+    (F64Copysign (lhs Value) (rhs Value))
+
+    ;; Float comparison operations (f32) - return i32 (0 or 1)
+    (F32Eq (lhs Value) (rhs Value))
+    (F32Ne (lhs Value) (rhs Value))
+    (F32Lt (lhs Value) (rhs Value))
+    (F32Gt (lhs Value) (rhs Value))
+    (F32Le (lhs Value) (rhs Value))
+    (F32Ge (lhs Value) (rhs Value))
+
+    ;; Float comparison operations (f64) - return i32 (0 or 1)
+    (F64Eq (lhs Value) (rhs Value))
+    (F64Ne (lhs Value) (rhs Value))
+    (F64Lt (lhs Value) (rhs Value))
+    (F64Gt (lhs Value) (rhs Value))
+    (F64Le (lhs Value) (rhs Value))
+    (F64Ge (lhs Value) (rhs Value))
+
+    ;; Partial-width memory load operations
+    (I32Load8S (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load8U (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load16S (addr Value) (offset u32) (align u32) (mem u32))
+    (I32Load16U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load8S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load8U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load16S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load16U (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load32S (addr Value) (offset u32) (align u32) (mem u32))
+    (I64Load32U (addr Value) (offset u32) (align u32) (mem u32))
+
+    ;; Partial-width memory store operations
+    (I32Store8 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I32Store16 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store8 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store16 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
+    (I64Store32 (addr Value) (value Value) (offset u32) (align u32) (mem u32))
 
     ;; Control flow operations (Issue #12)
     ;; Note: ISLE doesn't support nested lists well, so we use a workaround
@@ -169,6 +254,56 @@
     (I64ExtendI32S (val Value))
     ;; i64.extend_i32_u - zero-extend i32 to i64
     (I64ExtendI32U (val Value))
+
+    ;; Float-to-integer truncation (trapping)
+    (I32TruncF32S (val Value))
+    (I32TruncF32U (val Value))
+    (I32TruncF64S (val Value))
+    (I32TruncF64U (val Value))
+    (I64TruncF32S (val Value))
+    (I64TruncF32U (val Value))
+    (I64TruncF64S (val Value))
+    (I64TruncF64U (val Value))
+
+    ;; Integer-to-float conversion
+    (F32ConvertI32S (val Value))
+    (F32ConvertI32U (val Value))
+    (F32ConvertI64S (val Value))
+    (F32ConvertI64U (val Value))
+    (F64ConvertI32S (val Value))
+    (F64ConvertI32U (val Value))
+    (F64ConvertI64S (val Value))
+    (F64ConvertI64U (val Value))
+
+    ;; Float demote/promote
+    (F32DemoteF64 (val Value))
+    (F64PromoteF32 (val Value))
+
+    ;; Reinterpret (bit-cast)
+    (I32ReinterpretF32 (val Value))
+    (I64ReinterpretF64 (val Value))
+    (F32ReinterpretI32 (val Value))
+    (F64ReinterpretI64 (val Value))
+
+    ;; Saturating float-to-integer truncation (non-trapping)
+    (I32TruncSatF32S (val Value))
+    (I32TruncSatF32U (val Value))
+    (I32TruncSatF64S (val Value))
+    (I32TruncSatF64U (val Value))
+    (I64TruncSatF32S (val Value))
+    (I64TruncSatF32U (val Value))
+    (I64TruncSatF64S (val Value))
+    (I64TruncSatF64U (val Value))
+
+    ;; Memory operations
+    (MemorySize (mem u32))
+    (MemoryGrow (val Value) (mem u32))
+
+    ;; Bulk memory operations (side-effectful)
+    (MemoryFill (dst Value) (val Value) (len Value) (mem u32))
+    (MemoryCopy (dst Value) (src Value) (len Value) (dst_mem u32) (src_mem u32))
+    (MemoryInit (dst Value) (src Value) (len Value) (mem u32) (data_idx u32))
+    (DataDrop (data_idx u32))
 ))
 
 ;; Value is a boxed pointer to ValueData
@@ -388,17 +523,179 @@
 (extern constructor global_set global_set)
 
 ;; Memory operation constructors (Phase 13)
-(decl i32_load (Value u32 u32) Value)
+(decl i32_load (Value u32 u32 u32) Value)
 (extern constructor i32_load i32_load)
 
-(decl i32_store (Value Value u32 u32) Value)
+(decl i32_store (Value Value u32 u32 u32) Value)
 (extern constructor i32_store i32_store)
 
-(decl i64_load (Value u32 u32) Value)
+(decl i64_load (Value u32 u32 u32) Value)
 (extern constructor i64_load i64_load)
 
-(decl i64_store (Value Value u32 u32) Value)
+(decl i64_store (Value Value u32 u32 u32) Value)
 (extern constructor i64_store i64_store)
+
+;; Float memory operation constructors
+(decl f32_load (Value u32 u32 u32) Value)
+(extern constructor f32_load f32_load)
+
+(decl f32_store (Value Value u32 u32 u32) Value)
+(extern constructor f32_store f32_store)
+
+(decl f64_load (Value u32 u32 u32) Value)
+(extern constructor f64_load f64_load)
+
+(decl f64_store (Value Value u32 u32 u32) Value)
+(extern constructor f64_store f64_store)
+
+;; Float constant constructors
+(decl fconst32 (ImmF32) Value)
+(extern constructor fconst32 fconst32)
+(decl fconst64 (ImmF64) Value)
+(extern constructor fconst64 fconst64)
+
+;; Float arithmetic constructors (f32)
+(decl fadd32 (Value Value) Value)
+(extern constructor fadd32 fadd32)
+(decl fsub32 (Value Value) Value)
+(extern constructor fsub32 fsub32)
+(decl fmul32 (Value Value) Value)
+(extern constructor fmul32 fmul32)
+(decl fdiv32 (Value Value) Value)
+(extern constructor fdiv32 fdiv32)
+
+;; Float arithmetic constructors (f64)
+(decl fadd64 (Value Value) Value)
+(extern constructor fadd64 fadd64)
+(decl fsub64 (Value Value) Value)
+(extern constructor fsub64 fsub64)
+(decl fmul64 (Value Value) Value)
+(extern constructor fmul64 fmul64)
+(decl fdiv64 (Value Value) Value)
+(extern constructor fdiv64 fdiv64)
+
+;; Float unary constructors (f32)
+(decl fabs32 (Value) Value)
+(extern constructor fabs32 fabs32)
+(decl fneg32 (Value) Value)
+(extern constructor fneg32 fneg32)
+(decl fceil32 (Value) Value)
+(extern constructor fceil32 fceil32)
+(decl ffloor32 (Value) Value)
+(extern constructor ffloor32 ffloor32)
+(decl ftrunc32 (Value) Value)
+(extern constructor ftrunc32 ftrunc32)
+(decl fnearest32 (Value) Value)
+(extern constructor fnearest32 fnearest32)
+(decl fsqrt32 (Value) Value)
+(extern constructor fsqrt32 fsqrt32)
+
+;; Float unary constructors (f64)
+(decl fabs64 (Value) Value)
+(extern constructor fabs64 fabs64)
+(decl fneg64 (Value) Value)
+(extern constructor fneg64 fneg64)
+(decl fceil64 (Value) Value)
+(extern constructor fceil64 fceil64)
+(decl ffloor64 (Value) Value)
+(extern constructor ffloor64 ffloor64)
+(decl ftrunc64 (Value) Value)
+(extern constructor ftrunc64 ftrunc64)
+(decl fnearest64 (Value) Value)
+(extern constructor fnearest64 fnearest64)
+(decl fsqrt64 (Value) Value)
+(extern constructor fsqrt64 fsqrt64)
+
+;; Float binary constructors (f32)
+(decl fmin32 (Value Value) Value)
+(extern constructor fmin32 fmin32)
+(decl fmax32 (Value Value) Value)
+(extern constructor fmax32 fmax32)
+(decl fcopysign32 (Value Value) Value)
+(extern constructor fcopysign32 fcopysign32)
+
+;; Float binary constructors (f64)
+(decl fmin64 (Value Value) Value)
+(extern constructor fmin64 fmin64)
+(decl fmax64 (Value Value) Value)
+(extern constructor fmax64 fmax64)
+(decl fcopysign64 (Value Value) Value)
+(extern constructor fcopysign64 fcopysign64)
+
+;; Float comparison constructors (f32) - produce i32
+(decl feq32 (Value Value) Value)
+(extern constructor feq32 feq32)
+(decl fne32 (Value Value) Value)
+(extern constructor fne32 fne32)
+(decl flt32 (Value Value) Value)
+(extern constructor flt32 flt32)
+(decl fgt32 (Value Value) Value)
+(extern constructor fgt32 fgt32)
+(decl fle32 (Value Value) Value)
+(extern constructor fle32 fle32)
+(decl fge32 (Value Value) Value)
+(extern constructor fge32 fge32)
+
+;; Float comparison constructors (f64) - produce i32
+(decl feq64 (Value Value) Value)
+(extern constructor feq64 feq64)
+(decl fne64 (Value Value) Value)
+(extern constructor fne64 fne64)
+(decl flt64 (Value Value) Value)
+(extern constructor flt64 flt64)
+(decl fgt64 (Value Value) Value)
+(extern constructor fgt64 fgt64)
+(decl fle64 (Value Value) Value)
+(extern constructor fle64 fle64)
+(decl fge64 (Value Value) Value)
+(extern constructor fge64 fge64)
+
+;; Partial-width memory load constructors
+(decl i32_load8_s (Value u32 u32 u32) Value)
+(extern constructor i32_load8_s i32_load8_s)
+
+(decl i32_load8_u (Value u32 u32 u32) Value)
+(extern constructor i32_load8_u i32_load8_u)
+
+(decl i32_load16_s (Value u32 u32 u32) Value)
+(extern constructor i32_load16_s i32_load16_s)
+
+(decl i32_load16_u (Value u32 u32 u32) Value)
+(extern constructor i32_load16_u i32_load16_u)
+
+(decl i64_load8_s (Value u32 u32 u32) Value)
+(extern constructor i64_load8_s i64_load8_s)
+
+(decl i64_load8_u (Value u32 u32 u32) Value)
+(extern constructor i64_load8_u i64_load8_u)
+
+(decl i64_load16_s (Value u32 u32 u32) Value)
+(extern constructor i64_load16_s i64_load16_s)
+
+(decl i64_load16_u (Value u32 u32 u32) Value)
+(extern constructor i64_load16_u i64_load16_u)
+
+(decl i64_load32_s (Value u32 u32 u32) Value)
+(extern constructor i64_load32_s i64_load32_s)
+
+(decl i64_load32_u (Value u32 u32 u32) Value)
+(extern constructor i64_load32_u i64_load32_u)
+
+;; Partial-width memory store constructors
+(decl i32_store8 (Value Value u32 u32 u32) Value)
+(extern constructor i32_store8 i32_store8)
+
+(decl i32_store16 (Value Value u32 u32 u32) Value)
+(extern constructor i32_store16 i32_store16)
+
+(decl i64_store8 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store8 i64_store8)
+
+(decl i64_store16 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store16 i64_store16)
+
+(decl i64_store32 (Value Value u32 u32 u32) Value)
+(extern constructor i64_store32 i64_store32)
 
 ;; Control flow constructors (Issue #12)
 (decl block_instr (OptionString BlockType InstructionList) Value)
@@ -435,6 +732,92 @@
 
 (decl i64_extend_i32_u (Value) Value)
 (extern constructor i64_extend_i32_u i64_extend_i32_u)
+
+;; Float-to-integer truncation constructors (trapping)
+(decl i32_trunc_f32_s (Value) Value)
+(extern constructor i32_trunc_f32_s i32_trunc_f32_s)
+(decl i32_trunc_f32_u (Value) Value)
+(extern constructor i32_trunc_f32_u i32_trunc_f32_u)
+(decl i32_trunc_f64_s (Value) Value)
+(extern constructor i32_trunc_f64_s i32_trunc_f64_s)
+(decl i32_trunc_f64_u (Value) Value)
+(extern constructor i32_trunc_f64_u i32_trunc_f64_u)
+(decl i64_trunc_f32_s (Value) Value)
+(extern constructor i64_trunc_f32_s i64_trunc_f32_s)
+(decl i64_trunc_f32_u (Value) Value)
+(extern constructor i64_trunc_f32_u i64_trunc_f32_u)
+(decl i64_trunc_f64_s (Value) Value)
+(extern constructor i64_trunc_f64_s i64_trunc_f64_s)
+(decl i64_trunc_f64_u (Value) Value)
+(extern constructor i64_trunc_f64_u i64_trunc_f64_u)
+
+;; Integer-to-float conversion constructors
+(decl f32_convert_i32_s (Value) Value)
+(extern constructor f32_convert_i32_s f32_convert_i32_s)
+(decl f32_convert_i32_u (Value) Value)
+(extern constructor f32_convert_i32_u f32_convert_i32_u)
+(decl f32_convert_i64_s (Value) Value)
+(extern constructor f32_convert_i64_s f32_convert_i64_s)
+(decl f32_convert_i64_u (Value) Value)
+(extern constructor f32_convert_i64_u f32_convert_i64_u)
+(decl f64_convert_i32_s (Value) Value)
+(extern constructor f64_convert_i32_s f64_convert_i32_s)
+(decl f64_convert_i32_u (Value) Value)
+(extern constructor f64_convert_i32_u f64_convert_i32_u)
+(decl f64_convert_i64_s (Value) Value)
+(extern constructor f64_convert_i64_s f64_convert_i64_s)
+(decl f64_convert_i64_u (Value) Value)
+(extern constructor f64_convert_i64_u f64_convert_i64_u)
+
+;; Float demote/promote constructors
+(decl f32_demote_f64 (Value) Value)
+(extern constructor f32_demote_f64 f32_demote_f64)
+(decl f64_promote_f32 (Value) Value)
+(extern constructor f64_promote_f32 f64_promote_f32)
+
+;; Reinterpret (bit-cast) constructors
+(decl i32_reinterpret_f32 (Value) Value)
+(extern constructor i32_reinterpret_f32 i32_reinterpret_f32)
+(decl i64_reinterpret_f64 (Value) Value)
+(extern constructor i64_reinterpret_f64 i64_reinterpret_f64)
+(decl f32_reinterpret_i32 (Value) Value)
+(extern constructor f32_reinterpret_i32 f32_reinterpret_i32)
+(decl f64_reinterpret_i64 (Value) Value)
+(extern constructor f64_reinterpret_i64 f64_reinterpret_i64)
+
+;; Saturating truncation constructors (non-trapping)
+(decl i32_trunc_sat_f32_s (Value) Value)
+(extern constructor i32_trunc_sat_f32_s i32_trunc_sat_f32_s)
+(decl i32_trunc_sat_f32_u (Value) Value)
+(extern constructor i32_trunc_sat_f32_u i32_trunc_sat_f32_u)
+(decl i32_trunc_sat_f64_s (Value) Value)
+(extern constructor i32_trunc_sat_f64_s i32_trunc_sat_f64_s)
+(decl i32_trunc_sat_f64_u (Value) Value)
+(extern constructor i32_trunc_sat_f64_u i32_trunc_sat_f64_u)
+(decl i64_trunc_sat_f32_s (Value) Value)
+(extern constructor i64_trunc_sat_f32_s i64_trunc_sat_f32_s)
+(decl i64_trunc_sat_f32_u (Value) Value)
+(extern constructor i64_trunc_sat_f32_u i64_trunc_sat_f32_u)
+(decl i64_trunc_sat_f64_s (Value) Value)
+(extern constructor i64_trunc_sat_f64_s i64_trunc_sat_f64_s)
+(decl i64_trunc_sat_f64_u (Value) Value)
+(extern constructor i64_trunc_sat_f64_u i64_trunc_sat_f64_u)
+
+;; Memory operations
+(decl memory_size (u32) Value)
+(extern constructor memory_size memory_size)
+(decl memory_grow (Value u32) Value)
+(extern constructor memory_grow memory_grow)
+
+;; Bulk memory operations
+(decl memory_fill (Value Value Value u32) Value)
+(extern constructor memory_fill memory_fill)
+(decl memory_copy (Value Value Value u32 u32) Value)
+(extern constructor memory_copy memory_copy)
+(decl memory_init (Value Value Value u32 u32) Value)
+(extern constructor memory_init memory_init)
+(decl data_drop (u32) Value)
+(extern constructor data_drop data_drop)
 
 ;; BlockType constructors
 (decl block_type_empty () BlockType)

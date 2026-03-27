@@ -40,7 +40,7 @@
 //! println!("Size reduction: {:.1}%", stats.reduction_percentage());
 //! ```
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload};
 
 /// Statistics about component optimization
@@ -218,14 +218,22 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                 || fused_stats.dead_functions_eliminated > 0
                 || fused_stats.imports_deduplicated > 0
                 || fused_stats.trivial_calls_eliminated > 0
+                || fused_stats.memory_imports_deduplicated > 0
             {
                 eprintln!(
-                    "  Fused optimization: {} adapters devirtualized, {} trivial calls eliminated, {} types deduped, {} dead funcs removed, {} imports deduped",
+                    "  Fused optimization: {} mem imports deduped, {} adapters devirtualized, {} trivial calls eliminated, {} types deduped, {} dead funcs removed, {} imports deduped",
+                    fused_stats.memory_imports_deduplicated,
                     fused_stats.calls_devirtualized,
                     fused_stats.trivial_calls_eliminated,
                     fused_stats.types_deduplicated,
                     fused_stats.dead_functions_eliminated,
                     fused_stats.imports_deduplicated,
+                );
+            }
+            if fused_stats.cross_memory_adapters_detected > 0 {
+                eprintln!(
+                    "  Cross-memory adapters detected (not collapsed): {}",
+                    fused_stats.cross_memory_adapters_detected,
                 );
             }
 

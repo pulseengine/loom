@@ -9,7 +9,7 @@
 //!
 //! Together these provide much stronger guarantees than any single approach.
 
-use loom_testing::emi::{emi_test, EmiConfig};
+use loom_testing::emi::{EmiConfig, emi_test};
 use std::time::Instant;
 
 /// Load a WAT fixture as WASM bytes

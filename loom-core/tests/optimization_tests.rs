@@ -791,7 +791,6 @@ fn test_self_xor_i32() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_self_xor_i64() {
     let input = r#"
         (module
@@ -842,7 +841,6 @@ fn test_self_and_i32() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_self_or_i64() {
     let input = r#"
         (module
@@ -888,7 +886,6 @@ fn test_self_sub_i32() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_self_sub_i64() {
     let input = r#"
         (module
@@ -933,7 +930,6 @@ fn test_self_eq_i32() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_self_eq_i64() {
     let input = r#"
         (module
@@ -978,7 +974,6 @@ fn test_self_ne_i32() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_self_ne_i64() {
     let input = r#"
         (module
@@ -2243,7 +2238,6 @@ fn test_fold_constant_add() {
 }
 
 #[test]
-#[ignore = "I64 operations intentionally disabled in ISLE - type tracking needs I32/I64 distinction"]
 fn test_merge_constant_adds_i64() {
     let input = r#"
         (module

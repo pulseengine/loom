@@ -3,7 +3,7 @@
 //! Tests for WebAssembly Component Model support.
 //! LOOM is the first optimizer to support the Component Model.
 
-use loom_core::{analyze_component_structure, optimize_component, ComponentStats};
+use loom_core::{ComponentStats, analyze_component_structure, optimize_component};
 
 #[test]
 fn test_simple_component_optimization() {
