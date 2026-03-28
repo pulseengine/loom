@@ -5144,8 +5144,7 @@ fn encode_function_to_smt_impl_inner(
                 // The fill range is symbolic so we cannot enumerate individual stores.
                 static FILL_COUNTER: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
-                let fill_id =
-                    FILL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let fill_id = FILL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 memory = Array::new_const(
                     format!("mem_after_fill_{}", fill_id),
                     &Sort::bitvector(32),
@@ -5167,8 +5166,7 @@ fn encode_function_to_smt_impl_inner(
                 // precisely model this with a finite number of array operations.
                 static COPY_COUNTER: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
-                let copy_id =
-                    COPY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let copy_id = COPY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 memory = Array::new_const(
                     format!("mem_after_copy_{}", copy_id),
                     &Sort::bitvector(32),
@@ -5191,8 +5189,7 @@ fn encode_function_to_smt_impl_inner(
                 // Data segment contents are opaque to Z3 verification.
                 static INIT_COUNTER: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
-                let init_id =
-                    INIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let init_id = INIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 memory = Array::new_const(
                     format!("mem_after_init_{}", init_id),
                     &Sort::bitvector(32),

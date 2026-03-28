@@ -1523,11 +1523,8 @@ fn test_memory_fill_invalidates_store() {
         ],
     };
 
-    let result = verify_function_equivalence_with_result(
-        &original,
-        &optimized,
-        "store_fill_local_test",
-    );
+    let result =
+        verify_function_equivalence_with_result(&original, &optimized, "store_fill_local_test");
     assert!(
         result.is_verified(),
         "Store-fill with local return should verify, got: {:?}",
