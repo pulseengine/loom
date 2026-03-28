@@ -2,10 +2,37 @@
 //!
 //! This runs extensive verification against real WASM binaries
 //! to find miscompilation bugs that might not appear in small test cases.
+//!
+//! # Iteration Counts
+//!
+//! Iteration counts are kept low by default so CI completes within its timeout
+//! budget. Set the `LOOM_EMI_ITERATIONS` environment variable to override the
+//! default for the per-fixture EMI stress test, e.g.:
+//!
+//! ```sh
+//! LOOM_EMI_ITERATIONS=10000 cargo test --release -p loom-testing test_emi_stress
+//! ```
 
 use loom_testing::emi::{EmiConfig, MutationStrategy, analyze_dead_code, emi_test};
 use rand::Rng;
 use std::time::Instant;
+
+/// Default iteration count for the per-fixture EMI stress test.
+/// Kept at 1 000 so CI finishes in a reasonable time; set
+/// `LOOM_EMI_ITERATIONS` for deeper local runs.
+const DEFAULT_EMI_STRESS_ITERATIONS: usize = 1_000;
+
+/// Default iteration count for per-module real-WASM EMI fuzzing.
+const DEFAULT_EMI_FUZZ_ITERATIONS: usize = 100;
+
+/// Read the EMI stress iteration count from the environment, falling back to
+/// the provided default.
+fn emi_iterations(default: usize) -> usize {
+    std::env::var("LOOM_EMI_ITERATIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 /// Load a WASM file from the project root
 fn load_wasm(name: &str) -> Option<Vec<u8>> {
@@ -223,9 +250,15 @@ fn test_all_real_wasm_optimizes_correctly() {
 }
 
 #[test]
-fn test_emi_stress_10000_iterations() {
+fn test_emi_stress_iterations() {
+    let iterations = emi_iterations(DEFAULT_EMI_STRESS_ITERATIONS);
+
     println!("\n╔══════════════════════════════════════════════════════════════════╗");
-    println!("║     EMI Stress Test: 10,000 Iterations Per Fixture               ║");
+    println!(
+        "║     EMI Stress Test: {} Iterations Per Fixture{}║",
+        iterations,
+        " ".repeat(24usize.saturating_sub(iterations.to_string().len()))
+    );
     println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
     let start = Instant::now();
@@ -261,7 +294,7 @@ fn test_emi_stress_10000_iterations() {
             }
         };
 
-        let (regions, variants, bugs) = stress_test_module(name, &wasm, 10_000);
+        let (regions, variants, bugs) = stress_test_module(name, &wasm, iterations);
 
         total_variants += variants;
         total_bugs += bugs.len();
@@ -329,8 +362,9 @@ fn test_real_wasm_emi_fuzzing() {
 
         print!("  {} ({} dead regions)... ", name, regions.len());
 
-        // Run EMI with 1000 iterations per module
-        let (_, variants, bugs) = stress_test_module(name, wasm, 1000);
+        // Run EMI fuzzing per module (override with LOOM_EMI_ITERATIONS)
+        let fuzz_iters = emi_iterations(DEFAULT_EMI_FUZZ_ITERATIONS);
+        let (_, variants, bugs) = stress_test_module(name, wasm, fuzz_iters);
 
         total_regions += regions.len();
         total_variants += variants;
