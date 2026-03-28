@@ -2605,6 +2605,7 @@ pub struct MemoryLocation {
 }
 
 /// Environment for dataflow analysis
+#[derive(Clone)]
 pub struct OptimizationEnv {
     /// Local variable constants
     pub locals: std::collections::HashMap<u32, Value>,
@@ -3003,6 +3004,197 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             let simplified_value = simplify_with_env(value.clone(), env);
             env.invalidate_memory();
             i64_store32(simplified_addr, simplified_value, *offset, *align, *mem)
+        }
+
+        // Structured control flow: recursively optimize bodies with appropriate
+        // env save/restore semantics. This is the key enabler for optimizing
+        // functions with BrIf/BrTable — we descend into each body with the
+        // correct env state rather than skipping the entire function.
+        ValueData::Block {
+            label,
+            block_type,
+            body,
+        } => {
+            // Clear env at block entry. A block can be the target of a br from
+            // an inner loop, meaning it can be reached with different local values
+            // than the linear env tracks. Conservative: start fresh.
+            env.locals.clear();
+            env.invalidate_memory();
+            let optimized_body: Vec<Value> = body
+                .iter()
+                .map(|term| simplify_with_env(term.clone(), env))
+                .collect();
+            // After block: clear env. A br/br_if inside can exit early.
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Block {
+                label: label.clone(),
+                block_type: block_type.clone(),
+                body: optimized_body,
+            }))
+        }
+
+        ValueData::Loop {
+            label,
+            block_type,
+            body,
+        } => {
+            // Clear env at loop entry — a loop can be re-entered from a
+            // back-edge (br to loop label). Values set in a previous iteration
+            // are unknown at re-entry. This is the critical fix for the
+            // Z3-identified unsoundness.
+            env.locals.clear();
+            env.invalidate_memory();
+            let optimized_body: Vec<Value> = body
+                .iter()
+                .map(|term| simplify_with_env(term.clone(), env))
+                .collect();
+            // After loop: clear env. We don't know which iteration's values
+            // the locals hold at loop exit.
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Loop {
+                label: label.clone(),
+                block_type: block_type.clone(),
+                body: optimized_body,
+            }))
+        }
+
+        ValueData::If {
+            label,
+            block_type,
+            condition,
+            then_body,
+            else_body,
+        } => {
+            // Simplify condition with current env
+            let simplified_cond = simplify_with_env(condition.clone(), env);
+            // Fork env for each branch
+            let mut then_env = env.clone();
+            let mut else_env = env.clone();
+            let optimized_then: Vec<Value> = then_body
+                .iter()
+                .map(|term| simplify_with_env(term.clone(), &mut then_env))
+                .collect();
+            let optimized_else: Vec<Value> = else_body
+                .iter()
+                .map(|term| simplify_with_env(term.clone(), &mut else_env))
+                .collect();
+            // After if: clear env. We don't know which branch was taken.
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::If {
+                label: label.clone(),
+                block_type: block_type.clone(),
+                condition: simplified_cond,
+                then_body: optimized_then,
+                else_body: optimized_else,
+            }))
+        }
+
+        // Unconditional branch and return: code after these is dead.
+        // Clear env so dead code doesn't pollute tracked state.
+        ValueData::Br { depth, value } => {
+            let simplified_val = value
+                .as_ref()
+                .map(|v| Box::new(simplify_with_env(v.as_ref().clone(), env)));
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Br {
+                depth: *depth,
+                value: simplified_val,
+            }))
+        }
+
+        ValueData::Return { values } => {
+            let simplified_vals: Vec<Value> = values
+                .iter()
+                .map(|v| simplify_with_env(v.clone(), env))
+                .collect();
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Return {
+                values: simplified_vals,
+            }))
+        }
+
+        // Control flow that creates multiple execution paths: clear tracked state.
+        // After a BrIf, execution may continue (branch not taken) or jump away
+        // (branch taken). We cannot assume locals set before BrIf are still valid
+        // because the branch target may have different assignments.
+        // After a BrTable, any of the targets may be taken.
+        // After a Call/CallIndirect, the callee may modify globals and memory,
+        // and we cannot track its effects on our dataflow state.
+        ValueData::BrIf {
+            depth,
+            condition,
+            value,
+        } => {
+            let simplified_cond = simplify_with_env(condition.clone(), env);
+            let simplified_val = value
+                .as_ref()
+                .map(|v| simplify_with_env(v.as_ref().clone(), env));
+            // Invalidate all tracked state at conditional branch point
+            env.locals.clear();
+            env.invalidate_memory();
+            br_if(*depth, simplified_cond, simplified_val)
+        }
+
+        ValueData::BrTable {
+            targets,
+            default,
+            index,
+            value,
+        } => {
+            let simplified_index = simplify_with_env(index.clone(), env);
+            let simplified_val = value
+                .as_ref()
+                .map(|v| Box::new(simplify_with_env(v.as_ref().clone(), env)));
+            // Invalidate all tracked state at multi-way branch
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::BrTable {
+                targets: targets.clone(),
+                default: *default,
+                index: simplified_index,
+                value: simplified_val,
+            }))
+        }
+
+        ValueData::Call { func_idx, args } => {
+            let simplified_args: Vec<Value> = args
+                .iter()
+                .map(|a| simplify_with_env(a.clone(), env))
+                .collect();
+            // Calls may have arbitrary side effects — invalidate all state
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::Call {
+                func_idx: *func_idx,
+                args: simplified_args,
+            }))
+        }
+
+        ValueData::CallIndirect {
+            type_idx,
+            table_idx,
+            table_offset,
+            args,
+        } => {
+            let simplified_offset = simplify_with_env(table_offset.clone(), env);
+            let simplified_args: Vec<Value> = args
+                .iter()
+                .map(|a| simplify_with_env(a.clone(), env))
+                .collect();
+            // Indirect calls have unknown side effects — invalidate all state
+            env.locals.clear();
+            env.invalidate_memory();
+            Value(Box::new(ValueData::CallIndirect {
+                type_idx: *type_idx,
+                table_idx: *table_idx,
+                table_offset: simplified_offset,
+                args: simplified_args,
+            }))
         }
 
         // All other optimizations follow...
