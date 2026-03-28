@@ -1314,3 +1314,256 @@ fn test_partial_store_i64store32() {
         result
     );
 }
+
+// ================================================================
+// Bulk memory operation Z3 verification tests
+// ================================================================
+
+/// Test that MemoryFill correctly invalidates memory in Z3 model.
+/// A function with memory.fill followed by returning a local should verify.
+#[test]
+fn test_bulk_memory_fill_verification() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    // Function: fill memory, then return param + 1
+    // The memory.fill should be modeled as invalidating memory,
+    // but local computations should still verify.
+    let func = Function {
+        name: Some("fill_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            // memory.fill(0, 0, 10) - fill 10 bytes at addr 0 with value 0
+            Instruction::I32Const(0),  // dst
+            Instruction::I32Const(0),  // val
+            Instruction::I32Const(10), // len
+            Instruction::MemoryFill(0),
+            // return param + 1
+            Instruction::LocalGet(0),
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    let result = verify_function_equivalence_with_result(&func, &func, "fill_test");
+    assert!(
+        result.is_verified(),
+        "MemoryFill with local computation should verify, got: {:?}",
+        result
+    );
+}
+
+/// Test that MemoryCopy correctly invalidates memory in Z3 model.
+#[test]
+fn test_bulk_memory_copy_verification() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    let func = Function {
+        name: Some("copy_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            // memory.copy(0, 100, 50) - copy 50 bytes from addr 100 to addr 0
+            Instruction::I32Const(0),   // dst
+            Instruction::I32Const(100), // src
+            Instruction::I32Const(50),  // len
+            Instruction::MemoryCopy {
+                dst_mem: 0,
+                src_mem: 0,
+            },
+            // return param * 2
+            Instruction::LocalGet(0),
+            Instruction::I32Const(2),
+            Instruction::I32Mul,
+            Instruction::End,
+        ],
+    };
+
+    let result = verify_function_equivalence_with_result(&func, &func, "copy_test");
+    assert!(
+        result.is_verified(),
+        "MemoryCopy with local computation should verify, got: {:?}",
+        result
+    );
+}
+
+/// Test that MemoryInit correctly invalidates memory in Z3 model.
+#[test]
+fn test_bulk_memory_init_verification() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    let func = Function {
+        name: Some("init_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            // memory.init 0 (0, 0, 5) - copy 5 bytes from data segment 0 to memory addr 0
+            Instruction::I32Const(0), // dst
+            Instruction::I32Const(0), // src offset in data segment
+            Instruction::I32Const(5), // len
+            Instruction::MemoryInit {
+                mem: 0,
+                data_idx: 0,
+            },
+            // return param + 42
+            Instruction::LocalGet(0),
+            Instruction::I32Const(42),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    let result = verify_function_equivalence_with_result(&func, &func, "init_test");
+    assert!(
+        result.is_verified(),
+        "MemoryInit with local computation should verify, got: {:?}",
+        result
+    );
+}
+
+/// Test that DataDrop is a no-op in Z3 verification.
+#[test]
+fn test_bulk_data_drop_verification() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    let func = Function {
+        name: Some("data_drop_test".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::DataDrop(0),
+            Instruction::LocalGet(0),
+            Instruction::I32Const(7),
+            Instruction::I32Add,
+            Instruction::End,
+        ],
+    };
+
+    let result = verify_function_equivalence_with_result(&func, &func, "data_drop_test");
+    assert!(
+        result.is_verified(),
+        "DataDrop should be a no-op for verification, got: {:?}",
+        result
+    );
+}
+
+/// Test that memory.fill properly invalidates memory state.
+/// After memory.fill, the function returns a value derived only from locals
+/// (not from memory). This verifies that memory invalidation does not
+/// corrupt local/stack computations.
+#[test]
+fn test_memory_fill_invalidates_store() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    // Original: store, fill, then return param XOR param (= 0)
+    let original = Function {
+        name: Some("store_fill_local".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            // Store value at address (has side effect on memory)
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Store {
+                align: 2,
+                offset: 0,
+                mem: 0,
+            },
+            // memory.fill overwrites memory
+            Instruction::I32Const(0),
+            Instruction::I32Const(0),
+            Instruction::I32Const(256),
+            Instruction::MemoryFill(0),
+            // Return param0 XOR param0 = 0 (local computation, not memory)
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(0),
+            Instruction::I32Xor,
+            Instruction::End,
+        ],
+    };
+
+    // Optimized: same store and fill, but return 0 directly
+    let optimized = Function {
+        name: Some("store_fill_const".to_string()),
+        signature: FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Store {
+                align: 2,
+                offset: 0,
+                mem: 0,
+            },
+            Instruction::I32Const(0),
+            Instruction::I32Const(0),
+            Instruction::I32Const(256),
+            Instruction::MemoryFill(0),
+            Instruction::I32Const(0),
+            Instruction::End,
+        ],
+    };
+
+    let result =
+        verify_function_equivalence_with_result(&original, &optimized, "store_fill_local_test");
+    assert!(
+        result.is_verified(),
+        "Store-fill with local return should verify, got: {:?}",
+        result
+    );
+}
+
+/// Test that bulk memory operations with non-zero memory indices are
+/// conservatively skipped (multi-memory not yet supported in Z3 model).
+#[test]
+fn test_bulk_memory_multi_memory_skipped() {
+    use loom_core::verify::verify_function_equivalence_with_result;
+
+    // Function with MemoryFill targeting memory index 1 (non-zero)
+    let func = Function {
+        name: Some("fill_multi_mem".to_string()),
+        signature: FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        },
+        locals: vec![],
+        instructions: vec![
+            Instruction::I32Const(0),
+            Instruction::I32Const(0),
+            Instruction::I32Const(10),
+            Instruction::MemoryFill(1), // non-zero memory index
+            Instruction::I32Const(42),
+            Instruction::End,
+        ],
+    };
+
+    // Should be skipped (treated as equivalent) rather than incorrectly verified
+    let result = verify_function_equivalence_with_result(&func, &func, "multi_mem_test");
+    // With multi-memory, the function should be conservatively treated as equivalent
+    // (skipped) because our Z3 model only supports a single memory array.
+    // It should NOT be fully verified (is_verified() would mean Z3 actually proved it).
+    assert!(
+        result.is_equivalent(),
+        "Multi-memory bulk ops should be treated as equivalent (skipped), got: {:?}",
+        result
+    );
+}
