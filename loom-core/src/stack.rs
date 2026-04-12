@@ -1345,11 +1345,23 @@ pub mod validation {
             }
         }
 
-        /// Internal permissive validation - silently skips if validation cannot be performed
+        /// Internal permissive validation - skips with a warning if validation cannot be performed
+        ///
+        /// Unlike `validate_strict`, this does not fail when validation cannot be performed.
+        /// Instead, it emits a warning to stderr and returns Ok. This is appropriate for
+        /// defense-in-depth checks where the function was already skipped by the optimizer
+        /// and thus left unmodified.
         #[allow(dead_code)]
         fn validate_permissive(&self, func: &crate::Function) -> Result<(), String> {
-            // Skip validation if we can't accurately analyze
+            let func_name = self.func_name.as_deref().unwrap_or("<anonymous>");
+
+            // Skip validation if we can't accurately analyze, but warn about it
             if self.skip_validation {
+                eprintln!(
+                    "Warning: skipping stack validation for '{}' in {} pass: \
+                     contains unanalyzable instructions (Unknown, or Call/CallIndirect without module context)",
+                    func_name, self.pass_name
+                );
                 return Ok(());
             }
 
@@ -1357,6 +1369,11 @@ pub mod validation {
 
             // Also skip if the optimized function now has unanalyzable instructions
             if contains_unanalyzable_instructions(&func.instructions, has_context) {
+                eprintln!(
+                    "Warning: skipping stack validation for '{}' in {} pass: \
+                     optimization introduced unanalyzable instructions",
+                    func_name, self.pass_name
+                );
                 return Ok(());
             }
 

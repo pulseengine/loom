@@ -8,9 +8,9 @@
 
 This project uses **Rivet** for SDLC artifact traceability.
 - Config: `rivet.yaml`
-- Schemas: common, stpa, dev
-- Artifacts: 185 across 13 types
-- Validation: `rivet validate` (current status: pass)
+- Schemas: common, stpa, dev, supply-chain, safety-case, research
+- Artifacts: 144 across 12 types
+- Validation: `rivet validate` (current status: 55 errors)
 
 ## Available Commands
 
@@ -31,7 +31,6 @@ This project uses **Rivet** for SDLC artifact traceability.
 
 | Type | Count | Description |
 |------|------:|-------------|
-| `control-action` | 19 | An action issued by a controller to a controlled process or another controller. |
 | `controlled-process` | 3 | A process being controlled — the physical or data transformation acted upon by controllers. |
 | `controller` | 7 | A system component (human or automated) responsible for issuing control actions. Each controller has a process model — its internal beliefs about the state of the controlled process. |
 | `controller-constraint` | 24 | A constraint on a controller's behavior derived by inverting a UCA. Specifies what the controller must or must not do. |
@@ -43,7 +42,23 @@ This project uses **Rivet** for SDLC artifact traceability.
 | `requirement` | 18 | A functional or non-functional requirement |
 | `sub-hazard` | 8 | A refinement of a hazard into a more specific unsafe condition. |
 | `system-constraint` | 19 | A condition or behavior that must be satisfied to prevent a hazard. Each constraint is the inversion of a hazard. |
-| `uca` | 25 | An Unsafe Control Action — a control action that, in a particular context and worst-case environment, leads to a hazard. Four types (provably complete): 1. Not providing the control action leads to a hazard 2. Providing the control action leads to a hazard 3. Providing too early, too late, or in the wrong order 4. Control action stopped too soon or applied too long |
+| `uca` | 3 | An Unsafe Control Action — a control action that, in a particular context and worst-case environment, leads to a hazard. Four types (provably complete): 1. Not providing the control action leads to a hazard 2. Providing the control action leads to a hazard 3. Providing too early, too late, or in the wrong order 4. Control action stopped too soon or applied too long |
+| `academic-reference` | 0 | An academic paper, thesis, or technical report that informs the product design — key findings and relevance. |
+| `away-goal` | 0 | Reference to a safety goal that is argued in a separate safety case module. Used for modular safety arguments. |
+| `build-attestation` | 0 | A build provenance attestation linking a release artifact to its source and build process. Follows SLSA provenance model. |
+| `competitive-analysis` | 0 | Analysis of a competing or related tool — capabilities, limitations, licensing, activity status, and differentiation opportunity. |
+| `control-action` | 0 | An action issued by a controller to a controlled process or another controller. |
+| `market-finding` | 0 | A finding about a target market or domain — pain points, current tools, standards, regulatory requirements, and opportunities. |
+| `patent-finding` | 0 | A patent or patent family relevant to the product space — what it covers, its limitations, and freedom-to-operate assessment. |
+| `release-artifact` | 0 | A released binary, package, or container image. Tracks identity, digest, and signing status for integrity verification. |
+| `safety-context` | 0 | Assumptions, environmental conditions, or scope bounding a safety goal or strategy. |
+| `safety-goal` | 0 | A claim about the system's safety that must be supported by evidence or decomposed into sub-goals via a strategy. |
+| `safety-justification` | 0 | Rationale explaining why a goal or strategy is appropriate. Provides reasoning that is not evidence but supports the argument structure. |
+| `safety-solution` | 0 | Evidence supporting a safety goal. References a concrete piece of evidence such as a test report, analysis, or formal proof. |
+| `safety-strategy` | 0 | The argument approach used to decompose a goal into sub-goals. Explains why the sub-goals are sufficient to support the parent goal. |
+| `sbom-component` | 0 | A software component from a Software Bill of Materials (SBOM). Captures identity, version, license, and package URL per NTIA minimum elements. |
+| `technology-evaluation` | 0 | Evaluation of a technology, library, or approach for potential adoption — capabilities, maturity, compatibility, and recommendation. |
+| `vulnerability` | 0 | A known vulnerability affecting a software component. Tracks CVE identity, severity, and remediation status. |
 
 ## Working with Artifacts
 
@@ -66,21 +81,34 @@ Use `rivet validate --format json` for machine-readable output.
 | Link Type | Description | Inverse |
 |-----------|-------------|--------|
 | `acts-on` | Control action acts on a process or controller | `acted-on-by` |
+| `affects` | Vulnerability affects a software component | `affected-by` |
 | `allocated-to` | Source is allocated to the target (e.g. requirement to architecture component) | `allocated-from` |
+| `attests-build-of` | Build attestation certifies provenance of a release artifact | `build-attested-by` |
 | `caused-by-uca` | Loss scenario is caused by an unsafe control action | `causes-scenario` |
 | `constrained-by` | Source is constrained by the target | `constrains` |
 | `constrains-controller` | Constraint applies to a specific controller | `controller-constrained-by` |
+| `constraint-as-evidence` | STPA system constraint serves as evidence for a safety goal | `evidence-from-constraint` |
+| `constraint-satisfies` | Requirement satisfies (implements) a system constraint | `satisfied-by-constraint` |
+| `contains` | Release artifact contains a software component | `contained-in` |
+| `decomposes` | Strategy decomposes a safety goal into sub-goals | `decomposed-by` |
 | `depends-on` | Source depends on target being completed first | `depended-on-by` |
 | `derives-from` | Source is derived from the target | `derived-into` |
+| `evaluates` | A technology evaluation assesses a potential adoption | `evaluated-by` |
+| `goal-addresses-hazard` | Safety goal addresses an STPA hazard or loss | `hazard-addressed-by-goal` |
 | `implements` | Source implements the target | `implemented-by` |
 | `inverts-uca` | Controller constraint inverts (is derived from) an UCA | `inverted-by` |
 | `issued-by` | Control action or UCA is issued by a controller | `issues` |
+| `justifies` | Justification provides rationale for a goal or strategy | `justified-by` |
 | `leads-to-hazard` | UCA or loss scenario leads to a hazard | `hazard-caused-by` |
 | `leads-to-loss` | Hazard leads to a specific loss | `loss-caused-by` |
 | `mitigates` | Source mitigates or prevents the target | `mitigated-by` |
+| `motivates` | A research finding motivates a requirement or feature | `motivated-by` |
 | `prevents` | Constraint prevents a hazard | `prevented-by` |
 | `refines` | Source is a refinement or decomposition of the target | `refined-by` |
 | `satisfies` | Source satisfies or fulfils the target | `satisfied-by` |
+| `scopes` | Context provides scope or assumptions for a goal or strategy | `scoped-by` |
+| `sub-goal-of` | Goal is a sub-goal of a parent goal (direct or via away-goal) | `has-sub-goal` |
+| `supports` | Solution provides evidence supporting a safety goal | `supported-by` |
 | `traces-to` | General traceability link between any two artifacts | `traced-from` |
 | `verifies` | Source verifies or validates the target | `verified-by` |
 

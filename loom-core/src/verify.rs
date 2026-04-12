@@ -3136,6 +3136,7 @@ fn encode_function_to_smt_impl_inner(
                 while locals.len() <= idx {
                     locals.push(BV::from_u64(0, 32));
                 }
+                // SAFETY: guarded by is_empty check above
                 let value = stack.pop().unwrap();
                 locals[idx] = value;
             }
@@ -3148,6 +3149,7 @@ fn encode_function_to_smt_impl_inner(
                 while locals.len() <= idx {
                     locals.push(BV::from_u64(0, 32));
                 }
+                // SAFETY: guarded by is_empty check above
                 let value = stack.last().unwrap().clone();
                 locals[idx] = value;
             }
@@ -3171,6 +3173,7 @@ fn encode_function_to_smt_impl_inner(
                     let new_idx = globals.len();
                     globals.push(BV::new_const(format!("global{}", new_idx), 32));
                 }
+                // SAFETY: guarded by is_empty check above
                 let value = stack.pop().unwrap();
                 globals[idx] = value;
             }
@@ -3182,24 +3185,33 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
 
                 // Read 4 bytes in little-endian order and combine into 32-bit
                 // memory.select returns Dynamic, cast to BV via as_bv()
-                let byte0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I32Load byte 0")
+                })?;
                 let byte1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I32Load byte 1")
+                    })?;
                 let byte2: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I32Load byte 2")
+                    })?;
                 let byte3: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I32Load byte 3")
+                    })?;
 
                 // Zero-extend each byte to 32 bits
                 let b0 = byte0.zero_ext(24);
@@ -3219,6 +3231,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3239,6 +3252,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
 
@@ -3246,7 +3260,9 @@ fn encode_function_to_smt_impl_inner(
                 let mut result = BV::from_i64(0, 64);
                 for i in 0..8i64 {
                     let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
-                    let byte_val: BV = memory.select(&byte_addr).as_bv().unwrap();
+                    let byte_val: BV = memory.select(&byte_addr).as_bv().ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load byte {}", i)
+                    })?;
                     let extended = byte_val.zero_ext(56);
                     result = result.bvor(extended.bvshl(BV::from_i64(i * 8, 64)));
                 }
@@ -3256,6 +3272,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3273,9 +3290,13 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load8S"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte_val: BV = memory
+                    .select(&effective_addr)
+                    .as_bv()
+                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I32Load8S"))?;
                 // Sign-extend 8-bit to 32-bit
                 let result = byte_val.sign_ext(24);
                 stack.push(result);
@@ -3284,9 +3305,13 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load8U"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte_val: BV = memory
+                    .select(&effective_addr)
+                    .as_bv()
+                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I32Load8U"))?;
                 // Zero-extend 8-bit to 32-bit
                 let result = byte_val.zero_ext(24);
                 stack.push(result);
@@ -3295,14 +3320,19 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load16S"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I32Load16S byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I32Load16S byte 1")
+                    })?;
                 let val16 = b0
                     .zero_ext(8)
                     .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
@@ -3314,14 +3344,19 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load16U"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I32Load16U byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I32Load16U byte 1")
+                    })?;
                 let val16 = b0
                     .zero_ext(8)
                     .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
@@ -3333,9 +3368,13 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load8S"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte_val: BV = memory
+                    .select(&effective_addr)
+                    .as_bv()
+                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I64Load8S"))?;
                 // Sign-extend 8-bit to 64-bit
                 let result = byte_val.sign_ext(56);
                 stack.push(result);
@@ -3344,9 +3383,13 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load8U"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let byte_val: BV = memory
+                    .select(&effective_addr)
+                    .as_bv()
+                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I64Load8U"))?;
                 // Zero-extend 8-bit to 64-bit
                 let result = byte_val.zero_ext(56);
                 stack.push(result);
@@ -3355,14 +3398,19 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load16S"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I64Load16S byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load16S byte 1")
+                    })?;
                 let val16 = b0
                     .zero_ext(8)
                     .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
@@ -3374,14 +3422,19 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load16U"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I64Load16U byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load16U byte 1")
+                    })?;
                 let val16 = b0
                     .zero_ext(8)
                     .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
@@ -3393,22 +3446,31 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load32S"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 4 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I64Load32S byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 1")
+                    })?;
                 let b2: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 2")
+                    })?;
                 let b3: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 3")
+                    })?;
                 let val32 = b0
                     .zero_ext(24)
                     .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
@@ -3422,22 +3484,31 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load32U"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
                 // Read 4 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().unwrap();
+                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
+                    anyhow!("Z3 memory select did not return BV in I64Load32U byte 0")
+                })?;
                 let b1: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 1")
+                    })?;
                 let b2: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 2")
+                    })?;
                 let b3: BV = memory
                     .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
                     .as_bv()
-                    .unwrap();
+                    .ok_or_else(|| {
+                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 3")
+                    })?;
                 let val32 = b0
                     .zero_ext(24)
                     .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
@@ -3453,6 +3524,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store8"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3464,6 +3536,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store16"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3477,6 +3550,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store8"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3488,6 +3562,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store16"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3501,6 +3576,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store32"));
                 }
+                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
                 let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
@@ -3540,6 +3616,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in If"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let cond = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let cond_bool = cond.eq(&zero).not(); // cond != 0
@@ -3635,6 +3712,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in BrIf"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let cond = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let _cond_bool = cond.eq(&zero).not();
@@ -3647,6 +3725,7 @@ fn encode_function_to_smt_impl_inner(
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in BrTable"));
                 }
+                // SAFETY: guarded by is_empty check above
                 let _index = stack.pop().unwrap();
                 // Branch table is complex - treat as terminating for now
                 break;
@@ -3677,6 +3756,7 @@ fn encode_function_to_smt_impl_inner(
                                     sig.params.len()
                                 ));
                             }
+                            // SAFETY: guarded by is_empty check above
                             let _ = stack.pop().unwrap();
                         }
                         // Push results
@@ -3736,6 +3816,7 @@ fn encode_function_to_smt_impl_inner(
                         "Stack underflow in CallIndirect: missing table index"
                     ));
                 }
+                // SAFETY: guarded by is_empty check above
                 let _table_idx = stack.pop().unwrap();
 
                 // Use type signature to properly model stack effects
@@ -3750,6 +3831,7 @@ fn encode_function_to_smt_impl_inner(
                                     sig.params.len()
                                 ));
                             }
+                            // SAFETY: guarded by is_empty check above
                             let _ = stack.pop().unwrap();
                         }
                         // Push results

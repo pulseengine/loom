@@ -37,3 +37,15 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: rivet-validate
+        name: rivet validate (advisory — rivet#129 blocks pass)
+        entry: bash -c 'rivet validate || echo "rivet validate failed (known upstream issue pulseengine/rivet#129)"'
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: rivet-commit-msg
+        name: rivet commit-msg-check
+        entry: rivet commit-msg-check
+        language: system
+        stages: [commit-msg]
+        always_run: true

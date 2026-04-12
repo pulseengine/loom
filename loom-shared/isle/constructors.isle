@@ -75,15 +75,19 @@
 
 (decl iconst64 (Imm64) Value)
 (extern constructor iconst64 iconst64)
+(extern extractor iconst64 iconst64_extract)
 
 (decl iadd64 (Value Value) Value)
 (extern constructor iadd64 iadd64)
+(extern extractor iadd64 iadd64_extract)
 
 (decl isub64 (Value Value) Value)
 (extern constructor isub64 isub64)
+(extern extractor isub64 isub64_extract)
 
 (decl imul64 (Value Value) Value)
 (extern constructor imul64 imul64)
+(extern extractor imul64 imul64_extract)
 
 (decl idivs64 (Value Value) Value)
 (extern constructor idivs64 idivs64)

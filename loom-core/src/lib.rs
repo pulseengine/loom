@@ -6645,10 +6645,52 @@ pub mod optimize {
 
     /// Check if a function has control flow that makes dataflow-based ISLE optimization unsafe.
     ///
-    /// Functions with BrIf or BrTable are skipped for ISLE dataflow optimization because
-    /// simplify_with_env's linear env tracking cannot correctly handle multiple execution
-    /// paths, loop back-edges, or early block exits. Z3 confirms counterexamples exist
-    /// (e.g., matrix_multiply). Full fix requires basic block splitting or SSA (#56).
+    /// # Soundness boundary
+    ///
+    /// ISLE's `simplify_with_env` tracks a `LocalEnv` that maps local indices to their
+    /// last-known constant values. This tracking is **linear**: it assumes instructions
+    /// execute in order, with each `local.set` updating the env and each `local.get`
+    /// reading the most recent value. This model breaks when execution can take
+    /// multiple paths:
+    ///
+    /// - **`BrIf`**: Execution may branch or fall through, so the env state after
+    ///   the branch point is ambiguous -- the env may reflect values from the
+    ///   not-taken path.
+    /// - **`BrTable`**: Same issue but with N possible branch targets.
+    /// - **Loop back-edges**: A `loop` containing `BrIf` can re-execute the body,
+    ///   meaning the env from the first iteration leaks into the second.
+    ///
+    /// Z3 verification confirms that counterexamples exist in practice (e.g., the
+    /// `matrix_multiply` function where env tracking across a loop back-edge causes
+    /// incorrect constant propagation).
+    ///
+    /// # Current mitigation
+    ///
+    /// Functions containing `BrIf` or `BrTable` anywhere (including nested blocks)
+    /// are **entirely skipped** for ISLE dataflow optimization. This is conservative
+    /// but correct -- it is always safe to not optimize.
+    ///
+    /// The `simplify_with_env` function does have env-clearing logic at control flow
+    /// boundaries as defense-in-depth, but this is insufficient for soundness on its
+    /// own (the clearing is necessarily conservative and does not model join points).
+    ///
+    /// # What would be needed to lift this restriction
+    ///
+    /// To safely optimize functions with conditional branches, the optimizer would need:
+    ///
+    /// 1. **Basic block splitting**: Decompose the function into a control flow graph
+    ///    (CFG) of basic blocks, where each block has a single entry and exit.
+    /// 2. **SSA conversion**: Convert to Static Single Assignment form so that each
+    ///    variable definition dominates all its uses.
+    /// 3. **Dataflow analysis on the CFG**: Run the ISLE rewrite rules per-block with
+    ///    proper phi-node handling at join points.
+    ///
+    /// See issue #56 for tracking this work.
+    ///
+    /// # See also
+    ///
+    /// - `test_advanced_optimizations_in_control_flow` (ignored test demonstrating the gap)
+    /// - `constant_folding()` and `optimize_advanced_instructions()` which call this function
     fn has_dataflow_unsafe_control_flow(func: &Function) -> bool {
         has_dataflow_unsafe_control_flow_in_block(&func.instructions)
     }
@@ -6687,8 +6729,9 @@ pub mod optimize {
 
         // Phase 0: Fused component optimizations (adapter devirtualization, type/import
         // dedup, dead function elimination). These are safe no-ops on non-fused modules.
-        if let Err(_e) = super::fused_optimizer::optimize_fused_module(module) {
-            // Non-fatal: fused optimization is best-effort
+        if let Err(e) = super::fused_optimizer::optimize_fused_module(module) {
+            // Non-fatal: fused optimization is best-effort, but log so failures are visible
+            eprintln!("Warning: fused optimization failed (non-fatal): {e}");
         }
 
         // Apply constant folding first
@@ -6732,9 +6775,17 @@ pub mod optimize {
         {
             use crate::stack::validation::{ValidationContext, validate_function_with_context};
             let ctx = ValidationContext::from_module(module);
-            for func in &module.functions {
-                // Skip functions the optimizer also skips
+            let mut skipped_count = 0usize;
+            for (idx, func) in module.functions.iter().enumerate() {
+                // Skip functions the optimizer also skips, but track them
                 if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                    skipped_count += 1;
+                    eprintln!(
+                        "Warning: skipping post-optimization stack validation for function {} '{}': \
+                         contains unknown or unsupported instructions",
+                        idx,
+                        func.name.as_deref().unwrap_or("<anonymous>")
+                    );
                     continue;
                 }
                 if let Err(e) = validate_function_with_context(func, &ctx) {
@@ -6744,6 +6795,12 @@ pub mod optimize {
                         e
                     ));
                 }
+            }
+            if skipped_count > 0 {
+                eprintln!(
+                    "Warning: {skipped_count} function(s) skipped during post-optimization stack validation \
+                     (unmodified — optimizer also skips these)"
+                );
             }
         }
 
@@ -6764,11 +6821,15 @@ pub mod optimize {
         let term_sig_ctx = TermSignatureContext::from_module(module);
         let verify_sig_ctx = VerificationSignatureContext::from_module(module);
 
+        let mut skipped_unsupported = 0usize;
+        let mut skipped_control_flow = 0usize;
+
         for func in &mut module.functions {
             // Skip optimization for functions with unsupported instructions
             // This includes floats, conversions, rotations, and unknown opcodes
             // which would corrupt the stack simulation in instructions_to_terms
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                skipped_unsupported += 1;
                 continue;
             }
 
@@ -6778,6 +6839,7 @@ pub mod optimize {
             // Full fix requires basic block splitting or SSA conversion (#56).
             // The env clearing in simplify_with_env is defense-in-depth for future work.
             if has_dataflow_unsafe_control_flow(func) {
+                skipped_control_flow += 1;
                 continue;
             }
 
@@ -6818,6 +6880,14 @@ pub mod optimize {
 
             // Z3 translation validation: prove semantic equivalence
             translator.verify(func)?;
+        }
+
+        if skipped_unsupported > 0 || skipped_control_flow > 0 {
+            eprintln!(
+                "Warning: constant_folding skipped {} function(s) with unsupported instructions, \
+                 {} function(s) with dataflow-unsafe control flow (BrIf/BrTable, see #56)",
+                skipped_unsupported, skipped_control_flow
+            );
         }
 
         Ok(())
@@ -10775,16 +10845,21 @@ pub mod optimize {
         let term_sig_ctx = TermSignatureContext::from_module(module);
         let verify_sig_ctx = VerificationSignatureContext::from_module(module);
 
+        let mut skipped_unsupported = 0usize;
+        let mut skipped_control_flow = 0usize;
+
         for func in &mut module.functions {
             // Skip optimization for functions with unsupported instructions
             // This includes floats, conversions, rotations, and unknown opcodes
             // which would corrupt the stack simulation in instructions_to_terms
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                skipped_unsupported += 1;
                 continue;
             }
 
             // Skip functions with BrIf/BrTable — see comment in constant_folding.
             if has_dataflow_unsafe_control_flow(func) {
+                skipped_control_flow += 1;
                 continue;
             }
 
@@ -10827,6 +10902,15 @@ pub mod optimize {
             guard.validate(func)?;
             translator.verify(func)?;
         }
+
+        if skipped_unsupported > 0 || skipped_control_flow > 0 {
+            eprintln!(
+                "Warning: optimize_advanced_instructions skipped {} function(s) with unsupported instructions, \
+                 {} function(s) with dataflow-unsafe control flow (BrIf/BrTable, see #56)",
+                skipped_unsupported, skipped_control_flow
+            );
+        }
+
         Ok(())
     }
 
@@ -13376,7 +13460,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // INTENTIONALLY SKIPPED: Control flow optimization not yet proven correct in ISLE
+    #[ignore] // INTENTIONALLY SKIPPED: Control flow optimization not yet proven correct in ISLE.
+    // Functions with BrIf/BrTable skip ISLE env tracking because simplify_with_env's
+    // linear LocalEnv cannot model multiple execution paths or loop back-edges.
+    // Z3 confirms counterexamples (e.g., matrix_multiply). Lifting this requires
+    // basic block splitting + SSA conversion. See has_dataflow_unsafe_control_flow()
+    // and issue #56.
     fn test_advanced_optimizations_in_control_flow() {
         let wat = r#"(module
             (func $test (param $x i32) (result i32)

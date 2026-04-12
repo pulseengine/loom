@@ -1275,9 +1275,25 @@ pub fn iconst64(val: Imm64) -> Value {
     Value(Box::new(ValueData::I64Const { val }))
 }
 
+/// Extract i64.const value (extractor for pattern matching)
+pub fn iconst64_extract(val: &Value) -> Option<Imm64> {
+    match val.0.as_ref() {
+        ValueData::I64Const { val } => Some(*val),
+        _ => None,
+    }
+}
+
 /// Construct an i64.add operation
 pub fn iadd64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I64Add { lhs, rhs }))
+}
+
+/// Extract i64.add operands (extractor for pattern matching)
+pub fn iadd64_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I64Add { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 /// Construct an i64.sub operation
@@ -1285,9 +1301,25 @@ pub fn isub64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I64Sub { lhs, rhs }))
 }
 
+/// Extract i64.sub operands (extractor for pattern matching)
+pub fn isub64_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I64Sub { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
+}
+
 /// Construct an i64.mul operation
 pub fn imul64(lhs: Value, rhs: Value) -> Value {
     Value(Box::new(ValueData::I64Mul { lhs, rhs }))
+}
+
+/// Extract i64.mul operands (extractor for pattern matching)
+pub fn imul64_extract(val: &Value) -> Option<(Value, Value)> {
+    match val.0.as_ref() {
+        ValueData::I64Mul { lhs, rhs } => Some((lhs.clone(), rhs.clone())),
+        _ => None,
+    }
 }
 
 // Bitwise operation constructors (i32)

@@ -10,6 +10,9 @@ project:
     - common
     - stpa
     - dev
+    - supply-chain
+    - safety-case
+    - research
 
 sources:
   - path: safety/stpa

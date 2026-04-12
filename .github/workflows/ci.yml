@@ -11,6 +11,20 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  rivet-validate:
+    name: Rivet Artifact Traceability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rivet
+        run: cargo install rivet-cli || cargo binstall -y rivet-cli || echo "rivet not in crates.io — install from release"
+      - name: Validate artifacts
+        run: rivet validate
+      - name: Check traceability coverage
+        run: rivet coverage
+      - name: Artifact statistics
+        run: rivet stats
+
   format:
     name: Format
     runs-on: ubuntu-latest

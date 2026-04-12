@@ -455,84 +455,129 @@ Qed.
     when the operand simplifies to a constant. These proofs show
     semantic equivalence rather than structural equality. *)
 
-(** simplify (x + 0) is semantically equivalent to simplify x *)
+(** simplify (x + 0) is semantically equivalent to simplify x.
+    Note: This holds when simplify t does not produce a TI32Const
+    with an unwrapped value. For the constant case, simplify produces
+    TI32Const (i32_add a 0) = TI32Const (wrap32 a), which differs from
+    TI32Const a when a is outside [0, 2^32). The theorem is stated for
+    the general case but only holds under the assumption that all
+    TI32Const values in well-formed terms are already wrapped. *)
 Theorem simplify_add_zero_right_equiv : forall t,
   eval_term (simplify (TI32Add t (TI32Const 0))) = eval_term (simplify t).
 Proof.
-  (* Constant folding may apply; semantically equivalent via i32_add_zero *)
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_add z 0 = z, i.e., wrap32 z = z *)
+  (* This holds only when z is in [0, 2^32). *)
 Admitted.
 
 (** simplify (0 + x) is semantically equivalent to simplify x *)
 Theorem simplify_add_zero_left_equiv : forall t,
   eval_term (simplify (TI32Add (TI32Const 0) t)) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_add 0 z = z, i.e., wrap32 z = z *)
 Admitted.
 
 (** simplify (x - 0) is semantically equivalent to simplify x *)
 Theorem simplify_sub_zero_right_equiv : forall t,
   eval_term (simplify (TI32Sub t (TI32Const 0))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_sub z 0 = z, i.e., wrap32 z = z *)
 Admitted.
 
 (** simplify (x * 1) is semantically equivalent to simplify x *)
 Theorem simplify_mul_one_right_equiv : forall t,
   eval_term (simplify (TI32Mul t (TI32Const 1))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_mul z 1 = z, i.e., wrap32 z = z *)
 Admitted.
 
 (** simplify (1 * x) is semantically equivalent to simplify x *)
 Theorem simplify_mul_one_left_equiv : forall t,
   eval_term (simplify (TI32Mul (TI32Const 1) t)) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_mul 1 z = z, i.e., wrap32 z = z *)
 Admitted.
 
-(** simplify (x * 0) evaluates to 0 *)
+(** simplify (x * 0) evaluates to 0.
+    This is provable: in all cases the simplifier produces TI32Const 0.
+    - If simplify t = TI32Const a: constant fold gives TI32Const (i32_mul a 0) = TI32Const 0
+    - Otherwise: pattern (_, TI32Const 0 => TI32Const 0) applies *)
 Theorem simplify_mul_zero_right_equiv : forall t,
   eval_term (simplify (TI32Mul t (TI32Const 0))) = TROk (VI32 0).
 Proof.
-Admitted.
+  intros t. simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify (0 * x) evaluates to 0 *)
 Theorem simplify_mul_zero_left_equiv : forall t,
   eval_term (simplify (TI32Mul (TI32Const 0) t)) = TROk (VI32 0).
 Proof.
-Admitted.
+  intros t. simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify (x | 0) is semantically equivalent to simplify x *)
 Theorem simplify_or_zero_right_equiv : forall t,
   eval_term (simplify (TI32Or t (TI32Const 0))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_or z 0 = z *)
 Admitted.
 
 (** simplify (0 | x) is semantically equivalent to simplify x *)
 Theorem simplify_or_zero_left_equiv : forall t,
   eval_term (simplify (TI32Or (TI32Const 0) t)) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_or 0 z = z *)
 Admitted.
 
 (** simplify (x ^ 0) is semantically equivalent to simplify x *)
 Theorem simplify_xor_zero_right_equiv : forall t,
   eval_term (simplify (TI32Xor t (TI32Const 0))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_xor z 0 = z *)
 Admitted.
 
 (** simplify (0 ^ x) is semantically equivalent to simplify x *)
 Theorem simplify_xor_zero_left_equiv : forall t,
   eval_term (simplify (TI32Xor (TI32Const 0) t)) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI32Const z case: need i32_xor 0 z = z *)
 Admitted.
 
-(** simplify (x & 0) evaluates to 0 *)
+(** simplify (x & 0) evaluates to 0.
+    This is provable: in all cases the simplifier produces TI32Const 0. *)
 Theorem simplify_and_zero_right_equiv : forall t,
   eval_term (simplify (TI32And t (TI32Const 0))) = TROk (VI32 0).
 Proof.
-Admitted.
+  intros t. simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify (0 & x) evaluates to 0 *)
 Theorem simplify_and_zero_left_equiv : forall t,
   eval_term (simplify (TI32And (TI32Const 0) t)) = TROk (VI32 0).
 Proof.
-Admitted.
+  intros t. simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** * i64 Term-Level Identity Proofs *)
 
@@ -540,24 +585,36 @@ Admitted.
 Theorem simplify_i64_add_zero_right_equiv : forall t,
   eval_term (simplify (TI64Add t (TI64Const 0))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI64Const z case: need i64_add z 0 = z *)
 Admitted.
 
 (** simplify (0 + x) is semantically equivalent to simplify x (i64) *)
 Theorem simplify_i64_add_zero_left_equiv : forall t,
   eval_term (simplify (TI64Add (TI64Const 0) t)) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI64Const z case: need i64_add 0 z = z *)
 Admitted.
 
 (** simplify (x * 1) is semantically equivalent to simplify x (i64) *)
 Theorem simplify_i64_mul_one_right_equiv : forall t,
   eval_term (simplify (TI64Mul t (TI64Const 1))) = eval_term (simplify t).
 Proof.
+  intros t. simpl.
+  destruct (simplify t); simpl; try reflexivity.
+  (* TI64Const z case: need i64_mul z 1 = z *)
 Admitted.
 
-(** simplify (0 * x) evaluates to 0 (i64) *)
+(** simplify (0 * x) evaluates to 0 (i64).
+    Provable: simplifier always produces TI64Const 0 in this case. *)
 Theorem simplify_i64_mul_zero_left_equiv : forall t,
   eval_term (simplify (TI64Mul (TI64Const 0) t)) = TROk (VI64 0).
 Proof.
-Admitted.
+  intros t. simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 Close Scope Z_scope.
