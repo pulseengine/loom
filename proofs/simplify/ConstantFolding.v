@@ -418,37 +418,39 @@ Qed.
 
 (** * Simplify Constant Folding Integration *)
 
-(** simplify correctly folds i32.add constants *)
+(** simplify correctly folds i32.add constants.
+    The preconditions (a <> 0, b <> 0) are included in the statement
+    but are not needed for the proof: constant folding applies regardless. *)
 Theorem simplify_i32_add_const : forall a b,
   a <> 0 -> b <> 0 ->
   simplify (TI32Add (TI32Const a) (TI32Const b)) = TI32Const (i32_add a b).
 Proof.
-  (* Constant folding produces the sum *)
-Admitted.
+  intros. simpl. reflexivity.
+Qed.
 
 (** simplify correctly folds i32.sub constants *)
 Theorem simplify_i32_sub_const : forall a b,
   b <> 0 ->
   simplify (TI32Sub (TI32Const a) (TI32Const b)) = TI32Const (i32_sub a b).
 Proof.
-  (* Constant folding produces the difference *)
-Admitted.
+  intros. simpl. reflexivity.
+Qed.
 
 (** simplify correctly folds i32.mul constants *)
 Theorem simplify_i32_mul_const : forall a b,
   a <> 0 -> a <> 1 -> b <> 0 -> b <> 1 ->
   simplify (TI32Mul (TI32Const a) (TI32Const b)) = TI32Const (i32_mul a b).
 Proof.
-  (* Constant folding produces the product *)
-Admitted.
+  intros. simpl. reflexivity.
+Qed.
 
 (** simplify correctly folds i64.add constants *)
 Theorem simplify_i64_add_const : forall a b,
   a <> 0 -> b <> 0 ->
   simplify (TI64Add (TI64Const a) (TI64Const b)) = TI64Const (i64_add a b).
 Proof.
-  (* Constant folding produces the sum *)
-Admitted.
+  intros. simpl. reflexivity.
+Qed.
 
 (** simplify correctly folds i64.sub constants *)
 Theorem simplify_i64_sub_const : forall a b,

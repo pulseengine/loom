@@ -97,13 +97,30 @@ Proof.
   reflexivity.
 Qed.
 
+(** Helper: for 0 <= k < 32, Z.land (k mod 2^32) 31 = k *)
+Lemma land_shift_mask32 : forall k,
+  0 <= k < 32 ->
+  Z.land (k mod 2 ^ 32) 31 = k.
+Proof.
+  intros k Hk.
+  rewrite Z.mod_small by lia.
+  replace 31 with (Z.ones 5) by reflexivity.
+  rewrite Z.land_ones by lia.
+  apply Z.mod_small. lia.
+Qed.
+
 (** General theorem: x * 2^k = x << k for k in valid range *)
 Theorem mul_pow2_is_shl : forall x k,
   0 <= k < 32 ->
   i32_mul x (Z.pow 2 k) = i32_shl x k.
 Proof.
-  (* For any power of 2 in valid range, multiplication equals shift *)
-Admitted.
+  intros x k Hk.
+  unfold i32_mul, i32_shl, shift_mask32, wrap32.
+  rewrite land_shift_mask32 by lia.
+  rewrite Z.shiftl_mul_pow2 by lia.
+  rewrite Zmult_mod_idemp_l.
+  reflexivity.
+Qed.
 
 (** * i64 Multiplication to Shift *)
 
@@ -131,12 +148,30 @@ Proof.
   reflexivity.
 Qed.
 
+(** Helper: for 0 <= k < 64, Z.land (k mod 2^64) 63 = k *)
+Lemma land_shift_mask64 : forall k,
+  0 <= k < 64 ->
+  Z.land (k mod 2 ^ 64) 63 = k.
+Proof.
+  intros k Hk.
+  rewrite Z.mod_small by lia.
+  replace 63 with (Z.ones 6) by reflexivity.
+  rewrite Z.land_ones by lia.
+  apply Z.mod_small. lia.
+Qed.
+
 (** General theorem for i64 *)
 Theorem mul64_pow2_is_shl : forall x k,
   0 <= k < 64 ->
   i64_mul x (Z.pow 2 k) = i64_shl x k.
 Proof.
-Admitted.
+  intros x k Hk.
+  unfold i64_mul, i64_shl, shift_mask64, wrap64.
+  rewrite land_shift_mask64 by lia.
+  rewrite Z.shiftl_mul_pow2 by lia.
+  rewrite Zmult_mod_idemp_l.
+  reflexivity.
+Qed.
 
 (** * Division to Shift (Unsigned Only) *)
 
@@ -185,8 +220,13 @@ Theorem div_u_pow2_is_shr : forall x k,
   0 <= k < 32 ->
   Z.div x (Z.pow 2 k) = i32_shr_u x k.
 Proof.
-  (* Division by power of 2 equals right shift *)
-Admitted.
+  intros x k Hx Hk.
+  unfold i32_shr_u, shift_mask32, wrap32.
+  rewrite Z.mod_small by assumption.
+  rewrite land_shift_mask32 by lia.
+  rewrite Z.shiftr_div_pow2 by lia.
+  reflexivity.
+Qed.
 
 (** * Modulo to AND (Unsigned Only) *)
 
@@ -204,38 +244,58 @@ Proof.
   f_equal. unfold Z.ones. rewrite Z.shiftl_1_l. reflexivity.
 Qed.
 
+(** Helper: for 0 <= x < 2^32, wrap32 x = x *)
+Lemma wrap32_small : forall x, 0 <= x < 2 ^ 32 -> wrap32 x = x.
+Proof.
+  intros. unfold wrap32. apply Z.mod_small. assumption.
+Qed.
+
+(** Helper: for 0 <= x < 2^32 and 0 <= k <= 32, (2^k - 1) < 2^32 *)
+Lemma pow2_mask_range : forall k,
+  0 <= k <= 32 -> 0 <= 2 ^ k - 1 < 2 ^ 32.
+Proof.
+  intros k Hk. split.
+  - assert (1 <= 2 ^ k) by (apply Z.pow_le_mono_r; lia). lia.
+  - assert (2 ^ k <= 2 ^ 32) by (apply Z.pow_le_mono_r; lia). lia.
+Qed.
+
+(** General: x % 2^k = x & (2^k - 1) for values in [0, 2^32) *)
+Theorem mod_pow2_is_and_mask : forall x k,
+  0 <= x < Z.pow 2 32 ->
+  0 <= k <= 32 ->
+  Z.modulo x (Z.pow 2 k) = i32_and x (Z.pow 2 k - 1).
+Proof.
+  intros x k Hx Hk.
+  unfold i32_and.
+  rewrite wrap32_small by assumption.
+  rewrite wrap32_small by (apply pow2_mask_range; assumption).
+  rewrite mod_pow2_is_land by lia.
+  reflexivity.
+Qed.
+
 (** x % 2 = x & 1 *)
 Theorem mod_2_is_and_1 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 2 = i32_and x 1.
 Proof.
-  (* Uses Z.land_ones: Z.land x (Z.ones 1) = x mod 2^1 = x mod 2 *)
-Admitted.
+  intros. apply mod_pow2_is_and_mask; lia.
+Qed.
 
 (** x % 4 = x & 3 *)
 Theorem mod_4_is_and_3 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 4 = i32_and x 3.
 Proof.
-  (* Uses Z.land_ones: Z.land x (Z.ones 2) = x mod 2^2 = x mod 4 *)
-Admitted.
+  intros. apply mod_pow2_is_and_mask; lia.
+Qed.
 
 (** x % 8 = x & 7 *)
 Theorem mod_8_is_and_7 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 8 = i32_and x 7.
 Proof.
-  (* Uses Z.land_ones: Z.land x (Z.ones 3) = x mod 2^3 = x mod 8 *)
-Admitted.
-
-(** General: x % 2^k = x & (2^k - 1) *)
-Theorem mod_pow2_is_and_mask : forall x k,
-  0 <= x < Z.pow 2 32 ->
-  0 <= k <= 32 ->
-  Z.modulo x (Z.pow 2 k) = i32_and x (Z.pow 2 k - 1).
-Proof.
-  (* Uses mod_pow2_is_land and properties of i32_and *)
-Admitted.
+  intros. apply mod_pow2_is_and_mask; lia.
+Qed.
 
 (** * Negation to Subtraction *)
 
@@ -254,7 +314,13 @@ Theorem mod64_2_is_and_1 : forall x,
   0 <= x < Z.pow 2 64 ->
   Z.modulo x 2 = i64_and x 1.
 Proof.
-Admitted.
+  intros x Hx.
+  unfold i64_and, wrap64.
+  rewrite Z.mod_small by assumption.
+  rewrite Z.mod_small by lia.
+  rewrite mod_pow2_is_land by lia.
+  reflexivity.
+Qed.
 
 (** x * -1 = 0 - x (i64) *)
 Theorem mul64_neg1_is_neg : forall x,
@@ -270,7 +336,13 @@ Qed.
 Theorem mul_2_comm_shl : forall x,
   i32_mul 2 x = i32_shl x 1.
 Proof.
-Admitted.
+  intros. unfold i32_mul, i32_shl, shift_mask32, wrap32.
+  replace (Z.land (1 mod 2 ^ 32) 31) with 1 by reflexivity.
+  rewrite Z.shiftl_mul_pow2 by lia.
+  simpl (2 ^ 1).
+  rewrite Zmult_mod_idemp_r.
+  f_equal. ring.
+Qed.
 
 (** * Semantic Equivalence at Term Level *)
 

@@ -102,19 +102,55 @@ Proof.
   unfold wrap64, all_ones_64. reflexivity.
 Qed.
 
+(** Helper: wrap32 produces values in [0, 2^32) *)
+Lemma wrap32_range : forall x, 0 <= wrap32 x < 2 ^ 32.
+Proof.
+  intros. unfold wrap32. apply Z.mod_pos_bound. lia.
+Qed.
+
+(** Helper: Z.lor with all-ones mask via bit-level reasoning.
+    For any x in [0, 2^32), x | (2^32 - 1) = 2^32 - 1.
+    Proof: 2^32 - 1 = Z.ones 32 has all bits set in [0, 32),
+    so OR with any value in that range cannot add higher bits. *)
+Lemma lor_all_ones_32 : forall x,
+  0 <= x < 2 ^ 32 ->
+  Z.lor x (2 ^ 32 - 1) = 2 ^ 32 - 1.
+Proof.
+  intros x Hx.
+  replace (2 ^ 32 - 1) with (Z.ones 32) by reflexivity.
+  apply Z.bits_inj. intros n Hn.
+  rewrite Z.lor_spec.
+  destruct (Z.ltb n 32) eqn:Hlt.
+  - (* n < 32: bit n of Z.ones 32 is true, so OR is true *)
+    apply Z.ltb_lt in Hlt.
+    rewrite Z.ones_spec_low by lia.
+    rewrite Bool.orb_true_r. reflexivity.
+  - (* n >= 32: bit n of Z.ones 32 is false, bit n of x is false *)
+    apply Z.ltb_ge in Hlt.
+    rewrite Z.ones_spec_high by lia.
+    rewrite Bool.orb_false_r.
+    apply Z.bits_above_log2.
+    + lia.
+    + destruct (Z.eq_dec x 0) as [->|Hne].
+      * simpl. lia.
+      * apply Z.log2_lt_pow2; lia.
+Qed.
+
 (** x | all_ones = all_ones *)
 Theorem or32_all_ones_right : forall x,
   i32_or x all_ones_32 = all_ones_32.
 Proof.
-  (* OR with all 1s gives all 1s - requires bitwise reasoning *)
-Admitted.
+  intros. unfold i32_or, all_ones_32.
+  rewrite wrap32_all_ones.
+  apply lor_all_ones_32. apply wrap32_range.
+Qed.
 
 (** all_ones | x = all_ones *)
 Theorem or32_all_ones_left : forall x,
   i32_or all_ones_32 x = all_ones_32.
 Proof.
-  (* OR with all 1s gives all 1s (commutative) *)
-Admitted.
+  intros. rewrite or32_comm. apply or32_all_ones_right.
+Qed.
 
 (** * Idempotence *)
 
@@ -196,26 +232,98 @@ Qed.
 
 (** * Associativity *)
 
+(** Helper: Z.land of values in [0, 2^32) stays in [0, 2^32) *)
+Lemma land_range_32 : forall x y,
+  0 <= x < 2 ^ 32 -> 0 <= y < 2 ^ 32 ->
+  0 <= Z.land x y < 2 ^ 32.
+Proof.
+  intros x y Hx Hy. split.
+  - apply Z.land_nonneg. left. lia.
+  - apply Z.log2_lt_cancel.
+    apply Z.le_lt_trans with (m := Z.min (Z.log2 x) (Z.log2 y)).
+    + apply Z.log2_land; lia.
+    + apply Z.min_lt_iff.
+      destruct (Z.eq_dec x 0) as [->|Hxne]; [left; simpl; lia|].
+      destruct (Z.eq_dec y 0) as [->|Hyne]; [right; simpl; lia|].
+      left. apply Z.log2_lt_pow2; lia.
+Qed.
+
+(** Helper: wrap32 is identity on values already in range *)
+Lemma wrap32_small : forall x, 0 <= x < 2 ^ 32 -> wrap32 x = x.
+Proof.
+  intros x Hx. unfold wrap32. apply Z.mod_small. assumption.
+Qed.
+
+(** Helper: Z.lor of values in [0, 2^32) stays in [0, 2^32) *)
+Lemma lor_range_32 : forall x y,
+  0 <= x < 2 ^ 32 -> 0 <= y < 2 ^ 32 ->
+  0 <= Z.lor x y < 2 ^ 32.
+Proof.
+  intros x y Hx Hy. split.
+  - apply Z.lor_nonneg; lia.
+  - destruct (Z.eq_dec x 0) as [->|Hxne].
+    + rewrite Z.lor_0_l. lia.
+    + destruct (Z.eq_dec y 0) as [->|Hyne].
+      * rewrite Z.lor_0_r. lia.
+      * apply Z.log2_lt_cancel.
+        apply Z.le_lt_trans with (m := Z.max (Z.log2 x) (Z.log2 y)).
+        -- apply Z.log2_lor; lia.
+        -- apply Z.max_lt_iff. split; apply Z.log2_lt_pow2; lia.
+Qed.
+
+(** Helper: Z.lxor of values in [0, 2^32) stays in [0, 2^32) *)
+Lemma lxor_range_32 : forall x y,
+  0 <= x < 2 ^ 32 -> 0 <= y < 2 ^ 32 ->
+  0 <= Z.lxor x y < 2 ^ 32.
+Proof.
+  intros x y Hx Hy. split.
+  - apply Z.lxor_nonneg; lia.
+  - destruct (Z.eq_dec x 0) as [->|Hxne].
+    + rewrite Z.lxor_0_l. lia.
+    + destruct (Z.eq_dec y 0) as [->|Hyne].
+      * rewrite Z.lxor_0_r. lia.
+      * apply Z.log2_lt_cancel.
+        apply Z.le_lt_trans with (m := Z.max (Z.log2 x) (Z.log2 y)).
+        -- apply Z.log2_lxor; lia.
+        -- apply Z.max_lt_iff. split; apply Z.log2_lt_pow2; lia.
+Qed.
+
 (** (x & y) & z = x & (y & z) *)
 Theorem and32_assoc : forall x y z,
   i32_and (i32_and x y) z = i32_and x (i32_and y z).
 Proof.
-  (* AND is associative on wrapped values *)
-Admitted.
+  intros. unfold i32_and.
+  (* wrap32 (Z.land (wrap32 x) (wrap32 y)) = Z.land ... because result is in range *)
+  rewrite (wrap32_small (Z.land (wrap32 x) (wrap32 y)))
+    by (apply land_range_32; apply wrap32_range).
+  rewrite (wrap32_small (Z.land (wrap32 y) (wrap32 z)))
+    by (apply land_range_32; apply wrap32_range).
+  rewrite Z.land_assoc. reflexivity.
+Qed.
 
 (** (x | y) | z = x | (y | z) *)
 Theorem or32_assoc : forall x y z,
   i32_or (i32_or x y) z = i32_or x (i32_or y z).
 Proof.
-  (* OR is associative on wrapped values *)
-Admitted.
+  intros. unfold i32_or.
+  rewrite (wrap32_small (Z.lor (wrap32 x) (wrap32 y)))
+    by (apply lor_range_32; apply wrap32_range).
+  rewrite (wrap32_small (Z.lor (wrap32 y) (wrap32 z)))
+    by (apply lor_range_32; apply wrap32_range).
+  rewrite Z.lor_assoc. reflexivity.
+Qed.
 
 (** (x ^ y) ^ z = x ^ (y ^ z) *)
 Theorem xor32_assoc : forall x y z,
   i32_xor (i32_xor x y) z = i32_xor x (i32_xor y z).
 Proof.
-  (* XOR is associative on wrapped values *)
-Admitted.
+  intros. unfold i32_xor.
+  rewrite (wrap32_small (Z.lxor (wrap32 x) (wrap32 y)))
+    by (apply lxor_range_32; apply wrap32_range).
+  rewrite (wrap32_small (Z.lxor (wrap32 y) (wrap32 z)))
+    by (apply lxor_range_32; apply wrap32_range).
+  rewrite Z.lxor_assoc. reflexivity.
+Qed.
 
 (** * De Morgan's Laws *)
 
@@ -226,19 +334,49 @@ Admitted.
 
 (** * Absorption Laws *)
 
+(** Helper: a & (a | b) = a for non-negative integers (absorption) *)
+Lemma land_lor_absorb : forall a b,
+  0 <= a -> 0 <= b ->
+  Z.land a (Z.lor a b) = a.
+Proof.
+  intros a b Ha Hb.
+  apply Z.bits_inj. intros n Hn.
+  rewrite Z.land_spec, Z.lor_spec.
+  destruct (Z.testbit a n); simpl; reflexivity.
+Qed.
+
+(** Helper: a | (a & b) = a for non-negative integers (absorption) *)
+Lemma lor_land_absorb : forall a b,
+  0 <= a -> 0 <= b ->
+  Z.lor a (Z.land a b) = a.
+Proof.
+  intros a b Ha Hb.
+  apply Z.bits_inj. intros n Hn.
+  rewrite Z.lor_spec, Z.land_spec.
+  destruct (Z.testbit a n); simpl; reflexivity.
+Qed.
+
 (** x & (x | y) = x *)
 Theorem and_or_absorption : forall x y,
   i32_and (wrap32 x) (i32_or (wrap32 x) (wrap32 y)) = wrap32 x.
 Proof.
-  (* Boolean algebra absorption law *)
-Admitted.
+  intros. unfold i32_and, i32_or.
+  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
+  rewrite (wrap32_small (Z.lor (wrap32 x) (wrap32 y)))
+    by (apply lor_range_32; apply wrap32_range).
+  apply land_lor_absorb; destruct (wrap32_range x); lia.
+Qed.
 
 (** x | (x & y) = x *)
 Theorem or_and_absorption : forall x y,
   i32_or (wrap32 x) (i32_and (wrap32 x) (wrap32 y)) = wrap32 x.
 Proof.
-  (* Boolean algebra absorption law *)
-Admitted.
+  intros. unfold i32_or, i32_and.
+  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
+  rewrite (wrap32_small (Z.land (wrap32 x) (wrap32 y)))
+    by (apply land_range_32; apply wrap32_range).
+  apply lor_land_absorb; destruct (wrap32_range x); lia.
+Qed.
 
 (** * XOR Properties *)
 
@@ -254,43 +392,70 @@ Qed.
 Theorem xor32_triple : forall x,
   i32_xor (i32_xor x x) x = wrap32 x.
 Proof.
-  (* XOR with self cancels, then XOR with 0 is identity *)
-Admitted.
+  intros.
+  rewrite xor32_self_cancels.
+  (* i32_xor 0 x = wrap32 x *)
+  unfold i32_xor. rewrite wrap32_0. rewrite Z.lxor_0_l. reflexivity.
+Qed.
 
 (** (x ^ y) ^ y = x *)
 Theorem xor32_cancel_right : forall x y,
   i32_xor (i32_xor (wrap32 x) (wrap32 y)) (wrap32 y) = wrap32 x.
 Proof.
-  (* XOR is associative and self-cancelling *)
-Admitted.
+  intros. unfold i32_xor.
+  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
+  rewrite (wrap32_small (wrap32 y)) by (apply wrap32_range).
+  rewrite (wrap32_small (Z.lxor (wrap32 x) (wrap32 y)))
+    by (apply lxor_range_32; apply wrap32_range).
+  rewrite (wrap32_small (wrap32 y)) by (apply wrap32_range).
+  rewrite Z.lxor_assoc.
+  rewrite Z.lxor_nilpotent.
+  rewrite Z.lxor_0_r. reflexivity.
+Qed.
 
 (** * Term-Level Proofs *)
 
 (** These connect the Z-level proofs to the term simplifier *)
 
-(** simplify correctly handles x & 0 *)
+(** simplify correctly handles x & 0.
+    simplify (TI32And t (TI32Const 0)):
+    - simplify (TI32Const 0) = TI32Const 0
+    - If simplify t = TI32Const a: constant fold gives TI32Const (i32_and a 0) = TI32Const 0
+    - Otherwise: pattern (_, TI32Const 0 => TI32Const 0) applies *)
 Theorem simplify_and_annihilates : forall t,
   eval_term (simplify (TI32And t (TI32Const 0))) = eval_term (TI32Const 0).
 Proof.
-Admitted.
+  intros t.
+  simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify correctly handles 0 & x *)
 Theorem simplify_and_annihilates_left : forall t,
   eval_term (simplify (TI32And (TI32Const 0) t)) = eval_term (TI32Const 0).
 Proof.
-Admitted.
+  intros t.
+  simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify correctly handles x | 0 *)
 Theorem simplify_or_identity : forall t,
   eval_term (simplify (TI32Or t (TI32Const 0))) = eval_term (simplify t).
 Proof.
-Admitted.
+  intros t.
+  simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** simplify correctly handles x ^ 0 *)
 Theorem simplify_xor_identity : forall t,
   eval_term (simplify (TI32Xor t (TI32Const 0))) = eval_term (simplify t).
 Proof.
-Admitted.
+  intros t.
+  simpl.
+  destruct (simplify t); simpl; reflexivity.
+Qed.
 
 (** * Bitwise + Arithmetic Interactions *)
 

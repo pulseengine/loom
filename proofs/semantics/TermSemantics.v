@@ -1053,43 +1053,172 @@ Qed.
     semantics (eval_term) and operational semantics (exec_instrs).
     This is the key bridge for proving end-to-end optimization correctness. *)
 
-(** The core integration theorem: term evaluation corresponds to
-    instruction execution on an empty stack.
+(** Generalized compilation correctness: term_to_instrs on any starting state.
+    If eval_term t = TROk v, then executing the compiled instructions on
+    any state s produces a state with v pushed on top. This is stronger than
+    the initial_state version and is needed for compositionality. *)
+(** Helper: compose three instruction sequences using exec_instrs_app *)
+Lemma exec_instrs_app3 : forall i1 i2 i3 s s1 s2 s3,
+  exec_instrs i1 s = Some s1 ->
+  exec_instrs i2 s1 = Some s2 ->
+  exec_instrs i3 s2 = Some s3 ->
+  exec_instrs (i1 ++ i2 ++ i3) s = Some s3.
+Proof.
+  intros.
+  apply exec_instrs_app with s1.
+  - assumption.
+  - apply exec_instrs_app with s2; assumption.
+Qed.
 
-    If eval_term t = TROk v, then executing term_to_instrs t
-    on an empty stack produces a stack with just v on top. *)
+(** Helper: compose two instruction sequences *)
+Lemma exec_instrs_app2 : forall i1 i2 s s1 s2,
+  exec_instrs i1 s = Some s1 ->
+  exec_instrs i2 s1 = Some s2 ->
+  exec_instrs (i1 ++ i2) s = Some s2.
+Proof.
+  intros. apply exec_instrs_app with s1; assumption.
+Qed.
+
+(** Helper tactic-style lemma: executing a single binary op instruction *)
+Lemma exec_single_binop_i32 : forall op_instr op_fn a b s,
+  exec_instr op_instr (push (VI32 b) (push (VI32 a) s)) =
+    Some (push (VI32 (op_fn a b)) s) ->
+  exec_instrs [op_instr] (push (VI32 b) (push (VI32 a) s)) =
+    Some (push (VI32 (op_fn a b)) s).
+Proof.
+  intros. simpl. rewrite H. reflexivity.
+Qed.
+
+Theorem term_to_instrs_correct_gen : forall t v s,
+  eval_term t = TROk v ->
+  exec_instrs (term_to_instrs t) s = Some (push v s).
+Proof.
+  induction t; simpl; intros v0 s0 Heval.
+
+  (* TI32Const *)
+  - injection Heval; intros; subst. reflexivity.
+
+  (* TI64Const *)
+  - injection Heval; intros; subst. reflexivity.
+
+  (* All binary i32/i64 operations follow the same pattern:
+     term_to_instrs (BinOp l r) = term_to_instrs l ++ term_to_instrs r ++ [Op]
+     We use exec_instrs_app3 with the three parts. *)
+
+  (* TI32Add *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* TI32Sub *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* TI32Mul *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* TI64Add *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* TI64Sub *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* TI64Mul *)
+  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, push; destruct s0; reflexivity ].
+
+  (* All remaining binary operations (bitwise, shifts, comparisons)
+     follow the exact same pattern *)
+  all: try (
+    destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
+    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app3;
+    [ apply IHt1; reflexivity
+    | apply IHt2; reflexivity
+    | simpl; unfold pop2, pop, push; destruct s0; reflexivity ]).
+
+  (* TI32Eqz, TI64Eqz - unary operations *)
+  all: try (
+    destruct (eval_term t) as [[a|a|a|a]|] eqn:E; try discriminate;
+    injection Heval; intros; subst;
+    eapply exec_instrs_app2;
+    [ apply IHt; reflexivity
+    | simpl; unfold pop, push; destruct s0; reflexivity ]).
+
+  (* TDrop - produces no value, so eval_term returns TRFail *)
+  - destruct (eval_term t); discriminate.
+
+  (* TNop - produces no value *)
+  - discriminate.
+Qed.
+
+(** The initial_state version follows directly *)
 Theorem term_to_instrs_correct : forall t v,
   eval_term t = TROk v ->
   exec_instrs (term_to_instrs t) initial_state = Some (push v initial_state).
 Proof.
-  (* The proof is by structural induction on t.
-     Each case uses:
-     - exec_instrs_app for composed instruction sequences
-     - The correspondence between eval_term's operations
-       and exec_instr's operations
+  intros. apply term_to_instrs_correct_gen. assumption.
+Qed.
 
-     Key insight: term_to_instrs generates instructions that
-     evaluate operands left-to-right, building up the stack
-     in the same way that eval_term recursively evaluates. *)
-Admitted.
-
-(** Corollary: equivalent terms produce equivalent instruction executions *)
-Corollary term_equiv_instrs_equiv : forall t1 t2,
-  term_equiv t1 t2 ->
-  forall s, exec_instrs (term_to_instrs t1) s = exec_instrs (term_to_instrs t2) s.
+(** Corollary: terms that evaluate to the same value produce the same
+    instruction execution result. Note: this requires both terms to
+    evaluate successfully. When both return TRFail, the instruction
+    executions may differ (e.g., TNop vs TDrop (TI32Const 5) both
+    evaluate to TRFail but produce different instruction sequences). *)
+Corollary term_equiv_instrs_equiv : forall t1 t2 v s,
+  eval_term t1 = TROk v ->
+  eval_term t2 = TROk v ->
+  exec_instrs (term_to_instrs t1) s = exec_instrs (term_to_instrs t2) s.
 Proof.
-  (* If t1 and t2 produce the same values, their compiled
-     instructions produce the same execution results. *)
-Admitted.
+  intros t1 t2 v s H1 H2.
+  rewrite (term_to_instrs_correct_gen t1 v s H1).
+  rewrite (term_to_instrs_correct_gen t2 v s H2).
+  reflexivity.
+Qed.
 
 (** The optimization correctness theorem at the instruction level:
-    optimized terms, when compiled, produce equivalent behavior. *)
-Theorem optimization_preserves_execution : forall t s,
+    when evaluation succeeds, optimized terms produce equivalent behavior. *)
+Theorem optimization_preserves_execution : forall t v s,
+  eval_term t = TROk v ->
   exec_instrs (term_to_instrs t) s = exec_instrs (term_to_instrs (simplify t)) s.
 Proof.
-  intros t s.
-  apply term_equiv_instrs_equiv.
-  apply simplify_preserves_semantics.
+  intros t v s Heval.
+  apply (term_equiv_instrs_equiv t (simplify t) v s).
+  - assumption.
+  - rewrite <- (simplify_preserves_semantics t). assumption.
 Qed.
 
 Close Scope Z_scope.

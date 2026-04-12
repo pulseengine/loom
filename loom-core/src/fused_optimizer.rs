@@ -1026,6 +1026,7 @@ fn has_unsafe_global_writes(instructions: &[Instruction]) -> bool {
     if global_set_indices.len() > 1 {
         return true; // Multi-global → unsafe
     }
+    // SAFETY: guarded by is_empty check above (line 1023)
     let set_idx = *global_set_indices.iter().next().unwrap();
     !global_get_indices.contains(&set_idx) // Write-only → unsafe
 }

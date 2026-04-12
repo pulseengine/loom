@@ -1,47 +1,46 @@
 ;; LOOM - Constant Folding Optimization Rules
-;; These rules fold constant operations at compile time
+;; These rules fold constant operations at compile time.
 ;;
-;; Strategy: Use value_data extractor to match on ValueData enum variants,
-;; then use if-let with constant extractors to check if operands are constants.
+;; Strategy: Pattern match directly on instruction constructors with nested
+;; extractors (Cranelift style). Each rule matches when both operands are
+;; constants and produces a new constant with the computed result.
+;;
+;; Correctness: Each rule preserves semantic equivalence by applying the same
+;; wrapping arithmetic that WebAssembly specifies (mod 2^32 for i32, mod 2^64
+;; for i64). The imm32_*/imm64_* helper functions implement these semantics.
+;;
+;; Each rule has a unique priority > 0 to take precedence over the default
+;; catch-all rule (priority 0) and to avoid overlap errors between rules
+;; that the ISLE compiler's trie construction cannot resolve.
 
 ;; ============================================================================
 ;; i32 Constant Folding
 ;; ============================================================================
 
-;; i32.add constant folding: (i32.const x) + (i32.const y) → i32.const (x+y)
-;; Cranelift-style: pattern match directly on constructors with nested extractors
-(rule (simplify (iadd32 (iconst32 x) (iconst32 y)))
+;; i32.add constant folding: (i32.const x) + (i32.const y) -> i32.const (x+y)
+(rule 6 (simplify (iadd32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_add x y)))
 
-;; i32.sub constant folding
-(rule (simplify (isub32 (iconst32 x) (iconst32 y)))
+;; i32.sub constant folding: (i32.const x) - (i32.const y) -> i32.const (x-y)
+(rule 5 (simplify (isub32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_sub x y)))
 
-;; i32.mul constant folding
-(rule (simplify (imul32 (iconst32 x) (iconst32 y)))
+;; i32.mul constant folding: (i32.const x) * (i32.const y) -> i32.const (x*y)
+(rule 4 (simplify (imul32 (iconst32 x) (iconst32 y)))
       (iconst32 (imm32_mul x y)))
 
 ;; ============================================================================
 ;; i64 Constant Folding
 ;; ============================================================================
 
-;; i64.add constant folding
-(rule (simplify val)
-      (if-let (ValueData.I64Add lhs rhs) (value_data val))
-      (if-let x (i64_const lhs))
-      (if-let y (i64_const rhs))
+;; i64.add constant folding: (i64.const x) + (i64.const y) -> i64.const (x+y)
+(rule 3 (simplify (iadd64 (iconst64 x) (iconst64 y)))
       (iconst64 (imm64_add x y)))
 
-;; i64.sub constant folding
-(rule (simplify val)
-      (if-let (ValueData.I64Sub lhs rhs) (value_data val))
-      (if-let x (i64_const lhs))
-      (if-let y (i64_const rhs))
+;; i64.sub constant folding: (i64.const x) - (i64.const y) -> i64.const (x-y)
+(rule 2 (simplify (isub64 (iconst64 x) (iconst64 y)))
       (iconst64 (imm64_sub x y)))
 
-;; i64.mul constant folding
-(rule (simplify val)
-      (if-let (ValueData.I64Mul lhs rhs) (value_data val))
-      (if-let x (i64_const lhs))
-      (if-let y (i64_const rhs))
+;; i64.mul constant folding: (i64.const x) * (i64.const y) -> i64.const (x*y)
+(rule 1 (simplify (imul64 (iconst64 x) (iconst64 y)))
       (iconst64 (imm64_mul x y)))

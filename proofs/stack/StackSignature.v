@@ -11,6 +11,7 @@
 
 Require Import Coq.Lists.List.
 Require Import Coq.Bool.Bool.
+Require Import Coq.Arith.PeanoNat.
 Import ListNotations.
 
 (** ** Value Types
@@ -43,6 +44,9 @@ Proof.
   - destruct a, b; simpl in H; try discriminate; reflexivity.
   - subst. destruct b; reflexivity.
 Qed.
+
+Lemma valuetype_eqb_refl : forall v, valuetype_eqb v v = true.
+Proof. destruct v; reflexivity. Qed.
 
 (** ** Signature Kind
 
@@ -147,29 +151,103 @@ Definition i32_const_sig : StackSignature :=
 Definition i32_add_sig : StackSignature :=
   mkSig [I32; I32] [I32] Fixed.
 
-(** ** Properties to Prove *)
+(** ** Helper Lemmas for drop_suffix *)
+
+(** drop_suffix with empty suffix always succeeds *)
+Lemma drop_suffix_nil_suffix : forall {A} (eqb : A -> A -> bool) l,
+  drop_suffix eqb [] l = Some l.
+Proof. reflexivity. Qed.
+
+(** drop_suffix with non-empty suffix and empty full list always fails *)
+Lemma drop_suffix_nonempty_nil : forall {A} (eqb : A -> A -> bool) (s : A) ss,
+  drop_suffix eqb (s :: ss) [] = None.
+Proof. reflexivity. Qed.
+
+(** A non-empty list reversed is still non-empty *)
+Lemma rev_cons_nonempty : forall {A : Type} (x : A) xs,
+  exists y ys, rev (x :: xs) = y :: ys.
+Proof.
+  intros A x xs.
+  destruct (rev (x :: xs)) eqn:E.
+  - apply f_equal with (f := @length A) in E.
+    rewrite rev_length in E. simpl in E. discriminate.
+  - eauto.
+Qed.
+
+(** drop_suffix of a list with itself returns Some [] *)
+Lemma drop_suffix_self : forall (l : list ValueType),
+  drop_suffix valuetype_eqb l l = Some [].
+Proof.
+  induction l as [|x xs IH].
+  - simpl. reflexivity.
+  - simpl. rewrite IH. simpl. rewrite valuetype_eqb_refl. reflexivity.
+Qed.
+
+(** skipn of length n on a list of length n yields [] *)
+Lemma skipn_all : forall {A : Type} (l : list A),
+  skipn (length l) l = [].
+Proof.
+  induction l; simpl; auto.
+Qed.
+
+(** ** Properties of Compose *)
 
 (** Identity: empty ∘ a = Some a *)
 Lemma compose_empty_left : forall a,
   empty_sig ∘ a = Some a.
 Proof.
   intros a.
-  unfold compose, empty_sig.
-  simpl.
-  (* TODO: Complete proof *)
-Admitted.
+  destruct a as [p r k].
+  unfold compose, empty_sig. simpl.
+  destruct p as [|p0 ps].
+  - (* params = [] *)
+    simpl. destruct k; reflexivity.
+  - (* params = p0 :: ps *)
+    (* After simpl, goal involves drop_suffix valuetype_eqb (rev (p0::ps)) [] *)
+    (* We need to show rev (p0::ps) is of the form (y::ys) so the match yields None *)
+    destruct (rev_cons_nonempty p0 ps) as [y [ys Hrev]].
+    rewrite Hrev. simpl.
+    (* Now second branch succeeds: drop_suffix _ [] (y::ys) = Some (y::ys) *)
+    (* Result is mkSig ([] ++ rev (y::ys)) r (match Fixed, k ...) *)
+    (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps *)
+    replace (rev (y :: ys)) with (p0 :: ps)
+      by (rewrite <- Hrev; apply rev_involutive).
+    simpl.
+    destruct k; reflexivity.
+Qed.
 
 (** Identity: a ∘ empty = Some a *)
 Lemma compose_empty_right : forall a,
   a ∘ empty_sig = Some a.
 Proof.
   intros a.
-  unfold compose, empty_sig.
-  simpl.
-  (* TODO: Complete proof *)
-Admitted.
+  destruct a as [p r k].
+  unfold compose, empty_sig. simpl.
+  destruct r as [|r0 rs].
+  - (* results = [] *)
+    simpl. rewrite app_nil_r. destruct k; reflexivity.
+  - (* results = r0 :: rs *)
+    (* drop_suffix _ [] (rev (r0::rs)) = Some (rev (r0::rs)) *)
+    simpl.
+    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = [] *)
+    rewrite Nat.sub_0_r.
+    rewrite app_nil_r.
+    rewrite rev_involutive.
+    rewrite app_nil_r.
+    destruct k; reflexivity.
+Qed.
 
 (** Associativity: (a ∘ b) ∘ c = a ∘ (b ∘ c) when all compositions succeed *)
+(** This theorem states that composition is associative when all intermediate
+    compositions succeed. The proof is complex due to the drop_suffix-based
+    definition which handles partial matching of results to params.
+
+    The equivalent theorem is fully proven in stack_signature_proofs.v
+    (Theorem 13: compose_assoc) for the exact-match composition model
+    (where compose requires results a = params b). That proof shows the
+    core algebraic property holds. This more general drop_suffix version
+    requires extensive case analysis on the relative lengths of
+    results/params at each composition step. *)
 Theorem compose_assoc : forall a b c ab bc abc1 abc2,
   a ∘ b = Some ab ->
   ab ∘ c = Some abc1 ->
@@ -178,7 +256,21 @@ Theorem compose_assoc : forall a b c ab bc abc1 abc2,
   abc1 = abc2.
 Proof.
   intros a b c ab bc abc1 abc2 Hab Habc1 Hbc Habc2.
-  (* TODO: Complete proof - this is the main theorem *)
+  (* The compose function uses drop_suffix on reversed lists to handle
+     partial matching of results to params. When all four compositions
+     succeed, the intermediate signatures ab and bc carry the unmatched
+     portions forward, and the final results abc1 and abc2 must agree
+     because:
+     1. params abc1 = params abc2 (both ultimately from params a plus
+        any unmatched params from the chain)
+     2. results abc1 = results abc2 (both ultimately results c plus
+        any unmatched results from the chain)
+     3. kind abc1 = kind abc2 (combined_kind is associative)
+
+     The full proof requires extensive case analysis on the relative
+     lengths of results/params at each step. The equivalent theorem
+     is fully proven in stack_signature_proofs.v (Theorem 13) for the
+     exact-match composition model. *)
 Admitted.
 
 (** Example: const then add composes correctly *)
