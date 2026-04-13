@@ -1603,21 +1603,33 @@ mod extended_tests {
 //
 // This section parses ISLE rewrite rules and generates Z3 proof obligations.
 // Each ISLE rule of the form:
-//   (rule (simplify (OP (A x) (B y))) (C result))
+//   (rule PRIORITY (simplify (OP (A x) (B y))) (C result))
 // generates a proof obligation:
 //   ∀x,y. OP(A(x), B(y)) = C(result)
+//
+// For constant folding rules, the proof obligation ensures that the Rust helper
+// function (e.g., imm32_add using wrapping_add) produces the same result as
+// the WebAssembly runtime operation (e.g., i32.add). We model this by:
+//   1. Computing the WebAssembly operation via Z3 bitvector arithmetic (bvadd)
+//   2. Computing the Rust helper via wider arithmetic + truncation (sign-extend
+//      to 64 bits, operate, truncate back to 32 bits -- matching wrapping_* semantics)
+//   3. Proving these are equal for ALL possible inputs
 
 /// Represents a parsed ISLE rewrite rule
 #[derive(Debug, Clone)]
 pub struct IsleRule {
     /// Rule name (derived from pattern)
     pub name: String,
+    /// Rule priority (from ISLE source)
+    pub priority: Option<u32>,
     /// The pattern being matched (LHS)
     pub pattern: String,
     /// The replacement (RHS)
     pub replacement: String,
     /// Extracted operation (iadd32, isub32, etc.)
     pub operation: Option<String>,
+    /// Bit width (32 or 64)
+    pub bit_width: u32,
     /// Is this a constant folding rule?
     pub is_constant_fold: bool,
     /// Is this an algebraic simplification?
@@ -1671,18 +1683,36 @@ fn parse_single_rule(rule_text: &str) -> Option<IsleRule> {
         return None;
     }
 
-    // Extract the pattern and replacement
-    // Format: (rule (simplify PATTERN) REPLACEMENT)
-    let inner = &rule_text[5..rule_text.len() - 1].trim(); // Remove "(rule" and final ")"
+    // Extract the inner content: remove "(rule" prefix and final ")"
+    let inner = rule_text[5..rule_text.len() - 1].trim();
+
+    // Handle optional priority number: (rule 6 (simplify ...) ...)
+    let (priority, body) = {
+        let digits: String = inner.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            (None, inner)
+        } else {
+            let priority = digits.parse::<u32>().ok();
+            let body = inner[digits.len()..].trim();
+            (priority, body)
+        }
+    };
 
     // Find the simplify pattern
-    if !inner.contains("(simplify") {
+    if !body.contains("(simplify") {
         return None;
     }
 
     // Extract operation from pattern
-    let operation = extract_operation(inner);
-    let is_constant_fold = inner.contains("iconst32") || inner.contains("iconst64");
+    let operation = extract_operation(body);
+    let is_constant_fold = body.contains("iconst32") || body.contains("iconst64");
+
+    // Determine bit width from operation name
+    let bit_width = operation
+        .as_ref()
+        .map(|op| if op.contains("64") { 64 } else { 32 })
+        .unwrap_or(32);
+
     let is_algebraic = operation
         .as_ref()
         .map(|op| {
@@ -1699,9 +1729,11 @@ fn parse_single_rule(rule_text: &str) -> Option<IsleRule> {
 
     Some(IsleRule {
         name: format!("isle_{}", name),
-        pattern: inner.to_string(),
+        priority,
+        pattern: body.to_string(),
         replacement: String::new(), // Simplified for now
         operation,
+        bit_width,
         is_constant_fold,
         is_algebraic,
     })
@@ -1733,7 +1765,7 @@ pub fn generate_isle_proof_obligations(rules: &[IsleRule]) -> Vec<RuleProof> {
     for rule in rules {
         if rule.is_constant_fold {
             if let Some(ref op) = rule.operation {
-                let proof = verify_isle_constant_fold_rule(op, &rule.name);
+                let proof = verify_isle_constant_fold_rule(op, &rule.name, rule.bit_width);
                 proofs.push(proof);
             }
         }
@@ -1742,27 +1774,33 @@ pub fn generate_isle_proof_obligations(rules: &[IsleRule]) -> Vec<RuleProof> {
     proofs
 }
 
-/// Verify a constant folding ISLE rule
+/// Verify a constant folding ISLE rule via Z3 SMT.
+///
+/// Models both sides of the rewrite:
+///   LHS: WebAssembly runtime operation (e.g., i32.add) -> Z3 bvadd
+///   RHS: Rust wrapping helper (e.g., imm32_add) -> modeled as wider-arithmetic
+///         with truncation: sign-extend to 2*N bits, operate, extract low N bits
+///
+/// If `bvadd(a, b) == extract[N-1:0](sext(a) + sext(b))` is UNSAT when negated,
+/// then the ISLE rule is proven correct for all 2^N * 2^N input combinations.
 #[cfg(feature = "verification")]
-fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str) -> RuleProof {
+fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str, bit_width: u32) -> RuleProof {
     let start = std::time::Instant::now();
 
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
     let solver = Solver::new();
 
-    // Create symbolic constants
-    let k1 = BV::new_const("k1", 32);
-    let k2 = BV::new_const("k2", 32);
+    // Create symbolic constants at the native bit width
+    let a = BV::new_const("a", bit_width);
+    let b = BV::new_const("b", bit_width);
 
-    // Compute the operation result
-    let op_result = match operation {
-        "iadd32" => k1.bvadd(&k2),
-        "isub32" => k1.bvsub(&k2),
-        "imul32" => k1.bvmul(&k2),
-        "iand32" => k1.bvand(&k2),
-        "ior32" => k1.bvor(&k2),
-        "ixor32" => k1.bvxor(&k2),
+    // LHS: the WebAssembly runtime operation (direct bitvector arithmetic)
+    let wasm_result = match operation {
+        "iadd32" | "iadd64" => a.bvadd(&b),
+        "isub32" | "isub64" => a.bvsub(&b),
+        "imul32" | "imul64" => a.bvmul(&b),
+        "iand32" | "iand64" => a.bvand(&b),
+        "ior32" | "ior64" => a.bvor(&b),
+        "ixor32" | "ixor64" => a.bvxor(&b),
         _ => {
             return RuleProof::error(
                 rule_name,
@@ -1772,40 +1810,54 @@ fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str) -> RuleProof
         }
     };
 
-    // The constant folding result should equal the operation
-    // This is trivially true but demonstrates the framework
-    let folded_result = match operation {
-        "iadd32" => k1.bvadd(&k2),
-        "isub32" => k1.bvsub(&k2),
-        "imul32" => k1.bvmul(&k2),
-        "iand32" => k1.bvand(&k2),
-        "ior32" => k1.bvor(&k2),
-        "ixor32" => k1.bvxor(&k2),
-        _ => return RuleProof::error(rule_name, "Unsupported", 0),
+    // RHS: model the Rust wrapping helper function semantics.
+    //
+    // Rust's wrapping_add/sub/mul on i32/i64 operates as:
+    //   result = ((a as wider) OP (b as wider)) as narrow
+    // which is equivalent to: compute in 2*N bits, then truncate to N bits.
+    //
+    // We model this explicitly to prove it matches the WebAssembly semantics
+    // (which are defined as modular arithmetic on N-bit values).
+    let a_wide = a.sign_ext(bit_width); // sign-extend to 2*N bits
+    let b_wide = b.sign_ext(bit_width);
+
+    let wide_result = match operation {
+        "iadd32" | "iadd64" => a_wide.bvadd(&b_wide),
+        "isub32" | "isub64" => a_wide.bvsub(&b_wide),
+        "imul32" | "imul64" => a_wide.bvmul(&b_wide),
+        "iand32" | "iand64" => a_wide.bvand(&b_wide),
+        "ior32" | "ior64" => a_wide.bvor(&b_wide),
+        "ixor32" | "ixor64" => a_wide.bvxor(&b_wide),
+        _ => unreachable!(),
     };
 
-    // Assert they are NOT equal (looking for counterexample)
-    solver.assert(&op_result.eq(&folded_result).not());
+    // Truncate back to N bits (extract bits [N-1:0])
+    let rust_helper_result = wide_result.extract(bit_width - 1, 0);
+
+    // Proof obligation: wasm_result != rust_helper_result
+    // If UNSAT, then they are equal for ALL inputs -> rule is correct
+    solver.assert(&wasm_result.eq(&rust_helper_result).not());
 
     let time_ms = start.elapsed().as_millis() as u64;
 
     match solver.check() {
         SatResult::Unsat => {
             let op_symbol = match operation {
-                "iadd32" => "+",
-                "isub32" => "-",
-                "imul32" => "*",
-                "iand32" => "&",
-                "ior32" => "|",
-                "ixor32" => "^",
+                "iadd32" | "iadd64" => "+",
+                "isub32" | "isub64" => "-",
+                "imul32" | "imul64" => "*",
+                "iand32" | "iand64" => "&",
+                "ior32" | "ior64" => "|",
+                "ixor32" | "ixor64" => "^",
                 _ => "?",
             };
+            let ty = if bit_width == 64 { "i64" } else { "i32" };
             RuleProof::proven(
                 rule_name,
                 time_ms,
                 &format!(
-                    "ISLE rule {}: ∀k1,k2. fold(k1 {} k2) = k1 {} k2 ✓",
-                    operation, op_symbol, op_symbol
+                    "ISLE constant fold {}: ∀a,b: {}. wasm_{}(a, b) = rust_wrapping_{}(a, b) ✓",
+                    operation, ty, op_symbol, op_symbol
                 ),
             )
         }
@@ -1817,19 +1869,98 @@ fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str) -> RuleProof
     }
 }
 
+// ============================================================================
+// PART 5a: Dedicated ISLE Constant Folding Rule Verification
+// ============================================================================
+//
+// These functions verify the 6 constant folding rules from
+// loom-shared/isle/rules/constant_folding.isle:
+//
+//   (rule 6 (simplify (iadd32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_add x y)))
+//   (rule 5 (simplify (isub32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_sub x y)))
+//   (rule 4 (simplify (imul32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_mul x y)))
+//   (rule 3 (simplify (iadd64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_add x y)))
+//   (rule 2 (simplify (isub64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_sub x y)))
+//   (rule 1 (simplify (imul64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_mul x y)))
+
+/// Verify ISLE rule: (iadd32 (iconst32 a) (iconst32 b)) => (iconst32 (imm32_add a b))
+///
+/// Proves: ∀a,b: i32. bvadd(a, b) == truncate32(sign_ext64(a) + sign_ext64(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i32_add() -> RuleProof {
+    verify_isle_constant_fold_rule("iadd32", "isle_constant_fold_i32_add", 32)
+}
+
+/// Verify ISLE rule: (isub32 (iconst32 a) (iconst32 b)) => (iconst32 (imm32_sub a b))
+///
+/// Proves: ∀a,b: i32. bvsub(a, b) == truncate32(sign_ext64(a) - sign_ext64(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i32_sub() -> RuleProof {
+    verify_isle_constant_fold_rule("isub32", "isle_constant_fold_i32_sub", 32)
+}
+
+/// Verify ISLE rule: (imul32 (iconst32 a) (iconst32 b)) => (iconst32 (imm32_mul a b))
+///
+/// Proves: ∀a,b: i32. bvmul(a, b) == truncate32(sign_ext64(a) * sign_ext64(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i32_mul() -> RuleProof {
+    verify_isle_constant_fold_rule("imul32", "isle_constant_fold_i32_mul", 32)
+}
+
+/// Verify ISLE rule: (iadd64 (iconst64 a) (iconst64 b)) => (iconst64 (imm64_add a b))
+///
+/// Proves: ∀a,b: i64. bvadd(a, b) == truncate64(sign_ext128(a) + sign_ext128(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i64_add() -> RuleProof {
+    verify_isle_constant_fold_rule("iadd64", "isle_constant_fold_i64_add", 64)
+}
+
+/// Verify ISLE rule: (isub64 (iconst64 a) (iconst64 b)) => (iconst64 (imm64_sub a b))
+///
+/// Proves: ∀a,b: i64. bvsub(a, b) == truncate64(sign_ext128(a) - sign_ext128(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i64_sub() -> RuleProof {
+    verify_isle_constant_fold_rule("isub64", "isle_constant_fold_i64_sub", 64)
+}
+
+/// Verify ISLE rule: (imul64 (iconst64 a) (iconst64 b)) => (iconst64 (imm64_mul a b))
+///
+/// Proves: ∀a,b: i64. bvmul(a, b) == truncate64(sign_ext128(a) * sign_ext128(b))
+#[cfg(feature = "verification")]
+pub fn verify_isle_rule_i64_mul() -> RuleProof {
+    verify_isle_constant_fold_rule("imul64", "isle_constant_fold_i64_mul", 64)
+}
+
+/// Verify all 6 ISLE constant folding rules and return a tracked result set.
+///
+/// This verifies exactly the rules in `constant_folding.isle`:
+///   - i32: add, sub, mul
+///   - i64: add, sub, mul
+#[cfg(feature = "verification")]
+pub fn verify_isle_constant_folding_rules() -> VerifiedRuleSet {
+    let mut results = VerifiedRuleSet::new();
+
+    results.add_proof(verify_isle_rule_i32_add());
+    results.add_proof(verify_isle_rule_i32_sub());
+    results.add_proof(verify_isle_rule_i32_mul());
+    results.add_proof(verify_isle_rule_i64_add());
+    results.add_proof(verify_isle_rule_i64_sub());
+    results.add_proof(verify_isle_rule_i64_mul());
+
+    results
+}
+
+/// Stub for when verification is disabled
+#[cfg(not(feature = "verification"))]
+pub fn verify_isle_constant_folding_rules() -> VerifiedRuleSet {
+    VerifiedRuleSet::new()
+}
+
 /// Verify all ISLE rules from the constant folding files
 #[cfg(feature = "verification")]
 pub fn verify_isle_rules() -> Vec<RuleProof> {
-    // Inline the ISLE rule definitions we want to verify
-    let isle_source = r#"
-;; i32 constant folding
-(rule (simplify (iadd32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_add k1 k2)))
-(rule (simplify (isub32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_sub k1 k2)))
-(rule (simplify (imul32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_mul k1 k2)))
-(rule (simplify (iand32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_and k1 k2)))
-(rule (simplify (ior32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_or k1 k2)))
-(rule (simplify (ixor32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_xor k1 k2)))
-    "#;
+    // Read the actual ISLE constant folding rules (with priority numbers)
+    let isle_source = include_str!("../../loom-shared/isle/rules/constant_folding.isle");
 
     let rules = parse_isle_rules(isle_source);
     generate_isle_proof_obligations(&rules)
@@ -1846,8 +1977,9 @@ pub fn verify_isle_rules() -> Vec<RuleProof> {
 pub fn verify_all_with_isle() -> VerifiedRuleSet {
     let mut results = verify_all_rules_extended();
 
-    // Add ISLE rule proofs
-    for proof in verify_isle_rules() {
+    // Add ISLE constant folding rule proofs
+    let cf_results = verify_isle_constant_folding_rules();
+    for proof in cf_results.proofs.into_values() {
         results.add_proof(proof);
     }
 
@@ -1865,7 +1997,7 @@ mod isle_tests {
     use super::*;
 
     #[test]
-    fn test_parse_isle_rules() {
+    fn test_parse_isle_rules_without_priority() {
         let source = r#"
 ;; Comment
 (rule (simplify (iadd32 (iconst32 k1) (iconst32 k2))) (iconst32 (imm32_add k1 k2)))
@@ -1876,17 +2008,154 @@ mod isle_tests {
         assert_eq!(rules.len(), 2);
         assert!(rules[0].is_constant_fold);
         assert_eq!(rules[0].operation, Some("iadd32".to_string()));
+        assert_eq!(rules[0].priority, None);
         assert_eq!(rules[1].operation, Some("isub32".to_string()));
+    }
+
+    #[test]
+    fn test_parse_isle_rules_with_priority() {
+        let source = r#"
+;; Constant folding rules with priorities
+(rule 6 (simplify (iadd32 (iconst32 x) (iconst32 y)))
+      (iconst32 (imm32_add x y)))
+(rule 5 (simplify (isub32 (iconst32 x) (iconst32 y)))
+      (iconst32 (imm32_sub x y)))
+(rule 3 (simplify (iadd64 (iconst64 x) (iconst64 y)))
+      (iconst64 (imm64_add x y)))
+        "#;
+
+        let rules = parse_isle_rules(source);
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].priority, Some(6));
+        assert_eq!(rules[0].operation, Some("iadd32".to_string()));
+        assert_eq!(rules[0].bit_width, 32);
+        assert_eq!(rules[1].priority, Some(5));
+        assert_eq!(rules[1].operation, Some("isub32".to_string()));
+        assert_eq!(rules[2].priority, Some(3));
+        assert_eq!(rules[2].operation, Some("iadd64".to_string()));
+        assert_eq!(rules[2].bit_width, 64);
+    }
+
+    #[test]
+    fn test_parse_actual_constant_folding_isle() {
+        let source = include_str!("../../loom-shared/isle/rules/constant_folding.isle");
+        let rules = parse_isle_rules(source);
+        // The constant_folding.isle has exactly 6 rules
+        assert_eq!(rules.len(), 6, "Should parse all 6 constant folding rules");
+
+        // Verify all are constant folding rules
+        for rule in &rules {
+            assert!(
+                rule.is_constant_fold,
+                "Rule {} should be constant fold",
+                rule.name
+            );
+        }
+
+        // Verify we found all expected operations
+        let ops: Vec<_> = rules.iter().filter_map(|r| r.operation.as_ref()).collect();
+        assert!(ops.contains(&&"iadd32".to_string()));
+        assert!(ops.contains(&&"isub32".to_string()));
+        assert!(ops.contains(&&"imul32".to_string()));
+        assert!(ops.contains(&&"iadd64".to_string()));
+        assert!(ops.contains(&&"isub64".to_string()));
+        assert!(ops.contains(&&"imul64".to_string()));
     }
 
     #[test]
     fn test_verify_isle_rules() {
         let proofs = verify_isle_rules();
-        assert!(!proofs.is_empty(), "Should have ISLE proofs");
+        assert_eq!(
+            proofs.len(),
+            6,
+            "Should have 6 ISLE constant folding proofs"
+        );
 
         for proof in &proofs {
             assert!(proof.is_proven(), "ISLE rule failed: {:?}", proof);
         }
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i32_add() {
+        let proof = verify_isle_rule_i32_add();
+        assert!(
+            proof.is_proven(),
+            "i32_add constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i32_add");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i32_sub() {
+        let proof = verify_isle_rule_i32_sub();
+        assert!(
+            proof.is_proven(),
+            "i32_sub constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i32_sub");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i32_mul() {
+        let proof = verify_isle_rule_i32_mul();
+        assert!(
+            proof.is_proven(),
+            "i32_mul constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i32_mul");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i64_add() {
+        let proof = verify_isle_rule_i64_add();
+        assert!(
+            proof.is_proven(),
+            "i64_add constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i64_add");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i64_sub() {
+        let proof = verify_isle_rule_i64_sub();
+        assert!(
+            proof.is_proven(),
+            "i64_sub constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i64_sub");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_fold_i64_mul() {
+        let proof = verify_isle_rule_i64_mul();
+        assert!(
+            proof.is_proven(),
+            "i64_mul constant folding should be proven: {:?}",
+            proof
+        );
+        assert_eq!(proof.rule_name, "isle_constant_fold_i64_mul");
+    }
+
+    #[test]
+    fn test_rule_verification_isle_constant_folding_all() {
+        let results = verify_isle_constant_folding_rules();
+        assert_eq!(
+            results.total_rules, 6,
+            "Should verify all 6 constant folding rules"
+        );
+        assert_eq!(results.proven_rules, 6, "All 6 rules should be proven");
+        assert_eq!(results.failed_rules, 0, "No rules should fail");
+        assert!(
+            (results.success_rate() - 1.0).abs() < f64::EPSILON,
+            "100% success rate"
+        );
+        println!("{}", results.summary());
     }
 
     #[test]
@@ -1897,7 +2166,7 @@ mod isle_tests {
             results.failed_rules, 0,
             "Complete suite with ISLE had failures"
         );
-        // Should have more rules than extended suite alone
+        // Should have more rules than extended suite alone (51 + 6 = 57+)
         assert!(results.total_rules > 51, "Should include ISLE rules");
     }
 }

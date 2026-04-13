@@ -1,0 +1,238 @@
+artifacts:
+  # ══════════════════════════════════════════════════════════════════════
+  # Safety Goals (GSN top-level claims)
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: SG-1
+    type: safety-goal
+    title: LOOM preserves semantic equivalence for all supported optimizations
+    status: approved
+    fields:
+      claim: >
+        For every WebAssembly module M that LOOM accepts for optimization,
+        the output module M' is semantically equivalent to M — identical
+        observable behavior for all valid inputs.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-1
+      - type: goal-addresses-hazard
+        target: H-2
+      - type: goal-addresses-hazard
+        target: H-3
+      - type: goal-addresses-hazard
+        target: H-5
+      - type: goal-addresses-hazard
+        target: H-6
+      - type: goal-addresses-hazard
+        target: H-7
+      - type: goal-addresses-hazard
+        target: H-8
+      - type: goal-addresses-hazard
+        target: H-9
+      - type: goal-addresses-hazard
+        target: H-14
+      - type: goal-addresses-hazard
+        target: H-15
+      - type: goal-addresses-hazard
+        target: H-16
+
+  - id: SG-2
+    type: safety-goal
+    title: LOOM produces structurally valid WebAssembly output
+    status: approved
+    fields:
+      claim: >
+        Every output module passes wasm-tools validate and maintains
+        correct stack discipline, section ordering, and LEB128 encoding.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-4
+      - type: goal-addresses-hazard
+        target: H-10
+
+  - id: SG-3
+    type: safety-goal
+    title: LOOM verification system faithfully models WebAssembly semantics
+    status: approved
+    fields:
+      claim: >
+        The Z3 SMT encoding and Rocq proof models accurately represent
+        WebAssembly operational semantics, ensuring verification results
+        are trustworthy.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-12
+
+  - id: SG-4
+    type: safety-goal
+    title: LOOM optimization output is deterministic
+    status: approved
+    fields:
+      claim: >
+        Identical inputs produce identical outputs across runs, platforms,
+        and compiler versions. No HashMap iteration order or floating-point
+        host arithmetic introduces non-determinism.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-18
+      - type: goal-addresses-hazard
+        target: H-19
+      - type: goal-addresses-hazard
+        target: H-20
+
+  - id: SG-5
+    type: safety-goal
+    title: Component Model optimization preserves interface contracts
+    status: approved
+    fields:
+      claim: >
+        Optimization of meld-fused component modules preserves all
+        component external interfaces, adapter semantics, and Meld/Kiln
+        ABI compatibility.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-13
+
+  - id: SG-6
+    type: safety-goal
+    title: LOOM correctly skips functions it cannot safely optimize
+    status: approved
+    fields:
+      claim: >
+        Functions containing unsupported instructions or control flow
+        patterns beyond the verified boundary are passed through unchanged.
+      goal-type: top-level
+    links:
+      - type: goal-addresses-hazard
+        target: H-11
+      - type: goal-addresses-hazard
+        target: H-17
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Safety Strategies
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: SS-1
+    type: safety-strategy
+    title: Decompose into per-phase semantic preservation arguments
+    status: approved
+    fields:
+      rationale: >
+        Each of the 10 optimization phases is verified independently via
+        Z3 translation validation. Per-phase verification reduces the
+        proof obligation from whole-pipeline to individual transformations.
+    links:
+      - type: decomposes
+        target: SG-1
+
+  - id: SS-2
+    type: safety-strategy
+    title: "Defense-in-depth: stack validation plus external validation"
+    status: approved
+    fields:
+      rationale: >
+        Two independent validation layers — LOOM's internal stack type
+        system and external wasm-tools validate — provide overlapping
+        coverage for structural correctness.
+    links:
+      - type: decomposes
+        target: SG-2
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Safety Solutions (evidence)
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: SOL-1
+    type: safety-solution
+    title: Z3 SMT translation validation
+    status: approved
+    fields:
+      evidence-type: analysis
+    description: >
+      Z3 encodes original and optimized functions as SMT formulas and
+      queries for equivalence. UNSAT proves semantic preservation for
+      all inputs. Runs per-pass in the optimization pipeline.
+    links:
+      - type: supports
+        target: SG-1
+      - type: supports
+        target: SG-3
+
+  - id: SOL-2
+    type: safety-solution
+    title: Rocq mechanized proofs (47/51 lemmas closed)
+    status: approved
+    fields:
+      evidence-type: formal-proof
+    description: >
+      Coq/Rocq proofs covering constant folding, strength reduction,
+      bitwise identities, stack signature composition, and term
+      semantics. 47 of 51 lemmas proven; 4 structural axioms remain.
+    links:
+      - type: supports
+        target: SG-1
+
+  - id: SOL-3
+    type: safety-solution
+    title: Self-optimization test (dogfooding)
+    status: approved
+    fields:
+      evidence-type: test
+    description: >
+      LOOM optimizes its own WebAssembly binary. The optimized LOOM
+      must produce valid WASM and (when behavioral equivalence is
+      enabled) identical optimization results as the original.
+    links:
+      - type: supports
+        target: SG-1
+
+  - id: SOL-4
+    type: safety-solution
+    title: Differential testing vs wasm-opt
+    status: approved
+    fields:
+      evidence-type: test
+    description: >
+      Every CI run compares LOOM output against Binaryen wasm-opt -O3.
+      Both must produce valid WASM. Size and validity are compared.
+    links:
+      - type: supports
+        target: SG-2
+
+  - id: SOL-5
+    type: safety-solution
+    title: wasm-tools validate on all CI fixtures
+    status: approved
+    fields:
+      evidence-type: test
+    description: >
+      Every optimized fixture is validated with wasm-tools validate in
+      CI. Any invalid output fails the build.
+    links:
+      - type: supports
+        target: SG-2
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Safety Context
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: SC-CTXT-1
+    type: safety-context
+    title: LOOM operates as a build-time tool on well-formed WebAssembly
+    status: approved
+    fields:
+      statement: >
+        LOOM is a build-time optimizer. It receives well-formed
+        WebAssembly modules as input (validated by wasmparser). It does
+        not execute WASM code. Its output is consumed by downstream
+        runtimes (Kiln, wasmtime) or linkers (Meld).
+    links:
+      - type: scopes
+        target: SG-1
+      - type: scopes
+        target: SG-2
