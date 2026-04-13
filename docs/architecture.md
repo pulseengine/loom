@@ -64,41 +64,10 @@ LOOM is a WebAssembly optimizer built around three core principles:
                            │
                            ▼
 ┌────────────────────────────────────────────────────────────────┐
-│              12-Phase Optimization Pipeline                     │
+│              10-Phase CLI Optimization Pipeline                 │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 1: Precompute                                    │  │
-│  │  - Global constant propagation                          │  │
-│  │  - Replace immutable global.get with constants          │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-│                           ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 2: ISLE Constant Folding (Pre-CSE)              │  │
-│  │  - Convert to ISLE terms                                │  │
-│  │  - Apply pattern matching rules                         │  │
-│  │  - Fold constants: 10 + 20 → 30                        │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-│                           ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 3: Strength Reduction                            │  │
-│  │  - x * 8 → x << 3  (2-3x speedup)                      │  │
-│  │  - x / 4 → x >> 2  (2-3x speedup)                      │  │
-│  │  - x % 32 → x & 31 (2-3x speedup)                      │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-│                           ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 4: Common Subexpression Elimination (CSE)       │  │
-│  │  - Hash expressions for duplicate detection             │  │
-│  │  - Cache expensive computations in locals               │  │
-│  │  - Skip caching simple constants                        │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-│                           ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 5: Function Inlining                             │  │
+│  │  Phase 1: Inline                                        │  │
 │  │  - Build call graph                                      │  │
 │  │  - Inline small, frequently-called functions            │  │
 │  │  - Substitute parameters with arguments                 │  │
@@ -106,50 +75,66 @@ LOOM is a WebAssembly optimizer built around three core principles:
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 6: ISLE Constant Folding (Post-Inline)          │  │
-│  │  - Fold constants exposed by inlining                   │  │
-│  │  - Cross-function optimization                          │  │
+│  │  Phase 2: Precompute                                    │  │
+│  │  - Global constant propagation                          │  │
+│  │  - Replace immutable global.get with constants          │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 7: Code Folding                                  │  │
-│  │  - Flatten nested blocks                                │  │
-│  │  - Remove redundant control flow                        │  │
+│  │  Phase 3: Constant Folding                              │  │
+│  │  - Convert to ISLE terms                                │  │
+│  │  - Apply pattern matching rules                         │  │
+│  │  - Fold constants: 10 + 20 → 30                        │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 8: Loop-Invariant Code Motion (LICM)            │  │
-│  │  - Detect modified locals in loops                      │  │
-│  │  - Hoist constants and unmodified locals                │  │
+│  │  Phase 4: CSE (Common Subexpression Elimination)       │  │
+│  │  - Hash expressions for duplicate detection             │  │
+│  │  - Cache expensive computations in locals               │  │
+│  │  - Skip caching simple constants                        │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 9: Branch Simplification                         │  │
+│  │  Phase 5: Advanced (Strength Reduction)                 │  │
+│  │  - x * 8 → x << 3  (2-3x speedup)                      │  │
+│  │  - x / 4 → x >> 2  (2-3x speedup)                      │  │
+│  │  - x % 32 → x & 31 (2-3x speedup)                      │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                           │                                     │
+│                           ▼                                     │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │  Phase 6: Branches                                      │  │
 │  │  - Simplify constant conditions                         │  │
 │  │  - Remove redundant branches                            │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 10: Dead Code Elimination (DCE)                 │  │
+│  │  Phase 7: DCE (Dead Code Elimination)                  │  │
 │  │  - Remove unreachable code after terminators            │  │
 │  │  - Clean up code following return/br/unreachable        │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 11: Block Merging                                │  │
+│  │  Phase 8: Merge-blocks                                  │  │
 │  │  - Merge consecutive blocks                             │  │
 │  │  - Reduce control flow overhead                         │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │  Phase 12: Vacuum & Simplify Locals                    │  │
+│  │  Phase 9: Vacuum                                        │  │
 │  │  - Remove empty blocks                                   │  │
+│  │  - Final structural cleanup                             │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                           │                                     │
+│                           ▼                                     │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │  Phase 10: Simplify-locals                              │  │
 │  │  - Eliminate unused local variables                     │  │
 │  │  - Final cleanup pass                                    │  │
 │  └─────────────────────────────────────────────────────────┘  │
@@ -210,7 +195,7 @@ The core optimization library. Contains all optimization passes and the main pip
 
 **Key Modules:**
 - `parse`: WAT/WASM parsing using `wat` and `wasmparser` crates
-- `optimize`: 12-phase optimization pipeline
+- `optimize`: 10-phase optimization pipeline
 - `encode`: WAT/WASM encoding using `wasmprinter` and `wasm-encoder`
 - `verify`: Z3 SMT-based formal verification
 - `component`: WebAssembly Component Model support
@@ -266,9 +251,14 @@ loom optimize <input> [options]
 
 ### Phase Order Rationale
 
-The 12-phase pipeline is carefully ordered to maximize optimization opportunities:
+The 10-phase pipeline is carefully ordered to maximize optimization opportunities:
 
-#### Why Constant Folding Before CSE (Phases 2 & 3)?
+#### Why Inline First (Phase 1)?
+
+Inlining runs first so that subsequent passes (constant folding, CSE,
+strength reduction) can optimise across the now-visible inlined code.
+
+#### Why Constant Folding Before CSE (Phases 3 & 4)?
 
 **Problem**: If CSE runs before constant folding:
 ```wasm
@@ -295,26 +285,7 @@ i32.add
 → i32.const 84  # Folded before CSE sees it
 ```
 
-#### Why ISLE Twice (Phases 2 & 6)?
-
-**Phase 2 (Pre-CSE)**: Fold obvious constants
-**Phase 6 (Post-Inline)**: Fold constants exposed by inlining
-
-Example:
-```wasm
-(func $add_ten (param $x i32) (result i32)
-  local.get $x
-  i32.const 10
-  i32.add
-)
-
-(func $main (result i32)
-  i32.const 5
-  call $add_ten  # After inlining: 5 + 10, foldable!
-)
-```
-
-#### Why Strength Reduction After Constant Folding?
+#### Why Strength Reduction After Constant Folding (Phase 5)?
 
 Constants might create optimization opportunities:
 ```wasm

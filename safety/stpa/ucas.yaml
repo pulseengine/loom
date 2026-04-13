@@ -7,317 +7,378 @@
 #   2. Providing the control action leads to a hazard
 #   3. Providing too early, too late, or in the wrong order
 #   4. Control action stopped too soon or applied too long
+#
+# Flat format (workaround for rivet#129: grouped UCA format not parsed)
 
-# ============================================================================
-# Parser UCAs
-# ============================================================================
-parser-ucas:
-  control-action: "Parse WebAssembly operators into IR instructions"
-  controller: CTRL-1
+ucas:
+  # ============================================================================
+  # Parser UCAs (CTRL-1)
+  # ============================================================================
+  - id: UCA-1
+    title: Parser maps operator to wrong Instruction variant
+    uca-type: providing
+    controller: CTRL-1
+    control-action: "Parse WebAssembly operators into IR instructions"
+    description: >
+      Parser maps operator to wrong Instruction variant or with wrong
+      field values (memory index, alignment, signedness)
+    context: Parser encounters a wasmparser Operator and translates it
+    hazards: [H-11]
+    rationale: >
+      Wrong IR representation means all subsequent optimizations operate
+      on a program that does not match the input.
 
-  providing:
-    - id: UCA-1
-      description: >
-        Parser maps operator to wrong Instruction variant or with wrong
-        field values (memory index, alignment, signedness)
-      context: Parser encounters a wasmparser Operator and translates it
-      hazards: [H-11]
-      rationale: >
-        Wrong IR representation means all subsequent optimizations operate
-        on a program that does not match the input.
+  - id: UCA-2
+    title: Parser silently drops unsupported operator
+    uca-type: not-providing
+    controller: CTRL-1
+    control-action: "Parse WebAssembly operators into IR instructions"
+    description: >
+      Parser silently drops unsupported operator without recording it
+      as Unknown and without flagging the function for skip
+    context: Parser encounters an operator it does not recognize
+    hazards: [H-11]
+    rationale: >
+      The dropped instruction is absent from the IR. Optimization and
+      encoding proceed without it, producing output that is missing
+      instructions from the original program.
 
-    - id: UCA-3
-      description: >
-        Parser drops memory index on load/store in multi-memory module,
-        defaulting to memory 0
-      context: Module uses multiple memories
-      hazards: [H-11, H-2]
-      rationale: >
-        Subsequent optimization treats all memory accesses as targeting
-        memory 0, enabling invalid CSE or code motion across memories.
+  - id: UCA-3
+    title: Parser drops memory index on load/store in multi-memory module
+    uca-type: providing
+    controller: CTRL-1
+    control-action: "Parse WebAssembly operators into IR instructions"
+    description: >
+      Parser drops memory index on load/store in multi-memory module,
+      defaulting to memory 0
+    context: Module uses multiple memories
+    hazards: [H-11, H-2]
+    rationale: >
+      Subsequent optimization treats all memory accesses as targeting
+      memory 0, enabling invalid CSE or code motion across memories.
 
-  not-providing:
-    - id: UCA-2
-      description: >
-        Parser silently drops unsupported operator without recording it
-        as Unknown and without flagging the function for skip
-      context: Parser encounters an operator it does not recognize
-      hazards: [H-11]
-      rationale: >
-        The dropped instruction is absent from the IR. Optimization and
-        encoding proceed without it, producing output that is missing
-        instructions from the original program.
+  # ============================================================================
+  # ISLE term rewriter UCAs (CTRL-2)
+  # ============================================================================
+  - id: UCA-4
+    title: ISLE applies rewrite rule invalid for edge-case inputs
+    uca-type: providing
+    controller: CTRL-2
+    control-action: "Apply ISLE rewrite rules to optimize terms"
+    description: >
+      ISLE applies rewrite rule that is not semantically valid for
+      edge-case inputs (zero divisor, NaN, overflow, MIN_INT, negative
+      values)
+    context: A rewrite rule fires on a term whose operands include edge-case values
+    hazards: [H-1]
+    rationale: >
+      The optimized term produces a different result than the original
+      for those specific input values. The bug may not manifest in
+      testing if the edge case is not exercised.
 
-# ============================================================================
-# ISLE term rewriter UCAs
-# ============================================================================
-isle-rewriter-ucas:
-  control-action: "Apply ISLE rewrite rules to optimize terms"
-  controller: CTRL-2
+  - id: UCA-5
+    title: ISLE folds trapping operation to constant, suppressing the trap
+    uca-type: providing
+    controller: CTRL-2
+    control-action: "Apply ISLE rewrite rules to optimize terms"
+    description: >
+      ISLE folds trapping operation to constant, suppressing the trap
+      (div by zero, out-of-range truncation, NaN truncation)
+    context: A constant-folding rule evaluates an operation at compile time that would trap at runtime
+    hazards: [H-1]
+    rationale: >
+      The original program traps; the optimized program silently produces
+      a value. This changes observable behavior.
 
-  providing:
-    - id: UCA-4
-      description: >
-        ISLE applies rewrite rule that is not semantically valid for
-        edge-case inputs (zero divisor, NaN, overflow, MIN_INT, negative
-        values)
-      context: A rewrite rule fires on a term whose operands include edge-case values
-      hazards: [H-1]
-      rationale: >
-        The optimized term produces a different result than the original
-        for those specific input values. The bug may not manifest in
-        testing if the edge case is not exercised.
+  - id: UCA-6
+    title: instructions_to_terms() drops semantically relevant field
+    uca-type: not-providing
+    controller: CTRL-2
+    control-action: "Apply ISLE rewrite rules to optimize terms"
+    description: >
+      instructions_to_terms() drops a semantically relevant field
+      (memory index, alignment, signedness) during conversion
+    context: An instruction with multiple fields is converted to a term
+    hazards: [H-2]
+    rationale: >
+      The term does not fully represent the instruction. Optimization
+      proceeds on an incomplete model.
 
-    - id: UCA-5
-      description: >
-        ISLE folds trapping operation to constant, suppressing the trap
-        (div by zero, out-of-range truncation, NaN truncation)
-      context: A constant-folding rule evaluates an operation at compile time that would trap at runtime
-      hazards: [H-1]
-      rationale: >
-        The original program traps; the optimized program silently produces
-        a value. This changes observable behavior.
+  - id: UCA-7
+    title: Term-to-instruction conversion emits wrong opcode or immediate
+    uca-type: providing
+    controller: CTRL-2
+    control-action: "Apply ISLE rewrite rules to optimize terms"
+    description: >
+      Term-to-instruction conversion emits wrong opcode or wrong
+      immediate value for an optimized term
+    context: terms_to_instructions() converts an optimized term back to instructions
+    hazards: [H-3]
+    rationale: >
+      The encoded instruction has different behavior than the term
+      it was supposed to represent.
 
-    - id: UCA-7
-      description: >
-        Term-to-instruction conversion emits wrong opcode or wrong
-        immediate value for an optimized term
-      context: terms_to_instructions() converts an optimized term back to instructions
-      hazards: [H-3]
-      rationale: >
-        The encoded instruction has different behavior than the term
-        it was supposed to represent.
+  - id: UCA-8
+    title: Strength reduction applied to signed operation as if unsigned
+    uca-type: providing
+    controller: CTRL-2
+    control-action: "Apply ISLE rewrite rules to optimize terms"
+    description: >
+      Strength reduction applied to signed operation as if unsigned
+      (e.g., i32.div_s replaced with shift without negative-number
+      adjustment)
+    context: Strength reduction replaces division or modulo with shift or AND
+    hazards: [H-14]
+    rationale: >
+      Signed division rounds toward zero; arithmetic right shift rounds
+      toward negative infinity. For negative dividends, the results differ.
 
-    - id: UCA-8
-      description: >
-        Strength reduction applied to signed operation as if unsigned
-        (e.g., i32.div_s replaced with shift without negative-number
-        adjustment)
-      context: Strength reduction replaces division or modulo with shift or AND
-      hazards: [H-14]
-      rationale: >
-        Signed division rounds toward zero; arithmetic right shift rounds
-        toward negative infinity. For negative dividends, the results differ.
+  # ============================================================================
+  # Pipeline orchestrator UCAs (CTRL-3)
+  # ============================================================================
+  - id: UCA-9
+    title: Pipeline fails to skip function with unsupported instructions
+    uca-type: not-providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Pipeline fails to skip function containing instructions that
+      LOOM cannot correctly handle
+    context: has_unsupported_isle_instructions does not detect all unsupported instructions
+    hazards: [H-1, H-2]
+    rationale: >
+      The function is optimized despite containing instructions the
+      optimizer does not understand, leading to unpredictable output.
 
-  not-providing:
-    - id: UCA-6
-      description: >
-        instructions_to_terms() drops a semantically relevant field
-        (memory index, alignment, signedness) during conversion
-      context: An instruction with multiple fields is converted to a term
-      hazards: [H-2]
-      rationale: >
-        The term does not fully represent the instruction. Optimization
-        proceeds on an incomplete model.
+  - id: UCA-10
+    title: DCE removes live code after conditional branch
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      DCE removes instruction after conditional branch (br_if),
+      treating it as an unconditional terminator
+    context: Code follows a br_if instruction whose fall-through path is live
+    hazards: [H-5]
+    rationale: >
+      Live code is removed. The function's behavior changes for inputs
+      where the branch is not taken.
 
-# ============================================================================
-# Pipeline orchestrator UCAs
-# ============================================================================
-pipeline-ucas:
-  control-action: "Sequence optimization phases and transform IR"
-  controller: CTRL-3
+  - id: UCA-11
+    title: CSE caches expression with intervening memory store
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      CSE caches expression involving memory load with intervening
+      memory store that may modify the loaded address
+    context: Two identical memory load expressions with a store between them
+    hazards: [H-6]
+    rationale: >
+      The second load should return the new value but instead returns
+      the cached (stale) value.
 
-  providing:
-    - id: UCA-10
-      description: >
-        DCE removes instruction after conditional branch (br_if),
-        treating it as an unconditional terminator
-      context: Code follows a br_if instruction whose fall-through path is live
-      hazards: [H-5]
-      rationale: >
-        Live code is removed. The function's behavior changes for inputs
-        where the branch is not taken.
+  - id: UCA-12
+    title: Function inlining does not remap callee local indices
+    uca-type: not-providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Function inlining does not remap callee local indices to
+      non-conflicting indices in the caller
+    context: Inliner substitutes callee body at call site
+    hazards: [H-7]
+    rationale: >
+      The inlined code reads/writes the caller's locals instead of its
+      own, corrupting caller state.
 
-    - id: UCA-11
-      description: >
-        CSE caches expression involving memory load with intervening
-        memory store that may modify the loaded address
-      context: Two identical memory load expressions with a store between them
-      hazards: [H-6]
-      rationale: >
-        The second load should return the new value but instead returns
-        the cached (stale) value.
+  - id: UCA-13
+    title: Inlining applied to recursive function without depth bound
+    uca-type: stopped-too-soon
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Inlining applied to recursive function without depth bound,
+      causing infinite expansion
+    context: A function directly or indirectly calls itself
+    hazards: [H-7]
+    rationale: >
+      Infinite expansion causes the optimizer to hang or exhaust memory.
 
-    - id: UCA-14
-      description: >
-        Branch simplification treats mutable local as constant when
-        the local is modified inside the block
-      context: A local set to constant before a block, modified inside the block
-      hazards: [H-8]
-      rationale: >
-        The branch condition depends on the modified value, not the initial
-        constant. A live branch is removed.
+  - id: UCA-14
+    title: Branch simplification treats mutable local as constant
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Branch simplification treats mutable local as constant when
+      the local is modified inside the block
+    context: A local set to constant before a block, modified inside the block
+    hazards: [H-8]
+    rationale: >
+      The branch condition depends on the modified value, not the initial
+      constant. A live branch is removed.
 
-    - id: UCA-15
-      description: >
-        LICM hoists instruction that depends on a local modified by
-        a call instruction inside the loop
-      context: Loop body contains calls and LICM hoists an instruction past them
-      hazards: [H-9]
-      rationale: >
-        The hoisted instruction uses a value from before the loop instead
-        of the updated value from each iteration.
+  - id: UCA-15
+    title: LICM hoists instruction dependent on call-modified local
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      LICM hoists instruction that depends on a local modified by
+      a call instruction inside the loop
+    context: Loop body contains calls and LICM hoists an instruction past them
+    hazards: [H-9]
+    rationale: >
+      The hoisted instruction uses a value from before the loop instead
+      of the updated value from each iteration.
 
-    - id: UCA-16
-      description: >
-        Block merging changes branch target depth without adjusting
-        contained br/br_if/br_table instructions
-      context: Block merging eliminates a block layer
-      hazards: [H-15]
-      rationale: >
-        Branches now target a different block than intended, changing
-        control flow.
+  - id: UCA-16
+    title: Block merging changes branch target depth without adjustment
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Block merging changes branch target depth without adjusting
+      contained br/br_if/br_table instructions
+    context: Block merging eliminates a block layer
+    hazards: [H-15]
+    rationale: >
+      Branches now target a different block than intended, changing
+      control flow.
 
-    - id: UCA-17
-      description: >
-        Precompute replaces global.get for a mutable global with its
-        initial value
-      context: Global is declared as mutable, may be modified by other functions
-      hazards: [H-16]
-      rationale: >
-        The constant value is wrong after any mutation of the global.
+  - id: UCA-17
+    title: Precompute replaces mutable global.get with initial value
+    uca-type: providing
+    controller: CTRL-3
+    control-action: "Sequence optimization phases and transform IR"
+    description: >
+      Precompute replaces global.get for a mutable global with its
+      initial value
+    context: Global is declared as mutable, may be modified by other functions
+    hazards: [H-16]
+    rationale: >
+      The constant value is wrong after any mutation of the global.
 
-  not-providing:
-    - id: UCA-9
-      description: >
-        Pipeline fails to skip function containing instructions that
-        LOOM cannot correctly handle
-      context: has_unsupported_isle_instructions does not detect all unsupported instructions
-      hazards: [H-1, H-2]
-      rationale: >
-        The function is optimized despite containing instructions the
-        optimizer does not understand, leading to unpredictable output.
+  # ============================================================================
+  # Stack validator UCAs (CTRL-4)
+  # ============================================================================
+  - id: UCA-18
+    title: Stack validator uses wrong signature for call_indirect
+    uca-type: providing
+    controller: CTRL-4
+    control-action: "Validate WebAssembly stack discipline"
+    description: >
+      Stack validator uses wrong signature for call_indirect due to
+      missing or incorrect type_signatures lookup
+    context: call_indirect references a type index
+    hazards: [H-4]
+    rationale: >
+      The validator approves an instruction sequence with wrong stack
+      effect, producing a binary that fails at runtime.
 
-    - id: UCA-12
-      description: >
-        Function inlining does not remap callee local indices to
-        non-conflicting indices in the caller
-      context: Inliner substitutes callee body at call site
-      hazards: [H-7]
-      rationale: >
-        The inlined code reads/writes the caller's locals instead of its
-        own, corrupting caller state.
+  - id: UCA-19
+    title: Stack validator rejects valid unreachable code
+    uca-type: not-providing
+    controller: CTRL-4
+    control-action: "Validate WebAssembly stack discipline"
+    description: >
+      Stack validator does not enter polymorphic mode after
+      unconditional branch, rejecting valid unreachable code
+    context: Code follows an unconditional terminator inside a block
+    hazards: [H-4]
+    rationale: >
+      Valid functions are rejected, preventing optimization.
 
-  stopped-too-soon:
-    - id: UCA-13
-      description: >
-        Inlining applied to recursive function without depth bound,
-        causing infinite expansion
-      context: A function directly or indirectly calls itself
-      hazards: [H-7]
-      rationale: >
-        Infinite expansion causes the optimizer to hang or exhaust memory.
+  # ============================================================================
+  # Z3 verifier UCAs (CTRL-5)
+  # ============================================================================
+  - id: UCA-20
+    title: Z3 encoding uses wrong bit-width or signed/unsigned variant
+    uca-type: providing
+    controller: CTRL-5
+    control-action: "Verify semantic equivalence via SMT"
+    description: >
+      Z3 encoding uses wrong bit-width or wrong signed/unsigned variant
+      for a bitvector operation
+    context: SMT encoding of i32 or i64 arithmetic operations
+    hazards: [H-12]
+    rationale: >
+      Z3 verifies equivalence of the wrong formulas. A bug in the
+      optimizer is not detected because the verifier is also wrong.
 
-# ============================================================================
-# Stack validator UCAs
-# ============================================================================
-stack-validator-ucas:
-  control-action: "Validate WebAssembly stack discipline"
-  controller: CTRL-4
+  - id: UCA-21
+    title: Z3 encoding omits trap condition for trapping operations
+    uca-type: not-providing
+    controller: CTRL-5
+    control-action: "Verify semantic equivalence via SMT"
+    description: >
+      Z3 encoding omits trap condition for trapping operations
+      (division by zero, out-of-range truncation)
+    context: SMT encoding of division, remainder, or truncation operations
+    hazards: [H-12]
+    rationale: >
+      A trap-suppression bug is not detected by verification.
 
-  providing:
-    - id: UCA-18
-      description: >
-        Stack validator uses wrong signature for call_indirect due to
-        missing or incorrect type_signatures lookup
-      context: call_indirect references a type index
-      hazards: [H-4]
-      rationale: >
-        The validator approves an instruction sequence with wrong stack
-        effect, producing a binary that fails at runtime.
+  # ============================================================================
+  # Binary encoder UCAs (CTRL-6)
+  # ============================================================================
+  - id: UCA-22
+    title: Encoder emits wrong LEB128 encoding for large values
+    uca-type: providing
+    controller: CTRL-6
+    control-action: "Encode Module IR to WebAssembly binary"
+    description: >
+      Encoder emits wrong LEB128 encoding for large values (function
+      indices, type indices, memory offsets)
+    context: A value exceeds the range of a single LEB128 byte
+    hazards: [H-10]
+    rationale: >
+      The binary is malformed. Runtimes may reject it or misinterpret
+      the value.
 
-  not-providing:
-    - id: UCA-19
-      description: >
-        Stack validator does not enter polymorphic mode after
-        unconditional branch, rejecting valid unreachable code
-      context: Code follows an unconditional terminator inside a block
-      hazards: [H-4]
-      rationale: >
-        Valid functions are rejected, preventing optimization.
+  - id: UCA-23
+    title: Encoder computes wrong function body byte length
+    uca-type: providing
+    controller: CTRL-6
+    control-action: "Encode Module IR to WebAssembly binary"
+    description: >
+      Encoder computes wrong function body byte length, causing
+      section misalignment
+    context: Function body has variable-length LEB128 immediates
+    hazards: [H-10]
+    rationale: >
+      The length prefix does not match the body, causing the binary
+      parser to misalign all subsequent sections.
 
-# ============================================================================
-# Z3 verifier UCAs
-# ============================================================================
-z3-verifier-ucas:
-  control-action: "Verify semantic equivalence via SMT"
-  controller: CTRL-5
+  # ============================================================================
+  # Component model optimizer UCAs (CTRL-7)
+  # ============================================================================
+  - id: UCA-24
+    title: Same-memory adapter collapse skips data transformation
+    uca-type: providing
+    controller: CTRL-7
+    control-action: "Optimize Component Model adapter functions"
+    description: >
+      Same-memory adapter collapse skips necessary data transformation
+      (string encoding, list element reinterpretation)
+    context: >
+      Two adapters share the same linear memory but perform encoding
+      conversion
+    hazards: [H-13]
+    rationale: >
+      The callee receives data in the wrong encoding.
 
-  providing:
-    - id: UCA-20
-      description: >
-        Z3 encoding uses wrong bit-width or wrong signed/unsigned variant
-        for a bitvector operation
-      context: SMT encoding of i32 or i64 arithmetic operations
-      hazards: [H-12]
-      rationale: >
-        Z3 verifies equivalence of the wrong formulas. A bug in the
-        optimizer is not detected because the verifier is also wrong.
-
-  not-providing:
-    - id: UCA-21
-      description: >
-        Z3 encoding omits trap condition for trapping operations
-        (division by zero, out-of-range truncation)
-      context: SMT encoding of division, remainder, or truncation operations
-      hazards: [H-12]
-      rationale: >
-        A trap-suppression bug is not detected by verification.
-
-# ============================================================================
-# Binary encoder UCAs
-# ============================================================================
-encoder-ucas:
-  control-action: "Encode Module IR to WebAssembly binary"
-  controller: CTRL-6
-
-  providing:
-    - id: UCA-22
-      description: >
-        Encoder emits wrong LEB128 encoding for large values (function
-        indices, type indices, memory offsets)
-      context: A value exceeds the range of a single LEB128 byte
-      hazards: [H-10]
-      rationale: >
-        The binary is malformed. Runtimes may reject it or misinterpret
-        the value.
-
-    - id: UCA-23
-      description: >
-        Encoder computes wrong function body byte length, causing
-        section misalignment
-      context: Function body has variable-length LEB128 immediates
-      hazards: [H-10]
-      rationale: >
-        The length prefix does not match the body, causing the binary
-        parser to misalign all subsequent sections.
-
-# ============================================================================
-# Component model optimizer UCAs
-# ============================================================================
-component-optimizer-ucas:
-  control-action: "Optimize Component Model adapter functions"
-  controller: CTRL-7
-
-  providing:
-    - id: UCA-24
-      description: >
-        Same-memory adapter collapse skips necessary data transformation
-        (string encoding, list element reinterpretation)
-      context: >
-        Two adapters share the same linear memory but perform encoding
-        conversion
-      hazards: [H-13]
-      rationale: >
-        The callee receives data in the wrong encoding.
-
-  too-early-too-late:
-    - id: UCA-25
-      description: >
-        Fused module optimization reorders adapter execution, changing
-        observable state (memory writes, resource handle allocation)
-      context: Multiple adapters with shared state are optimized together
-      hazards: [H-13]
-      rationale: >
-        The component's behavior changes due to reordering even though
-        each individual adapter is correct in isolation.
+  - id: UCA-25
+    title: Fused module optimization reorders adapter execution
+    uca-type: too-early-too-late
+    controller: CTRL-7
+    control-action: "Optimize Component Model adapter functions"
+    description: >
+      Fused module optimization reorders adapter execution, changing
+      observable state (memory writes, resource handle allocation)
+    context: Multiple adapters with shared state are optimized together
+    hazards: [H-13]
+    rationale: >
+      The component's behavior changes due to reordering even though
+      each individual adapter is correct in isolation.

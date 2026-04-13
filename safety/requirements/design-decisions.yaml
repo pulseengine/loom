@@ -167,3 +167,116 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-11
+
+  - id: DD-8
+    type: design-decision
+    title: HashMap usage policy
+    status: approved
+    description: >
+      Use BTreeMap for iteration-order-sensitive maps (CSE caching,
+      register coloring), HashMap only for pure lookups.
+    fields:
+      rationale: >
+        REQ-14 requires deterministic output. HashMap iteration order
+        is non-deterministic across runs and platforms. BTreeMap provides
+        sorted, deterministic iteration at minimal performance cost for
+        the map sizes involved in optimization passes.
+      alternatives: >
+        Alternative 1: HashMap everywhere with post-hoc sorting (rejected:
+        easy to forget sorting step, fragile). Alternative 2: IndexMap
+        (rejected: additional dependency, BTreeMap is in std).
+    links:
+      - type: satisfies
+        target: REQ-14
+
+  - id: DD-9
+    type: design-decision
+    title: Greedy graph coloring for local coalescing
+    status: approved
+    description: >
+      Use interference graph with greedy coloring (sorted by degree)
+      for local variable allocation.
+    fields:
+      rationale: >
+        O(V+E) complexity, deterministic with sorted input. Greedy
+        coloring on a sorted vertex list produces consistent results
+        across runs. The interference graph accurately models which
+        locals have overlapping live ranges and cannot share a slot.
+      alternatives: >
+        Alternative 1: Linear scan allocation (rejected: less effective
+        at coalescing non-adjacent live ranges). Alternative 2: Optimal
+        graph coloring via ILP (rejected: NP-hard, overkill for typical
+        local counts).
+    links:
+      - type: satisfies
+        target: REQ-9
+
+  - id: DD-10
+    type: design-decision
+    title: Post-optimization stack validation
+    status: approved
+    description: >
+      Run stack validation after all optimization passes as
+      defense-in-depth. Rejects functions that fail validation.
+    fields:
+      rationale: >
+        Catches optimization bugs before encoding. Even if individual
+        passes are proven correct, their composition may introduce
+        stack discipline violations due to implementation bugs. Running
+        validation after the full pipeline provides a final safety net
+        per REQ-13.
+      alternatives: >
+        Alternative: Validate only at encoding time via wasm-tools
+        (rejected: late detection gives poor error messages and does not
+        distinguish which pass caused the issue).
+    links:
+      - type: satisfies
+        target: REQ-13
+
+  - id: DD-11
+    type: design-decision
+    title: Conservative LICM
+    status: approved
+    description: >
+      Never hoist instructions past call instructions (calls may have
+      side effects).
+    fields:
+      rationale: >
+        REQ-5 mandates conservative-over-fast. Calls may modify globals,
+        memory, or trap, so hoisting past them could change observable
+        behavior. By treating all calls as optimization barriers, LICM
+        remains sound without requiring interprocedural analysis.
+      alternatives: >
+        Alternative: Interprocedural purity analysis to identify safe-to-hoist
+        calls (rejected: complex, fragile, and violates conservative principle
+        until proven correct).
+    links:
+      - type: satisfies
+        target: REQ-5
+
+  - id: DD-12
+    type: design-decision
+    title: Two-tier verification
+    status: approved
+    description: >
+      Z3 SMT for runtime translation validation plus Rocq mechanized
+      proofs for foundational correctness.
+    fields:
+      rationale: >
+        Z3 catches optimization bugs per-run by checking that the
+        optimized function is semantically equivalent to the original.
+        Rocq proves invariants for all inputs, providing foundational
+        assurance that the rewrite rules are correct. The two tiers are
+        complementary: Z3 catches implementation bugs, Rocq proves the
+        rules themselves.
+      alternatives: >
+        Alternative 1: Z3 only (rejected: cannot prove universal properties,
+        only checks concrete runs). Alternative 2: Rocq only (rejected:
+        does not catch implementation bugs in the optimizer code).
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-6
+      - type: satisfies
+        target: REQ-7
