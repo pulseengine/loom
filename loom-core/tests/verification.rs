@@ -1567,3 +1567,205 @@ fn test_bulk_memory_multi_memory_skipped() {
         result
     );
 }
+
+// ============================================================================
+// ISLE Rule Verification Tests (#50)
+// ============================================================================
+//
+// These integration tests verify that the ISLE constant folding rules from
+// loom-shared/isle/rules/constant_folding.isle are provably correct via Z3.
+// Each test corresponds to a specific ISLE rewrite rule.
+
+/// Test: Verify ISLE rule i32_add constant folding via Z3
+///
+/// Rule: (rule 6 (simplify (iadd32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_add x y)))
+/// Proof: for all a,b: i32. bvadd(a, b) == truncate32(sext64(a) + sext64(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i32_add() {
+    use loom_core::verify_rules::verify_isle_rule_i32_add;
+
+    let proof = verify_isle_rule_i32_add();
+    assert!(
+        proof.is_proven(),
+        "ISLE i32_add constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+    assert!(
+        proof.counterexample.is_none(),
+        "No counterexample should exist for a correct rule"
+    );
+}
+
+/// Test: Verify ISLE rule i32_sub constant folding via Z3
+///
+/// Rule: (rule 5 (simplify (isub32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_sub x y)))
+/// Proof: for all a,b: i32. bvsub(a, b) == truncate32(sext64(a) - sext64(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i32_sub() {
+    use loom_core::verify_rules::verify_isle_rule_i32_sub;
+
+    let proof = verify_isle_rule_i32_sub();
+    assert!(
+        proof.is_proven(),
+        "ISLE i32_sub constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+    assert!(
+        proof.counterexample.is_none(),
+        "No counterexample should exist for a correct rule"
+    );
+}
+
+/// Test: Verify ISLE rule i32_mul constant folding via Z3
+///
+/// Rule: (rule 4 (simplify (imul32 (iconst32 x) (iconst32 y))) (iconst32 (imm32_mul x y)))
+/// Proof: for all a,b: i32. bvmul(a, b) == truncate32(sext64(a) * sext64(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i32_mul() {
+    use loom_core::verify_rules::verify_isle_rule_i32_mul;
+
+    let proof = verify_isle_rule_i32_mul();
+    assert!(
+        proof.is_proven(),
+        "ISLE i32_mul constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+    assert!(
+        proof.counterexample.is_none(),
+        "No counterexample should exist for a correct rule"
+    );
+}
+
+/// Test: Verify ISLE rule i64_add constant folding via Z3
+///
+/// Rule: (rule 3 (simplify (iadd64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_add x y)))
+/// Proof: for all a,b: i64. bvadd(a, b) == truncate64(sext128(a) + sext128(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i64_add() {
+    use loom_core::verify_rules::verify_isle_rule_i64_add;
+
+    let proof = verify_isle_rule_i64_add();
+    assert!(
+        proof.is_proven(),
+        "ISLE i64_add constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+}
+
+/// Test: Verify ISLE rule i64_sub constant folding via Z3
+///
+/// Rule: (rule 2 (simplify (isub64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_sub x y)))
+/// Proof: for all a,b: i64. bvsub(a, b) == truncate64(sext128(a) - sext128(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i64_sub() {
+    use loom_core::verify_rules::verify_isle_rule_i64_sub;
+
+    let proof = verify_isle_rule_i64_sub();
+    assert!(
+        proof.is_proven(),
+        "ISLE i64_sub constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+}
+
+/// Test: Verify ISLE rule i64_mul constant folding via Z3
+///
+/// Rule: (rule 1 (simplify (imul64 (iconst64 x) (iconst64 y))) (iconst64 (imm64_mul x y)))
+/// Proof: for all a,b: i64. bvmul(a, b) == truncate64(sext128(a) * sext128(b))
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_i64_mul() {
+    use loom_core::verify_rules::verify_isle_rule_i64_mul;
+
+    let proof = verify_isle_rule_i64_mul();
+    assert!(
+        proof.is_proven(),
+        "ISLE i64_mul constant folding rule must be proven correct for all inputs: {:?}",
+        proof
+    );
+}
+
+/// Test: Verify all 6 ISLE constant folding rules as a suite
+///
+/// Ensures the VerifiedRuleSet correctly tracks all 6 rules as proven.
+#[test]
+#[cfg(feature = "verification")]
+fn test_rule_verification_all_constant_folding() {
+    use loom_core::verify_rules::verify_isle_constant_folding_rules;
+
+    let results = verify_isle_constant_folding_rules();
+
+    assert_eq!(
+        results.total_rules, 6,
+        "Should verify exactly 6 constant folding rules"
+    );
+    assert_eq!(
+        results.proven_rules, 6,
+        "All 6 constant folding rules should be proven"
+    );
+    assert_eq!(
+        results.failed_rules, 0,
+        "No constant folding rules should fail verification"
+    );
+
+    // Verify each expected rule is present and proven
+    let expected_rules = [
+        "isle_constant_fold_i32_add",
+        "isle_constant_fold_i32_sub",
+        "isle_constant_fold_i32_mul",
+        "isle_constant_fold_i64_add",
+        "isle_constant_fold_i64_sub",
+        "isle_constant_fold_i64_mul",
+    ];
+
+    for rule_name in &expected_rules {
+        let proof = results
+            .proofs
+            .get(*rule_name)
+            .unwrap_or_else(|| panic!("Missing proof for rule: {}", rule_name));
+        assert!(
+            proof.is_proven(),
+            "Rule {} should be proven: {:?}",
+            rule_name,
+            proof
+        );
+    }
+
+    println!("ISLE constant folding verification: {}", results.summary());
+}
+
+/// Test: ISLE rule parser correctly handles actual constant_folding.isle file
+#[test]
+fn test_rule_verification_parse_constant_folding_isle() {
+    use loom_core::verify_rules::parse_isle_rules;
+
+    let source = include_str!("../../loom-shared/isle/rules/constant_folding.isle");
+    let rules = parse_isle_rules(source);
+
+    assert_eq!(
+        rules.len(),
+        6,
+        "constant_folding.isle should contain exactly 6 rules"
+    );
+
+    // Verify priorities are parsed
+    let priorities: Vec<Option<u32>> = rules.iter().map(|r| r.priority).collect();
+    assert_eq!(
+        priorities,
+        vec![Some(6), Some(5), Some(4), Some(3), Some(2), Some(1)],
+        "Priorities should be 6, 5, 4, 3, 2, 1"
+    );
+
+    // Verify bit widths
+    let widths: Vec<u32> = rules.iter().map(|r| r.bit_width).collect();
+    assert_eq!(
+        widths,
+        vec![32, 32, 32, 64, 64, 64],
+        "First three rules should be 32-bit, last three 64-bit"
+    );
+}

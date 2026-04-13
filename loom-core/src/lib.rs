@@ -7639,7 +7639,7 @@ pub mod optimize {
 
                 // Apply optimizations (skip equivalence substitution if control flow present)
                 let safe_equivalences = if has_control_flow {
-                    std::collections::HashMap::new()
+                    std::collections::BTreeMap::new()
                 } else {
                     equivalences
                 };
@@ -7680,19 +7680,19 @@ pub mod optimize {
     fn analyze_locals(
         instructions: &[Instruction],
     ) -> (
-        std::collections::HashMap<u32, LocalUsage>,
-        std::collections::HashMap<u32, u32>,
+        std::collections::BTreeMap<u32, LocalUsage>,
+        std::collections::BTreeMap<u32, u32>,
     ) {
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
-        let mut usage: HashMap<u32, LocalUsage> = HashMap::new();
-        let mut equivalences: HashMap<u32, u32> = HashMap::new();
+        let mut usage: BTreeMap<u32, LocalUsage> = BTreeMap::new();
+        let mut equivalences: BTreeMap<u32, u32> = BTreeMap::new();
         let mut position = 0;
 
         fn analyze_recursive(
             instructions: &[Instruction],
-            usage: &mut HashMap<u32, LocalUsage>,
-            equivalences: &mut HashMap<u32, u32>,
+            usage: &mut BTreeMap<u32, LocalUsage>,
+            equivalences: &mut BTreeMap<u32, u32>,
             position: &mut usize,
         ) {
             let mut i = 0;
@@ -7788,8 +7788,8 @@ pub mod optimize {
 
     fn simplify_instructions(
         instructions: &[Instruction],
-        usage: &std::collections::HashMap<u32, LocalUsage>,
-        equivalences: &std::collections::HashMap<u32, u32>,
+        usage: &std::collections::BTreeMap<u32, LocalUsage>,
+        equivalences: &std::collections::BTreeMap<u32, u32>,
         changed: &mut bool,
     ) -> Vec<Instruction> {
         let mut result = Vec::new();
@@ -7941,7 +7941,7 @@ pub mod optimize {
         instructions: &[Instruction],
         changed: &mut bool,
     ) -> Vec<Instruction> {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::{BTreeMap, HashSet};
 
         /// Information about a local.set instruction
         #[derive(Debug, Clone)]
@@ -7957,7 +7957,7 @@ pub mod optimize {
         /// First pass: identify which sets are redundant
         fn find_redundant_sets(
             instructions: &[Instruction],
-            last_sets: &mut HashMap<u32, SetInfo>,
+            last_sets: &mut BTreeMap<u32, SetInfo>,
             redundant_positions: &mut HashSet<usize>,
             tee_positions_to_remove: &mut HashSet<usize>,
             base_position: usize,
@@ -8024,7 +8024,7 @@ pub mod optimize {
                     // Recursively analyze control flow structures
                     Instruction::Block { body, .. } => {
                         // Save state and recurse with fresh tracking
-                        let mut block_sets: HashMap<u32, SetInfo> = last_sets
+                        let mut block_sets: BTreeMap<u32, SetInfo> = last_sets
                             .iter()
                             .map(|(k, v)| {
                                 (
@@ -8060,7 +8060,7 @@ pub mod optimize {
                     Instruction::Loop { body, .. } => {
                         // For loops, conservatively mark all locals as potentially read
                         // (they might be read on back-edge iterations)
-                        let mut loop_sets: HashMap<u32, SetInfo> = last_sets
+                        let mut loop_sets: BTreeMap<u32, SetInfo> = last_sets
                             .iter()
                             .map(|(k, v)| {
                                 (
@@ -8095,7 +8095,7 @@ pub mod optimize {
                         ..
                     } => {
                         // Process both branches independently
-                        let mut then_sets: HashMap<u32, SetInfo> = last_sets
+                        let mut then_sets: BTreeMap<u32, SetInfo> = last_sets
                             .iter()
                             .map(|(k, v)| {
                                 (
@@ -8252,7 +8252,7 @@ pub mod optimize {
         }
 
         // Pass 1: Find redundant sets
-        let mut last_sets = HashMap::new();
+        let mut last_sets = BTreeMap::new();
         let mut redundant_positions = HashSet::new();
         let mut tee_positions_to_remove = HashSet::new();
         find_redundant_sets(
@@ -9775,7 +9775,7 @@ pub mod optimize {
     }
 
     fn compute_live_ranges(instructions: &[Instruction], param_count: usize) -> Vec<LiveRange> {
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         // Track first def and last use for each local
         #[derive(Default)]
@@ -9784,12 +9784,12 @@ pub mod optimize {
             last_use: Option<usize>,
         }
 
-        let mut local_info: HashMap<u32, LocalInfo> = HashMap::new();
+        let mut local_info: BTreeMap<u32, LocalInfo> = BTreeMap::new();
         let mut position = 0;
 
         fn scan_instructions(
             instructions: &[crate::Instruction],
-            local_info: &mut HashMap<u32, LocalInfo>,
+            local_info: &mut BTreeMap<u32, LocalInfo>,
             position: &mut usize,
             param_count: usize,
         ) {
@@ -9880,10 +9880,10 @@ pub mod optimize {
         InterferenceGraph { nodes, edges }
     }
 
-    fn color_interference_graph(graph: &InterferenceGraph) -> std::collections::HashMap<u32, u32> {
-        use std::collections::{HashMap, HashSet};
+    fn color_interference_graph(graph: &InterferenceGraph) -> std::collections::BTreeMap<u32, u32> {
+        use std::collections::{BTreeMap, HashSet};
 
-        let mut coloring: HashMap<u32, u32> = HashMap::new();
+        let mut coloring: BTreeMap<u32, u32> = BTreeMap::new();
 
         // Sort nodes by degree (most connected first) for better coloring
         let mut node_degrees: Vec<(u32, usize)> = graph
@@ -9931,7 +9931,7 @@ pub mod optimize {
 
     fn remap_function_locals(
         func: &mut crate::Function,
-        coloring: &std::collections::HashMap<u32, u32>,
+        coloring: &std::collections::BTreeMap<u32, u32>,
     ) {
         // Remap all local references in instructions
         remap_instructions(&mut func.instructions, coloring);
@@ -9940,11 +9940,11 @@ pub mod optimize {
         let param_count = func.signature.params.len();
 
         // Count how many locals of each type are needed for each color
-        use std::collections::HashMap;
-        let mut color_types: HashMap<u32, crate::ValueType> = HashMap::new();
+        use std::collections::BTreeMap;
+        let mut color_types: BTreeMap<u32, crate::ValueType> = BTreeMap::new();
 
         // Build mapping from old index to type
-        let mut old_idx_to_type: HashMap<u32, crate::ValueType> = HashMap::new();
+        let mut old_idx_to_type: BTreeMap<u32, crate::ValueType> = BTreeMap::new();
         let mut current_idx = param_count as u32;
         for (count, value_type) in &func.locals {
             for _ in 0..*count {
@@ -9975,7 +9975,7 @@ pub mod optimize {
 
     fn remap_instructions(
         instructions: &mut [crate::Instruction],
-        coloring: &std::collections::HashMap<u32, u32>,
+        coloring: &std::collections::BTreeMap<u32, u32>,
     ) {
         use crate::Instruction;
         for instr in instructions {
@@ -10017,10 +10017,10 @@ pub mod optimize {
     ///
     /// Propagates immutable global constants throughout the module.
     pub fn precompute(module: &mut Module) -> Result<()> {
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         // Phase 1: Analyze globals to find constants
-        let mut global_constants: HashMap<u32, ConstantValue> = HashMap::new();
+        let mut global_constants: BTreeMap<u32, ConstantValue> = BTreeMap::new();
 
         for (idx, global) in module.globals.iter().enumerate() {
             // Only track immutable globals
@@ -10063,7 +10063,7 @@ pub mod optimize {
 
     fn propagate_global_constants_in_instructions(
         instructions: &[Instruction],
-        constants: &std::collections::HashMap<u32, ConstantValue>,
+        constants: &std::collections::BTreeMap<u32, ConstantValue>,
     ) -> Vec<Instruction> {
         instructions
             .iter()
