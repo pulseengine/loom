@@ -190,6 +190,13 @@ controlled-processes:
       The in-memory Module struct containing types, functions, tables,
       memories, globals, and exports. All optimization phases read and
       modify this structure.
+    links:
+      - type: acted-on-by
+        target: CTRL-1
+      - type: acted-on-by
+        target: CTRL-3
+      - type: acted-on-by
+        target: CTRL-7
 
   - id: CP-2
     name: ISLE term environment
@@ -197,6 +204,9 @@ controlled-processes:
       The term environment used during ISLE rewriting. Contains Value
       terms representing instruction sequences, local variable bindings,
       and the simplification context.
+    links:
+      - type: acted-on-by
+        target: CTRL-2
 
   - id: CP-3
     name: Output WASM binary
@@ -204,3 +214,6 @@ controlled-processes:
       The final encoded WebAssembly binary. Once encoded, this is the
       artifact consumed by downstream tools (Meld, Kiln, Synth, or
       direct execution runtimes).
+    links:
+      - type: acted-on-by
+        target: CTRL-6

@@ -15,6 +15,9 @@ controller-constraints:
       signedness, immediate values) preserved.
     ucas: [UCA-1, UCA-3]
     hazards: [H-11]
+    links:
+      - type: satisfies
+        target: REQ-9
 
   - id: CC-2
     controller: CTRL-1
@@ -24,6 +27,9 @@ controller-constraints:
       silently dropped from the instruction stream.
     ucas: [UCA-2]
     hazards: [H-11]
+    links:
+      - type: satisfies
+        target: REQ-9
 
   # ── ISLE term rewriter constraints ──────────────────────────────────
   - id: CC-3
@@ -34,6 +40,11 @@ controller-constraints:
       negative values, NaN, infinity, and subnormals where applicable.
     ucas: [UCA-4]
     hazards: [H-1]
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-6
 
   - id: CC-4
     controller: CTRL-2
@@ -44,6 +55,9 @@ controller-constraints:
       If it cannot be determined statically, the fold must not occur.
     ucas: [UCA-5]
     hazards: [H-1]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-5
     controller: CTRL-2
@@ -54,6 +68,9 @@ controller-constraints:
       the instruction's observable behavior.
     ucas: [UCA-6]
     hazards: [H-2]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-6
     controller: CTRL-2
@@ -63,6 +80,9 @@ controller-constraints:
       verify round-trip fidelity for every supported instruction type.
     ucas: [UCA-7]
     hazards: [H-3]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-7
     controller: CTRL-2
@@ -72,6 +92,9 @@ controller-constraints:
       shift for negative numbers), or must only apply to unsigned operations.
     ucas: [UCA-8]
     hazards: [H-14]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   # ── Pipeline orchestrator constraints ───────────────────────────────
   - id: CC-8
@@ -82,6 +105,9 @@ controller-constraints:
       check must be updated whenever new instruction support is added.
     ucas: [UCA-9]
     hazards: [H-1, H-2]
+    links:
+      - type: satisfies
+        target: REQ-5
 
   - id: CC-9
     controller: CTRL-3
@@ -92,6 +118,9 @@ controller-constraints:
       only if all branch targets are covered.
     ucas: [UCA-10]
     hazards: [H-5]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-10
     controller: CTRL-3
@@ -102,6 +131,11 @@ controller-constraints:
       may be cached.
     ucas: [UCA-11]
     hazards: [H-6]
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-5
 
   - id: CC-11
     controller: CTRL-3
@@ -112,6 +146,9 @@ controller-constraints:
       semantics correctly.
     ucas: [UCA-12]
     hazards: [H-7]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-12
     controller: CTRL-3
@@ -121,6 +158,9 @@ controller-constraints:
       enforce a maximum inlined body size to prevent code explosion.
     ucas: [UCA-13]
     hazards: [H-7]
+    links:
+      - type: satisfies
+        target: REQ-5
 
   - id: CC-13
     controller: CTRL-3
@@ -131,6 +171,9 @@ controller-constraints:
       have arbitrary effects via imported functions).
     ucas: [UCA-14]
     hazards: [H-8]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-14
     controller: CTRL-3
@@ -141,6 +184,11 @@ controller-constraints:
       modified set and it does not access memory or globals.
     ucas: [UCA-15]
     hazards: [H-9]
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-5
 
   - id: CC-15
     controller: CTRL-3
@@ -150,6 +198,9 @@ controller-constraints:
       block layers. Loop blocks must never be merged away.
     ucas: [UCA-16]
     hazards: [H-15]
+    links:
+      - type: satisfies
+        target: REQ-1
 
   - id: CC-16
     controller: CTRL-3
@@ -159,6 +210,11 @@ controller-constraints:
       global.get replaced with a constant.
     ucas: [UCA-17]
     hazards: [H-16]
+    links:
+      - type: satisfies
+        target: REQ-1
+      - type: satisfies
+        target: REQ-5
 
   # ── Stack validator constraints ─────────────────────────────────────
   - id: CC-17
@@ -170,6 +226,9 @@ controller-constraints:
       rather than using a default signature.
     ucas: [UCA-18]
     hazards: [H-4]
+    links:
+      - type: satisfies
+        target: REQ-13
 
   - id: CC-18
     controller: CTRL-4
@@ -180,6 +239,9 @@ controller-constraints:
       validation algorithm.
     ucas: [UCA-19]
     hazards: [H-4]
+    links:
+      - type: satisfies
+        target: REQ-13
 
   # ── Z3 verifier constraints ─────────────────────────────────────────
   - id: CC-19
@@ -191,6 +253,9 @@ controller-constraints:
       bvsdiv, bvsrem).
     ucas: [UCA-20]
     hazards: [H-12]
+    links:
+      - type: satisfies
+        target: REQ-6
 
   - id: CC-20
     controller: CTRL-5
@@ -201,6 +266,9 @@ controller-constraints:
       just that non-trapping results match.
     ucas: [UCA-21]
     hazards: [H-12]
+    links:
+      - type: satisfies
+        target: REQ-6
 
   # ── Binary encoder constraints ──────────────────────────────────────
   - id: CC-21
@@ -212,6 +280,9 @@ controller-constraints:
       encoding correctness.
     ucas: [UCA-22]
     hazards: [H-10]
+    links:
+      - type: satisfies
+        target: REQ-12
 
   - id: CC-22
     controller: CTRL-6
@@ -222,6 +293,9 @@ controller-constraints:
       actual encoding is not acceptable.
     ucas: [UCA-23]
     hazards: [H-10]
+    links:
+      - type: satisfies
+        target: REQ-12
 
   # ── Component model optimizer constraints ───────────────────────────
   - id: CC-23
@@ -233,6 +307,9 @@ controller-constraints:
       adapters where source and destination types are identical.
     ucas: [UCA-24]
     hazards: [H-13]
+    links:
+      - type: satisfies
+        target: REQ-17
 
   - id: CC-24
     controller: CTRL-7
@@ -242,3 +319,6 @@ controller-constraints:
       resource handle allocation, table mutations).
     ucas: [UCA-25]
     hazards: [H-13]
+    links:
+      - type: satisfies
+        target: REQ-17

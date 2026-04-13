@@ -16,6 +16,16 @@ artifacts:
     links:
       - type: mitigates
         target: SC-1
+      - type: constraint-satisfies
+        target: SC-1
+      - type: constraint-satisfies
+        target: SC-2
+      - type: constraint-satisfies
+        target: SC-4
+      - type: constraint-satisfies
+        target: SC-10
+      - type: constraint-satisfies
+        target: SC-13
 
   - id: REQ-2
     type: requirement
@@ -27,6 +37,11 @@ artifacts:
     fields:
       priority: must
       category: constraint
+    links:
+      - type: satisfies
+        target: DD-3
+      - type: satisfies
+        target: DD-6
 
   - id: REQ-3
     type: requirement
@@ -70,6 +85,15 @@ artifacts:
     fields:
       priority: must
       category: constraint
+    links:
+      - type: constraint-satisfies
+        target: SC-5
+      - type: constraint-satisfies
+        target: SC-6
+      - type: constraint-satisfies
+        target: SC-7
+      - type: constraint-satisfies
+        target: SC-8
 
   # ============================================================================
   # Verification requirements
@@ -90,6 +114,10 @@ artifacts:
         target: SC-1
       - type: mitigates
         target: SC-11
+      - type: constraint-satisfies
+        target: SC-11
+      - type: constraint-satisfies
+        target: SC-17
 
   - id: REQ-7
     type: requirement
@@ -132,6 +160,10 @@ artifacts:
     links:
       - type: mitigates
         target: SC-10
+      - type: constraint-satisfies
+        target: SC-9
+      - type: constraint-satisfies
+        target: SC-18
 
   - id: REQ-10
     type: requirement
@@ -181,6 +213,10 @@ artifacts:
     links:
       - type: mitigates
         target: SC-9
+      - type: constraint-satisfies
+        target: SC-3
+      - type: constraint-satisfies
+        target: SC-14
 
   - id: REQ-13
     type: requirement
@@ -196,6 +232,8 @@ artifacts:
     links:
       - type: mitigates
         target: SC-3
+      - type: constraint-satisfies
+        target: SC-16
 
   - id: REQ-14
     type: requirement
@@ -208,6 +246,9 @@ artifacts:
     fields:
       priority: must
       category: non-functional
+    links:
+      - type: constraint-satisfies
+        target: SC-19
 
   - id: REQ-15
     type: requirement
@@ -250,6 +291,10 @@ artifacts:
     links:
       - type: mitigates
         target: SC-12
+      - type: constraint-satisfies
+        target: SC-12
+      - type: constraint-satisfies
+        target: SC-15
 
   - id: REQ-18
     type: requirement
