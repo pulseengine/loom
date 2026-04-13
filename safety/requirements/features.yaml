@@ -219,3 +219,45 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-18
+
+  - id: FEAT-15
+    type: feature
+    title: Redundant set elimination (RSE)
+    status: approved
+    description: >
+      Removes redundant local.set instructions when a subsequent set
+      overwrites the same local without an intervening get. Reduces
+      code size and eliminates unnecessary stack operations.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-9
+
+  - id: FEAT-16
+    type: feature
+    title: Interference graph register allocation
+    status: approved
+    description: >
+      Greedy graph coloring to coalesce local variables, reducing local
+      count. Builds an interference graph of live ranges and assigns
+      locals using sorted-by-degree greedy coloring.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-9
+
+  - id: FEAT-17
+    type: feature
+    title: Precompute pass
+    status: approved
+    description: >
+      Propagates immutable global constants into function bodies,
+      replacing global.get of immutable globals with their constant
+      values to enable further constant folding.
+    fields:
+      phase: phase-1
+    links:
+      - type: satisfies
+        target: REQ-9
