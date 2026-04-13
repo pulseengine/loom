@@ -192,6 +192,54 @@ impl std::hash::Hash for ImmF64 {
     }
 }
 
+// ====================================================================
+// Float NaN/Subnormal Helpers
+// ====================================================================
+// These helpers centralize WebAssembly float constant-folding guards so
+// that every arithmetic fold site uses exactly the same logic.
+
+/// Canonical NaN for f32 (WebAssembly spec: 0x7fc00000)
+pub const F32_CANONICAL_NAN: u32 = 0x7fc00000;
+
+/// Canonical NaN for f64 (WebAssembly spec: 0x7ff8000000000000)
+pub const F64_CANONICAL_NAN: u64 = 0x7ff8000000000000;
+
+/// Returns `true` if the f32 is subnormal (non-zero with biased exponent 0).
+/// We skip constant folding for subnormal results because the host FPU may
+/// flush subnormals to zero (e.g. ARM FTZ), while WebAssembly requires
+/// IEEE 754 gradual underflow.
+pub fn is_f32_subnormal(val: f32) -> bool {
+    val != 0.0 && val.is_subnormal()
+}
+
+/// Returns `true` if the f64 is subnormal (non-zero with biased exponent 0).
+/// See [`is_f32_subnormal`] for rationale.
+pub fn is_f64_subnormal(val: f64) -> bool {
+    val != 0.0 && val.is_subnormal()
+}
+
+/// Canonicalize an f32 result for constant folding.
+/// If the result is NaN, returns the WebAssembly canonical NaN bits.
+/// Otherwise returns the result's bit representation.
+pub fn canonicalize_f32(result: f32) -> u32 {
+    if result.is_nan() {
+        F32_CANONICAL_NAN
+    } else {
+        result.to_bits()
+    }
+}
+
+/// Canonicalize an f64 result for constant folding.
+/// If the result is NaN, returns the WebAssembly canonical NaN bits.
+/// Otherwise returns the result's bit representation.
+pub fn canonicalize_f64(result: f64) -> u64 {
+    if result.is_nan() {
+        F64_CANONICAL_NAN
+    } else {
+        result.to_bits()
+    }
+}
+
 /// Optional string for block/loop labels
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OptionString(pub Option<String>);
@@ -4389,10 +4437,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv + rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst32(ImmF32(0x7fc00000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst32(ImmF32(F32_CANONICAL_NAN))
+                        } else if is_f32_subnormal(result) {
                             fadd32(lhs_simplified, rhs_simplified)
                         } else {
                             fconst32(ImmF32::new(result))
@@ -4428,10 +4474,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv - rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst32(ImmF32(0x7fc00000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst32(ImmF32(F32_CANONICAL_NAN))
+                        } else if is_f32_subnormal(result) {
                             fsub32(lhs_simplified, rhs_simplified)
                         } else {
                             fconst32(ImmF32::new(result))
@@ -4462,10 +4506,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv * rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst32(ImmF32(0x7fc00000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst32(ImmF32(F32_CANONICAL_NAN))
+                        } else if is_f32_subnormal(result) {
                             fmul32(lhs_simplified, rhs_simplified)
                         } else {
                             fconst32(ImmF32::new(result))
@@ -4493,10 +4535,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv / rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst32(ImmF32(0x7fc00000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst32(ImmF32(F32_CANONICAL_NAN))
+                        } else if is_f32_subnormal(result) {
                             fdiv32(lhs_simplified, rhs_simplified)
                         } else {
                             fconst32(ImmF32::new(result))
@@ -4523,10 +4563,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv + rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst64(ImmF64(0x7ff8000000000000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst64(ImmF64(F64_CANONICAL_NAN))
+                        } else if is_f64_subnormal(result) {
                             fadd64(lhs_simplified, rhs_simplified)
                         } else {
                             fconst64(ImmF64::new(result))
@@ -4561,10 +4599,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv - rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst64(ImmF64(0x7ff8000000000000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst64(ImmF64(F64_CANONICAL_NAN))
+                        } else if is_f64_subnormal(result) {
                             fsub64(lhs_simplified, rhs_simplified)
                         } else {
                             fconst64(ImmF64::new(result))
@@ -4594,10 +4630,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv * rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst64(ImmF64(0x7ff8000000000000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst64(ImmF64(F64_CANONICAL_NAN))
+                        } else if is_f64_subnormal(result) {
                             fmul64(lhs_simplified, rhs_simplified)
                         } else {
                             fconst64(ImmF64::new(result))
@@ -4624,10 +4658,8 @@ fn simplify_stateless(val: Value) -> Value {
                     if !lv.is_nan() && !rv.is_nan() {
                         let result = lv / rv;
                         if result.is_nan() {
-                            // Canonicalize to WebAssembly canonical NaN
-                            fconst64(ImmF64(0x7ff8000000000000))
-                        } else if result != 0.0 && result.is_subnormal() {
-                            // Subnormal: host FPU may flush to zero; don't fold
+                            fconst64(ImmF64(F64_CANONICAL_NAN))
+                        } else if is_f64_subnormal(result) {
                             fdiv64(lhs_simplified, rhs_simplified)
                         } else {
                             fconst64(ImmF64::new(result))
