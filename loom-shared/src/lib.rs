@@ -2668,13 +2668,21 @@ impl OptimizationEnv {
 /// Legacy type alias for compatibility
 pub type LocalEnv = OptimizationEnv;
 
-/// Simplify/optimize a Value term with dataflow-aware optimization
-/// Phase 13: Extended with memory redundancy elimination
-pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
+/// Dataflow-aware ISLE rewrite — tracks local variables and memory state.
+///
+/// Applies all pure structural rewrites (constant folding, algebraic
+/// identities, strength reduction) PLUS:
+/// - Local variable constant propagation (LocalSet/Get/Tee tracking)
+/// - Memory redundancy elimination (load-after-store forwarding)
+/// - Environment invalidation at control flow boundaries
+///
+/// Only safe for straight-line code or with env clearing at join points.
+/// For functions with BrIf/BrTable, use `rewrite_pure` instead.
+pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
     match val.data() {
         // Local variable operations
         ValueData::LocalSet { idx, val: set_val } => {
-            let simplified_val = simplify_with_env(set_val.clone(), env);
+            let simplified_val = rewrite_with_dataflow(set_val.clone(), env);
 
             // Track this assignment in our environment
             if matches!(
@@ -2699,7 +2707,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         }
 
         ValueData::LocalTee { idx, val: tee_val } => {
-            let simplified_val = simplify_with_env(tee_val.clone(), env);
+            let simplified_val = rewrite_with_dataflow(tee_val.clone(), env);
 
             if matches!(
                 simplified_val.data(),
@@ -2720,7 +2728,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
 
             // Try to extract memory location
             if let ValueData::I32Const { val: addr_val } = simplified_addr.data() {
@@ -2747,8 +2755,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
 
             // Track this store in memory state
             if let ValueData::I32Const { val: addr_val } = simplified_addr.data() {
@@ -2776,7 +2784,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
 
             if let ValueData::I32Const { val: addr_val } = simplified_addr.data() {
                 let mem_loc = MemoryLocation {
@@ -2800,8 +2808,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
 
             if let ValueData::I32Const { val: addr_val } = simplified_addr.data() {
                 let mem_loc = MemoryLocation {
@@ -2827,7 +2835,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             f32_load(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2838,8 +2846,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             // Unknown store type - invalidate conservatively
             env.invalidate_memory();
             f32_store(simplified_addr, simplified_value, *offset, *align, *mem)
@@ -2851,7 +2859,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             f64_load(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2862,8 +2870,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             f64_store(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -2877,7 +2885,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i32_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2887,7 +2895,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i32_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2897,7 +2905,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i32_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2907,7 +2915,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i32_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2917,7 +2925,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load8_s(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2927,7 +2935,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load8_u(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2937,7 +2945,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load16_s(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2947,7 +2955,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load16_u(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2957,7 +2965,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load32_s(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2967,7 +2975,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
             i64_load32_u(simplified_addr, *offset, *align, *mem)
         }
 
@@ -2980,8 +2988,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             i32_store8(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -2993,8 +3001,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             i32_store16(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -3006,8 +3014,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             i64_store8(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -3019,8 +3027,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             i64_store16(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -3032,8 +3040,8 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             align,
             mem,
         } => {
-            let simplified_addr = simplify_with_env(addr.clone(), env);
-            let simplified_value = simplify_with_env(value.clone(), env);
+            let simplified_addr = rewrite_with_dataflow(addr.clone(), env);
+            let simplified_value = rewrite_with_dataflow(value.clone(), env);
             env.invalidate_memory();
             i64_store32(simplified_addr, simplified_value, *offset, *align, *mem)
         }
@@ -3054,7 +3062,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             env.invalidate_memory();
             let optimized_body: Vec<Value> = body
                 .iter()
-                .map(|term| simplify_with_env(term.clone(), env))
+                .map(|term| rewrite_with_dataflow(term.clone(), env))
                 .collect();
             // After block: clear env. A br/br_if inside can exit early.
             env.locals.clear();
@@ -3079,7 +3087,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             env.invalidate_memory();
             let optimized_body: Vec<Value> = body
                 .iter()
-                .map(|term| simplify_with_env(term.clone(), env))
+                .map(|term| rewrite_with_dataflow(term.clone(), env))
                 .collect();
             // After loop: clear env. We don't know which iteration's values
             // the locals hold at loop exit.
@@ -3100,17 +3108,17 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             else_body,
         } => {
             // Simplify condition with current env
-            let simplified_cond = simplify_with_env(condition.clone(), env);
+            let simplified_cond = rewrite_with_dataflow(condition.clone(), env);
             // Fork env for each branch
             let mut then_env = env.clone();
             let mut else_env = env.clone();
             let optimized_then: Vec<Value> = then_body
                 .iter()
-                .map(|term| simplify_with_env(term.clone(), &mut then_env))
+                .map(|term| rewrite_with_dataflow(term.clone(), &mut then_env))
                 .collect();
             let optimized_else: Vec<Value> = else_body
                 .iter()
-                .map(|term| simplify_with_env(term.clone(), &mut else_env))
+                .map(|term| rewrite_with_dataflow(term.clone(), &mut else_env))
                 .collect();
             // After if: clear env. We don't know which branch was taken.
             env.locals.clear();
@@ -3129,7 +3137,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         ValueData::Br { depth, value } => {
             let simplified_val = value
                 .as_ref()
-                .map(|v| Box::new(simplify_with_env(v.as_ref().clone(), env)));
+                .map(|v| Box::new(rewrite_with_dataflow(v.as_ref().clone(), env)));
             env.locals.clear();
             env.invalidate_memory();
             Value(Box::new(ValueData::Br {
@@ -3141,7 +3149,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         ValueData::Return { values } => {
             let simplified_vals: Vec<Value> = values
                 .iter()
-                .map(|v| simplify_with_env(v.clone(), env))
+                .map(|v| rewrite_with_dataflow(v.clone(), env))
                 .collect();
             env.locals.clear();
             env.invalidate_memory();
@@ -3162,10 +3170,10 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             condition,
             value,
         } => {
-            let simplified_cond = simplify_with_env(condition.clone(), env);
+            let simplified_cond = rewrite_with_dataflow(condition.clone(), env);
             let simplified_val = value
                 .as_ref()
-                .map(|v| simplify_with_env(v.as_ref().clone(), env));
+                .map(|v| rewrite_with_dataflow(v.as_ref().clone(), env));
             // Invalidate all tracked state at conditional branch point
             env.locals.clear();
             env.invalidate_memory();
@@ -3178,10 +3186,10 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             index,
             value,
         } => {
-            let simplified_index = simplify_with_env(index.clone(), env);
+            let simplified_index = rewrite_with_dataflow(index.clone(), env);
             let simplified_val = value
                 .as_ref()
-                .map(|v| Box::new(simplify_with_env(v.as_ref().clone(), env)));
+                .map(|v| Box::new(rewrite_with_dataflow(v.as_ref().clone(), env)));
             // Invalidate all tracked state at multi-way branch
             env.locals.clear();
             env.invalidate_memory();
@@ -3196,7 +3204,7 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         ValueData::Call { func_idx, args } => {
             let simplified_args: Vec<Value> = args
                 .iter()
-                .map(|a| simplify_with_env(a.clone(), env))
+                .map(|a| rewrite_with_dataflow(a.clone(), env))
                 .collect();
             // Calls may have arbitrary side effects — invalidate all state
             env.locals.clear();
@@ -3213,10 +3221,10 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
             table_offset,
             args,
         } => {
-            let simplified_offset = simplify_with_env(table_offset.clone(), env);
+            let simplified_offset = rewrite_with_dataflow(table_offset.clone(), env);
             let simplified_args: Vec<Value> = args
                 .iter()
-                .map(|a| simplify_with_env(a.clone(), env))
+                .map(|a| rewrite_with_dataflow(a.clone(), env))
                 .collect();
             // Indirect calls have unknown side effects — invalidate all state
             env.locals.clear();
@@ -3230,14 +3238,30 @@ pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
         }
 
         // All other optimizations follow...
-        _ => simplify_stateless(val),
+        _ => rewrite_pure_impl(val),
     }
 }
 
-/// Original stateless simplification (for compatibility)
+/// Pure structural ISLE rewrites — no dataflow state, safe for all control flow.
+///
+/// Applies: constant folding, algebraic identities, strength reduction.
+/// Does NOT propagate local variable values or track memory state.
+/// Use `rewrite_with_dataflow` for straight-line code where local/memory
+/// propagation is safe.
+pub fn rewrite_pure(val: Value) -> Value {
+    rewrite_pure_impl(val)
+}
+
+/// Backward-compatible alias for `rewrite_pure`.
+#[doc(hidden)]
 pub fn simplify(val: Value) -> Value {
-    let mut env = LocalEnv::new();
-    simplify_with_env(val, &mut env)
+    rewrite_pure(val)
+}
+
+/// Backward-compatible alias for `rewrite_with_dataflow`.
+#[doc(hidden)]
+pub fn simplify_with_env(val: Value, env: &mut OptimizationEnv) -> Value {
+    rewrite_with_dataflow(val, env)
 }
 
 /// Check if two values are structurally equal
@@ -3269,12 +3293,12 @@ fn are_values_equal(lhs: &Value, rhs: &Value) -> bool {
 }
 
 /// Stateless simplification (expression-level only)
-fn simplify_stateless(val: Value) -> Value {
+fn rewrite_pure_impl(val: Value) -> Value {
     match val.data() {
         // i32.add optimizations
         ValueData::I32Add { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding: (i32.add (i32.const A) (i32.const B)) → (i32.const (A+B))
@@ -3291,8 +3315,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.sub optimizations
         ValueData::I32Sub { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x - x = 0 pattern (self-subtraction)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3327,8 +3351,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.mul optimizations
         ValueData::I32Mul { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding: (i32.mul (i32.const A) (i32.const B)) → (i32.const (A*B))
@@ -3371,8 +3395,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.add optimizations
         ValueData::I64Add { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
@@ -3386,8 +3410,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.sub optimizations
         ValueData::I64Sub { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x - x = 0 pattern (self-subtraction)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3420,8 +3444,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.mul optimizations
         ValueData::I64Mul { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
@@ -3461,8 +3485,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.div_u optimizations (unsigned division)
         ValueData::I64DivU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Strength reduction: x / power_of_2 → x >> log2(power_of_2)
@@ -3481,8 +3505,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.rem_u optimizations (unsigned remainder/modulo)
         ValueData::I64RemU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Strength reduction: x % power_of_2 → x & (power_of_2 - 1)
@@ -3498,8 +3522,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.and optimizations
         ValueData::I32And { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x & x = x pattern (self-AND)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3523,8 +3547,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.or optimizations
         ValueData::I32Or { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x | x = x pattern (self-OR)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3548,8 +3572,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.xor optimizations
         ValueData::I32Xor { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x ^ x = 0 pattern (self-XOR)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3570,8 +3594,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.shl optimizations
         ValueData::I32Shl { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3586,8 +3610,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.shr_s optimizations
         ValueData::I32ShrS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3602,8 +3626,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i32.shr_u optimizations
         ValueData::I32ShrU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3618,8 +3642,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.and optimizations
         ValueData::I64And { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x & x = x pattern (self-AND)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3643,8 +3667,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.or optimizations
         ValueData::I64Or { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x | x = x pattern (self-OR)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3668,8 +3692,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.xor optimizations
         ValueData::I64Xor { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x ^ x = 0 pattern (self-XOR)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3690,8 +3714,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.shl optimizations
         ValueData::I64Shl { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3706,8 +3730,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.shr_s optimizations
         ValueData::I64ShrS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3722,8 +3746,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // i64.shr_u optimizations
         ValueData::I64ShrU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3738,8 +3762,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Rotation optimizations (i32)
         ValueData::I32Rotl { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3756,8 +3780,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Rotr { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3775,8 +3799,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Rotation optimizations (i64)
         ValueData::I64Rotl { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3793,8 +3817,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Rotr { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding
@@ -3812,8 +3836,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Comparison optimizations (i32)
         ValueData::I32Eq { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x == x = 1 pattern (self-equality always true)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3829,8 +3853,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Ne { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x != x = 0 pattern (self-inequality always false)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3846,8 +3870,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32LtS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() < r.value() { 1 } else { 0 }))
@@ -3857,8 +3881,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32LtU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u32) < (r.value() as u32) {
@@ -3872,8 +3896,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32GtS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() > r.value() { 1 } else { 0 }))
@@ -3883,8 +3907,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32GtU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u32) > (r.value() as u32) {
@@ -3898,8 +3922,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32LeS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() <= r.value() { 1 } else { 0 }))
@@ -3909,8 +3933,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32LeU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u32) <= (r.value() as u32) {
@@ -3924,8 +3948,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32GeS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if l.value() >= r.value() { 1 } else { 0 }))
@@ -3935,8 +3959,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32GeU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u32) >= (r.value() as u32) {
@@ -3951,8 +3975,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Comparison optimizations (i64)
         ValueData::I64Eq { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x == x = 1 pattern (self-equality always true)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3968,8 +3992,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Ne { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             // Check for x != x = 0 pattern (self-inequality always false)
             if are_values_equal(&lhs_simplified, &rhs_simplified) {
@@ -3985,8 +4009,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64LtS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() < r.value() { 1 } else { 0 }))
@@ -3996,8 +4020,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64LtU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u64) < (r.value() as u64) {
@@ -4011,8 +4035,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64GtS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() > r.value() { 1 } else { 0 }))
@@ -4022,8 +4046,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64GtU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u64) > (r.value() as u64) {
@@ -4037,8 +4061,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64LeS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() <= r.value() { 1 } else { 0 }))
@@ -4048,8 +4072,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64LeU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u64) <= (r.value() as u64) {
@@ -4063,8 +4087,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64GeS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if l.value() >= r.value() { 1 } else { 0 }))
@@ -4074,8 +4098,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64GeU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r }) => {
                     iconst32(Imm32(if (l.value() as u64) >= (r.value() as u64) {
@@ -4090,8 +4114,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Division and remainder optimizations (i32) - constant folding only, avoid division by zero
         ValueData::I32DivS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
                     if r.value() != 0 =>
@@ -4104,8 +4128,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32DivU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding: const / const
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
@@ -4127,8 +4151,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32RemS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
                     if r.value() != 0 =>
@@ -4140,8 +4164,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32RemU { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding: const % const
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
@@ -4162,8 +4186,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Division and remainder optimizations (i64) - constant folding only, avoid division by zero
         ValueData::I64DivS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
                     if r.value() != 0 =>
@@ -4175,8 +4199,8 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64RemS { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
                     if r.value() != 0 =>
@@ -4189,7 +4213,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Unary operations (i32) optimizations
         ValueData::I32Eqz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.eqz (i32.const N)) → (i32.const (N == 0 ? 1 : 0))
                 ValueData::I32Const { val: v } => {
@@ -4200,7 +4224,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Clz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.clz (i32.const N)) → (i32.const count_leading_zeros(N))
                 ValueData::I32Const { val: v } => iconst32(Imm32(v.value().leading_zeros() as i32)),
@@ -4209,7 +4233,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Ctz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.ctz (i32.const N)) → (i32.const count_trailing_zeros(N))
                 ValueData::I32Const { val: v } => {
@@ -4220,7 +4244,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Popcnt { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.popcnt (i32.const N)) → (i32.const count_ones(N))
                 ValueData::I32Const { val: v } => iconst32(Imm32(v.value().count_ones() as i32)),
@@ -4230,7 +4254,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Unary operations (i64) optimizations
         ValueData::I64Eqz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.eqz (i64.const N)) → (i32.const (N == 0 ? 1 : 0))
                 ValueData::I64Const { val: v } => {
@@ -4241,7 +4265,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Clz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.clz (i64.const N)) → (i64.const count_leading_zeros(N))
                 ValueData::I64Const { val: v } => iconst64(Imm64(v.value().leading_zeros() as i64)),
@@ -4250,7 +4274,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Ctz { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.ctz (i64.const N)) → (i64.const count_trailing_zeros(N))
                 ValueData::I64Const { val: v } => {
@@ -4261,7 +4285,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Popcnt { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.popcnt (i64.const N)) → (i64.const count_ones(N))
                 ValueData::I64Const { val: v } => iconst64(Imm64(v.value().count_ones() as i64)),
@@ -4275,9 +4299,9 @@ fn simplify_stateless(val: Value) -> Value {
             true_val,
             false_val,
         } => {
-            let cond_simplified = simplify(cond.clone());
-            let true_simplified = simplify(true_val.clone());
-            let false_simplified = simplify(false_val.clone());
+            let cond_simplified = rewrite_pure(cond.clone());
+            let true_simplified = rewrite_pure(true_val.clone());
+            let false_simplified = rewrite_pure(false_val.clone());
 
             // Algebraic: select(c, x, x) → x (both branches same)
             if are_values_equal(&true_simplified, &false_simplified) {
@@ -4295,7 +4319,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Sign extension optimizations (i32)
         ValueData::I32Extend8S { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.extend8_s (i32.const N)) → (i32.const sign_extend_8(N))
                 ValueData::I32Const { val: v } => {
@@ -4308,7 +4332,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I32Extend16S { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i32.extend16_s (i32.const N)) → (i32.const sign_extend_16(N))
                 ValueData::I32Const { val: v } => {
@@ -4322,7 +4346,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // Sign extension optimizations (i64)
         ValueData::I64Extend8S { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.extend8_s (i64.const N)) → (i64.const sign_extend_8(N))
                 ValueData::I64Const { val: v } => {
@@ -4335,7 +4359,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Extend16S { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.extend16_s (i64.const N)) → (i64.const sign_extend_16(N))
                 ValueData::I64Const { val: v } => {
@@ -4348,7 +4372,7 @@ fn simplify_stateless(val: Value) -> Value {
         }
 
         ValueData::I64Extend32S { val } => {
-            let val_simplified = simplify(val.clone());
+            let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: (i64.extend32_s (i64.const N)) → (i64.const sign_extend_32(N))
                 ValueData::I64Const { val: v } => {
@@ -4378,8 +4402,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.add optimizations
         ValueData::F32Add { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 // Constant folding when neither operand is NaN
@@ -4418,8 +4442,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.sub optimizations
         ValueData::F32Sub { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
@@ -4452,8 +4476,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.mul optimizations
         ValueData::F32Mul { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
@@ -4483,8 +4507,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.div optimizations
         ValueData::F32Div { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
@@ -4513,8 +4537,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.add optimizations
         ValueData::F64Add { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
@@ -4551,8 +4575,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.sub optimizations
         ValueData::F64Sub { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
@@ -4584,8 +4608,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.mul optimizations
         ValueData::F64Mul { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
@@ -4614,8 +4638,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.div optimizations
         ValueData::F64Div { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
 
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
@@ -4643,28 +4667,28 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.abs optimizations — always safe (clears sign bit, well-defined for NaN)
         ValueData::F32Abs { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } => fconst32(ImmF32::new(val.value().abs())),
                 ValueData::F32Abs { .. } => simplified,
-                ValueData::F32Neg { val: inner2 } => fabs32(simplify(inner2.clone())),
+                ValueData::F32Neg { val: inner2 } => fabs32(rewrite_pure(inner2.clone())),
                 _ => fabs32(simplified),
             }
         }
 
         // f32.neg optimizations — always safe (flips sign bit, well-defined for NaN)
         ValueData::F32Neg { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } => fconst32(ImmF32::new(-val.value())),
-                ValueData::F32Neg { val: inner2 } => simplify(inner2.clone()),
+                ValueData::F32Neg { val: inner2 } => rewrite_pure(inner2.clone()),
                 _ => fneg32(simplified),
             }
         }
 
         // f32.ceil optimizations
         ValueData::F32Ceil { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } if !val.value().is_nan() => {
                     fconst32(ImmF32::new(val.value().ceil()))
@@ -4675,7 +4699,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.floor optimizations
         ValueData::F32Floor { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } if !val.value().is_nan() => {
                     fconst32(ImmF32::new(val.value().floor()))
@@ -4686,7 +4710,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.trunc optimizations
         ValueData::F32Trunc { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } if !val.value().is_nan() => {
                     fconst32(ImmF32::new(val.value().trunc()))
@@ -4697,7 +4721,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.nearest optimizations (round ties to even)
         ValueData::F32Nearest { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } if !val.value().is_nan() => {
                     fconst32(ImmF32::new(val.value().round_ties_even()))
@@ -4708,7 +4732,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.sqrt optimizations
         ValueData::F32Sqrt { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F32Const { val } if !val.value().is_nan() => {
                     fconst32(ImmF32::new(val.value().sqrt()))
@@ -4719,8 +4743,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.min optimizations — NaN propagation: fold only when both non-NaN
         ValueData::F32Min { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
                     if !l.value().is_nan() && !r.value().is_nan() =>
@@ -4733,8 +4757,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.max optimizations — NaN propagation: fold only when both non-NaN
         ValueData::F32Max { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r })
                     if !l.value().is_nan() && !r.value().is_nan() =>
@@ -4747,8 +4771,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32.copysign optimizations — always safe (pure bit manipulation)
         ValueData::F32Copysign { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     fconst32(ImmF32::new(l.value().copysign(r.value())))
@@ -4759,8 +4783,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f32 comparison optimizations — Rust IEEE 754 semantics match WASM
         ValueData::F32Eq { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
@@ -4769,8 +4793,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32Ne { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
@@ -4779,8 +4803,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32Lt { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
@@ -4789,8 +4813,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32Gt { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
@@ -4799,8 +4823,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32Le { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
@@ -4809,8 +4833,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32Ge { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F32Const { val: l }, ValueData::F32Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
@@ -4821,28 +4845,28 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.abs optimizations — always safe
         ValueData::F64Abs { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } => fconst64(ImmF64::new(val.value().abs())),
                 ValueData::F64Abs { .. } => simplified,
-                ValueData::F64Neg { val: inner2 } => fabs64(simplify(inner2.clone())),
+                ValueData::F64Neg { val: inner2 } => fabs64(rewrite_pure(inner2.clone())),
                 _ => fabs64(simplified),
             }
         }
 
         // f64.neg optimizations — always safe
         ValueData::F64Neg { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } => fconst64(ImmF64::new(-val.value())),
-                ValueData::F64Neg { val: inner2 } => simplify(inner2.clone()),
+                ValueData::F64Neg { val: inner2 } => rewrite_pure(inner2.clone()),
                 _ => fneg64(simplified),
             }
         }
 
         // f64.ceil optimizations
         ValueData::F64Ceil { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } if !val.value().is_nan() => {
                     fconst64(ImmF64::new(val.value().ceil()))
@@ -4853,7 +4877,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.floor optimizations
         ValueData::F64Floor { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } if !val.value().is_nan() => {
                     fconst64(ImmF64::new(val.value().floor()))
@@ -4864,7 +4888,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.trunc optimizations
         ValueData::F64Trunc { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } if !val.value().is_nan() => {
                     fconst64(ImmF64::new(val.value().trunc()))
@@ -4875,7 +4899,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.nearest optimizations (round ties to even)
         ValueData::F64Nearest { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } if !val.value().is_nan() => {
                     fconst64(ImmF64::new(val.value().round_ties_even()))
@@ -4886,7 +4910,7 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.sqrt optimizations
         ValueData::F64Sqrt { val: inner } => {
-            let simplified = simplify(inner.clone());
+            let simplified = rewrite_pure(inner.clone());
             match simplified.data() {
                 ValueData::F64Const { val } if !val.value().is_nan() => {
                     fconst64(ImmF64::new(val.value().sqrt()))
@@ -4897,8 +4921,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.min optimizations — NaN propagation: fold only when both non-NaN
         ValueData::F64Min { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
                     if !l.value().is_nan() && !r.value().is_nan() =>
@@ -4911,8 +4935,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.max optimizations — NaN propagation: fold only when both non-NaN
         ValueData::F64Max { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r })
                     if !l.value().is_nan() && !r.value().is_nan() =>
@@ -4925,8 +4949,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64.copysign optimizations — always safe
         ValueData::F64Copysign { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     fconst64(ImmF64::new(l.value().copysign(r.value())))
@@ -4937,8 +4961,8 @@ fn simplify_stateless(val: Value) -> Value {
 
         // f64 comparison optimizations — Rust IEEE 754 semantics match WASM
         ValueData::F64Eq { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() == r.value() { 1 } else { 0 }))
@@ -4947,8 +4971,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64Ne { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() != r.value() { 1 } else { 0 }))
@@ -4957,8 +4981,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64Lt { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() < r.value() { 1 } else { 0 }))
@@ -4967,8 +4991,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64Gt { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() > r.value() { 1 } else { 0 }))
@@ -4977,8 +5001,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64Le { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() <= r.value() { 1 } else { 0 }))
@@ -4987,8 +5011,8 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64Ge { lhs, rhs } => {
-            let lhs_simplified = simplify(lhs.clone());
-            let rhs_simplified = simplify(rhs.clone());
+            let lhs_simplified = rewrite_pure(lhs.clone());
+            let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
                 (ValueData::F64Const { val: l }, ValueData::F64Const { val: r }) => {
                     iconst32(Imm32::new(if l.value() >= r.value() { 1 } else { 0 }))
@@ -5003,7 +5027,7 @@ fn simplify_stateless(val: Value) -> Value {
         // we only fold when the conversion would succeed.
         // ====================================================================
         ValueData::I32TruncF32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= i32::MIN as f32 && f < (i32::MAX as f32 + 1.0) {
@@ -5016,7 +5040,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncF32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f32 + 1.0) {
@@ -5029,7 +5053,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncF64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= i32::MIN as f64 && f < (i32::MAX as f64 + 1.0) {
@@ -5042,7 +5066,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncF64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= 0.0 && f < (u32::MAX as f64 + 1.0) {
@@ -5055,7 +5079,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncF32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= i64::MIN as f32 && f < (i64::MAX as f32) {
@@ -5068,7 +5092,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncF32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f32) {
@@ -5081,7 +5105,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncF64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= i64::MIN as f64 && f < (i64::MAX as f64) {
@@ -5094,7 +5118,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncF64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 if !f.is_nan() && f >= 0.0 && f < (u64::MAX as f64) {
@@ -5111,7 +5135,7 @@ fn simplify_stateless(val: Value) -> Value {
         // Integer-to-Float Conversion — always safe to fold
         // ====================================================================
         ValueData::F32ConvertI32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I32Const { val: c } = v.data() {
                 fconst32(ImmF32::new(c.value() as f32))
             } else {
@@ -5119,7 +5143,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32ConvertI32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I32Const { val: c } = v.data() {
                 fconst32(ImmF32::new(c.value() as u32 as f32))
             } else {
@@ -5127,7 +5151,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32ConvertI64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I64Const { val: c } = v.data() {
                 fconst32(ImmF32::new(c.value() as f32))
             } else {
@@ -5135,7 +5159,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32ConvertI64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I64Const { val: c } = v.data() {
                 fconst32(ImmF32::new(c.value() as u64 as f32))
             } else {
@@ -5143,7 +5167,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64ConvertI32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I32Const { val: c } = v.data() {
                 fconst64(ImmF64::new(c.value() as f64))
             } else {
@@ -5151,7 +5175,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64ConvertI32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I32Const { val: c } = v.data() {
                 fconst64(ImmF64::new(c.value() as u32 as f64))
             } else {
@@ -5159,7 +5183,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64ConvertI64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I64Const { val: c } = v.data() {
                 fconst64(ImmF64::new(c.value() as f64))
             } else {
@@ -5167,7 +5191,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64ConvertI64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I64Const { val: c } = v.data() {
                 fconst64(ImmF64::new(c.value() as u64 as f64))
             } else {
@@ -5179,7 +5203,7 @@ fn simplify_stateless(val: Value) -> Value {
         // Float Demote/Promote — always safe to fold
         // ====================================================================
         ValueData::F32DemoteF64 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 fconst32(ImmF32::new(c.value() as f32))
             } else {
@@ -5187,7 +5211,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64PromoteF32 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 fconst64(ImmF64::new(c.value() as f64))
             } else {
@@ -5199,7 +5223,7 @@ fn simplify_stateless(val: Value) -> Value {
         // Reinterpret (bit-cast) — always safe, pure bit reinterpretation
         // ====================================================================
         ValueData::I32ReinterpretF32 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 iconst32(Imm32::new(c.value().to_bits() as i32))
             } else {
@@ -5207,7 +5231,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64ReinterpretF64 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 iconst64(Imm64::new(c.value().to_bits() as i64))
             } else {
@@ -5215,7 +5239,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F32ReinterpretI32 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I32Const { val: c } = v.data() {
                 fconst32(ImmF32::new(f32::from_bits(c.value() as u32)))
             } else {
@@ -5223,7 +5247,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::F64ReinterpretI64 { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::I64Const { val: c } = v.data() {
                 fconst64(ImmF64::new(f64::from_bits(c.value() as u64)))
             } else {
@@ -5235,7 +5259,7 @@ fn simplify_stateless(val: Value) -> Value {
         // Saturating Truncation — always safe to fold (NaN→0, clamp on overflow)
         // ====================================================================
         ValueData::I32TruncSatF32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() {
@@ -5253,7 +5277,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncSatF32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() || f < 0.0 {
@@ -5269,7 +5293,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncSatF64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() {
@@ -5287,7 +5311,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I32TruncSatF64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() || f < 0.0 {
@@ -5303,7 +5327,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncSatF32S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() {
@@ -5321,7 +5345,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncSatF32U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F32Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() || f < 0.0 {
@@ -5337,7 +5361,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncSatF64S { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() {
@@ -5355,7 +5379,7 @@ fn simplify_stateless(val: Value) -> Value {
             }
         }
         ValueData::I64TruncSatF64U { val } => {
-            let v = simplify(val.clone());
+            let v = rewrite_pure(val.clone());
             if let ValueData::F64Const { val: c } = v.data() {
                 let f = c.value();
                 let result = if f.is_nan() || f < 0.0 {
@@ -5376,7 +5400,7 @@ fn simplify_stateless(val: Value) -> Value {
         // ====================================================================
         ValueData::MemorySize { .. } => val, // no children to simplify
         ValueData::MemoryGrow { val: inner, mem } => {
-            let v = simplify(inner.clone());
+            let v = rewrite_pure(inner.clone());
             memory_grow(v, *mem)
         }
 
@@ -5389,9 +5413,9 @@ fn simplify_stateless(val: Value) -> Value {
             len,
             mem,
         } => memory_fill(
-            simplify(dst.clone()),
-            simplify(v.clone()),
-            simplify(len.clone()),
+            rewrite_pure(dst.clone()),
+            rewrite_pure(v.clone()),
+            rewrite_pure(len.clone()),
             *mem,
         ),
         ValueData::MemoryCopy {
@@ -5401,9 +5425,9 @@ fn simplify_stateless(val: Value) -> Value {
             dst_mem,
             src_mem,
         } => memory_copy(
-            simplify(dst.clone()),
-            simplify(src.clone()),
-            simplify(len.clone()),
+            rewrite_pure(dst.clone()),
+            rewrite_pure(src.clone()),
+            rewrite_pure(len.clone()),
             *dst_mem,
             *src_mem,
         ),
@@ -5414,9 +5438,9 @@ fn simplify_stateless(val: Value) -> Value {
             mem,
             data_idx,
         } => memory_init(
-            simplify(dst.clone()),
-            simplify(src.clone()),
-            simplify(len.clone()),
+            rewrite_pure(dst.clone()),
+            rewrite_pure(src.clone()),
+            rewrite_pure(len.clone()),
             *mem,
             *data_idx,
         ),
@@ -5517,7 +5541,7 @@ mod tests {
     fn test_simplify_constant_folding() {
         // Test: (i32.add (i32.const 10) (i32.const 32)) → (i32.const 42)
         let term = iadd32(iconst32(Imm32::from(10)), iconst32(Imm32::from(32)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5534,7 +5558,7 @@ mod tests {
         // Then to: (i32.const 35)
         let inner_add = iadd32(iconst32(Imm32::from(10)), iconst32(Imm32::from(20)));
         let outer_add = iadd32(iconst32(Imm32::from(5)), inner_add);
-        let simplified = simplify(outer_add);
+        let simplified = rewrite_pure(outer_add);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5549,7 +5573,7 @@ mod tests {
         // If we had variables, this wouldn't fold
         // For now, test that constants are unchanged
         let term = iconst32(Imm32::from(42));
-        let simplified = simplify(term.clone());
+        let simplified = rewrite_pure(term.clone());
 
         assert_eq!(simplified, term);
     }
@@ -5558,7 +5582,7 @@ mod tests {
     fn test_simplify_overflow() {
         // Test overflow wrapping in constant folding
         let term = iadd32(iconst32(Imm32::from(i32::MAX)), iconst32(Imm32::from(1)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5576,7 +5600,7 @@ mod tests {
     fn test_i32_sub_constant_folding() {
         // Test: (i32.sub (i32.const 100) (i32.const 42)) → (i32.const 58)
         let term = isub32(iconst32(Imm32::from(100)), iconst32(Imm32::from(42)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5590,7 +5614,7 @@ mod tests {
     fn test_i32_mul_constant_folding() {
         // Test: (i32.mul (i32.const 6) (i32.const 7)) → (i32.const 42)
         let term = imul32(iconst32(Imm32::from(6)), iconst32(Imm32::from(7)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5604,7 +5628,7 @@ mod tests {
     fn test_algebraic_add_zero() {
         // Test: (i32.add (i32.const 42) (i32.const 0)) → (i32.const 42)
         let term = iadd32(iconst32(Imm32::from(42)), iconst32(Imm32::from(0)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5618,7 +5642,7 @@ mod tests {
     fn test_algebraic_sub_zero() {
         // Test: (i32.sub (i32.const 99) (i32.const 0)) → (i32.const 99)
         let term = isub32(iconst32(Imm32::from(99)), iconst32(Imm32::from(0)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5632,7 +5656,7 @@ mod tests {
     fn test_algebraic_mul_zero() {
         // Test: (i32.mul (i32.const 999) (i32.const 0)) → (i32.const 0)
         let term = imul32(iconst32(Imm32::from(999)), iconst32(Imm32::from(0)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5646,7 +5670,7 @@ mod tests {
     fn test_algebraic_mul_one() {
         // Test: (i32.mul (i32.const 123) (i32.const 1)) → (i32.const 123)
         let term = imul32(iconst32(Imm32::from(123)), iconst32(Imm32::from(1)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5660,7 +5684,7 @@ mod tests {
     fn test_i64_add_constant_folding() {
         // Test: (i64.add (i64.const 1000) (i64.const 2000)) → (i64.const 3000)
         let term = iadd64(iconst64(Imm64::from(1000)), iconst64(Imm64::from(2000)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I64Const { val } => {
@@ -5674,7 +5698,7 @@ mod tests {
     fn test_i64_sub_constant_folding() {
         // Test: (i64.sub (i64.const 500) (i64.const 300)) → (i64.const 200)
         let term = isub64(iconst64(Imm64::from(500)), iconst64(Imm64::from(300)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I64Const { val } => {
@@ -5688,7 +5712,7 @@ mod tests {
     fn test_i64_mul_constant_folding() {
         // Test: (i64.mul (i64.const 10) (i64.const 20)) → (i64.const 200)
         let term = imul64(iconst64(Imm64::from(10)), iconst64(Imm64::from(20)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I64Const { val } => {
@@ -5702,7 +5726,7 @@ mod tests {
     fn test_i32_sub_overflow() {
         // Test: (i32.sub (i32.const i32::MIN) (i32.const 1)) wraps
         let term = isub32(iconst32(Imm32::from(i32::MIN)), iconst32(Imm32::from(1)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5716,7 +5740,7 @@ mod tests {
     fn test_i32_mul_overflow() {
         // Test: (i32.mul (i32.const i32::MAX) (i32.const 2)) wraps
         let term = imul32(iconst32(Imm32::from(i32::MAX)), iconst32(Imm32::from(2)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5731,7 +5755,7 @@ mod tests {
         // Test: ((5 * 2) + 10) → (10 + 10) → 20
         let mul = imul32(iconst32(Imm32::from(5)), iconst32(Imm32::from(2)));
         let add = iadd32(mul, iconst32(Imm32::from(10)));
-        let simplified = simplify(add);
+        let simplified = rewrite_pure(add);
 
         match simplified.data() {
             ValueData::I32Const { val } => {
@@ -5746,7 +5770,7 @@ mod tests {
         // Test: (i32.mul x -1) → (i32.sub 0 x)
         let x = local_get(0);
         let term = imul32(x, iconst32(Imm32::from(-1)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         // Should be (0 - local.get 0)
         match simplified.data() {
@@ -5770,7 +5794,7 @@ mod tests {
         let x = local_get(0);
         let neg_x = isub32(iconst32(Imm32::from(0)), x);
         let double_neg = isub32(iconst32(Imm32::from(0)), neg_x);
-        let simplified = simplify(double_neg);
+        let simplified = rewrite_pure(double_neg);
 
         match simplified.data() {
             ValueData::LocalGet { idx } => assert_eq!(*idx, 0),
@@ -5784,7 +5808,7 @@ mod tests {
         let cond = local_get(0);
         let x = iconst32(Imm32::from(42));
         let term = select_instr(cond, x.clone(), x);
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         match simplified.data() {
             ValueData::I32Const { val } => assert_eq!(val.value(), 42),
@@ -5797,7 +5821,7 @@ mod tests {
         // Test: (i64.mul x -1) → (i64.sub 0 x)
         let x = local_get(0);
         let term = imul64(x, iconst64(Imm64::from(-1)));
-        let simplified = simplify(term);
+        let simplified = rewrite_pure(term);
 
         // Note: local_get produces i32 conceptually, but the mul expects i64
         // The test verifies the structure of the transformation
@@ -5830,7 +5854,7 @@ mod tests {
             2, // align
             0, // mem = 0
         );
-        let _ = simplify_with_env(store, &mut env);
+        let _ = rewrite_with_dataflow(store, &mut env);
 
         // Load from memory 1 at the same address (0+4)
         let load = i32_load(
@@ -5839,7 +5863,7 @@ mod tests {
             2, // align
             1, // mem = 1 — different memory!
         );
-        let result = simplify_with_env(load, &mut env);
+        let result = rewrite_with_dataflow(load, &mut env);
 
         // The load should NOT be simplified to i32.const 42 — it's a different memory
         match result.data() {
@@ -5866,7 +5890,7 @@ mod tests {
             2, // align
             0, // mem = 0
         );
-        let _ = simplify_with_env(store, &mut env);
+        let _ = rewrite_with_dataflow(store, &mut env);
 
         let load = i32_load(
             iconst32(Imm32::from(0)),
@@ -5874,7 +5898,7 @@ mod tests {
             2, // align
             0, // mem = 0 — same memory
         );
-        let result = simplify_with_env(load, &mut env);
+        let result = rewrite_with_dataflow(load, &mut env);
 
         // The load SHOULD be simplified to i32.const 42
         match result.data() {

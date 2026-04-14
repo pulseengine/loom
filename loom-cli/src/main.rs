@@ -156,7 +156,7 @@ impl OptimizationStats {
         if before == 0 {
             0.0
         } else {
-            ((before - after) as f64 / before as f64) * 100.0
+            ((before as f64 - after as f64) / before as f64) * 100.0
         }
     }
 }
@@ -285,7 +285,7 @@ fn optimize_command(
                         stats.original_size,
                         stats.optimized_size,
                         if stats.original_size > 0 {
-                            ((stats.original_size - stats.optimized_size) as f64
+                            ((stats.original_size as f64 - stats.optimized_size as f64)
                                 / stats.original_size as f64)
                                 * 100.0
                         } else {
@@ -301,7 +301,8 @@ fn optimize_command(
                             "Module size:  {} → {} bytes ({:.1}% reduction)",
                             stats.original_module_size,
                             stats.optimized_module_size,
-                            ((stats.original_module_size - stats.optimized_module_size) as f64
+                            ((stats.original_module_size as f64
+                                - stats.optimized_module_size as f64)
                                 / stats.original_module_size as f64)
                                 * 100.0
                         );

@@ -40,8 +40,9 @@
 //! println!("Size reduction: {:.1}%", stats.reduction_percentage());
 //! ```
 
+use crate::parse::wasm_features_with_async;
 use anyhow::{Context, Result, anyhow};
-use wasmparser::{Encoding, Parser, Payload};
+use wasmparser::{Encoding, Parser, Payload, Validator};
 
 /// Statistics about component optimization
 #[derive(Debug, Clone)]
@@ -150,7 +151,9 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
     let optimized_component = reconstruct_component(component_bytes, &core_modules)?;
 
     // Step 4: Validate
-    if let Err(e) = wasmparser::validate(&optimized_component) {
+    if let Err(e) =
+        Validator::new_with_features(wasm_features_with_async()).validate_all(&optimized_component)
+    {
         eprintln!("⚠  Component validation error: {}", e);
         return Err(anyhow!("Optimized component validation failed: {}", e));
     }
@@ -200,7 +203,9 @@ struct CoreModule {
 /// 2. Standard 12-phase pipeline (constant folding, strength reduction, DCE, etc.)
 fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // First validate the input module
-    wasmparser::validate(module_bytes).context("Input module validation failed")?;
+    Validator::new_with_features(wasm_features_with_async())
+        .validate_all(module_bytes)
+        .context("Input module validation failed")?;
 
     // Parse the module
     let mut module = crate::parse::parse_wasm(module_bytes)?;
@@ -239,7 +244,9 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
 
             // Validate after fused optimization
             let bytes = crate::encode::encode_wasm(&module)?;
-            if let Err(e) = wasmparser::validate(&bytes) {
+            if let Err(e) =
+                Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
+            {
                 return Err(anyhow!(
                     "Module became invalid after fused optimization pass: {}",
                     e
@@ -283,7 +290,9 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
 
         // Validate after each pass to identify the problematic one
         let bytes = crate::encode::encode_wasm(&module)?;
-        if let Err(e) = wasmparser::validate(&bytes) {
+        if let Err(e) =
+            Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
+        {
             return Err(anyhow!(
                 "Module became invalid after '{}' pass: {}",
                 pass_name,
@@ -296,7 +305,9 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
     // Validate before accepting to ensure optimization correctness
-    if let Err(e) = wasmparser::validate(&optimized_bytes) {
+    if let Err(e) =
+        Validator::new_with_features(wasm_features_with_async()).validate_all(&optimized_bytes)
+    {
         return Err(anyhow!("Module roundtrip validation failed: {}", e));
     }
 
