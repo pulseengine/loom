@@ -286,18 +286,35 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     ];
 
     for (pass_name, pass_fn) in passes {
-        pass_fn(&mut module).with_context(|| format!("Pass '{}' failed", pass_name))?;
+        // Save module state before each pass for rollback on failure
+        let saved_functions = module.functions.clone();
 
-        // Validate after each pass to identify the problematic one
-        let bytes = crate::encode::encode_wasm(&module)?;
-        if let Err(e) =
-            Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
-        {
-            return Err(anyhow!(
-                "Module became invalid after '{}' pass: {}",
-                pass_name,
-                e
-            ));
+        if let Err(e) = pass_fn(&mut module) {
+            eprintln!("  Pass '{}' failed (reverting): {}", pass_name, e);
+            module.functions = saved_functions;
+            continue;
+        }
+
+        // Validate after each pass — revert if module became invalid
+        match crate::encode::encode_wasm(&module) {
+            Ok(bytes) => {
+                if let Err(e) =
+                    Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
+                {
+                    eprintln!(
+                        "  Module invalid after '{}' pass (reverting): {}",
+                        pass_name, e
+                    );
+                    module.functions = saved_functions;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "  Encode failed after '{}' pass (reverting): {}",
+                    pass_name, e
+                );
+                module.functions = saved_functions;
+            }
         }
     }
 

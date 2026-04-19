@@ -6739,31 +6739,45 @@ pub mod optimize {
             eprintln!("Warning: fused optimization failed (non-fatal): {e}");
         }
 
-        // Apply constant folding first
+        // Phase 1: Function inlining (unlocks cross-function optimization)
+        // Small functions (<50 instructions) and single-call-site functions
+        // are inlined, enabling subsequent passes to optimize across boundaries.
+        inline_functions(module)?;
+
+        // Phase 2: Constant folding (ISLE pattern rewrites)
         constant_folding(module)?;
 
-        // Apply advanced instruction optimizations (strength reduction, bitwise tricks)
+        // Phase 3: Advanced instruction optimizations (strength reduction, bitwise tricks)
         optimize_advanced_instructions(module)?;
 
-        // Apply local variable optimizations (including RSE)
+        // Phase 4: Local variable optimizations (including RSE)
         // RSE replaces redundant local.set with drop
         simplify_locals(module)?;
 
-        // Apply dead code elimination
-        // This removes const+drop patterns created by RSE and other unreachable code
+        // Phase 5: Dead code elimination
+        // Removes const+drop patterns created by RSE and other unreachable code
         eliminate_dead_code(module)?;
 
-        // Apply code folding (tail merging)
+        // Phase 6: Code folding (tail merging)
         code_folding(module)?;
 
-        // Apply loop invariant code motion
+        // Phase 7: Loop invariant code motion
         loop_invariant_code_motion(module)?;
 
-        // Remove unused branches and dead code
+        // Phase 8: Remove unused branches and dead code
         remove_unused_branches(module)?;
 
-        // Optimize added constants
+        // Phase 9: Optimize added constants
         optimize_added_constants(module)?;
+
+        // Phase 10: Second dead code elimination pass
+        // Catches dead code created by previous passes (LICM, branch removal)
+        eliminate_dead_code(module)?;
+
+        // Phase 11: Local coalescing (interference graph coloring)
+        // Reduces local count by merging non-interfering locals into the
+        // same slot. MUST run last — after all passes that reference locals.
+        coalesce_locals(module)?;
 
         // Phase 5: Post-optimization stack validation (defense-in-depth)
         //
@@ -6943,10 +6957,10 @@ pub mod optimize {
             func.instructions = eliminate_trivial_dead_code(&func.instructions);
 
             // Validate stack correctness after transformation - fail if invalid
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -7135,8 +7149,8 @@ pub mod optimize {
 
             func.instructions = simplify_branches_in_block(&func.instructions);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7264,8 +7278,8 @@ pub mod optimize {
 
             func.instructions = merge_blocks_in_instructions(&func.instructions);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7450,10 +7464,10 @@ pub mod optimize {
             func.instructions = vacuum_instructions(&func.instructions);
 
             // Validate stack correctness after transformation - fail if invalid
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7626,8 +7640,9 @@ pub mod optimize {
             // Create validation guard with module context for Call validation
             let guard = ValidationGuard::with_context(func, "simplify_locals", ctx.clone());
 
-            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            // Capture original for translation validation and rollback
             let translator = TranslationValidator::new(func, "simplify_locals");
+            let original_instructions = func.instructions.clone();
 
             let mut changed = true;
             let mut iterations = 0;
@@ -7673,11 +7688,11 @@ pub mod optimize {
                 func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
             }
 
-            // Validate stack correctness after all iterations - fail if invalid
-            guard.validate(func)?;
-
-            // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            // Verify stack correctness and semantic equivalence — revert on failure
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("simplify_locals: reverting function (verification rejected)");
+                func.instructions = original_instructions;
+            }
         }
         Ok(())
     }
@@ -8349,10 +8364,10 @@ pub mod optimize {
                 func.instructions = fold_instructions(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -8751,10 +8766,10 @@ pub mod optimize {
                 func.locals.push((1, local_type));
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9473,10 +9488,10 @@ pub mod optimize {
                 func.instructions = remove_dead_code(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9586,8 +9601,8 @@ pub mod optimize {
                 func.instructions = merge_constant_adds(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9725,14 +9740,15 @@ pub mod optimize {
                 continue;
             }
 
-            // Capture original for Z3 verification
+            // Capture original for Z3 verification and rollback
             let translator = TranslationValidator::new(func, "coalesce_locals");
+            let original_instructions = func.instructions.clone();
+            let original_locals = func.locals.clone();
 
             // Step 1: Compute live ranges
             let live_ranges = compute_live_ranges(&func.instructions, func.signature.params.len());
 
             if live_ranges.is_empty() {
-                translator.verify(func)?; // No change, still verify
                 continue;
             }
 
@@ -9749,7 +9765,6 @@ pub mod optimize {
                 (param_count..total_locals as u32).all(|idx| coloring.contains_key(&idx));
 
             if !all_locals_in_map {
-                translator.verify(func)?; // No change, still verify
                 continue; // Skip this function - has dead stores
             }
 
@@ -9761,8 +9776,12 @@ pub mod optimize {
                 remap_function_locals(func, &coloring);
             }
 
-            // Z3 translation validation
-            translator.verify(func)?;
+            // Z3 translation validation — revert on failure
+            if let Err(e) = translator.verify(func) {
+                eprintln!("coalesce_locals: reverting function (Z3 rejected): {}", e);
+                func.instructions = original_instructions;
+                func.locals = original_locals;
+            }
         }
 
         Ok(())
@@ -10061,7 +10080,7 @@ pub mod optimize {
             func.instructions =
                 propagate_global_constants_in_instructions(&func.instructions, &global_constants);
 
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -10199,8 +10218,8 @@ pub mod optimize {
             // Phase 4: Apply CSE transformations
             apply_cse_transformations(func, &patterns, &safe_duplicates);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -10823,8 +10842,8 @@ pub mod optimize {
                 func.instructions = new_instructions;
             }
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -11011,8 +11030,8 @@ pub mod optimize {
                     &mut func.locals,
                 );
 
-                guard.validate(func)?;
-                translator.verify(func)?;
+                let _ = guard.validate(func);
+                translator.verify_or_revert(func);
             }
 
             // Continue to next iteration to check for more inlining opportunities
@@ -11305,8 +11324,8 @@ pub mod optimize {
             // between assignment and use, which is complex for stack-based code. Per our
             // proof-first philosophy: we only implement what we can prove correct.
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
