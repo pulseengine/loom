@@ -63,27 +63,24 @@ fn analyze_function_body(func_idx: u32, body: &FunctionBody) -> Result<Vec<DeadR
             // Pattern 1: i32.const followed by if
             // If const is 0, then branch is dead
             // If const is non-zero, else branch is dead
-            Operator::I32Const { value } => {
-                if i + 1 < operators.len() {
-                    if let (Operator::If { .. }, _) = &operators[i + 1] {
-                        // Found constant condition if
-                        if let Some(region) =
-                            find_dead_if_branch(&operators, i + 1, *value != 0, func_idx)
-                        {
+            Operator::I32Const { value } if i + 1 < operators.len() => {
+                if let (Operator::If { .. }, _) = &operators[i + 1] {
+                    // Found constant condition if
+                    if let Some(region) =
+                        find_dead_if_branch(&operators, i + 1, *value != 0, func_idx)
+                    {
+                        dead_regions.push(region);
+                    }
+                } else if let (Operator::BrIf { .. }, _) = &operators[i + 1] {
+                    // Found constant condition br_if
+                    if *value != 0 {
+                        // br_if always taken - code after is dead
+                        if let Some(region) = find_dead_after_br_if(&operators, i + 1, func_idx) {
                             dead_regions.push(region);
                         }
-                    } else if let (Operator::BrIf { .. }, _) = &operators[i + 1] {
-                        // Found constant condition br_if
-                        if *value != 0 {
-                            // br_if always taken - code after is dead
-                            if let Some(region) = find_dead_after_br_if(&operators, i + 1, func_idx)
-                            {
-                                dead_regions.push(region);
-                            }
-                        }
-                        // If value == 0, br_if never taken - the br_if itself could be removed
-                        // but that's an optimization, not dead code detection
                     }
+                    // If value == 0, br_if never taken - the br_if itself could be removed
+                    // but that's an optimization, not dead code detection
                 }
             }
 
@@ -134,10 +131,8 @@ fn find_dead_if_branch(
             Operator::If { .. } | Operator::Block { .. } | Operator::Loop { .. } => {
                 depth += 1;
             }
-            Operator::Else => {
-                if depth == 1 {
-                    else_offset = Some(operators[j].1);
-                }
+            Operator::Else if depth == 1 => {
+                else_offset = Some(operators[j].1);
             }
             Operator::End => {
                 depth -= 1;

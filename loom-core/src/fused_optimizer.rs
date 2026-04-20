@@ -571,26 +571,24 @@ fn adapter_uses_single_memory(instructions: &[Instruction], expected_mem: u32) -
             | Instruction::I32Store16 { mem, .. }
             | Instruction::I64Store8 { mem, .. }
             | Instruction::I64Store16 { mem, .. }
-            | Instruction::I64Store32 { mem, .. } => {
-                if *mem != expected_mem {
-                    return false;
-                }
+            | Instruction::I64Store32 { mem, .. }
+                if *mem != expected_mem =>
+            {
+                return false;
             }
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if !adapter_uses_single_memory(body, expected_mem) {
-                    return false;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if !adapter_uses_single_memory(body, expected_mem) =>
+            {
+                return false;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if !adapter_uses_single_memory(then_body, expected_mem)
-                    || !adapter_uses_single_memory(else_body, expected_mem)
-                {
-                    return false;
-                }
+            } if (!adapter_uses_single_memory(then_body, expected_mem)
+                || !adapter_uses_single_memory(else_body, expected_mem)) =>
+            {
+                return false;
             }
             _ => {}
         }

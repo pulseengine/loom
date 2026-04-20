@@ -1209,29 +1209,25 @@ pub mod validation {
                 // Call and CallIndirect need type context - only unanalyzable if we don't have it
                 // CallIndirect's stack signature is fully determined by type_idx (statically known),
                 // even though the target function is resolved at runtime from the table.
-                Call(_) | CallIndirect { .. } => {
-                    if !has_context {
-                        return true;
-                    }
+                Call(_) | CallIndirect { .. } if !has_context => {
+                    return true;
                 }
                 // Unknown instructions have unknown stack effects - can't validate
                 Unknown(_) => return true,
                 // Recursively check nested bodies
-                Block { body, .. } | Loop { body, .. } => {
-                    if contains_unanalyzable_instructions(body, has_context) {
-                        return true;
-                    }
+                Block { body, .. } | Loop { body, .. }
+                    if contains_unanalyzable_instructions(body, has_context) =>
+                {
+                    return true;
                 }
                 If {
                     then_body,
                     else_body,
                     ..
-                } => {
-                    if contains_unanalyzable_instructions(then_body, has_context)
-                        || contains_unanalyzable_instructions(else_body, has_context)
-                    {
-                        return true;
-                    }
+                } if (contains_unanalyzable_instructions(then_body, has_context)
+                    || contains_unanalyzable_instructions(else_body, has_context)) =>
+                {
+                    return true;
                 }
                 _ => {}
             }

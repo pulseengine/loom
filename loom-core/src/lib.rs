@@ -6614,21 +6614,19 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 // Recursively check nested blocks
-                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    if has_unsupported_isle_instructions_in_block(body) {
-                        return true;
-                    }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                    if has_unsupported_isle_instructions_in_block(body) =>
+                {
+                    return true;
                 }
                 Instruction::If {
                     then_body,
                     else_body,
                     ..
-                } => {
-                    if has_unsupported_isle_instructions_in_block(then_body)
-                        || has_unsupported_isle_instructions_in_block(else_body)
-                    {
-                        return true;
-                    }
+                } if (has_unsupported_isle_instructions_in_block(then_body)
+                    || has_unsupported_isle_instructions_in_block(else_body)) =>
+                {
+                    return true;
                 }
 
                 // Unknown instructions (opaque — cannot model stack effects)
@@ -6699,21 +6697,19 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
-                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    if has_dataflow_unsafe_control_flow_in_block(body) {
-                        return true;
-                    }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                    if has_dataflow_unsafe_control_flow_in_block(body) =>
+                {
+                    return true;
                 }
                 Instruction::If {
                     then_body,
                     else_body,
                     ..
-                } => {
-                    if has_dataflow_unsafe_control_flow_in_block(then_body)
-                        || has_dataflow_unsafe_control_flow_in_block(else_body)
-                    {
-                        return true;
-                    }
+                } if (has_dataflow_unsafe_control_flow_in_block(then_body)
+                    || has_dataflow_unsafe_control_flow_in_block(else_body)) =>
+                {
+                    return true;
                 }
                 _ => {}
             }
@@ -7355,20 +7351,18 @@ pub mod optimize {
                 }
 
                 // Recursively check nested structures
-                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    if contains_branches(body) {
-                        return true;
-                    }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                    if contains_branches(body) =>
+                {
+                    return true;
                 }
 
                 Instruction::If {
                     then_body,
                     else_body,
                     ..
-                } => {
-                    if contains_branches(then_body) || contains_branches(else_body) {
-                        return true;
-                    }
+                } if (contains_branches(then_body) || contains_branches(else_body)) => {
+                    return true;
                 }
 
                 _ => {}
@@ -7713,13 +7707,12 @@ pub mod optimize {
                 // Clear equivalence when a local is set (unless it's from the pattern above)
                 // This ensures we don't use stale equivalences after a local is modified
                 match instr {
-                    Instruction::LocalSet(idx) => {
+                    Instruction::LocalSet(idx)
                         // Check if this is NOT the target of a local.get; local.set pattern
-                        if i == 0 || !matches!(&instructions[i - 1], Instruction::LocalGet(_)) {
+                        if (i == 0 || !matches!(&instructions[i - 1], Instruction::LocalGet(_))) => {
                             // This set breaks any prior equivalence
                             equivalences.remove(idx);
                         }
-                    }
                     Instruction::LocalTee(idx) => {
                         // Tee also breaks equivalence (unless immediately after local.get of same local)
                         equivalences.remove(idx);
@@ -8166,26 +8159,18 @@ pub mod optimize {
                 *position += 1;
 
                 match instr {
-                    Instruction::LocalSet(_) => {
-                        if redundant_positions.contains(&current_pos) {
-                            // Replace redundant set with drop (preserves stack effects)
-                            result.push(Instruction::Drop);
-                            *changed = true;
-                        } else {
-                            result.push(instr.clone());
-                        }
+                    Instruction::LocalSet(_) if redundant_positions.contains(&current_pos) => {
+                        // Replace redundant set with drop (preserves stack effects)
+                        result.push(Instruction::Drop);
+                        *changed = true;
                     }
 
-                    Instruction::LocalTee(_) => {
-                        if tee_positions_to_remove.contains(&current_pos) {
-                            // Remove redundant tee entirely (value stays on stack)
-                            // Don't push anything - this preserves stack because:
-                            // tee: pop value, set local, push value -> net effect: value stays
-                            // nothing: value stays
-                            *changed = true;
-                        } else {
-                            result.push(instr.clone());
-                        }
+                    Instruction::LocalTee(_) if tee_positions_to_remove.contains(&current_pos) => {
+                        // Remove redundant tee entirely (value stays on stack)
+                        // Don't push anything - this preserves stack because:
+                        // tee: pop value, set local, push value -> net effect: value stays
+                        // nothing: value stays
+                        *changed = true;
                     }
 
                     Instruction::Block { block_type, body } => {
@@ -9796,9 +9781,9 @@ pub mod optimize {
             use crate::Instruction;
             for instr in instructions {
                 match instr {
-                    Instruction::LocalGet(idx) => {
+                    Instruction::LocalGet(idx)
                         // Parameters are always live (don't coalesce them)
-                        if *idx >= param_count as u32 {
+                        if *idx >= param_count as u32 => {
                             let info = local_info.entry(*idx).or_default();
                             info.last_use = Some(*position);
                             if info.first_def.is_none() {
@@ -9806,9 +9791,8 @@ pub mod optimize {
                                 info.first_def = Some(0);
                             }
                         }
-                    }
-                    Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
-                        if *idx >= param_count as u32 {
+                    Instruction::LocalSet(idx) | Instruction::LocalTee(idx)
+                        if *idx >= param_count as u32 => {
                             let info = local_info.entry(*idx).or_default();
                             if info.first_def.is_none() {
                                 info.first_def = Some(*position);
@@ -9818,7 +9802,6 @@ pub mod optimize {
                                 info.last_use = Some(*position);
                             }
                         }
-                    }
                     // Recurse into control flow
                     Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
                         scan_instructions(body, local_info, position, param_count);
@@ -10315,10 +10298,10 @@ pub mod optimize {
                 | Instruction::Return => return false,
 
                 // Local modifications invalidate if they reference our locals
-                Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
-                    if first.referenced_locals.contains(idx) {
-                        return false;
-                    }
+                Instruction::LocalSet(idx) | Instruction::LocalTee(idx)
+                    if first.referenced_locals.contains(idx) =>
+                {
+                    return false;
                 }
 
                 // Memory operations are conservatively rejected for now
