@@ -215,12 +215,11 @@ where
                     data: &wasm_bytes[reader.range().start..reader.range().end],
                 });
             }
-            Payload::End(_) => {
+            Payload::End(_)
                 // Write code section if we haven't yet
-                if in_code_section && !code_section_entries.is_empty() {
+                if in_code_section && !code_section_entries.is_empty() => {
                     write_code_section(&mut module, &code_section_entries);
                 }
-            }
             _ => {
                 // Skip other payloads
             }

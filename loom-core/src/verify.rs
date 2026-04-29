@@ -755,26 +755,23 @@ fn block_type_width(block_type: &BlockType) -> Option<u32> {
 fn contains_complex_loops(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
-            Instruction::Loop { body, .. } => {
+            Instruction::Loop { body, .. }
                 // Check if this loop is too complex for bounded verification
-                if is_complex_loop(body) {
+                if is_complex_loop(body) => {
                     return true;
                 }
-            }
-            Instruction::Block { body, .. } => {
-                if contains_complex_loops(body) {
+            Instruction::Block { body, .. }
+                if contains_complex_loops(body) => {
                     return true;
                 }
-            }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if contains_complex_loops(then_body) || contains_complex_loops(else_body) {
+            }
+                if (contains_complex_loops(then_body) || contains_complex_loops(else_body)) => {
                     return true;
                 }
-            }
             _ => {}
         }
     }
@@ -842,23 +839,21 @@ fn is_complex_loop_at_depth(body: &[Instruction], depth: usize) -> bool {
             }
             Instruction::Block {
                 body: inner_body, ..
-            } => {
+            }
                 // Recurse into blocks (they don't increase loop depth)
-                if is_complex_loop_at_depth(inner_body, depth) {
+                if is_complex_loop_at_depth(inner_body, depth) => {
                     return true;
                 }
-            }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if is_complex_loop_at_depth(then_body, depth)
-                    || is_complex_loop_at_depth(else_body, depth)
-                {
+            }
+                if (is_complex_loop_at_depth(then_body, depth)
+                    || is_complex_loop_at_depth(else_body, depth))
+                => {
                     return true;
                 }
-            }
             _ => {}
         }
     }
@@ -874,19 +869,15 @@ fn contains_any_loop(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
             Instruction::Loop { .. } => return true,
-            Instruction::Block { body, .. } => {
-                if contains_any_loop(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } if contains_any_loop(body) => {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if contains_any_loop(then_body) || contains_any_loop(else_body) {
-                    return true;
-                }
+            } if (contains_any_loop(then_body) || contains_any_loop(else_body)) => {
+                return true;
             }
             _ => {}
         }
@@ -1154,68 +1145,50 @@ fn encode_loop_body_for_kinduction(
             }
 
             // Basic arithmetic (i32)
-            Instruction::I32Add => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvadd(&b));
-                }
+            Instruction::I32Add if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvadd(&b));
             }
-            Instruction::I32Sub => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvsub(&b));
-                }
+            Instruction::I32Sub if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvsub(&b));
             }
-            Instruction::I32Mul => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvmul(&b));
-                }
+            Instruction::I32Mul if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvmul(&b));
             }
-            Instruction::I32And => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvand(&b));
-                }
+            Instruction::I32And if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvand(&b));
             }
-            Instruction::I32Or => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvor(&b));
-                }
+            Instruction::I32Or if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvor(&b));
             }
-            Instruction::I32Xor => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvxor(&b));
-                }
+            Instruction::I32Xor if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvxor(&b));
             }
-            Instruction::I32Shl => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvshl(&b));
-                }
+            Instruction::I32Shl if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvshl(&b));
             }
-            Instruction::I32ShrU => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvlshr(&b));
-                }
+            Instruction::I32ShrU if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvlshr(&b));
             }
-            Instruction::I32ShrS => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    stack.push(a.bvashr(&b));
-                }
+            Instruction::I32ShrS if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                stack.push(a.bvashr(&b));
             }
 
             // Comparisons
@@ -1227,95 +1200,75 @@ fn encode_loop_body_for_kinduction(
                     stack.push(result);
                 }
             }
-            Instruction::I32Eq => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.eq(&b).ite(&one, &zero));
-                }
+            Instruction::I32Eq if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.eq(&b).ite(&one, &zero));
             }
-            Instruction::I32Ne => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.eq(&b).not().ite(&one, &zero));
-                }
+            Instruction::I32Ne if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.eq(&b).not().ite(&one, &zero));
             }
-            Instruction::I32LtS => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvslt(&b).ite(&one, &zero));
-                }
+            Instruction::I32LtS if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvslt(&b).ite(&one, &zero));
             }
-            Instruction::I32LtU => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvult(&b).ite(&one, &zero));
-                }
+            Instruction::I32LtU if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvult(&b).ite(&one, &zero));
             }
-            Instruction::I32GtS => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvsgt(&b).ite(&one, &zero));
-                }
+            Instruction::I32GtS if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvsgt(&b).ite(&one, &zero));
             }
-            Instruction::I32GtU => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvugt(&b).ite(&one, &zero));
-                }
+            Instruction::I32GtU if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvugt(&b).ite(&one, &zero));
             }
-            Instruction::I32LeS => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvsle(&b).ite(&one, &zero));
-                }
+            Instruction::I32LeS if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvsle(&b).ite(&one, &zero));
             }
-            Instruction::I32LeU => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvule(&b).ite(&one, &zero));
-                }
+            Instruction::I32LeU if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvule(&b).ite(&one, &zero));
             }
-            Instruction::I32GeS => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvsge(&b).ite(&one, &zero));
-                }
+            Instruction::I32GeS if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvsge(&b).ite(&one, &zero));
             }
-            Instruction::I32GeU => {
-                if stack.len() >= 2 {
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let one = BV::from_i64(1, 32);
-                    stack.push(a.bvuge(&b).ite(&one, &zero));
-                }
+            Instruction::I32GeU if stack.len() >= 2 => {
+                let b = stack.pop().unwrap();
+                let a = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let one = BV::from_i64(1, 32);
+                stack.push(a.bvuge(&b).ite(&one, &zero));
             }
 
             // Control flow - simplified handling
@@ -1381,15 +1334,13 @@ fn encode_loop_body_for_kinduction(
             Instruction::Drop => {
                 stack.pop();
             }
-            Instruction::Select => {
-                if stack.len() >= 3 {
-                    let cond = stack.pop().unwrap();
-                    let val2 = stack.pop().unwrap();
-                    let val1 = stack.pop().unwrap();
-                    let zero = BV::from_i64(0, 32);
-                    let cond_bool = cond.eq(&zero).not();
-                    stack.push(cond_bool.ite(&val1, &val2));
-                }
+            Instruction::Select if stack.len() >= 3 => {
+                let cond = stack.pop().unwrap();
+                let val2 = stack.pop().unwrap();
+                let val1 = stack.pop().unwrap();
+                let zero = BV::from_i64(0, 32);
+                let cond_bool = cond.eq(&zero).not();
+                stack.push(cond_bool.ite(&val1, &val2));
             }
 
             // End of block
@@ -1468,21 +1419,19 @@ fn contains_unverifiable_instructions(instructions: &[Instruction]) -> bool {
             }
 
             // Recurse into control flow structures
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if contains_unverifiable_instructions(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if contains_unverifiable_instructions(body) =>
+            {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if contains_unverifiable_instructions(then_body)
-                    || contains_unverifiable_instructions(else_body)
-                {
-                    return true;
-                }
+            } if (contains_unverifiable_instructions(then_body)
+                || contains_unverifiable_instructions(else_body)) =>
+            {
+                return true;
             }
 
             // All other instructions have precise SMT encodings
@@ -1853,21 +1802,19 @@ fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
 
             // Note: I32Load, I64Load, I32Store, I64Store are now verifiable
             // via Z3 Array theory (Array[BitVec32 -> BitVec8] with little-endian encoding)
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if contains_memory_instructions(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if contains_memory_instructions(body) =>
+            {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if contains_memory_instructions(then_body)
-                    || contains_memory_instructions(else_body)
-                {
-                    return true;
-                }
+            } if (contains_memory_instructions(then_body)
+                || contains_memory_instructions(else_body)) =>
+            {
+                return true;
             }
             _ => {}
         }
@@ -2315,36 +2262,30 @@ fn has_multi_memory_ops(instructions: &[Instruction]) -> bool {
             | Instruction::I64Store8 { mem, .. }
             | Instruction::I64Store16 { mem, .. }
             | Instruction::I64Store32 { mem, .. }
-            | Instruction::MemoryFill(mem) => {
-                if *mem != 0 {
-                    return true;
-                }
+            | Instruction::MemoryFill(mem)
+                if *mem != 0 =>
+            {
+                return true;
             }
             // MemoryCopy has two memory indices - skip if either is non-zero
-            Instruction::MemoryCopy { dst_mem, src_mem } => {
-                if *dst_mem != 0 || *src_mem != 0 {
-                    return true;
-                }
+            Instruction::MemoryCopy { dst_mem, src_mem } if (*dst_mem != 0 || *src_mem != 0) => {
+                return true;
             }
             // MemoryInit targets a specific memory
-            Instruction::MemoryInit { mem, .. } => {
-                if *mem != 0 {
-                    return true;
-                }
+            Instruction::MemoryInit { mem, .. } if *mem != 0 => {
+                return true;
             }
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if has_multi_memory_ops(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if has_multi_memory_ops(body) =>
+            {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if has_multi_memory_ops(then_body) || has_multi_memory_ops(else_body) {
-                    return true;
-                }
+            } if (has_multi_memory_ops(then_body) || has_multi_memory_ops(else_body)) => {
+                return true;
             }
             _ => {}
         }
