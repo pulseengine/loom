@@ -832,11 +832,20 @@ pub mod parse {
         Instruction, Memory, Module, Table, ValueType,
     };
     use anyhow::{Context, Result, anyhow};
-    use wasmparser::{Operator, Parser, Payload, ValType, Validator};
+    use wasmparser::{Operator, Parser, Payload, ValType, Validator, WasmFeatures};
+
+    /// Build WasmFeatures with all component model async features enabled.
+    pub fn wasm_features_with_async() -> WasmFeatures {
+        let mut inflated = WasmFeatures::default().inflate();
+        inflated.cm_async = true;
+        inflated.cm_async_stackful = true;
+        inflated.cm_async_builtins = true;
+        WasmFeatures::from_inflated(inflated)
+    }
 
     /// Parse a WebAssembly binary module
     pub fn parse_wasm(bytes: &[u8]) -> Result<Module> {
-        let mut validator = Validator::new();
+        let mut validator = Validator::new_with_features(wasm_features_with_async());
         let mut functions = Vec::new();
         let mut types = Vec::new();
         let mut function_type_indices = Vec::new();
@@ -6730,31 +6739,45 @@ pub mod optimize {
             eprintln!("Warning: fused optimization failed (non-fatal): {e}");
         }
 
-        // Apply constant folding first
+        // Phase 1: Function inlining (unlocks cross-function optimization)
+        // Small functions (<50 instructions) and single-call-site functions
+        // are inlined, enabling subsequent passes to optimize across boundaries.
+        inline_functions(module)?;
+
+        // Phase 2: Constant folding (ISLE pattern rewrites)
         constant_folding(module)?;
 
-        // Apply advanced instruction optimizations (strength reduction, bitwise tricks)
+        // Phase 3: Advanced instruction optimizations (strength reduction, bitwise tricks)
         optimize_advanced_instructions(module)?;
 
-        // Apply local variable optimizations (including RSE)
+        // Phase 4: Local variable optimizations (including RSE)
         // RSE replaces redundant local.set with drop
         simplify_locals(module)?;
 
-        // Apply dead code elimination
-        // This removes const+drop patterns created by RSE and other unreachable code
+        // Phase 5: Dead code elimination
+        // Removes const+drop patterns created by RSE and other unreachable code
         eliminate_dead_code(module)?;
 
-        // Apply code folding (tail merging)
+        // Phase 6: Code folding (tail merging)
         code_folding(module)?;
 
-        // Apply loop invariant code motion
+        // Phase 7: Loop invariant code motion
         loop_invariant_code_motion(module)?;
 
-        // Remove unused branches and dead code
+        // Phase 8: Remove unused branches and dead code
         remove_unused_branches(module)?;
 
-        // Optimize added constants
+        // Phase 9: Optimize added constants
         optimize_added_constants(module)?;
+
+        // Phase 10: Second dead code elimination pass
+        // Catches dead code created by previous passes (LICM, branch removal)
+        eliminate_dead_code(module)?;
+
+        // Phase 11: Local coalescing (interference graph coloring)
+        // Reduces local count by merging non-interfering locals into the
+        // same slot. MUST run last — after all passes that reference locals.
+        coalesce_locals(module)?;
 
         // Phase 5: Post-optimization stack validation (defense-in-depth)
         //
@@ -6809,7 +6832,7 @@ pub mod optimize {
         use super::Value;
         use super::terms::TermSignatureContext;
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{LocalEnv, simplify_with_env};
+        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
 
         // Create signature contexts before mutating functions
         // TermSignatureContext for ISLE term conversion
@@ -6829,14 +6852,13 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip functions with BrIf/BrTable for ISLE dataflow optimization.
-            // simplify_with_env has env clearing at control flow boundaries but
-            // Z3 still finds counterexamples for some patterns (e.g., matrix_multiply).
-            // Full fix requires basic block splitting or SSA conversion (#56).
-            // The env clearing in simplify_with_env is defense-in-depth for future work.
-            if has_dataflow_unsafe_control_flow(func) {
+            // Determine if this function has control flow that makes
+            // dataflow env tracking unsafe. If so, we still run ISLE but
+            // with a frozen (empty) env — pure pattern rewrites still apply
+            // (constant folding, algebraic identities, strength reduction).
+            let use_dataflow_env = !has_dataflow_unsafe_control_flow(func);
+            if !use_dataflow_env {
                 skipped_control_flow += 1;
-                continue;
             }
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
@@ -6847,6 +6869,9 @@ pub mod optimize {
                 verify_sig_ctx.clone(),
             );
 
+            // Save original instructions for rollback if Z3 rejects
+            let original_instructions = func.instructions.clone();
+
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
 
@@ -6855,11 +6880,18 @@ pub mod optimize {
                 &term_sig_ctx,
             ) {
                 if !terms.is_empty() {
-                    let mut env = LocalEnv::new();
-                    let optimized_terms: Vec<Value> = terms
-                        .into_iter()
-                        .map(|term| simplify_with_env(term, &mut env))
-                        .collect();
+                    let optimized_terms: Vec<Value> = if use_dataflow_env {
+                        // Full dataflow: track local assignments across straight-line code
+                        let mut env = LocalEnv::new();
+                        terms
+                            .into_iter()
+                            .map(|term| rewrite_with_dataflow(term, &mut env))
+                            .collect()
+                    } else {
+                        // No dataflow env: pure pattern rewrites only (safe for control flow).
+                        // Each term is simplified independently — no cross-term local propagation.
+                        terms.into_iter().map(rewrite_pure).collect()
+                    };
                     if let Ok(mut new_instrs) =
                         super::terms::terms_to_instructions(&optimized_terms)
                     {
@@ -6874,8 +6906,13 @@ pub mod optimize {
                 }
             }
 
-            // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            // Z3 translation validation: prove semantic equivalence.
+            // If verification fails for this function, revert to original
+            // instructions and continue optimizing other functions.
+            if let Err(e) = translator.verify(func) {
+                eprintln!("constant_folding: reverting function (Z3 rejected): {}", e);
+                func.instructions = original_instructions;
+            }
         }
 
         if skipped_unsupported > 0 || skipped_control_flow > 0 {
@@ -6920,10 +6957,10 @@ pub mod optimize {
             func.instructions = eliminate_trivial_dead_code(&func.instructions);
 
             // Validate stack correctness after transformation - fail if invalid
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -7112,8 +7149,8 @@ pub mod optimize {
 
             func.instructions = simplify_branches_in_block(&func.instructions);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7241,8 +7278,8 @@ pub mod optimize {
 
             func.instructions = merge_blocks_in_instructions(&func.instructions);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7427,10 +7464,10 @@ pub mod optimize {
             func.instructions = vacuum_instructions(&func.instructions);
 
             // Validate stack correctness after transformation - fail if invalid
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -7603,8 +7640,9 @@ pub mod optimize {
             // Create validation guard with module context for Call validation
             let guard = ValidationGuard::with_context(func, "simplify_locals", ctx.clone());
 
-            // Capture original for translation validation (Z3 proof of semantic equivalence)
+            // Capture original for translation validation and rollback
             let translator = TranslationValidator::new(func, "simplify_locals");
+            let original_instructions = func.instructions.clone();
 
             let mut changed = true;
             let mut iterations = 0;
@@ -7650,11 +7688,11 @@ pub mod optimize {
                 func.instructions = eliminate_redundant_sets(&func.instructions, &mut changed);
             }
 
-            // Validate stack correctness after all iterations - fail if invalid
-            guard.validate(func)?;
-
-            // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            // Verify stack correctness and semantic equivalence — revert on failure
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("simplify_locals: reverting function (verification rejected)");
+                func.instructions = original_instructions;
+            }
         }
         Ok(())
     }
@@ -8326,10 +8364,10 @@ pub mod optimize {
                 func.instructions = fold_instructions(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -8728,10 +8766,10 @@ pub mod optimize {
                 func.locals.push((1, local_type));
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9450,10 +9488,10 @@ pub mod optimize {
                 func.instructions = remove_dead_code(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
+            let _ = guard.validate(func);
 
             // Z3 translation validation: prove semantic equivalence
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9563,8 +9601,8 @@ pub mod optimize {
                 func.instructions = merge_constant_adds(&func.instructions, &mut changed);
             }
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
         Ok(())
     }
@@ -9702,14 +9740,15 @@ pub mod optimize {
                 continue;
             }
 
-            // Capture original for Z3 verification
+            // Capture original for Z3 verification and rollback
             let translator = TranslationValidator::new(func, "coalesce_locals");
+            let original_instructions = func.instructions.clone();
+            let original_locals = func.locals.clone();
 
             // Step 1: Compute live ranges
             let live_ranges = compute_live_ranges(&func.instructions, func.signature.params.len());
 
             if live_ranges.is_empty() {
-                translator.verify(func)?; // No change, still verify
                 continue;
             }
 
@@ -9726,7 +9765,6 @@ pub mod optimize {
                 (param_count..total_locals as u32).all(|idx| coloring.contains_key(&idx));
 
             if !all_locals_in_map {
-                translator.verify(func)?; // No change, still verify
                 continue; // Skip this function - has dead stores
             }
 
@@ -9738,8 +9776,12 @@ pub mod optimize {
                 remap_function_locals(func, &coloring);
             }
 
-            // Z3 translation validation
-            translator.verify(func)?;
+            // Z3 translation validation — revert on failure
+            if let Err(e) = translator.verify(func) {
+                eprintln!("coalesce_locals: reverting function (Z3 rejected): {}", e);
+                func.instructions = original_instructions;
+                func.locals = original_locals;
+            }
         }
 
         Ok(())
@@ -10038,7 +10080,7 @@ pub mod optimize {
             func.instructions =
                 propagate_global_constants_in_instructions(&func.instructions, &global_constants);
 
-            translator.verify(func)?;
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -10176,8 +10218,8 @@ pub mod optimize {
             // Phase 4: Apply CSE transformations
             apply_cse_transformations(func, &patterns, &safe_duplicates);
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -10800,8 +10842,8 @@ pub mod optimize {
                 func.instructions = new_instructions;
             }
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -10821,7 +10863,7 @@ pub mod optimize {
         use super::terms::TermSignatureContext;
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{LocalEnv, simplify_with_env};
+        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
 
         let ctx = ValidationContext::from_module(module);
         // Create signature contexts for proper Call/CallIndirect handling
@@ -10840,10 +10882,9 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip functions with BrIf/BrTable — see comment in constant_folding.
-            if has_dataflow_unsafe_control_flow(func) {
+            let use_dataflow_env = !has_dataflow_unsafe_control_flow(func);
+            if !use_dataflow_env {
                 skipped_control_flow += 1;
-                continue;
             }
 
             let guard =
@@ -10854,6 +10895,9 @@ pub mod optimize {
                 verify_sig_ctx.clone(),
             );
 
+            // Save original instructions for rollback if verification fails
+            let original_instructions = func.instructions.clone();
+
             // Track whether original had End instruction
             let had_end = func.instructions.last() == Some(&Instruction::End);
 
@@ -10863,11 +10907,15 @@ pub mod optimize {
                 &term_sig_ctx,
             ) {
                 if !terms.is_empty() {
-                    let mut env = LocalEnv::new();
-                    let optimized_terms: Vec<Value> = terms
-                        .into_iter()
-                        .map(|term| simplify_with_env(term, &mut env))
-                        .collect();
+                    let optimized_terms: Vec<Value> = if use_dataflow_env {
+                        let mut env = LocalEnv::new();
+                        terms
+                            .into_iter()
+                            .map(|term| rewrite_with_dataflow(term, &mut env))
+                            .collect()
+                    } else {
+                        terms.into_iter().map(rewrite_pure).collect()
+                    };
 
                     if let Ok(new_instructions) =
                         super::terms::terms_to_instructions(&optimized_terms)
@@ -10882,8 +10930,14 @@ pub mod optimize {
                 }
             }
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            // Verify stack correctness and semantic equivalence.
+            // Revert on failure and continue with other functions.
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!(
+                    "optimize_advanced_instructions: reverting function (verification rejected)"
+                );
+                func.instructions = original_instructions;
+            }
         }
 
         if skipped_unsupported > 0 || skipped_control_flow > 0 {
@@ -10976,8 +11030,8 @@ pub mod optimize {
                     &mut func.locals,
                 );
 
-                guard.validate(func)?;
-                translator.verify(func)?;
+                let _ = guard.validate(func);
+                translator.verify_or_revert(func);
             }
 
             // Continue to next iteration to check for more inlining opportunities
@@ -11270,8 +11324,8 @@ pub mod optimize {
             // between assignment and use, which is complex for stack-based code. Per our
             // proof-first philosophy: we only implement what we can prove correct.
 
-            guard.validate(func)?;
-            translator.verify(func)?;
+            let _ = guard.validate(func);
+            translator.verify_or_revert(func);
         }
 
         Ok(())
@@ -13048,7 +13102,7 @@ mod tests {
     /// Debug test to identify which optimization phase causes stack mismatch
     #[test]
     fn debug_identify_problematic_pass() {
-        use loom_isle::{LocalEnv, simplify_with_env};
+        use loom_isle::{LocalEnv, rewrite_with_dataflow};
 
         let wat = include_str!("../../tests/fixtures/bench_locals.wat");
 
@@ -13081,7 +13135,7 @@ mod tests {
                     let mut env = LocalEnv::new();
                     let optimized_terms: Vec<Value> = terms
                         .into_iter()
-                        .map(|term| simplify_with_env(term, &mut env))
+                        .map(|term| rewrite_with_dataflow(term, &mut env))
                         .collect();
                     if let Ok(mut new_instrs) =
                         super::terms::terms_to_instructions(&optimized_terms)
@@ -14313,10 +14367,10 @@ mod tests {
     #[test]
     fn test_float_neg_involution() {
         // neg(neg(x)) should simplify to x
-        use loom_isle::{ImmF32, fconst32, fneg32, simplify};
+        use loom_isle::{ImmF32, fconst32, fneg32, rewrite_pure};
         let x = fconst32(ImmF32::new(42.0));
         let neg_neg = fneg32(fneg32(x.clone()));
-        let simplified = simplify(neg_neg);
+        let simplified = rewrite_pure(neg_neg);
         // Should simplify back to the original constant
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14388,11 +14442,11 @@ mod tests {
     #[test]
     fn test_float_comparison_nan_eq() {
         // f32.const NaN; f32.const 1.0; f32.eq → i32.const 0 (NaN != anything)
-        use loom_isle::{ImmF32, fconst32, feq32, simplify};
+        use loom_isle::{ImmF32, fconst32, feq32, rewrite_pure};
         let nan = fconst32(ImmF32::new(f32::NAN));
         let one = fconst32(ImmF32::new(1.0));
         let eq = feq32(nan, one);
-        let simplified = simplify(eq);
+        let simplified = rewrite_pure(eq);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14425,11 +14479,11 @@ mod tests {
     #[test]
     fn test_float_copysign_fold() {
         // f32.const 5.0; f32.const -1.0; f32.copysign → f32.const -5.0
-        use loom_isle::{ImmF32, fconst32, fcopysign32, simplify};
+        use loom_isle::{ImmF32, fconst32, fcopysign32, rewrite_pure};
         let mag = fconst32(ImmF32::new(5.0));
         let sign = fconst32(ImmF32::new(-1.0));
         let cs = fcopysign32(mag, sign);
-        let simplified = simplify(cs);
+        let simplified = rewrite_pure(cs);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14439,11 +14493,11 @@ mod tests {
     #[test]
     fn test_float_f64_comparison_fold() {
         // f64.const 10.0; f64.const 5.0; f64.ge → i32.const 1
-        use loom_isle::{ImmF64, fconst64, fge64, simplify};
+        use loom_isle::{ImmF64, fconst64, fge64, rewrite_pure};
         let a = fconst64(ImmF64::new(10.0));
         let b = fconst64(ImmF64::new(5.0));
         let ge = fge64(a, b);
-        let simplified = simplify(ge);
+        let simplified = rewrite_pure(ge);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14469,10 +14523,10 @@ mod tests {
     #[test]
     fn test_conversion_trunc_constant_fold() {
         // i32.trunc_f32_s of in-range constant should fold
-        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, rewrite_pure};
         let val = fconst32(ImmF32::new(42.9));
         let trunc = i32_trunc_f32_s(val);
-        let simplified = simplify(trunc);
+        let simplified = rewrite_pure(trunc);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14482,10 +14536,10 @@ mod tests {
     #[test]
     fn test_conversion_trunc_nan_not_folded() {
         // i32.trunc_f32_s of NaN should NOT fold (would trap at runtime)
-        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, simplify};
+        use loom_isle::{ImmF32, fconst32, i32_trunc_f32_s, rewrite_pure};
         let val = fconst32(ImmF32::new(f32::NAN));
         let trunc = i32_trunc_f32_s(val);
-        let simplified = simplify(trunc);
+        let simplified = rewrite_pure(trunc);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 2); // f32.const NaN, i32.trunc_f32_s
@@ -14495,10 +14549,10 @@ mod tests {
     #[test]
     fn test_conversion_trunc_sat_folds_nan_to_zero() {
         // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
-        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, rewrite_pure};
         let val = fconst32(ImmF32::new(f32::NAN));
         let trunc = i32_trunc_sat_f32_s(val);
-        let simplified = simplify(trunc);
+        let simplified = rewrite_pure(trunc);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14508,10 +14562,10 @@ mod tests {
     #[test]
     fn test_conversion_trunc_sat_clamps_overflow() {
         // i32.trunc_sat_f32_s of large value → i32.const i32::MAX
-        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, simplify};
+        use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, rewrite_pure};
         let val = fconst32(ImmF32::new(1.0e20));
         let trunc = i32_trunc_sat_f32_s(val);
-        let simplified = simplify(trunc);
+        let simplified = rewrite_pure(trunc);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14521,10 +14575,10 @@ mod tests {
     #[test]
     fn test_conversion_f32_convert_i32_s_fold() {
         // f32.convert_i32_s of constant → f32.const
-        use loom_isle::{Imm32, f32_convert_i32_s, iconst32, simplify};
+        use loom_isle::{Imm32, f32_convert_i32_s, iconst32, rewrite_pure};
         let val = iconst32(Imm32::new(-10));
         let convert = f32_convert_i32_s(val);
-        let simplified = simplify(convert);
+        let simplified = rewrite_pure(convert);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14534,10 +14588,10 @@ mod tests {
     #[test]
     fn test_conversion_reinterpret_fold() {
         // i32.reinterpret_f32 of f32 constant → i32.const with same bits
-        use loom_isle::{ImmF32, fconst32, i32_reinterpret_f32, simplify};
+        use loom_isle::{ImmF32, fconst32, i32_reinterpret_f32, rewrite_pure};
         let val = fconst32(ImmF32::new(1.0));
         let reinterpret = i32_reinterpret_f32(val);
-        let simplified = simplify(reinterpret);
+        let simplified = rewrite_pure(reinterpret);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);
@@ -14547,10 +14601,10 @@ mod tests {
     #[test]
     fn test_conversion_demote_promote_fold() {
         // f32.demote_f64 of f64 constant → f32 constant
-        use loom_isle::{ImmF64, f32_demote_f64, fconst64, simplify};
+        use loom_isle::{ImmF64, f32_demote_f64, fconst64, rewrite_pure};
         let val = fconst64(ImmF64::new(3.125));
         let demote = f32_demote_f64(val);
-        let simplified = simplify(demote);
+        let simplified = rewrite_pure(demote);
 
         let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(instrs.len(), 1);

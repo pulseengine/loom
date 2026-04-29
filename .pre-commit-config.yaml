@@ -26,8 +26,8 @@ repos:
         types: [rust]
         pass_filenames: false
       - id: cargo-test
-        name: cargo test
-        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo test --release --all'
+        name: cargo test (unit tests — full integration suite runs in CI)
+        entry: bash -c 'Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h cargo test --release --lib --bins'
         language: system
         types: [rust]
         pass_filenames: false

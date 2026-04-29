@@ -2159,6 +2159,21 @@ impl TranslationValidator {
         }
     }
 
+    /// Verify semantic equivalence; revert the function to its original
+    /// instructions if verification fails. Returns true if verified, false
+    /// if reverted. Never propagates errors — always safe to call.
+    pub fn verify_or_revert(&self, func: &mut Function) -> bool {
+        match self.verify(func) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("{}: reverting function: {}", self.pass_name, e);
+                func.instructions = self.original.instructions.clone();
+                func.locals = self.original.locals.clone();
+                false
+            }
+        }
+    }
+
     /// Verify and return detailed result instead of Result<()>
     pub fn verify_detailed(&self, optimized: &Function) -> TranslationResult {
         match verify_function_equivalence_with_context(
@@ -2216,6 +2231,11 @@ impl TranslationValidator {
     /// Stub verify - always succeeds when verification disabled
     pub fn verify(&self, _optimized: &crate::Function) -> Result<()> {
         Ok(())
+    }
+
+    /// Stub verify_or_revert - always returns true when verification disabled
+    pub fn verify_or_revert(&self, _func: &mut crate::Function) -> bool {
+        true
     }
 }
 
