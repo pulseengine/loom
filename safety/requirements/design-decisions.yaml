@@ -77,18 +77,22 @@ artifacts:
 
   - id: DD-4
     type: design-decision
-    title: Fixed 12-phase pipeline ordering
+    title: Fixed pipeline ordering
     status: approved
     description: >
-      The optimization pipeline has a fixed, deterministic ordering of
-      12 phases. Phases are not reorderable or optional.
+      The optimization pipeline has a fixed, deterministic ordering.
+      The CLI exposes selectable passes (REQ-10); the library
+      optimize_module() in loom-core/src/lib.rs runs a canonical
+      sequence from inline through coalesce_locals. Passes are not
+      reorderable or optional within either surface.
     fields:
       rationale: >
         Fixed ordering ensures deterministic output (REQ-14) and makes
         phase interactions predictable. The ordering is designed so that
         earlier phases expose opportunities for later phases (e.g.,
-        constant folding before CSE, inlining before second constant
-        folding pass). A configurable pipeline would require verifying
+        inlining before constant folding to enable cross-function
+        optimization, second DCE pass after LICM to clean up hoisted
+        dead code). A configurable pipeline would require verifying
         all possible orderings.
       alternatives: >
         Alternative 1: Configurable phase selection (rejected: combinatorial

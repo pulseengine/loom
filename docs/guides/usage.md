@@ -73,17 +73,29 @@ loom optimize input.wasm --output output.wat --wat
 
 ## Optimization Features
 
-LOOM applies a comprehensive 12-phase optimization pipeline:
+LOOM applies a multi-phase optimization pipeline. Two surfaces exist with
+slightly different pass sets:
 
-### Phase 1: Precompute (Global Constant Propagation)
+- **Library `optimize_module()`** (loom-core/src/lib.rs): Inline → Constant
+  Folding → Advanced Instructions → Simplify Locals → DCE → Code Folding →
+  LICM → Remove Unused Branches → Optimize Added Constants → DCE →
+  Coalesce Locals.
+- **CLI `loom optimize --passes`** (loom-cli/src/main.rs) selectable
+  passes: inline, precompute, constant-folding, cse, advanced, branches,
+  dce, merge-blocks, vacuum, simplify-locals.
+
+The pass descriptions below cover the union of both pipelines (some
+passes run in only one surface):
+
+### Precompute (Global Constant Propagation)
 - Replaces immutable global.get with constants
 - Enables further constant folding
 
-### Phase 2: ISLE-Based Constant Folding
+### ISLE-Based Constant Folding
 - Folds constant arithmetic at compile time
 - Example: `i32.const 10 + i32.const 20` → `i32.const 30`
 
-### Phase 3: Advanced Instruction Optimizations
+### Advanced Instruction Optimizations
 - **Strength Reduction**: Replaces expensive operations with cheaper equivalents
   - `x * 8` → `x << 3` (multiply to shift)
   - `x / 4` → `x >> 2` (divide to shift)
@@ -93,7 +105,7 @@ LOOM applies a comprehensive 12-phase optimization pipeline:
   - `x & -1` → `x`
   - `x ^ 0` → `x`
 
-### Phase 4: Common Subexpression Elimination (CSE)
+### Common Subexpression Elimination (CSE)
 - Caches duplicate computations in local variables
 - Skips simple constants (they're cheap)
 - Example:
@@ -114,38 +126,38 @@ LOOM applies a comprehensive 12-phase optimization pipeline:
   local.get $temp  ;; Reuse cached result
   ```
 
-### Phase 5: Function Inlining
+### Function Inlining
 - Inlines small, frequently-called functions
 - Reduces call overhead
 - Enables further optimizations across function boundaries
 
-### Phase 6: ISLE Optimization (Post-Inlining)
+### ISLE Optimization (Post-Inlining)
 - Second pass of constant folding
 - Optimizes code exposed by inlining
 
-### Phase 7: Code Folding
+### Code Folding
 - Flattens nested blocks
 - Removes unnecessary control flow structures
 
-### Phase 8: Loop-Invariant Code Motion (LICM)
+### Loop-Invariant Code Motion (LICM)
 - Hoists loop-invariant computations outside loops
 - Currently handles:
   - Constants
   - Unmodified local variables
 
-### Phase 9: Branch Simplification
+### Branch Simplification
 - Simplifies conditional branches
 - Removes redundant conditions
 
-### Phase 10: Dead Code Elimination (DCE)
+### Dead Code Elimination (DCE)
 - Removes unreachable code after terminators
 - Cleans up code that never executes
 
-### Phase 11: Block Merging
+### Block Merging
 - Merges consecutive blocks
 - Reduces control flow overhead
 
-### Phase 12: Vacuum & Simplify Locals
+### Vacuum & Simplify Locals
 - Removes empty blocks
 - Eliminates unused local variables
 
