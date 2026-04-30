@@ -599,8 +599,17 @@ impl SharedSymbolicInputs {
     }
 }
 
-/// Execution state for symbolic execution
-/// Tracks the symbolic state at each point during execution
+/// Execution state for symbolic execution.
+/// Tracks the symbolic state at each point during execution.
+///
+/// SCAFFOLDING — currently `#[allow(dead_code)]` and unused by the live
+/// encoder (`encode_function_to_smt_impl_inner`), which uses simple
+/// `Vec<BV>` stack/locals without per-path predicates. This struct is
+/// the intended target for the verifier model upgrade tracked in the
+/// v0.4.0 release notes (PR-C deferred work): full exit-state
+/// equivalence (return + locals + globals + memory) and per-arm BrTable
+/// state merge via `merge_states`. Do not delete — the next verifier
+/// PR will wire this in.
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
 struct ExecutionState {

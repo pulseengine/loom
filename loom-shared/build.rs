@@ -3,6 +3,22 @@ use std::path::PathBuf;
 
 use cranelift_isle as isle;
 
+// ISLE codegen for loom-shared.
+//
+// Note on the `simplify` ISLE term: the generated `Context::simplify` is
+// not invoked from Rust today. The optimizer's term rewriting lives in
+// `rewrite_pure_impl` and `rewrite_with_dataflow` (Rust match arms) in
+// loom-shared/src/lib.rs. The ISLE codegen is retained because the
+// generated immediate-value constructors (Imm32, Imm64, ImmF32, ImmF64,
+// iconst32, fconst32, etc.) are used by the Rust rewriters.
+//
+// Two ISLE files were removed in v0.4.0 PR-E because they were not in
+// the compiled set and produced no live code:
+//   - isle/wasm_terms.isle (parallel term declarations)
+//   - isle/rules/constant_folding_v2.isle (alternative rule set)
+//
+// If you add new rules, prefer extending the Rust rewriters; the ISLE
+// rule set here exists only to keep the immediate-value codegen alive.
 fn main() {
     // Get the output directory
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
