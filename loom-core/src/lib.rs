@@ -1750,7 +1750,7 @@ pub mod encode {
         BlockType, ExportKind, FunctionSignature, ImportKind, Instruction, Module, RefType,
         ValueType,
     };
-    use anyhow::{Context, Result};
+    use anyhow::{Context, Result, anyhow};
     use wasm_encoder::{
         CodeSection, ConstExpr, CustomSection, DataSection, EntityType,
         ExportKind as EncoderExportKind, ExportSection, Function as EncoderFunction,
@@ -1886,10 +1886,13 @@ pub mod encode {
         let mut functions = FunctionSection::new();
         for func in &module.functions {
             // Find the type index for this function's signature
-            let type_idx = *type_map
-                .get(&func.signature)
-                .expect("Function signature not found in type_map")
-                as u32;
+            let type_idx = *type_map.get(&func.signature).ok_or_else(|| {
+                anyhow!(
+                    "encoder: function signature {:?} not found in type_map (REQ-3 — \
+                     no silent failures); this indicates a bug in collect_function_types",
+                    func.signature
+                )
+            })? as u32;
             functions.function(type_idx);
         }
         wasm_module.section(&functions);
@@ -2858,11 +2861,17 @@ pub mod encode {
                 params: _,
                 results: _,
             } => {
-                // For function types, we need a type index
-                // This is a limitation - we would need to track function types in the module
-                // For now, if we have a complex signature, we'll panic
-                // This should be handled by proper type section management
-                panic!("Complex function type blocks not yet supported in encoder")
+                // Multi-value block types require a type index in the wasm
+                // type section — encoder does not yet emit those.
+                // Invariant: this branch is unreachable because the parser
+                // rejects `wasmparser::BlockType::FuncType(_)` upstream
+                // (see the FuncType arm in the parser around line 1735).
+                // If you hit this, an optimization pass synthesized a
+                // Func block-type internally; that is the bug to fix.
+                unreachable!(
+                    "encoder reached BlockType::Func — parser should have rejected this input \
+                     upstream; an optimization pass must have synthesized a multi-value block type"
+                )
             }
         }
     }
@@ -8348,6 +8357,12 @@ pub mod optimize {
                 continue;
             }
 
+            // Skip BrIf/BrTable functions — verifier is path-insensitive across
+            // these branches; tail-merging across them can be unsound (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
+
             let guard = ValidationGuard::with_context(func, "code_folding", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
@@ -8727,6 +8742,15 @@ pub mod optimize {
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Skip functions with BrIf/BrTable: the Z3 verifier is path-insensitive
+            // across these branches (top-of-stack-only equivalence model), so
+            // hoisting code across them can pass verification while being unsound
+            // on paths that branch out before the hoisted op's original location.
+            // Conservative-over-fast (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
                 continue;
             }
 
@@ -9740,6 +9764,13 @@ pub mod optimize {
                 continue;
             }
 
+            // Skip BrIf/BrTable functions — coalescing relies on liveness
+            // analysis that the path-insensitive verifier cannot validate
+            // across these branches (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
+
             // Capture original for Z3 verification and rollback
             let translator = TranslationValidator::new(func, "coalesce_locals");
             let original_instructions = func.instructions.clone();
@@ -10171,6 +10202,14 @@ pub mod optimize {
                 continue;
             }
 
+            // Skip BrIf/BrTable functions — CSE caches a value computed once and
+            // reuses it; if a branch skips the original cache point, the reused
+            // value is from the wrong path. The verifier is path-insensitive
+            // and cannot reject this (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
+
             let guard =
                 ValidationGuard::with_context(func, "eliminate_common_subexpressions", ctx.clone());
             let translator = TranslationValidator::new(func, "eliminate_common_subexpressions");
@@ -10575,6 +10614,13 @@ pub mod optimize {
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Skip BrIf/BrTable functions — same path-sensitivity concern as
+            // basic CSE; the verifier cannot reject unsound caching across
+            // these branches (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
                 continue;
             }
 
