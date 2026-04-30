@@ -291,6 +291,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
 
         if let Err(e) = pass_fn(&mut module) {
             eprintln!("  Pass '{}' failed (reverting): {}", pass_name, e);
+            crate::stats::record_revert(&format!("component:{}", pass_name));
             module.functions = saved_functions;
             continue;
         }
@@ -305,6 +306,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                         "  Module invalid after '{}' pass (reverting): {}",
                         pass_name, e
                     );
+                    crate::stats::record_revert(&format!("component:{}/invalid", pass_name));
                     module.functions = saved_functions;
                 }
             }
@@ -313,6 +315,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                     "  Encode failed after '{}' pass (reverting): {}",
                     pass_name, e
                 );
+                crate::stats::record_revert(&format!("component:{}/encode-failed", pass_name));
                 module.functions = saved_functions;
             }
         }
