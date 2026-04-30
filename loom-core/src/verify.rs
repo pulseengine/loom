@@ -1592,11 +1592,37 @@ pub fn verify_function_equivalence(
     }
 
     // Skip verification for functions containing imprecisely-modeled instructions
-    // (memory ops, unknown ops) - these would produce false counterexamples
+    // (float load/store, unknown ops) — these would produce false counterexamples.
+    //
+    // KNOWN LIMITATION: returning Ok(true) here means callers' verify_or_revert
+    // accept the transform without proof. PR-B added pass-level hoist guards
+    // (LICM, CSE, code_folding, coalesce_locals) that skip BrIf/BrTable
+    // functions entirely, so the silent skip cannot mask a hoisting bug
+    // for those passes. For value-level passes (constant_folding,
+    // simplify_locals, eliminate_dead_code, optimize_added_constants,
+    // simplify_branches, merge_blocks, vacuum, remove_unused_branches,
+    // optimize_advanced_instructions), the transforms do not move code
+    // across branches, so the silent skip is acceptable.
+    //
+    // To make this VISIBLE rather than silent, emit a one-line diagnostic so
+    // operators see how often verification is bypassed. The structured
+    // VerificationCoverage tracker (see verify_function_equivalence_with_result)
+    // records counts.
     if contains_unverifiable_instructions(&original.instructions)
         || contains_unverifiable_instructions(&optimized.instructions)
     {
-        return Ok(true); // Assume equivalent - can't prove without precise model
+        let reason = if contains_memory_instructions(&original.instructions)
+            || contains_memory_instructions(&optimized.instructions)
+        {
+            "float load/store"
+        } else {
+            "unknown opcode"
+        };
+        eprintln!(
+            "{}: verification skipped (unverifiable instructions: {})",
+            pass_name, reason
+        );
+        return Ok(true); // Assume equivalent — can't prove without precise model
     }
 
     // Create Z3 context and solver using thread-local context
@@ -1629,7 +1655,18 @@ pub fn verify_function_equivalence(
                     )),
                 }
             }
-            (Ok(None), Ok(None)) => Ok(true), // Both void functions
+            (Ok(None), Ok(None)) => {
+                // Both functions return no value (void). Currently auto-pass.
+                //
+                // KNOWN LIMITATION: void functions can still have side effects
+                // (memory writes, global writes) that differ between original
+                // and optimized. The current model does not assert equivalence
+                // of post-state locals/globals/memory — only the top-of-stack
+                // return value. For void functions there is no return value
+                // so the equivalence is vacuous. A future verifier upgrade
+                // should encode side-effect equivalence for these.
+                Ok(true)
+            }
             (Err(e), _) => Err(anyhow!("{}: Failed to encode original: {}", pass_name, e)),
             (_, Err(e)) => Err(anyhow!("{}: Failed to encode optimized: {}", pass_name, e)),
             _ => Err(anyhow!(
@@ -1869,11 +1906,37 @@ pub fn verify_function_equivalence_with_context(
     }
 
     // Skip verification for functions containing imprecisely-modeled instructions
-    // (memory ops, unknown ops) - these would produce false counterexamples
+    // (float load/store, unknown ops) — these would produce false counterexamples.
+    //
+    // KNOWN LIMITATION: returning Ok(true) here means callers' verify_or_revert
+    // accept the transform without proof. PR-B added pass-level hoist guards
+    // (LICM, CSE, code_folding, coalesce_locals) that skip BrIf/BrTable
+    // functions entirely, so the silent skip cannot mask a hoisting bug
+    // for those passes. For value-level passes (constant_folding,
+    // simplify_locals, eliminate_dead_code, optimize_added_constants,
+    // simplify_branches, merge_blocks, vacuum, remove_unused_branches,
+    // optimize_advanced_instructions), the transforms do not move code
+    // across branches, so the silent skip is acceptable.
+    //
+    // To make this VISIBLE rather than silent, emit a one-line diagnostic so
+    // operators see how often verification is bypassed. The structured
+    // VerificationCoverage tracker (see verify_function_equivalence_with_result)
+    // records counts.
     if contains_unverifiable_instructions(&original.instructions)
         || contains_unverifiable_instructions(&optimized.instructions)
     {
-        return Ok(true); // Assume equivalent - can't prove without precise model
+        let reason = if contains_memory_instructions(&original.instructions)
+            || contains_memory_instructions(&optimized.instructions)
+        {
+            "float load/store"
+        } else {
+            "unknown opcode"
+        };
+        eprintln!(
+            "{}: verification skipped (unverifiable instructions: {})",
+            pass_name, reason
+        );
+        return Ok(true); // Assume equivalent — can't prove without precise model
     }
 
     // Create Z3 context and solver using thread-local context
@@ -1913,7 +1976,18 @@ pub fn verify_function_equivalence_with_context(
                     )),
                 }
             }
-            (Ok(None), Ok(None)) => Ok(true), // Both void functions
+            (Ok(None), Ok(None)) => {
+                // Both functions return no value (void). Currently auto-pass.
+                //
+                // KNOWN LIMITATION: void functions can still have side effects
+                // (memory writes, global writes) that differ between original
+                // and optimized. The current model does not assert equivalence
+                // of post-state locals/globals/memory — only the top-of-stack
+                // return value. For void functions there is no return value
+                // so the equivalence is vacuous. A future verifier upgrade
+                // should encode side-effect equivalence for these.
+                Ok(true)
+            }
             (Err(e), _) => Err(anyhow!("{}: Failed to encode original: {}", pass_name, e)),
             (_, Err(e)) => Err(anyhow!("{}: Failed to encode optimized: {}", pass_name, e)),
             _ => Err(anyhow!(
