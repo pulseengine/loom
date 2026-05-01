@@ -3016,3 +3016,93 @@ fn test_default_then_override_across_br_table_preserved() {
          for known model limitations."
     );
 }
+
+// ============================================================================
+// Hoist soundness regression: early-exit pattern (gale_sem_count_take)
+// ============================================================================
+//
+// v0.4.0 audit found CSE produced an unsound store-hoist on
+// gale_sem_count_take: an `if (eqz) return; end` early-exit guard followed
+// by an i32.store had the store hoisted ABOVE the guard, so the store ran
+// even when the input was null. The v0.4.0 hoist guard only flagged
+// BrIf/BrTable functions; this function uses If+Return, which slipped
+// through.
+//
+// v0.5.0 PR-B extends `has_dataflow_unsafe_control_flow` to flag any
+// nested Return/Br as an early-exit pattern. This test pins that the
+// store-after-guard pattern survives optimization unchanged.
+
+#[test]
+fn test_early_return_guard_prevents_store_hoist() {
+    // Mirrors gale_sem_count_take: null-pointer guard with early `return`,
+    // then a store of a derived value. If LOOM hoists the store above
+    // the guard, the test will fail because the store will appear before
+    // the (i32.eqz) check in the optimized output.
+    let input = r#"
+        (module
+            (memory 1)
+            (func $sem_take (param $sem i32) (result i32)
+                ;; null-pointer guard: if sem == 0, return -EINVAL early
+                (if (i32.eqz (local.get $sem))
+                    (then
+                        (return (i32.const -22))
+                    )
+                )
+                ;; only safe to load/store when sem != 0
+                (local.get $sem)
+                (i32.load (local.get $sem))
+                (i32.const 1)
+                (i32.sub)
+                (i32.store)
+                (i32.const 0)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).expect("optimization should not fail");
+
+    let wasm_bytes = encode::encode_wasm(&module).expect("encode should succeed");
+    wasmparser::validate(&wasm_bytes).expect("output must be valid WASM");
+
+    // The guard must come before the store. We check this by finding the
+    // first I32Eqz and the first I32Store and asserting the order.
+    use loom_core::Instruction;
+
+    fn find_first(instrs: &[Instruction], target: &str) -> Option<usize> {
+        for (i, instr) in instrs.iter().enumerate() {
+            let name = format!("{:?}", instr);
+            if name.starts_with(target) {
+                return Some(i);
+            }
+            // Recurse into nested bodies — guard in If/Block, store may be
+            // anywhere. The order at the top level is what matters for
+            // gale_sem_count_take's flat layout.
+            match instr {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                    if find_first(body, target).is_some() =>
+                {
+                    return Some(i);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let func = &module.functions[0];
+    let eqz_idx =
+        find_first(&func.instructions, "I32Eqz").expect("guard's I32Eqz must survive optimization");
+    let store_idx =
+        find_first(&func.instructions, "I32Store").expect("store must survive optimization");
+
+    assert!(
+        eqz_idx < store_idx,
+        "i32.store ({store_idx}) hoisted ABOVE i32.eqz guard ({eqz_idx})! \
+         This is the gale_sem_count_take CSE soundness bug from v0.4.0 — \
+         the store now runs unconditionally including when sem == 0. \
+         See docs/research/gale-v0.4.0/measurement-report.md for context. \
+         v0.5.0 PR-B fixes this by extending has_dataflow_unsafe_control_flow \
+         to flag any nested Return/Br as an early-exit pattern."
+    );
+}
