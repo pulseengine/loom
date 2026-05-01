@@ -2912,3 +2912,107 @@ fn test_locals_in_nested_blocks() {
     wasmparser::validate(&wasm_bytes)
         .expect("Local operations in nested blocks should produce valid WASM");
 }
+
+// ============================================================================
+// Hoist soundness regression: default-then-override across br_table
+// ============================================================================
+//
+// This pattern tests that PR-B's hoist guards correctly skip optimization on
+// functions where path-sensitive local-state analysis matters. The pattern:
+//
+//   1. default-set local L = WAKE (1)
+//   2. br_table dispatcher; one arm "br 2" exits the outer block
+//   3. fall-through arm overrides L = INCREMENT (0)
+//   4. tail returns L
+//
+// On the "br 2" arm, L stays WAKE. On the fall-through arm, L becomes
+// INCREMENT. Hoisting "L = 0" to before the dispatcher would make L
+// always INCREMENT — breaking the WAKE arm.
+//
+// The Z3 verifier today is path-insensitive (top-of-stack-only equivalence,
+// BrTable as opaque terminator). Without PR-B's guards, hoist-prone passes
+// like LICM/CSE could collapse the default-then-override pattern and the
+// verifier would silently accept it. PR-B guards prevent the transform
+// from being attempted on these functions.
+
+#[test]
+fn test_default_then_override_across_br_table_preserved() {
+    // Function semantics:
+    //   - Default L=1 (WAKE) at function entry
+    //   - br_table to one of three targets based on input
+    //   - Fall-through: L=0 (INCREMENT)
+    //   - Returns: L
+    //
+    // Expected: optimizer must not collapse the default-then-override into
+    //   "L = 0 always before br_table" — that would break the WAKE arm.
+    let input = r#"
+        (module
+            (func $decide (param $kind i32) (result i32)
+                (local $action i32)
+                (local.set $action (i32.const 1))
+                (block
+                    (block
+                        (block
+                            (block
+                                (local.get $kind)
+                                (br_table 0 1 2 3)
+                            )
+                            (return (local.get $action))
+                        )
+                        (local.set $action (i32.const 0))
+                        (return (local.get $action))
+                    )
+                    (return (local.get $action))
+                )
+                (local.get $action)
+            )
+        )
+    "#;
+
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).expect("optimization should not fail");
+
+    let wasm_bytes = encode::encode_wasm(&module).expect("encode should succeed");
+    wasmparser::validate(&wasm_bytes).expect("output must be valid WASM");
+
+    // The output must still contain at least one local.set with value 1
+    // (the WAKE default) — otherwise the optimizer collapsed the pattern.
+    use loom_core::Instruction;
+
+    fn has_const_one_local_set(instrs: &[Instruction]) -> bool {
+        let mut last_was_const_1 = false;
+        for instr in instrs {
+            match instr {
+                Instruction::I32Const(1) => last_was_const_1 = true,
+                Instruction::LocalSet(_) if last_was_const_1 => return true,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    if has_const_one_local_set(body) {
+                        return true;
+                    }
+                    last_was_const_1 = false;
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    if has_const_one_local_set(then_body) || has_const_one_local_set(else_body) {
+                        return true;
+                    }
+                    last_was_const_1 = false;
+                }
+                _ => last_was_const_1 = false,
+            }
+        }
+        false
+    }
+
+    assert!(
+        has_const_one_local_set(&module.functions[0].instructions),
+        "default-set of WAKE (i32.const 1; local.set) must survive optimization. \
+         If it was hoisted/collapsed, the WAKE arm of the br_table is broken. \
+         See PR-B hoist guards (loop_invariant_code_motion, code_folding, \
+         coalesce_locals, eliminate_common_subexpressions) and PR-A z3-status.md \
+         for known model limitations."
+    );
+}
