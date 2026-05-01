@@ -11,7 +11,7 @@ use std::time::Instant;
 #[derive(Parser)]
 #[command(name = "loom")]
 #[command(author = "PulseEngine")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "LOOM - Formally Verified WebAssembly Optimizer", long_about = None)]
 struct Cli {
     #[command(subcommand)]
