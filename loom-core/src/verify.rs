@@ -483,7 +483,13 @@ pub enum VerificationResult {
 
 impl VerificationResult {
     /// Returns true if this result indicates the functions are equivalent
-    /// (either proven or assumed due to skipping)
+    /// (either proven or assumed due to skipping).
+    ///
+    /// **Lenient semantics**: counts skipped-due-to-unverifiable as
+    /// "equivalent" (the verifier couldn't prove a difference, so the
+    /// transform is allowed). Use this for value-level passes (constant
+    /// folding, simplify_locals, dead-code-elimination) where the
+    /// transforms cannot move code across branches.
     pub fn is_equivalent(&self) -> bool {
         matches!(
             self,
@@ -494,9 +500,40 @@ impl VerificationResult {
         )
     }
 
-    /// Returns true if this result was fully Z3-verified
+    /// Returns true if this result was fully Z3-verified.
+    ///
+    /// **Strict semantics**: only `Verified` counts. Skipped* and
+    /// counterexamples both return false. Use this for hoist-prone
+    /// passes (LICM, CSE, code_folding, coalesce_locals) where moving
+    /// code across branches is unsafe without a real proof — REQ-5
+    /// conservative-over-fast: "skip the function rather than risk
+    /// incorrect optimization."
     pub fn is_verified(&self) -> bool {
         matches!(self, VerificationResult::Verified)
+    }
+
+    /// Returns true if verification was skipped (any reason).
+    ///
+    /// Lets callers distinguish "verifier proved equivalence" from
+    /// "verifier could not reason about this input." The latter is the
+    /// audit's S5 finding: silent skips were being treated as success.
+    pub fn is_skip(&self) -> bool {
+        matches!(
+            self,
+            VerificationResult::SkippedLoop
+                | VerificationResult::SkippedMemory
+                | VerificationResult::SkippedUnknown
+        )
+    }
+
+    /// Human-readable skip reason, or `None` if not a skip outcome.
+    pub fn skip_reason(&self) -> Option<&'static str> {
+        match self {
+            VerificationResult::SkippedLoop => Some("complex loop"),
+            VerificationResult::SkippedMemory => Some("float load/store"),
+            VerificationResult::SkippedUnknown => Some("unknown opcode"),
+            _ => None,
+        }
     }
 
     /// Update coverage tracker based on this result
@@ -2246,6 +2283,14 @@ impl TranslationValidator {
     /// instructions if verification fails. Returns true if verified, false
     /// if reverted. Never propagates errors — always safe to call.
     ///
+    /// **Lenient semantics**: silent skips on unverifiable instructions
+    /// (float load/store, unknown opcodes, complex loops) are treated as
+    /// "verified" and the transform is kept. Use this for value-level
+    /// passes that cannot move code across branches.
+    ///
+    /// For hoist-prone passes (LICM, CSE, code_folding, coalesce_locals),
+    /// use [`Self::verify_or_revert_strict`] instead.
+    ///
     /// Reverts are recorded in `crate::stats::record_revert(pass_name)` so
     /// callers can observe how often verification rejects a transform.
     pub fn verify_or_revert(&self, func: &mut Function) -> bool {
@@ -2258,6 +2303,57 @@ impl TranslationValidator {
                 func.locals = self.original.locals.clone();
                 false
             }
+        }
+    }
+
+    /// Verify semantic equivalence with strict semantics: a *skipped*
+    /// verification (verifier could not reason about this input) counts
+    /// as failure and the function is reverted. Only `VerificationResult::Verified`
+    /// is accepted. Returns true if verified, false if reverted.
+    ///
+    /// Use this for hoist-prone passes (LICM, CSE, code_folding,
+    /// coalesce_locals) where moving code across branches is unsafe
+    /// without a real proof — REQ-5 conservative-over-fast.
+    ///
+    /// Reverts are recorded in `crate::stats::record_revert("<pass>:strict-skip")`
+    /// for skip-induced reverts and `crate::stats::record_revert("<pass>")`
+    /// for genuine counterexamples.
+    pub fn verify_or_revert_strict(&self, func: &mut Function) -> bool {
+        let result = verify_function_equivalence_with_result(&self.original, func, &self.pass_name);
+        match result {
+            VerificationResult::Verified => true,
+            VerificationResult::Failed(reason) => {
+                eprintln!(
+                    "{}: reverting function (counterexample): {}",
+                    self.pass_name, reason
+                );
+                crate::stats::record_revert(&self.pass_name);
+                func.instructions = self.original.instructions.clone();
+                func.locals = self.original.locals.clone();
+                false
+            }
+            VerificationResult::Error(reason) => {
+                eprintln!(
+                    "{}: reverting function (verification error): {}",
+                    self.pass_name, reason
+                );
+                crate::stats::record_revert(&self.pass_name);
+                func.instructions = self.original.instructions.clone();
+                func.locals = self.original.locals.clone();
+                false
+            }
+            r if r.is_skip() => {
+                let reason = r.skip_reason().unwrap_or("unknown");
+                eprintln!(
+                    "{}: reverting function (strict mode rejects skip: {})",
+                    self.pass_name, reason
+                );
+                crate::stats::record_revert(&format!("{}:strict-skip", self.pass_name));
+                func.instructions = self.original.instructions.clone();
+                func.locals = self.original.locals.clone();
+                false
+            }
+            _ => true, // unreachable in practice
         }
     }
 
@@ -2323,6 +2419,14 @@ impl TranslationValidator {
     /// Stub verify_or_revert - always returns true when verification disabled
     pub fn verify_or_revert(&self, _func: &mut crate::Function) -> bool {
         true
+    }
+
+    /// Stub verify_or_revert_strict — when verification is disabled, there
+    /// is no Z3 model to consult, so we conservatively revert (REQ-5).
+    /// In practice this means hoist-prone passes are no-ops in non-Z3
+    /// builds; they should already be guarded by has_dataflow_unsafe_control_flow.
+    pub fn verify_or_revert_strict(&self, _func: &mut crate::Function) -> bool {
+        false
     }
 }
 
@@ -7056,5 +7160,66 @@ mod tests {
             result.unwrap(),
             "memory.fill should not affect local variables in Z3 model"
         );
+    }
+
+    // ======================================================================
+    // VerificationResult skip-disambiguation tests (v0.5.0 PR-A)
+    //
+    // The audit's S5 finding: callers couldn't tell "Z3 proved equivalence"
+    // from "verifier silently bailed because input was unverifiable." These
+    // tests pin the strict/lenient distinction added in v0.5.0.
+    // ======================================================================
+
+    #[test]
+    fn verification_result_lenient_treats_skip_as_equivalent() {
+        // Lenient mode (existing is_equivalent): skipped == equivalent.
+        // Used by value-level passes that don't move code across branches.
+        assert!(VerificationResult::Verified.is_equivalent());
+        assert!(VerificationResult::SkippedLoop.is_equivalent());
+        assert!(VerificationResult::SkippedMemory.is_equivalent());
+        assert!(VerificationResult::SkippedUnknown.is_equivalent());
+        assert!(!VerificationResult::Failed("cex".into()).is_equivalent());
+        assert!(!VerificationResult::Error("err".into()).is_equivalent());
+    }
+
+    #[test]
+    fn verification_result_strict_only_accepts_verified() {
+        // Strict mode (existing is_verified): only Verified counts.
+        // Used by hoist-prone passes (LICM, CSE, code_folding, coalesce_locals).
+        assert!(VerificationResult::Verified.is_verified());
+        assert!(!VerificationResult::SkippedLoop.is_verified());
+        assert!(!VerificationResult::SkippedMemory.is_verified());
+        assert!(!VerificationResult::SkippedUnknown.is_verified());
+        assert!(!VerificationResult::Failed("cex".into()).is_verified());
+        assert!(!VerificationResult::Error("err".into()).is_verified());
+    }
+
+    #[test]
+    fn verification_result_skip_predicate_distinguishes_skip_from_proof() {
+        // is_skip() lets callers detect "verifier couldn't reason" cases.
+        assert!(!VerificationResult::Verified.is_skip());
+        assert!(VerificationResult::SkippedLoop.is_skip());
+        assert!(VerificationResult::SkippedMemory.is_skip());
+        assert!(VerificationResult::SkippedUnknown.is_skip());
+        assert!(!VerificationResult::Failed("cex".into()).is_skip());
+        assert!(!VerificationResult::Error("err".into()).is_skip());
+    }
+
+    #[test]
+    fn verification_result_skip_reason_human_readable() {
+        assert_eq!(VerificationResult::Verified.skip_reason(), None);
+        assert_eq!(
+            VerificationResult::SkippedLoop.skip_reason(),
+            Some("complex loop")
+        );
+        assert_eq!(
+            VerificationResult::SkippedMemory.skip_reason(),
+            Some("float load/store")
+        );
+        assert_eq!(
+            VerificationResult::SkippedUnknown.skip_reason(),
+            Some("unknown opcode")
+        );
+        assert_eq!(VerificationResult::Failed("x".into()).skip_reason(), None);
     }
 }
