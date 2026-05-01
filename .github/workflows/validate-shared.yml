@@ -214,8 +214,11 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f loom-shared/isle/wasm_terms.isle ]; then
-            echo "❌ ISLE definitions missing!"
+          # The canonical ISLE definitions are types.isle + constructors.isle
+          # plus rules under isle/rules/. wasm_terms.isle was removed in
+          # v0.4.0 (PR-E) as vestigial - it duplicated types/constructors.
+          if [ ! -f loom-shared/isle/types.isle ] || [ ! -f loom-shared/isle/constructors.isle ]; then
+            echo "ISLE definitions missing (need types.isle + constructors.isle)!"
             exit 1
           fi
 
