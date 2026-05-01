@@ -2236,11 +2236,15 @@ impl TranslationValidator {
     /// Verify semantic equivalence; revert the function to its original
     /// instructions if verification fails. Returns true if verified, false
     /// if reverted. Never propagates errors — always safe to call.
+    ///
+    /// Reverts are recorded in `crate::stats::record_revert(pass_name)` so
+    /// callers can observe how often verification rejects a transform.
     pub fn verify_or_revert(&self, func: &mut Function) -> bool {
         match self.verify(func) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("{}: reverting function: {}", self.pass_name, e);
+                crate::stats::record_revert(&self.pass_name);
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
                 false

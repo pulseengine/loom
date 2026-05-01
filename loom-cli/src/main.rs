@@ -149,6 +149,22 @@ impl OptimizationStats {
                 println!("  (no effect: {})", inactive.join(", "));
             }
         }
+
+        // Per-pass revert summary — counts how many functions each pass
+        // tried to transform and then reverted because the Z3 verifier
+        // rejected the result. Non-zero counts indicate verification
+        // saved a potential miscompile.
+        let reverts = loom_core::stats::revert_summary();
+        if !reverts.is_empty() {
+            println!();
+            println!("🔁 Verification Reverts");
+            println!("─────────────────────────────────────────");
+            for (pass, count) in &reverts {
+                println!("  {:30} {} function(s) reverted", pass, count);
+            }
+            let total: u64 = reverts.values().sum();
+            println!("  Total: {} revert(s)", total);
+        }
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 

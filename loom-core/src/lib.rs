@@ -13,6 +13,9 @@ pub use loom_isle::{Imm32, Imm64, Value, ValueData};
 /// Stack analysis module: compositional stack type system
 pub mod stack;
 
+/// Optimization observability counters (revert counts per pass).
+pub mod stats;
+
 /// Internal representation of a WebAssembly module
 #[derive(Debug, Clone)]
 pub struct Module {
@@ -6920,6 +6923,7 @@ pub mod optimize {
             // instructions and continue optimizing other functions.
             if let Err(e) = translator.verify(func) {
                 eprintln!("constant_folding: reverting function (Z3 rejected): {}", e);
+                crate::stats::record_revert("constant_folding");
                 func.instructions = original_instructions;
             }
         }
@@ -7700,6 +7704,7 @@ pub mod optimize {
             // Verify stack correctness and semantic equivalence — revert on failure
             if guard.validate(func).is_err() || translator.verify(func).is_err() {
                 eprintln!("simplify_locals: reverting function (verification rejected)");
+                crate::stats::record_revert("simplify_locals");
                 func.instructions = original_instructions;
             }
         }
@@ -9810,6 +9815,7 @@ pub mod optimize {
             // Z3 translation validation — revert on failure
             if let Err(e) = translator.verify(func) {
                 eprintln!("coalesce_locals: reverting function (Z3 rejected): {}", e);
+                crate::stats::record_revert("coalesce_locals");
                 func.instructions = original_instructions;
                 func.locals = original_locals;
             }
@@ -10982,6 +10988,7 @@ pub mod optimize {
                 eprintln!(
                     "optimize_advanced_instructions: reverting function (verification rejected)"
                 );
+                crate::stats::record_revert("optimize_advanced_instructions");
                 func.instructions = original_instructions;
             }
         }
