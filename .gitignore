@@ -48,3 +48,13 @@ docs/source/_generated/
 *.bak
 .cache/
 *.z3-trace
+
+# Bazel
+bazel-bin
+bazel-loom
+bazel-out
+bazel-testlogs
+bazel-*
+
+# Claude Code agent worktrees
+.claude/worktrees/

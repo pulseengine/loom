@@ -172,44 +172,60 @@ hazards:
   - id: H-17
     title: Stack validation disabled, invalid sequences pass undetected
     description: >
-      The post-optimization stack validation safety gate is disabled in code
-      (lib.rs lines 5732-5750, commented out pending bug fixes). Without this
-      gate, optimization passes that introduce stack discipline violations
-      are not caught before encoding. The comment acknowledges false positives
-      from compositional analysis but the workaround removes the safety net
-      entirely. CODE-VERIFIED: confirmed disabled on main branch.
+      The post-optimization stack validation safety gate was previously
+      disabled. Re-enabled in lib.rs Phase 5 (around line 6782), using
+      validate_function_with_context as a per-function gate to avoid
+      compositional-analysis false positives. CODE-VERIFIED: active on
+      main branch.
     losses: [L-2]
+    status: MITIGATED
+    mitigation: |
+      Re-enabled by 84ce9f7 ("fix(safety): re-enable post-optimization
+      stack validation"). Active in lib.rs:6782+ Phase 5 block.
 
   - id: H-18
     title: Z3 verification not exercised in main CI test suite
     description: >
-      The main CI test job builds and tests without --features verification.
-      Z3 verification only runs on a single fixture file (bench_compare.wat)
-      in a separate verify job. This means the TranslationValidator stub
-      (which always returns Ok) is used for all fixture tests. Optimization
-      bugs that Z3 would catch go undetected in normal CI. CODE-VERIFIED:
-      confirmed in ci.yml -- main test job has no verification feature.
+      The main CI test job historically built without --features verification,
+      so the TranslationValidator stub was used for all fixture tests. Wave 2
+      added a dedicated Z3-based ISLE rule verification gate (REQ-6, SG-3),
+      and verification is on by default per loom-core/Cargo.toml ("default =
+      ['verification', 'attestation']"). Main CI test job now exercises
+      Z3-backed verification on the default feature set.
     losses: [L-3]
+    status: MITIGATED
+    mitigation: |
+      Wave 2 (#77) added Z3-based ISLE rule verification (REQ-6, SG-3).
+      verification feature is default-on in loom-core and loom-cli Cargo.toml.
 
   - id: H-19
     title: Optimization skips too many functions due to unsupported instruction list
     description: >
-      has_unsupported_isle_instructions() blocks a large number of instruction
-      types (all floats, conversions, memory ops, call_indirect, br_table,
-      bulk memory) on main branch. Functions containing any of these are
-      skipped entirely, significantly reducing optimization effectiveness.
-      PR #53 addresses this but is not yet merged.
+      has_unsupported_isle_instructions() previously blocked many instruction
+      types (floats, conversions, memory ops, br_table, bulk memory). PR #53
+      ("complete ISLE pipeline coverage") merged 2026-04-01 expanded ISLE
+      coverage. Wave-3 PR #80 added rewrite_pure() so functions containing
+      BrIf/BrTable now receive structural ISLE rewrites (constant folding,
+      algebraic identities, strength reduction) without dataflow tracking.
     losses: [L-4]
+    status: MITIGATED
+    mitigation: |
+      PR #53 (ac01a19) and PR #80 (c1eb8f3) together cover the prior skip
+      cases. Functions with control flow now optimize via rewrite_pure().
 
   - id: H-20
     title: HashMap iteration in CSE may cause non-deterministic optimization choices
     description: >
-      CSE uses std::collections::HashMap for pattern grouping (lib.rs line
-      9086). HashMap iteration order is non-deterministic in Rust. When
-      multiple duplicate patterns exist, the choice of which pattern index
-      becomes "first" depends on iteration order. This may cause different
-      but semantically equivalent optimization choices across runs.
+      Iteration-order-sensitive HashMaps in optimization passes were
+      replaced with BTreeMap in Wave 2 (#77) for deterministic output.
+      Five sites converted: coloring, usage/equivalences, last_sets,
+      local_info, global_constants. Pure-lookup HashMaps remain where
+      iteration order does not affect output.
     losses: [L-5]
+    status: MITIGATED
+    mitigation: |
+      Wave 2 (REQ-14, #77) swapped 5 iteration-order-sensitive HashMaps
+      to BTreeMap. Verified by running optimizer twice on same input.
 
 sub-hazards:
   # Refinements of H-1 (ISLE rewriting)

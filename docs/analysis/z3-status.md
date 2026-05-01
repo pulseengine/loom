@@ -34,8 +34,25 @@ LOOM implements **translation validation** - it proves that each individual opti
 - ✅ Floating point constants (F32Const, F64Const) - as bitvectors
 - ✅ Floating point operations - via Unknown opcode decoding (correct stack effects)
 - ✅ Select instruction
+- ✅ Integer memory operations (I32/I64Load, I32/I64Store, partial-width
+  loads with sign/zero-extend, partial-width stores, MemorySize, MemoryGrow)
+  via Z3 Array theory (verify.rs:1404-1414)
 - ⚠️ Floating point arithmetic - sound but imprecise (symbolic results, not IEEE 754)
-- ❌ Memory operations - not yet implemented
+- ⚠️ Floating point memory operations (F32/F64 load/store) - not yet modeled
+
+**Known model limitations** (tracked):
+- Equivalence is asserted only on the function's terminal return value.
+  Locals/globals/memory at exit are not in the assertion. Void functions
+  auto-pass.
+- `Br`, `BrIf`, `BrTable` use `break` semantics with no path predicate.
+  `BrIf` discards its condition; `BrTable` discards its index. As a result,
+  hoisting code across these instructions can pass verification while being
+  semantically incorrect on paths that branch out (the "default-then-override"
+  pattern). Mitigated at the pass level by `has_dataflow_unsafe_control_flow`
+  guards on the affected passes; verifier model upgrade is in progress.
+- `contains_unverifiable_instructions` returns "assumed equivalent" for
+  inputs it cannot reason about. Treat verification as a best-effort gate
+  pending model improvements.
 
 ### Verified Optimizations
 

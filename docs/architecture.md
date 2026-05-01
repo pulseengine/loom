@@ -195,7 +195,7 @@ The core optimization library. Contains all optimization passes and the main pip
 
 **Key Modules:**
 - `parse`: WAT/WASM parsing using `wat` and `wasmparser` crates
-- `optimize`: 10-phase optimization pipeline
+- `optimize`: optimization pipeline via `optimize_module()`
 - `encode`: WAT/WASM encoding using `wasmprinter` and `wasm-encoder`
 - `verify`: Z3 SMT-based formal verification
 - `component`: WebAssembly Component Model support
@@ -251,7 +251,7 @@ loom optimize <input> [options]
 
 ### Phase Order Rationale
 
-The 10-phase pipeline is carefully ordered to maximize optimization opportunities:
+The pipeline is carefully ordered to maximize optimization opportunities. The CLI exposes selectable passes via `loom optimize --passes`; the library `optimize_module()` runs a superset (see usage.md and quick-reference.md for the canonical list). Rationale below applies to both:
 
 #### Why Inline First (Phase 1)?
 
@@ -385,9 +385,10 @@ Inlines small, frequently-called functions to reduce call overhead and enable cr
    - Update local indices
 4. Remove inlined functions if no remaining callers
 
-**Heuristics**:
-- Inline if: `body_size < 20 instructions && call_count > 2`
-- Or: `body_size < 5 instructions` (always inline tiny functions)
+**Heuristics** (loom-core/src/lib.rs `inline_functions`):
+- Inline if: `call_count == 1` (single-call-site inlining)
+- Or: `body_size < 10 instructions` (tiny-function inlining)
+- Hard cap: `body_size < 50 instructions` (size-bound)
 
 ## ISLE Integration
 

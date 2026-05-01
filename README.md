@@ -32,7 +32,7 @@
 
 Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
 
-Twelve-pass WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination — each pass proven correct through Z3 SMT translation validation. Includes a fused mode purpose-built for Meld output.
+WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination — each pass proven correct through Z3 SMT translation validation. Includes a fused mode purpose-built for Meld output.
 
 Loom consistently achieves 80-95% binary size reduction with 10-30 microsecond optimization times. The entire pipeline is pure Rust with minimal dependencies.
 
@@ -61,7 +61,10 @@ loom optimize input.wasm -o output.wasm --verify
 - **loom-cli** — Command-line interface
 - **loom-testing** — Differential testing framework
 
-The 12-phase pipeline: Precompute, ISLE Constant Folding, Strength Reduction, CSE, Function Inlining, ISLE (Post-inline), Code Folding, LICM, Branch Simplification, Dead Code Elimination, Block Merging, Vacuum and Simplify Locals.
+Two pipeline surfaces:
+
+- **Library `optimize_module()`** (loom-core) runs the canonical pipeline: Inline → Constant Folding → Advanced Instructions → Simplify Locals → DCE → Code Folding → LICM → Remove Unused Branches → Optimize Added Constants → DCE → Coalesce Locals.
+- **CLI `loom optimize --passes`** exposes selectable passes: inline, precompute, constant-folding, cse, advanced, branches, dce, merge-blocks, vacuum, simplify-locals.
 
 See [docs/architecture.md](docs/architecture.md) for the full pipeline design.
 
@@ -79,20 +82,18 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline design.
 
 ## Formal Verification
 
-Loom supports two verification modes:
+Z3 SMT translation validation is **on by default** (`default = ["verification", "attestation"]` in loom-core / loom-cli Cargo.toml). Each optimization pass proves semantic equivalence per function before accepting the transform; on counterexample, the function is reverted to its pre-pass state.
 
-**Property-Based (Always Available)**
 ```bash
+# Default build — Z3 verification on
+cargo build --release
 loom optimize input.wasm -o output.wasm --verify
-```
-Fast idempotence checks and constant folding validation with ~5ms overhead.
 
-**Z3 SMT Formal Proof (Optional)**
-```bash
-cargo build --release --features verification
-loom optimize input.wasm -o output.wasm --verify
+# Disable Z3 (faster, no semantic proofs)
+cargo build --release --no-default-features
 ```
-Proves mathematically that optimizations preserve program semantics via translation validation. See [docs/guides/formal-verification.md](docs/guides/formal-verification.md) for details.
+
+See [docs/guides/formal-verification.md](docs/guides/formal-verification.md) for details.
 
 > [!NOTE]
 > **Cross-cutting verification** &mdash; Rocq mechanized proofs, Kani bounded model checking, Z3 SMT verification, and Verus Rust verification are used across the PulseEngine toolchain. Sigil attestation chains bind it all together.
@@ -101,7 +102,7 @@ Proves mathematically that optimizations preserve program semantics via translat
 
 - [Usage Guide](docs/guides/usage.md) — Complete CLI reference and best practices
 - [Quick Reference](docs/guides/quick-reference.md) — Cheat sheet for common tasks
-- [Architecture](docs/architecture.md) — Deep dive into the 12-phase pipeline
+- [Architecture](docs/architecture.md) — Deep dive into the optimization pipeline
 - [Formal Verification](docs/guides/formal-verification.md) — Z3 SMT verification internals
 - [WASM Build](docs/guides/wasm-build.md) — Building Loom to WebAssembly
 - [Fused Component Optimization](docs/design/fused-component-optimization.md) — Meld-Loom pipeline
@@ -110,11 +111,14 @@ Proves mathematically that optimizations preserve program semantics via translat
 ## Building
 
 ```bash
-cargo build --release                            # Standard build
-cargo build --release --features verification    # With Z3 verification
+cargo build --release                            # Standard build (Z3 on by default)
+cargo build --release --no-default-features      # Without Z3 verification
 cargo test                                       # Run tests
 cargo bench                                      # Run benchmarks
-bazel build //loom-cli:loom_wasm --platforms=@rules_rust//rust/platform:wasm  # WASM build
+
+# WASM build (CI uses these exact steps)
+rustup target add wasm32-wasip2
+cargo build --release --target wasm32-wasip2 --package loom-cli
 ```
 
 ## License

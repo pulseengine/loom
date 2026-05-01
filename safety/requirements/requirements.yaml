@@ -167,20 +167,18 @@ artifacts:
 
   - id: REQ-10
     type: requirement
-    title: 10-phase CLI optimization pipeline
+    title: CLI optimization pipeline
     status: approved
     description: >
       The CLI optimizer (loom-cli/src/main.rs) must implement the following
-      phases in order: 1. Inline (function inlining), 2. Precompute (global
-      constant propagation), 3. Constant folding (ISLE pattern-match
-      folding), 4. CSE (common subexpression elimination), 5. Advanced
-      (strength reduction, bitwise tricks), 6. Branches (branch
-      simplification), 7. DCE (dead code elimination), 8. Merge-blocks
-      (block merging), 9. Vacuum (empty block removal), 10. Simplify-locals
-      (unused local elimination). The library API entry point
-      optimize_module() in loom-core/src/lib.rs provides a subset of these
-      passes for programmatic use; the CLI pipeline is the canonical
-      ordering.
+      passes in order: inline (function inlining), precompute (global
+      constant propagation), constant-folding (ISLE pattern-match folding),
+      cse (common subexpression elimination), advanced (strength reduction,
+      bitwise tricks), branches (branch simplification), dce (dead code
+      elimination), merge-blocks (block merging), vacuum (empty block
+      removal), simplify-locals (unused local elimination). The library
+      entry point optimize_module() in loom-core/src/lib.rs provides a
+      different selection (see DD-4). Both pipelines are deterministic.
     fields:
       priority: must
       category: functional

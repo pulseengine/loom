@@ -19,22 +19,28 @@ loom optimize input.wasm -o output.wat --wat
 loom optimize input.wat -o output.wasm --stats --verify
 ```
 
-## 12-Phase Optimization Pipeline
+## Optimization Pipeline
 
-| Phase | Optimization | Example Transformation |
-|-------|-------------|----------------------|
-| 1 | Precompute | `global.get $const` → `i32.const 42` |
-| 2 | ISLE Folding | `10 + 20` → `30` |
-| 3 | Strength Reduction | `x * 8` → `x << 3` |
-| 4 | CSE | Cache duplicate computations |
-| 5 | Function Inlining | Inline small functions |
-| 6 | ISLE (Post-inline) | Fold newly exposed constants |
-| 7 | Code Folding | Flatten blocks |
-| 8 | LICM | Hoist loop invariants |
-| 9 | Branch Simplify | Simplify conditionals |
-| 10 | DCE | Remove dead code |
-| 11 | Block Merge | Merge consecutive blocks |
-| 12 | Vacuum | Clean up unused locals |
+Library `optimize_module()` (loom-core) runs the production pipeline.
+CLI `loom optimize --passes` exposes selectable pass names. Library
+order:
+
+| Pass | Optimization | Example Transformation |
+|------|-------------|----------------------|
+| Function Inlining | Inline small / single-call functions | |
+| ISLE Constant Folding | `10 + 20` → `30` | |
+| Advanced Instructions | `x * 8` → `x << 3` (strength reduction) | |
+| Simplify Locals | Eliminate redundant local sets (RSE) | |
+| Dead Code Elimination | Remove unreachable / unused code | |
+| Code Folding | Flatten blocks, tail-merge common suffixes | |
+| LICM | Hoist loop invariants | |
+| Remove Unused Branches | Strip dead branches | |
+| Optimize Added Constants | Fold `(x + c1) + c2` → `x + (c1+c2)` | |
+| Dead Code Elimination (2nd) | Clean up after LICM/branch removal | |
+| Coalesce Locals | Merge non-interfering locals (must run last) | |
+
+Plus a fused-component prelude (memory-import dedup, dead-function elim,
+type dedup) when input is a fused Component-Model module.
 
 ## Strength Reduction Patterns
 
@@ -49,17 +55,25 @@ loom optimize input.wat -o output.wasm --stats --verify
 
 ## Verification
 
-### Without Z3 (always available)
+### Default (Z3 verification on)
 ```bash
+cargo build --release
 loom optimize input.wasm -o output.wasm --verify
 ```
-- Property-based checks
-- Idempotence verification
-- Fast (~5ms)
+- Z3 SMT translation validation per pass per function
+- Reverts a single function on counterexample; reports overall stats
+- Z3 verification feature is on by default
 
-### With Z3 (requires installation)
+### Without Z3 (faster, no semantic proofs)
 ```bash
-# Install Z3
+cargo build --release --no-default-features
+loom optimize input.wasm -o output.wasm --verify
+```
+- Skips Z3 (verification feature off)
+- `--verify` runs ISLE-rule property checks only
+
+If installing Z3 from scratch:
+```bash
 brew install z3  # macOS
 sudo apt install z3  # Linux
 
