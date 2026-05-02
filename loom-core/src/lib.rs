@@ -6711,15 +6711,54 @@ pub mod optimize {
     /// - `test_advanced_optimizations_in_control_flow` (ignored test demonstrating the gap)
     /// - `constant_folding()` and `optimize_advanced_instructions()` which call this function
     fn has_dataflow_unsafe_control_flow(func: &Function) -> bool {
-        has_dataflow_unsafe_control_flow_in_block(&func.instructions)
-    }
-
-    fn has_dataflow_unsafe_control_flow_in_block(instructions: &[Instruction]) -> bool {
-        for instr in instructions {
+        // Top-level scan: BrIf/BrTable are always unsafe. Br/Return are safe
+        // only at the very last position (where they act as the function
+        // terminator). Anywhere else they create early-exit paths.
+        let n = func.instructions.len();
+        for (i, instr) in func.instructions.iter().enumerate() {
             match instr {
                 Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
+                Instruction::Br(_) | Instruction::Return
+                    // Tail position is fine — that's just the function ending.
+                    if i + 1 != n => {
+                        return true;
+                    }
                 Instruction::Block { body, .. } | Instruction::Loop { body, .. }
-                    if has_dataflow_unsafe_control_flow_in_block(body) =>
+                    if has_unsafe_in_nested(body) => {
+                        return true;
+                    }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                }
+                    if (has_unsafe_in_nested(then_body) || has_unsafe_in_nested(else_body)) => {
+                        return true;
+                    }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Inside a nested block/loop/if body, ANY Br/BrIf/BrTable/Return is an
+    /// early-exit pattern — the surrounding expression has another path that
+    /// skips the rest of the function. Hoisting code across these is unsound
+    /// without a path-sensitive verifier.
+    ///
+    /// This is what the v0.4.0 audit's gale_sem_count_take CSE bug needed:
+    /// the function had `if (eqz) return; end` (a Return inside an If body),
+    /// which the previous BrIf-only check did not flag. CSE then hoisted an
+    /// i32.store above the guard, producing an unsound transformation.
+    fn has_unsafe_in_nested(instructions: &[Instruction]) -> bool {
+        for instr in instructions {
+            match instr {
+                Instruction::BrIf { .. }
+                | Instruction::BrTable { .. }
+                | Instruction::Br(_)
+                | Instruction::Return => return true,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                    if has_unsafe_in_nested(body) =>
                 {
                     return true;
                 }
@@ -6727,9 +6766,7 @@ pub mod optimize {
                     then_body,
                     else_body,
                     ..
-                } if (has_dataflow_unsafe_control_flow_in_block(then_body)
-                    || has_dataflow_unsafe_control_flow_in_block(else_body)) =>
-                {
+                } if (has_unsafe_in_nested(then_body) || has_unsafe_in_nested(else_body)) => {
                     return true;
                 }
                 _ => {}
@@ -6844,7 +6881,7 @@ pub mod optimize {
         use super::Value;
         use super::terms::TermSignatureContext;
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
+        use loom_isle::{LocalEnv, rewrite_with_dataflow};
 
         // Create signature contexts before mutating functions
         // TermSignatureContext for ISLE term conversion
@@ -6865,12 +6902,18 @@ pub mod optimize {
             }
 
             // Determine if this function has control flow that makes
-            // dataflow env tracking unsafe. If so, we still run ISLE but
-            // with a frozen (empty) env — pure pattern rewrites still apply
-            // (constant folding, algebraic identities, strength reduction).
-            let use_dataflow_env = !has_dataflow_unsafe_control_flow(func);
-            if !use_dataflow_env {
+            // dataflow env tracking unsafe. If so, skip the entire function:
+            // even rewrite_pure goes through instructions_to_terms /
+            // terms_to_instructions, and that round-trip is not guaranteed
+            // to preserve instruction order across early-exit patterns
+            // (Return inside If/Block). The gale_sem_count_take regression
+            // (v0.4.0 audit) reproduced exactly this — terms_to_instructions
+            // emitted the if-guard AFTER the function-tail straight-line
+            // code, hoisting an i32.store above its null-pointer guard.
+            // REQ-5 conservative-over-fast.
+            if has_dataflow_unsafe_control_flow(func) {
                 skipped_control_flow += 1;
+                continue;
             }
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
@@ -6892,18 +6935,17 @@ pub mod optimize {
                 &term_sig_ctx,
             ) {
                 if !terms.is_empty() {
-                    let optimized_terms: Vec<Value> = if use_dataflow_env {
-                        // Full dataflow: track local assignments across straight-line code
-                        let mut env = LocalEnv::new();
-                        terms
-                            .into_iter()
-                            .map(|term| rewrite_with_dataflow(term, &mut env))
-                            .collect()
-                    } else {
-                        // No dataflow env: pure pattern rewrites only (safe for control flow).
-                        // Each term is simplified independently — no cross-term local propagation.
-                        terms.into_iter().map(rewrite_pure).collect()
-                    };
+                    // Always use dataflow env: the unsafe-control-flow path
+                    // is now skipped above (see comment on
+                    // has_dataflow_unsafe_control_flow). The previous
+                    // rewrite_pure fallback unsoundly reordered code on
+                    // early-exit patterns via the terms-to-instructions
+                    // round-trip; it's been removed.
+                    let mut env = LocalEnv::new();
+                    let optimized_terms: Vec<Value> = terms
+                        .into_iter()
+                        .map(|term| rewrite_with_dataflow(term, &mut env))
+                        .collect();
                     if let Ok(mut new_instrs) =
                         super::terms::terms_to_instructions(&optimized_terms)
                     {
@@ -6956,6 +6998,12 @@ pub mod optimize {
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
                 continue;
             }
+
+            // DCE only deletes unreachable code after Return/Br/Unreachable
+            // terminators. It does not reorder reachable code, so the
+            // early-exit hoist concern that motivated guards on other passes
+            // does not apply here. (Function-tail Return is the primary
+            // reason DCE exists.)
 
             // Create validation guard with module context for Call validation
             let guard = ValidationGuard::with_context(func, "eliminate_dead_code", ctx.clone());
@@ -7647,6 +7695,15 @@ pub mod optimize {
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Skip early-exit functions: simplify_locals (RSE / local-merge)
+            // can move local.set / local.get sequences across guard
+            // boundaries when those guards are `if (cond) return ...`.
+            // The verifier is path-insensitive across these (REQ-5,
+            // gale_sem_count_take regression).
+            if has_dataflow_unsafe_control_flow(func) {
                 continue;
             }
 
@@ -9501,6 +9558,12 @@ pub mod optimize {
                 continue;
             }
 
+            // Skip early-exit functions — branch-removal can restructure
+            // control flow across guard boundaries (REQ-5).
+            if has_dataflow_unsafe_control_flow(func) {
+                continue;
+            }
+
             let guard = ValidationGuard::with_context(func, "remove_unused_branches", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
@@ -9612,6 +9675,11 @@ pub mod optimize {
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Skip early-exit functions (REQ-5 conservative-over-fast).
+            if has_dataflow_unsafe_control_flow(func) {
                 continue;
             }
 
@@ -10915,7 +10983,7 @@ pub mod optimize {
         use super::terms::TermSignatureContext;
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
+        use loom_isle::{LocalEnv, rewrite_with_dataflow};
 
         let ctx = ValidationContext::from_module(module);
         // Create signature contexts for proper Call/CallIndirect handling
@@ -10934,9 +11002,11 @@ pub mod optimize {
                 continue;
             }
 
-            let use_dataflow_env = !has_dataflow_unsafe_control_flow(func);
-            if !use_dataflow_env {
+            // Same skip as constant_folding: terms_to_instructions roundtrip
+            // does not preserve order across early-exit patterns. REQ-5.
+            if has_dataflow_unsafe_control_flow(func) {
                 skipped_control_flow += 1;
+                continue;
             }
 
             let guard =
@@ -10959,15 +11029,12 @@ pub mod optimize {
                 &term_sig_ctx,
             ) {
                 if !terms.is_empty() {
-                    let optimized_terms: Vec<Value> = if use_dataflow_env {
-                        let mut env = LocalEnv::new();
-                        terms
-                            .into_iter()
-                            .map(|term| rewrite_with_dataflow(term, &mut env))
-                            .collect()
-                    } else {
-                        terms.into_iter().map(rewrite_pure).collect()
-                    };
+                    // Always use dataflow env (same reasoning as constant_folding).
+                    let mut env = LocalEnv::new();
+                    let optimized_terms: Vec<Value> = terms
+                        .into_iter()
+                        .map(|term| rewrite_with_dataflow(term, &mut env))
+                        .collect();
 
                     if let Ok(new_instructions) =
                         super::terms::terms_to_instructions(&optimized_terms)
