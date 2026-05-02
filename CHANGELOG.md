@@ -5,6 +5,109 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-02
+
+This release closes a real soundness bug discovered on production
+gale code (kernel-scheduler FFI, Verus-verified Rust), gives passes
+a way to opt into strict verification semantics, expands the test
+corpus to post-MVP wasm features, wires `FusedOptimization.v` into
+the Bazel proof build, and ships CI concurrency hardening.
+
+### Soundness
+
+- **Closed CSE hoist hole on early-exit patterns** (PR-B). v0.4.0's
+  `has_dataflow_unsafe_control_flow` only flagged `BrIf`/`BrTable`,
+  letting the canonical Rust `if (cond) return; end` early-exit
+  guard slip through. Per-pass tracing on `gale_sem_count_take`
+  showed the reordering happens in `constant_folding`'s
+  `instructions_to_terms` → rewrite → `terms_to_instructions`
+  round-trip — once a function with `If { then_body: [..., Return] }`
+  is converted to terms and back, the if-block can land at the
+  function tail with the straight-line code (load/sub/store)
+  hoisted to the function head, so a store now runs even when
+  the guard would have returned early.
+- The fix extends the guard to flag any *nested* `Return`/`Br` as
+  an early-exit pattern (top-level Return at the function tail is
+  still allowed — that's the function terminator). New helper
+  `has_unsafe_in_nested` recurses into `Block`/`Loop`/`If` bodies.
+- `constant_folding` and `optimize_advanced_instructions` now skip
+  the function entirely when this guard fires (previously they
+  fell back to `rewrite_pure`, which still went through the unsound
+  round-trip). Defense-in-depth guards added to `simplify_locals`,
+  `remove_unused_branches`, `optimize_added_constants`. DCE
+  intentionally NOT guarded — it only deletes unreachable code,
+  never reorders.
+- New regression test `test_early_return_guard_prevents_store_hoist`
+  mirrors `gale_sem_count_take` and pins the fix.
+
+### Verification API
+
+- **`VerificationResult::is_skip()` and `skip_reason()`** (PR-A).
+  Lets callers distinguish "Z3 proved equivalence" from "verifier
+  silently bailed because input was unverifiable." Closes audit S5.
+- **`TranslationValidator::verify_or_revert_strict()`** (PR-A).
+  Strict counterpart to `verify_or_revert`: only `Verified` is
+  accepted; `Skipped*`, `Failed`, and `Error` all revert. Reverts
+  recorded under `<pass>:strict-skip` for separability. Stub for
+  non-verification builds returns false (REQ-5: when Z3 isn't
+  available we don't hoist).
+- Existing `is_equivalent()` and `is_verified()` doc comments now
+  name the lenient/strict semantics explicitly.
+
+### Research
+
+- `docs/research/gale-v0.4.0/measurement-report.md` (PR-A) — LOOM
+  v0.4.0 vs `wasm-opt -O3` on a Verus-verified kernel-scheduler FFI
+  (`gale_ffi`: sem + timer + spinlock + ring_buf + bitarray + rbtree).
+  Headline: LOOM regresses code-section size by +6.3% on this
+  workload while wasm-opt reduces by -2.0%, primarily because LOOM's
+  CSE deduplicates trivially-cheap small constants into
+  `local.tee/local.get` pairs that grow function headers. The CSE
+  soundness bug discovered in this report motivated PR-B.
+
+### Test corpus
+
+- 8 minimal post-MVP wasm fixtures (PR-C): SIMD/v128, ref types,
+  bulk memory, tail calls, exception handling, multi-memory,
+  sign-extension, saturating-trunc.
+- New `loom-core/tests/spec_features.rs` runs each through one of
+  three buckets: clean rejection (unsupported), clean rejection or
+  round-trip (partial), or full optimize+roundtrip (supported).
+  Pins the contract that no post-MVP feature crashes the parser.
+
+### Proofs
+
+- `proofs/simplify/FusedOptimization.v` is now in `BUILD.bazel`
+  (PR-D). Closes audit D1: the file backs the fused/meld pipeline
+  with 7 axioms + 8+ theorems and was previously orphaned from
+  the build, so CI never compiled or checked it. Axioms remain
+  unchanged in this PR; discharging them is future work.
+
+### CI
+
+- **Top-level `concurrency:` block on every workflow** (PR
+  `chore/ci-concurrency-control`). Closes the queue-backlog issue
+  identified org-wide: superseded PR runs are now cancelled within
+  ~30 seconds; runs on `main`, tags, releases, and scheduled events
+  are never cancelled. `release.yml` and `fuzz.yml` use the
+  release/scheduled variants per the cross-repo brief. Expected
+  effect: 30–40% reduction in CI compute on PR-heavy days.
+
+### Deferred
+
+The following audit findings remain out of scope for v0.5.0 and
+will be picked up later:
+
+- Full exit-state Z3 equivalence (return + locals + globals + memory).
+  v0.5.0 only changes the API surface (`VerificationResult` predicates
+  + strict-mode revert helper); the encoder still asserts only on
+  top-of-stack at function exit.
+- BrTable arm encoding with path predicates and per-arm state merge.
+- Switch float fold to `rustc_apfloat` for bit-exact wasm semantics.
+- Discharge the 7 axioms in `FusedOptimization.v`.
+- Wire or remove the 5 implemented passes never called from
+  `optimize_module`.
+
 ## [0.4.0] - 2026-05-01
 
 This release closes the path-sensitivity hoist hole at the pass level,
