@@ -3,6 +3,10 @@
 
 name: Fuzzing
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
 on:
   schedule:
     # Run nightly at 2am UTC
