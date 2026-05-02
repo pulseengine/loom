@@ -100,6 +100,25 @@ rocq_proof_test(
     deps = [":strength_reduction"],
 )
 
+# Fused/meld optimization proofs
+# Covers the optimization passes specific to WebAssembly modules produced by
+# component fusion: same-memory adapter collapse, adapter devirtualization,
+# trivial call elimination, type/import dedup, dead function elimination.
+rocq_library(
+    name = "fused_optimization",
+    srcs = ["simplify/FusedOptimization.v"],
+    deps = [
+        ":wasm_semantics",
+        ":term_semantics",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "fused_optimization_test",
+    deps = [":fused_optimization"],
+)
+
 # =============================================================================
 # Master Correctness Theorem
 # =============================================================================
@@ -175,6 +194,7 @@ filegroup(
         ":identity",
         ":bitwise",
         ":strength_reduction",
+        ":fused_optimization",
     ],
     visibility = ["//visibility:public"],
 )
@@ -200,6 +220,7 @@ filegroup(
         ":identity",
         ":bitwise",
         ":strength_reduction",
+        ":fused_optimization",
         ":correctness",
         # Existing proofs
         ":stack_proofs",
@@ -226,6 +247,7 @@ test_suite(
         ":identity_test",
         ":bitwise_test",
         ":strength_reduction_test",
+        ":fused_optimization_test",
         ":correctness_test",
         ":stack_proofs_test",
         ":codec_proofs_test",
