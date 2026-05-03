@@ -35,7 +35,7 @@ env:
 jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     strategy:
       fail-fast: false
       matrix:
@@ -105,7 +105,7 @@ jobs:
 
   coverage:
     name: Fuzzing coverage report
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, light]
     needs: fuzz
     if: always()
 

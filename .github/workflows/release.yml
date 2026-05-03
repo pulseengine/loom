@@ -21,6 +21,7 @@ env:
 jobs:
   build-native:
     name: Build Native (${{ matrix.os }})
+    # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -75,6 +76,7 @@ jobs:
 
   build-wasm:
     name: Build WASM (wasm32-wasip2)
+    # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -110,6 +112,8 @@ jobs:
   release:
     name: Create Release
     needs: [build-native, build-wasm]
+    # Stays on ubuntu-latest: uses `sudo mv` for oras install plus Cosign
+    # OIDC keyless signing tied to GitHub-hosted runner identity.
     runs-on: ubuntu-latest
     permissions:
       contents: write
