@@ -7625,7 +7625,77 @@ pub mod optimize {
             }
         }
 
-        result
+        // Post-pass peephole: collapse `pure_push; drop` pairs.
+        //
+        // Created mostly by `eliminate_dead_locals` (which replaces
+        // dead `LocalSet` with `Drop`, leaving the constant or load
+        // pushed by a preceding instruction with no consumer) and by
+        // `eliminate_dead_stores` (same mechanism, path-sensitive).
+        //
+        // Pure pushers that are safe to fold away with their Drop:
+        //   I32Const, I64Const, F32Const, F64Const  — pure literals
+        //   LocalGet idx                            — pure read
+        //   GlobalGet idx                           — pure read
+        //
+        // NOT folded: memory loads, calls, anything that can trap or
+        // have a side effect — even if the result is dropped, the
+        // side effect / trap is observable.
+        peephole_const_drop(result)
+    }
+
+    /// Recognize `pure_push; drop` and remove both. Recurses into
+    /// nested control-flow bodies. Used by `vacuum_instructions` to
+    /// mop up the leftovers from `eliminate_dead_locals` and
+    /// `eliminate_dead_stores`.
+    fn peephole_const_drop(instructions: Vec<Instruction>) -> Vec<Instruction> {
+        let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
+        let mut iter = instructions.into_iter().peekable();
+        while let Some(instr) = iter.next() {
+            // First, recurse into nested bodies (Block/Loop/If) so the
+            // peephole reaches their leftovers too.
+            let instr = match instr {
+                Instruction::Block { block_type, body } => Instruction::Block {
+                    block_type,
+                    body: peephole_const_drop(body),
+                },
+                Instruction::Loop { block_type, body } => Instruction::Loop {
+                    block_type,
+                    body: peephole_const_drop(body),
+                },
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => Instruction::If {
+                    block_type,
+                    then_body: peephole_const_drop(then_body),
+                    else_body: peephole_const_drop(else_body),
+                },
+                other => other,
+            };
+
+            // Match the pair pattern.
+            if is_pure_pusher(&instr) && matches!(iter.peek(), Some(Instruction::Drop)) {
+                iter.next(); // consume the Drop
+                continue; // skip both — net effect is nothing
+            }
+            out.push(instr);
+        }
+        out
+    }
+
+    /// Side-effect-free, non-trapping instructions whose result can be
+    /// safely discarded with their immediately-following `Drop`.
+    fn is_pure_pusher(instr: &Instruction) -> bool {
+        matches!(
+            instr,
+            Instruction::I32Const(_)
+                | Instruction::I64Const(_)
+                | Instruction::F32Const(_)
+                | Instruction::F64Const(_)
+                | Instruction::LocalGet(_)
+                | Instruction::GlobalGet(_)
+        )
     }
 
     /// Check if a block is trivial and can be unwrapped
@@ -15993,6 +16063,272 @@ mod tests {
         assert!(!has_tee, "Dead LocalTee must be removed entirely");
 
         // Validates: stack effect is preserved by removal.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // vacuum const+drop peephole tests (PR-B/PR-C follow-up)
+    //
+    // Closes the loop: dead-locals and dead-stores neutralize a
+    // `LocalSet` to `Drop`, leaving the value-pusher (`i32.const X`,
+    // `local.get N`, etc.) immediately followed by `Drop`. Vacuum's
+    // peephole now folds the pair away.
+
+    #[test]
+    fn test_vacuum_folds_const_drop() {
+        let wat = r#"(module
+            (func $test (result i32)
+                i32.const -22
+                drop
+                i32.const 7
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let len_before = module.functions[0].instructions.len();
+        optimize::vacuum(&mut module).expect("vacuum");
+        let len_after = module.functions[0].instructions.len();
+        assert!(
+            len_after < len_before,
+            "const+drop pair must be folded away (was {len_before}, now {len_after})"
+        );
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_folds_local_get_drop() {
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                local.get 0
+                drop
+                local.get 0
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+        let drops = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Drop))
+            .count();
+        assert_eq!(drops, 0, "local.get + drop must fold away");
+    }
+
+    #[test]
+    fn test_vacuum_does_not_fold_load_drop() {
+        // A memory load can trap on bad address — discarding the result
+        // does NOT discard the trap, so the load must survive vacuum.
+        let wat = r#"(module
+            (memory 1)
+            (func $test (param i32) (result i32)
+                local.get 0
+                i32.load
+                drop
+                local.get 0
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+        let has_load = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Load { .. }));
+        assert!(
+            has_load,
+            "i32.load + drop must NOT be folded — load can trap, dropping result \
+             does not discard the trap"
+        );
+    }
+
+    #[test]
+    fn test_vacuum_folds_const_drop_inside_block() {
+        // Peephole must recurse into nested control flow.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                block (result i32)
+                    i32.const 99
+                    drop
+                    local.get 0
+                end
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+
+        // Walk into the block to confirm the const+drop is gone.
+        fn count_drops(instrs: &[Instruction]) -> usize {
+            let mut n = 0;
+            for i in instrs {
+                match i {
+                    Instruction::Drop => n += 1,
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        n += count_drops(body)
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => n += count_drops(then_body) + count_drops(else_body),
+                    _ => {}
+                }
+            }
+            n
+        }
+        assert_eq!(count_drops(&module.functions[0].instructions), 0);
+    }
+
+    // inline_functions i64-correctness regression tests (loom#98)
+    //
+    // Pre-fix symptom: every function in gale-ffi (Verus-verified kernel
+    // wasm with u64-packed FFI returns) panicked the inline pass with
+    // `SortDiffers { left: BitVec(64), right: BitVec(32) }` deep in the
+    // z3 crate. Root cause: when `inline_functions` adds new locals to
+    // hold the inlined callee's parameters, the Z3 verifier extended its
+    // shared-input symbolic-locals vector with hardcoded 32-bit zeros
+    // regardless of declared type. Any subsequent i64 binop on those
+    // locals tripped Z3's width check.
+    //
+    // Fix: extend with the declared local type's BV width via
+    // `local_type_at` + `bv_width_for_value_type` (see verify.rs).
+    //
+    // The tests below construct minimal i64-typed function pairs that
+    // exercise the broken path. Without the fix they trip the panic and
+    // the inline pass reverts every function (no-op). With the fix they
+    // either inline successfully or revert via a clean Z3 verdict — never
+    // a panic.
+
+    #[test]
+    fn test_inline_i64_helper_no_z3_panic() {
+        // Smallest reproducer of loom#98: a tiny i64-param helper with a
+        // single call site triggers the inline pass to add new i64 locals
+        // to the caller. The Z3 verifier must handle those 64-bit BVs
+        // without panicking.
+        let wat = r#"(module
+            (func $helper (param i64 i64) (result i64)
+                local.get 0
+                local.get 1
+                i64.add
+            )
+            (func $caller (export "test") (param i64 i64) (result i64)
+                local.get 0
+                local.get 1
+                call $helper
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        // The pass must complete without panicking. Whether it actually
+        // inlines or conservatively reverts, the absence of a panic is
+        // the regression we lock in.
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        // Output must validate as wasm regardless of inline outcome.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_mixed_i32_i64_widths_no_z3_panic() {
+        // Exercises the gale-ffi pattern more directly: i64-packed FFI
+        // return that the caller masks down to i32 fields. The bit-mask
+        // and wrap force mixed-width values to flow through the verifier
+        // simultaneously.
+        let wat = r#"(module
+            (func $packed_return (param i32) (result i64)
+                local.get 0
+                i64.extend_i32_u
+                i64.const 0xFF
+                i64.shl
+                local.get 0
+                i64.extend_i32_u
+                i64.or
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                call $packed_return
+                i32.wrap_i64
+                i32.const 0xFF
+                i32.and
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_i64_local_only_no_z3_panic() {
+        // No params, just an i64 local — the helper still needs Z3 to
+        // handle 64-bit symbolic state when its body is inlined into a
+        // caller that didn't previously declare any i64 locals.
+        let wat = r#"(module
+            (func $helper (result i64)
+                (local i64)
+                i64.const 42
+                local.set 0
+                local.get 0
+                local.get 0
+                i64.add
+            )
+            (func $caller (export "test") (result i64)
+                call $helper
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_pass_actually_inlines_i64_helper() {
+        // Past the panic-prevention bar: confirm the pass does its job
+        // on i64 helpers — the call must be replaced by the helper's
+        // body. Pre-fix this test would also fail because every function
+        // reverted under the panic-catch.
+        let wat = r#"(module
+            (func $double (param i64) (result i64)
+                local.get 0
+                local.get 0
+                i64.add
+            )
+            (func $caller (export "test") (param i64) (result i64)
+                local.get 0
+                call $double
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let calls_before = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(calls_before, 1, "caller starts with one Call");
+
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        let calls_after = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls_after, 0,
+            "i64 helper must be inlined — pre-fix the verifier panicked \
+             and reverted every function, leaving the Call in place"
+        );
+
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
     }
