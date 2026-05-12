@@ -10109,6 +10109,369 @@ pub mod optimize {
         out
     }
 
+    /// Eliminate dead stores via per-position backward liveness on
+    /// structured wasm control flow. The path-sensitive complement to
+    /// `eliminate_dead_locals`: catches writes that are dead on every
+    /// continuation (overwritten before any read) even when the local
+    /// is read elsewhere in the function.
+    ///
+    /// Pick #3 from the v0.6.0 wasm-opt-gap research agent's plan
+    /// (full liveness, Option C).
+    ///
+    /// Algorithm: backward walk over the structured instruction tree
+    /// computing, at each position, the set of locals whose value will
+    /// be read on some continuation path before being overwritten.
+    /// A write is dead iff its target local is not in that "live-after"
+    /// set.
+    ///
+    /// Wasm structured control flow handling:
+    ///   - `Block { body }`: br N targets the end-of-block, so
+    ///     break-target liveness equals live-after-block.
+    ///   - `If { then, else }`: live-before-if = uses(cond) ∪
+    ///     (live_in(then) ∪ live_in(else)).
+    ///   - `Br N`, `Return`, `Unreachable`: no fall-through. Live
+    ///     becomes the target's liveness (or empty for Return/Unreachable).
+    ///   - `BrIf N`, `BrTable [...]`: union of target liveness with
+    ///     fall-through (or with all targets, for BrTable).
+    ///   - `Loop { body }`: handled CONSERVATIVELY (v1) — every local
+    ///     that is read anywhere in the body is treated as live throughout
+    ///     the body and live just before the loop. This avoids fixpoint
+    ///     iteration and remains sound; it loses precision *inside* loops
+    ///     but the gale dead-store patterns sit before loops, not in them.
+    ///     Full Loop fixpoint is a follow-up.
+    ///   - `Call`, `CallIndirect`: do not access caller's locals; pass
+    ///     through unchanged.
+    ///
+    /// Trap-effecting instructions (load, store, div, etc.) may end the
+    /// function early on trap. We compute liveness under "no trap"
+    /// assumption: writes are removed only if dead on the no-trap
+    /// continuation. If a trap intervenes, no later instruction observes
+    /// the local — so removal remains sound.
+    ///
+    /// Application:
+    ///   - Dead `LocalSet idx` → `Drop`
+    ///   - Dead `LocalTee idx` → removed (Tee `[T]→[T]` passes through)
+    ///
+    /// After this pass runs, `eliminate_dead_locals` may find additional
+    /// locals with zero remaining reads (if all their writes were dead);
+    /// running these passes in sequence amplifies their effect.
+    pub fn eliminate_dead_stores(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
+        for func in &mut module.functions {
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Step 1: count writes (LocalSet + LocalTee) for ID tracking.
+            let total_writes = count_local_writes(&func.instructions);
+            if total_writes == 0 {
+                continue;
+            }
+
+            // Step 2: backward liveness analysis. Builds a set of dead
+            // write IDs (0..total_writes, in tree-walk forward order).
+            let mut analyzer = LivenessAnalyzer::new(total_writes);
+            analyzer.analyze(&func.instructions);
+
+            if analyzer.dead_writes.is_empty() {
+                continue;
+            }
+
+            let guard = ValidationGuard::with_context(func, "eliminate_dead_stores", ctx.clone());
+            let translator = TranslationValidator::new(func, "eliminate_dead_stores");
+            let original_instructions = func.instructions.clone();
+
+            // Step 3: apply — walk forward, replace dead writes by ID.
+            let mut applier = DeadStoreApplier::new(&analyzer.dead_writes);
+            applier.apply(&mut func.instructions);
+
+            // Step 4: Z3 translation validation — revert on rejection.
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("eliminate_dead_stores: reverting function (verification rejected)");
+                crate::stats::record_revert("eliminate_dead_stores");
+                func.instructions = original_instructions;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Count LocalSet + LocalTee occurrences in a structured instruction
+    /// tree. Used to size the dead-write ID space.
+    fn count_local_writes(instructions: &[crate::Instruction]) -> usize {
+        use crate::Instruction;
+        let mut n = 0;
+        for instr in instructions {
+            match instr {
+                Instruction::LocalSet(_) | Instruction::LocalTee(_) => n += 1,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    n += count_local_writes(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    n += count_local_writes(then_body);
+                    n += count_local_writes(else_body);
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+
+    /// Collect the set of all locals read anywhere in a structured
+    /// instruction tree (LocalGet only). Used for the conservative
+    /// Loop body approximation.
+    fn collect_reads(
+        instructions: &[crate::Instruction],
+        out: &mut std::collections::BTreeSet<u32>,
+    ) {
+        use crate::Instruction;
+        for instr in instructions {
+            match instr {
+                Instruction::LocalGet(idx) => {
+                    out.insert(*idx);
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    collect_reads(body, out);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    collect_reads(then_body, out);
+                    collect_reads(else_body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Backward-liveness analyzer for structured wasm. Walks the tree in
+    /// reverse order, propagating a `LiveSet` and recording dead write IDs.
+    /// IDs are assigned in tree-walk *forward* order via a backward counter
+    /// that decrements as writes are encountered.
+    struct LivenessAnalyzer {
+        /// Counter tracking the next write ID, decremented as we walk
+        /// backward. Initially equals total_writes; decrements to 0.
+        write_counter: usize,
+        /// Set of dead write IDs (0..total_writes in tree-walk forward
+        /// order). A write is dead iff its target local is not in the
+        /// live-after set at that position.
+        dead_writes: std::collections::BTreeSet<usize>,
+    }
+
+    type LiveSet = std::collections::BTreeSet<u32>;
+
+    impl LivenessAnalyzer {
+        fn new(total_writes: usize) -> Self {
+            Self {
+                write_counter: total_writes,
+                dead_writes: std::collections::BTreeSet::new(),
+            }
+        }
+
+        fn analyze(&mut self, instructions: &[crate::Instruction]) {
+            let mut label_stack: Vec<LiveSet> = Vec::new();
+            let _ = self.walk(instructions, LiveSet::new(), &mut label_stack);
+        }
+
+        /// Backward walk over `instructions`. Returns live-before the
+        /// first instruction (= live-in to this block).
+        ///
+        /// `live` starts as live-after-the-last-instruction.
+        /// `label_stack` mirrors the wasm control-flow nesting: index 0
+        /// is the outermost label, last is the innermost (br N counts
+        /// from innermost-out, so target = label_stack[len - 1 - N]).
+        fn walk(
+            &mut self,
+            instructions: &[crate::Instruction],
+            mut live: LiveSet,
+            label_stack: &mut Vec<LiveSet>,
+        ) -> LiveSet {
+            use crate::Instruction;
+
+            for instr in instructions.iter().rev() {
+                match instr {
+                    Instruction::LocalGet(idx) => {
+                        live.insert(*idx);
+                    }
+                    Instruction::LocalSet(idx) => {
+                        // Decrement counter to get this write's ID.
+                        // (Forward IDs are assigned in tree-walk order;
+                        // since we walk backward, last write seen has the
+                        // highest ID.)
+                        self.write_counter -= 1;
+                        let id = self.write_counter;
+                        if !live.contains(idx) {
+                            self.dead_writes.insert(id);
+                        }
+                        live.remove(idx);
+                    }
+                    Instruction::LocalTee(idx) => {
+                        self.write_counter -= 1;
+                        let id = self.write_counter;
+                        if !live.contains(idx) {
+                            self.dead_writes.insert(id);
+                        }
+                        live.remove(idx);
+                        // Tee's stack output isn't a local — it flows via
+                        // the operand stack, not the live set.
+                    }
+                    Instruction::Block { body, .. } => {
+                        // br N inside a Block targets the END of the block,
+                        // which equals live-after-block (current `live`).
+                        label_stack.push(live.clone());
+                        live = self.walk(body, live.clone(), label_stack);
+                        label_stack.pop();
+                    }
+                    Instruction::Loop { body, .. } => {
+                        // Conservative v1: assume every local read inside
+                        // the body is live throughout the body and live
+                        // just before the loop. This avoids fixpoint
+                        // iteration on the back-edge.
+                        let mut body_reads = LiveSet::new();
+                        collect_reads(body, &mut body_reads);
+                        let live_in_body: LiveSet = live.union(&body_reads).copied().collect();
+
+                        // Loop label targets the loop-header (live-in-body).
+                        label_stack.push(live_in_body.clone());
+                        // Walk body for dead-write detection. Pass the
+                        // conservative live_in_body as live-after each
+                        // body instruction (over-approximation: keeps
+                        // writes inside loops; safe).
+                        let _ = self.walk(body, live_in_body.clone(), label_stack);
+                        label_stack.pop();
+
+                        live = live_in_body;
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        // Both arms see the same live-after-if.
+                        // If's label targets the END of the if (live-after).
+                        label_stack.push(live.clone());
+                        let then_live_in = self.walk(then_body, live.clone(), label_stack);
+                        let else_live_in = self.walk(else_body, live.clone(), label_stack);
+                        label_stack.pop();
+
+                        // live-before-if = live-in-then ∪ live-in-else
+                        // (the cond is consumed from the operand stack;
+                        // it doesn't add to local liveness here).
+                        live = then_live_in.union(&else_live_in).copied().collect();
+                    }
+                    Instruction::Br(n) => {
+                        // After Br, fall-through is unreachable. Live
+                        // becomes the target's liveness.
+                        let depth = label_stack.len();
+                        if let Some(target_idx) = depth.checked_sub(1 + *n as usize) {
+                            live = label_stack[target_idx].clone();
+                        } else {
+                            // Br beyond the function: equivalent to Return.
+                            live.clear();
+                        }
+                    }
+                    Instruction::BrIf(n) => {
+                        // Branch taken: live = target. Not taken: fall-through.
+                        let depth = label_stack.len();
+                        if let Some(target_idx) = depth.checked_sub(1 + *n as usize) {
+                            live = live.union(&label_stack[target_idx]).copied().collect();
+                        }
+                    }
+                    Instruction::BrTable { targets, default } => {
+                        let depth = label_stack.len();
+                        let mut combined = live.clone();
+                        for n in targets.iter().chain(std::iter::once(default)) {
+                            if let Some(target_idx) = depth.checked_sub(1 + *n as usize) {
+                                combined.extend(&label_stack[target_idx]);
+                            }
+                        }
+                        live = combined;
+                    }
+                    Instruction::Return | Instruction::Unreachable => {
+                        // No continuation. Live becomes empty.
+                        live.clear();
+                    }
+                    _ => {
+                        // Other instructions don't read or write locals
+                        // (Call/CallIndirect don't access caller locals).
+                    }
+                }
+            }
+            live
+        }
+    }
+
+    /// Apply pass: walk the tree forward, replacing dead writes by ID.
+    /// Tracks a counter that mirrors the analyzer's forward ID assignment.
+    struct DeadStoreApplier<'a> {
+        dead_writes: &'a std::collections::BTreeSet<usize>,
+        write_counter: usize,
+    }
+
+    impl<'a> DeadStoreApplier<'a> {
+        fn new(dead_writes: &'a std::collections::BTreeSet<usize>) -> Self {
+            Self {
+                dead_writes,
+                write_counter: 0,
+            }
+        }
+
+        fn apply(&mut self, instructions: &mut Vec<crate::Instruction>) {
+            use crate::Instruction;
+            let mut i = 0;
+            while i < instructions.len() {
+                match &mut instructions[i] {
+                    Instruction::LocalSet(_) => {
+                        let id = self.write_counter;
+                        self.write_counter += 1;
+                        if self.dead_writes.contains(&id) {
+                            instructions[i] = Instruction::Drop;
+                        }
+                        i += 1;
+                    }
+                    Instruction::LocalTee(_) => {
+                        let id = self.write_counter;
+                        self.write_counter += 1;
+                        if self.dead_writes.contains(&id) {
+                            instructions.remove(i);
+                            // Don't increment i — re-examine new instruction
+                            // at this position (matches the convention in
+                            // neutralize_dead_writes).
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        self.apply(body);
+                        i += 1;
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        self.apply(then_body);
+                        self.apply(else_body);
+                        i += 1;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     struct LiveRange {
         local_idx: u32,
@@ -15410,5 +15773,227 @@ mod tests {
             module.functions[0].signature, sig_before,
             "Function signature (params) must never change"
         );
+    }
+
+    // eliminate_dead_stores tests (v0.6.0 PR-C)
+    //
+    // Path-sensitive dead-store elimination via backward liveness over
+    // structured wasm control flow. Catches dead writes PR-B can't:
+    // locals that ARE read elsewhere but where a particular write is
+    // overwritten before any read on every continuation.
+
+    #[test]
+    fn test_eliminate_dead_stores_overwritten_in_straight_line() {
+        // Two writes to local 1, no read between. The first is dead.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32)
+                i32.const 42
+                local.set 1   ;; dead — overwritten before any read
+                i32.const 7
+                local.set 1   ;; live — reaches the local.get below
+                local.get 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        // The first write (the i32.const 42 / local.set 1 pair) should
+        // have its set replaced by Drop.
+        let dropped_sets = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Drop))
+            .count();
+        assert!(dropped_sets >= 1, "First write must be neutralized to Drop");
+
+        // The function still validates as wasm.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_preserves_live_writes() {
+        // A single write whose value IS read must survive untouched.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32)
+                i32.const 42
+                local.set 1
+                local.get 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let original = module.functions[0].instructions.clone();
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        assert_eq!(
+            module.functions[0].instructions, original,
+            "Live writes must not be changed"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_branch_aware_keeps_partial_use() {
+        // local 1 is written, then a Br could exit early without
+        // overwriting. The first write IS live on the early-exit path
+        // and must be preserved.
+        //
+        // Structure:
+        //   local.set 1     ; conditional may need this value via the if
+        //   if (...) {
+        //     local.set 1   ; overwrites only on this path
+        //   }
+        //   local.get 1     ; reads on either path
+        //
+        // The first set is LIVE on the "if-not-taken" path. Pick #3 must
+        // recognize this — replacing it with Drop would expose an
+        // uninitialized read.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32)
+                i32.const 42
+                local.set 1
+                local.get 0
+                if
+                    i32.const 7
+                    local.set 1
+                end
+                local.get 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let count_sets_before = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalSet(1)))
+            .count();
+        assert_eq!(count_sets_before, 1); // only the outer set is at top level
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        // The outer (first) set MUST survive — it's live on the
+        // if-not-taken path that reaches local.get 1.
+        let outer_set_survives = matches!(
+            module.functions[0].instructions.get(1),
+            Some(Instruction::LocalSet(1))
+        );
+        assert!(
+            outer_set_survives,
+            "Outer set must survive: it's live on if-not-taken path"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_both_arms_overwrite() {
+        // The first set is dead because BOTH if arms overwrite local 1
+        // before any read. Liveness must compute the union of arm-deads
+        // correctly (live-before-if = live-in-then ∪ live-in-else).
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32)
+                i32.const 42
+                local.set 1   ;; dead — both arms overwrite
+                local.get 0
+                if
+                    i32.const 7
+                    local.set 1
+                else
+                    i32.const 9
+                    local.set 1
+                end
+                local.get 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        // The first set should be neutralized (replaced with Drop)
+        // because every continuation overwrites local 1.
+        let drops = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Drop))
+            .count();
+        assert!(
+            drops >= 1,
+            "Outer set must be neutralized — both arms overwrite"
+        );
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_return_kills_continuation() {
+        // After Return, subsequent code is unreachable. A write
+        // immediately followed by Return where the value isn't part
+        // of the return is dead.
+        let wat = r#"(module
+            (func $test (result i32)
+                (local i32)
+                i32.const 42
+                local.set 0   ;; dead — Return follows, no read
+                i32.const 7
+                return
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+
+        // The set should be replaced by Drop.
+        let drops = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Drop))
+            .count();
+        assert!(drops >= 1, "Set followed by Return must be dead");
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_localtee_dead_removed() {
+        // LocalTee whose stored value is never read should be removed
+        // (not replaced with Drop), letting the [T] -> [T] value pass
+        // through. Same stack-effect rule as eliminate_dead_locals.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32)
+                local.get 0
+                i32.const 1
+                i32.add
+                local.tee 1   ;; dead — never read
+                i32.const 2
+                i32.mul
+                drop
+                local.get 0   ;; ignores local 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        // No LocalTee should survive (the only one was dead).
+        let has_tee = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalTee(_)));
+        assert!(!has_tee, "Dead LocalTee must be removed entirely");
+
+        // Validates: stack effect is preserved by removal.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
     }
 }
