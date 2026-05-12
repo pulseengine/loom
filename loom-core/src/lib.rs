@@ -13,6 +13,12 @@ pub use loom_isle::{Imm32, Imm64, Value, ValueData};
 /// Stack analysis module: compositional stack type system
 pub mod stack;
 
+/// Function-summary interprocedural analysis (IPA).
+///
+/// Computes per-function `is_pure` / `is_no_trap` summaries so downstream
+/// passes can reason across `Call` boundaries.
+pub mod summary;
+
 /// Optimization observability counters (revert counts per pass).
 pub mod stats;
 
@@ -7509,6 +7515,29 @@ pub mod optimize {
 
         let ctx = ValidationContext::from_module(module);
 
+        // PR-F (v0.7.0): compute function summaries up-front so the
+        // peephole inside `vacuum_instructions` can fold `Call f; Drop`
+        // when f is pure + no-trap + ZERO args + ONE result. Without
+        // summaries a Call is an opaque side-effecting wall — even a
+        // call to a pure helper survives `Drop` because we can't prove
+        // the absence of effects.
+        //
+        // Why zero-arg only: a Call consumes its arguments from the
+        // stack. Removing the Call without also removing the arg
+        // pushers leaves dangling values that break stack balance.
+        // The broader fold (pop N preceding pure pushers when arg-count
+        // is N, AND each is a pure pusher) is sound but lives in a
+        // follow-up. The zero-arg case is the safe minimum.
+        let summaries = crate::summary::compute_module_summaries(module);
+        // Snapshot per-function (param_count, result_count) before the
+        // mutable loop. The fold requires param_count == 0 and
+        // result_count == 1.
+        let signatures: Vec<(usize, usize)> = module
+            .functions
+            .iter()
+            .map(|f| (f.signature.params.len(), f.signature.results.len()))
+            .collect();
+
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
@@ -7521,8 +7550,10 @@ pub mod optimize {
             // Capture original for translation validation (Z3 proof of semantic equivalence)
             let translator = TranslationValidator::new(func, "vacuum");
 
-            // Apply vacuum transformation
-            func.instructions = vacuum_instructions(&func.instructions);
+            // Apply vacuum transformation (passes summaries through so the
+            // const+drop peephole can also fold pure+no-trap Call;Drop pairs).
+            func.instructions =
+                vacuum_instructions(&func.instructions, &summaries, &signatures);
 
             // Validate stack correctness after transformation - fail if invalid
             let _ = guard.validate(func);
@@ -7534,7 +7565,11 @@ pub mod optimize {
     }
 
     /// Recursively clean up instructions
-    fn vacuum_instructions(instructions: &[Instruction]) -> Vec<Instruction> {
+    fn vacuum_instructions(
+        instructions: &[Instruction],
+        summaries: &[crate::summary::FunctionSummary],
+        signatures: &[(usize, usize)],
+    ) -> Vec<Instruction> {
         let mut result = Vec::new();
 
         for (i, instr) in instructions.iter().enumerate() {
@@ -7544,7 +7579,7 @@ pub mod optimize {
 
                 // Clean up blocks
                 Instruction::Block { block_type, body } => {
-                    let cleaned_body = vacuum_instructions(body);
+                    let cleaned_body = vacuum_instructions(body, summaries, signatures);
 
                     // Check if block is trivial and can be unwrapped
                     // CRITICAL: Don't unwrap blocks with result types if followed by another block/if
@@ -7579,7 +7614,7 @@ pub mod optimize {
 
                 // Clean up loops
                 Instruction::Loop { block_type, body } => {
-                    let cleaned_body = vacuum_instructions(body);
+                    let cleaned_body = vacuum_instructions(body, summaries, signatures);
 
                     if !cleaned_body.is_empty() {
                         result.push(Instruction::Loop {
@@ -7596,8 +7631,8 @@ pub mod optimize {
                     then_body,
                     else_body,
                 } => {
-                    let cleaned_then = vacuum_instructions(then_body);
-                    let cleaned_else = vacuum_instructions(else_body);
+                    let cleaned_then = vacuum_instructions(then_body, summaries, signatures);
+                    let cleaned_else = vacuum_instructions(else_body, summaries, signatures);
 
                     // Simplify based on branch emptiness
                     if cleaned_then.is_empty() && cleaned_else.is_empty() {
@@ -7636,18 +7671,23 @@ pub mod optimize {
         //   I32Const, I64Const, F32Const, F64Const  — pure literals
         //   LocalGet idx                            — pure read
         //   GlobalGet idx                           — pure read
+        //   Call f   where f is pure + no-trap + returns one value
         //
-        // NOT folded: memory loads, calls, anything that can trap or
-        // have a side effect — even if the result is dropped, the
-        // side effect / trap is observable.
-        peephole_const_drop(result)
+        // NOT folded: memory loads, calls to impure or may-trap
+        // functions, anything else that can trap or have a side effect.
+        peephole_const_drop(result, summaries, signatures)
     }
 
     /// Recognize `pure_push; drop` and remove both. Recurses into
     /// nested control-flow bodies. Used by `vacuum_instructions` to
     /// mop up the leftovers from `eliminate_dead_locals` and
-    /// `eliminate_dead_stores`.
-    fn peephole_const_drop(instructions: Vec<Instruction>) -> Vec<Instruction> {
+    /// `eliminate_dead_stores`, plus PR-F's `Call f; Drop` folding
+    /// when `f` is pure + no-trap + single-result.
+    fn peephole_const_drop(
+        instructions: Vec<Instruction>,
+        summaries: &[crate::summary::FunctionSummary],
+        signatures: &[(usize, usize)],
+    ) -> Vec<Instruction> {
         let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
         let mut iter = instructions.into_iter().peekable();
         while let Some(instr) = iter.next() {
@@ -7656,11 +7696,11 @@ pub mod optimize {
             let instr = match instr {
                 Instruction::Block { block_type, body } => Instruction::Block {
                     block_type,
-                    body: peephole_const_drop(body),
+                    body: peephole_const_drop(body, summaries, signatures),
                 },
                 Instruction::Loop { block_type, body } => Instruction::Loop {
                     block_type,
-                    body: peephole_const_drop(body),
+                    body: peephole_const_drop(body, summaries, signatures),
                 },
                 Instruction::If {
                     block_type,
@@ -7668,14 +7708,16 @@ pub mod optimize {
                     else_body,
                 } => Instruction::If {
                     block_type,
-                    then_body: peephole_const_drop(then_body),
-                    else_body: peephole_const_drop(else_body),
+                    then_body: peephole_const_drop(then_body, summaries, signatures),
+                    else_body: peephole_const_drop(else_body, summaries, signatures),
                 },
                 other => other,
             };
 
             // Match the pair pattern.
-            if is_pure_pusher(&instr) && matches!(iter.peek(), Some(Instruction::Drop)) {
+            if is_pure_pusher(&instr, summaries, signatures)
+                && matches!(iter.peek(), Some(Instruction::Drop))
+            {
                 iter.next(); // consume the Drop
                 continue; // skip both — net effect is nothing
             }
@@ -7686,16 +7728,40 @@ pub mod optimize {
 
     /// Side-effect-free, non-trapping instructions whose result can be
     /// safely discarded with their immediately-following `Drop`.
-    fn is_pure_pusher(instr: &Instruction) -> bool {
-        matches!(
-            instr,
+    ///
+    /// PR-F (v0.7.0): extended to also accept `Call f` when the callee
+    /// is pure + no-trap + produces exactly one value. The pure+no-trap
+    /// constraint is the interprocedural justification that the call's
+    /// only effect is producing the value we're about to drop;
+    /// single-result is required because `Drop` consumes exactly one
+    /// stack slot — a multi-result call would leave the remaining
+    /// values orphaned on the stack.
+    fn is_pure_pusher(
+        instr: &Instruction,
+        summaries: &[crate::summary::FunctionSummary],
+        signatures: &[(usize, usize)],
+    ) -> bool {
+        match instr {
             Instruction::I32Const(_)
-                | Instruction::I64Const(_)
-                | Instruction::F32Const(_)
-                | Instruction::F64Const(_)
-                | Instruction::LocalGet(_)
-                | Instruction::GlobalGet(_)
-        )
+            | Instruction::I64Const(_)
+            | Instruction::F32Const(_)
+            | Instruction::F64Const(_)
+            | Instruction::LocalGet(_)
+            | Instruction::GlobalGet(_) => true,
+            Instruction::Call(idx) => {
+                // Only fold zero-arg calls — the safe minimum.
+                // A Call consumes its arguments from the stack; removing
+                // it without also removing the arg-pushers would leave
+                // dangling values that break stack balance.
+                let i = *idx as usize;
+                i < summaries.len()
+                    && summaries[i].is_pure
+                    && summaries[i].is_no_trap
+                    && i < signatures.len()
+                    && signatures[i] == (0, 1)
+            }
+            _ => false,
+        }
     }
 
     /// Check if a block is trivial and can be unwrapped
@@ -16331,6 +16397,145 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // PR-F (v0.7.0): function-summary IPA enables vacuum to fold
+    // `Call f; Drop` when f is pure + no-trap + single-result.
+
+    #[test]
+    fn test_vacuum_folds_pure_zero_arg_call_drop() {
+        // Zero-arg pure+no-trap helper. The safe minimum for
+        // pure-call-drop folding: no args to leave dangling.
+        let wat = r#"(module
+            (func $pure_helper (result i32)
+                i32.const 42
+            )
+            (func $caller (export "test") (result i32)
+                call $pure_helper
+                drop
+                i32.const 7
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        // The Call+Drop in $caller (function index 1) should be folded.
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        let has_drop = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Drop));
+        assert!(
+            !has_call,
+            "Call to pure+no-trap zero-arg helper must be folded"
+        );
+        assert!(!has_drop, "Paired Drop must also be folded");
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_keeps_pure_call_drop_with_args() {
+        // Pure+no-trap helper but takes args. The safe-minimum rule
+        // doesn't fold this (would leave args dangling on stack).
+        // Pin that we don't accidentally fold it.
+        let wat = r#"(module
+            (func $pure_with_arg (param i32) (result i32)
+                local.get 0
+                i32.const 1
+                i32.add
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                call $pure_with_arg
+                drop
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        assert!(
+            has_call,
+            "Pure helper with args must NOT be folded under the zero-arg rule \
+             (would leave the arg dangling on the stack)"
+        );
+
+        // Output must validate.
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_keeps_impure_call_drop() {
+        // A call to a function that writes memory must NOT be folded,
+        // even if its result is dropped — the store is observable.
+        let wat = r#"(module
+            (memory 1)
+            (func $impure (result i32)
+                i32.const 0
+                i32.const 42
+                i32.store
+                i32.const 0
+            )
+            (func $caller (export "test") (result i32)
+                call $impure
+                drop
+                i32.const 7
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        assert!(
+            has_call,
+            "Call to impure helper must NOT be folded — the store is observable"
+        );
+    }
+
+    #[test]
+    fn test_vacuum_keeps_may_trap_call_drop() {
+        // A call to a no-side-effect-but-may-trap function (e.g., does
+        // a load) must NOT be folded — the trap is observable behavior.
+        let wat = r#"(module
+            (memory 1)
+            (func $may_trap (result i32)
+                i32.const 0
+                i32.load
+            )
+            (func $caller (export "test") (result i32)
+                call $may_trap
+                drop
+                i32.const 7
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        assert!(
+            has_call,
+            "Call to may-trap helper must NOT be folded — the trap is observable"
+        );
     }
 
     // Soundness regression tests for the null-check / store-hoist guard
