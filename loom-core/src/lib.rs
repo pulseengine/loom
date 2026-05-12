@@ -9892,6 +9892,223 @@ pub mod optimize {
         Ok(())
     }
 
+    /// Eliminate trivially dead locals: locals declared by a function but
+    /// never read by any `LocalGet` anywhere in the function body.
+    ///
+    /// This is the path-INSENSITIVE half of dead-store elimination. Unlike
+    /// the path-sensitive case (Pick #3, RedundantSetElimination liveness),
+    /// "zero reads anywhere" is a structural property of the instruction
+    /// tree — sound regardless of `BrIf`/`BrTable`/early-`Return` control
+    /// flow. So this pass DOES NOT need the `has_dataflow_unsafe_control_flow`
+    /// guard that prevents `simplify_locals` and `coalesce_locals` from
+    /// running on kernel-style early-exit code (gale).
+    ///
+    /// Targets the gale "default-then-override" pattern: rustc/LLVM
+    /// materializes an EINVAL default at function entry, then every
+    /// reachable path overwrites it before return. The default's
+    /// `local.set` becomes pure dead store. wasm-opt eliminates this;
+    /// LOOM v0.5.0 did not.
+    ///
+    /// Algorithm:
+    /// 1. Recursively count `LocalGet` references for each local index.
+    ///    (Walks Block/Loop/If bodies — same recursion shape as
+    ///    `remap_instructions` and `eliminate_redundant_sets`.)
+    /// 2. Identify dead locals: idx >= param_count AND read_count == 0.
+    /// 3. Neutralize writes to dead locals:
+    ///    - `LocalSet dead_idx` → `Drop` (preserves stack consumption)
+    ///    - `LocalTee dead_idx` → removed (Tee's stack effect is `[T]→[T]`,
+    ///      so removing it leaves the value passing through unchanged)
+    /// 4. Build a packed remap: surviving locals get sequential indices
+    ///    starting at param_count (densest LEB128 encoding).
+    /// 5. Apply remap via existing `remap_instructions`; rebuild
+    ///    declarations from surviving types.
+    /// 6. Z3 translation-validation: revert on rejection.
+    pub fn eliminate_dead_locals(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let ctx = ValidationContext::from_module(module);
+
+        for func in &mut module.functions {
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            let param_count = func.signature.params.len() as u32;
+            let declared_count: u32 = func.locals.iter().map(|(c, _)| *c).sum();
+            if declared_count == 0 {
+                continue;
+            }
+            let total_locals = param_count + declared_count;
+
+            // Step 1: Count LocalGet references for each local across the
+            // entire instruction tree (including nested bodies).
+            let mut read_counts: BTreeMap<u32, usize> = BTreeMap::new();
+            count_local_reads(&func.instructions, &mut read_counts);
+
+            // Step 2: A local is dead iff it's declared (not a param) and
+            // never read anywhere. This rule is path-insensitive — no read
+            // means no observation, regardless of which paths the writes
+            // are reachable from.
+            let dead: BTreeSet<u32> = (param_count..total_locals)
+                .filter(|idx| read_counts.get(idx).copied().unwrap_or(0) == 0)
+                .collect();
+
+            if dead.is_empty() {
+                continue;
+            }
+
+            let guard = ValidationGuard::with_context(func, "eliminate_dead_locals", ctx.clone());
+            let translator = TranslationValidator::new(func, "eliminate_dead_locals");
+            let original_instructions = func.instructions.clone();
+            let original_locals = func.locals.clone();
+
+            // Step 3: Neutralize writes to dead locals. Done in-place via
+            // a tree walk (matches the recursion shape of remap_instructions).
+            neutralize_dead_writes(&mut func.instructions, &dead);
+
+            // Step 4: Build packed remap. Surviving locals keep their
+            // relative order but get a dense, gap-free sequence of new
+            // indices starting at param_count.
+            let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
+            // Identity-map the parameters.
+            for p in 0..param_count {
+                remap.insert(p, p);
+            }
+            let mut next_idx = param_count;
+            for old_idx in param_count..total_locals {
+                if !dead.contains(&old_idx) {
+                    remap.insert(old_idx, next_idx);
+                    next_idx += 1;
+                }
+            }
+
+            // Step 5: Walk the tree applying the remap, then rebuild the
+            // locals declaration from the surviving types in order.
+            remap_instructions(&mut func.instructions, &remap);
+            func.locals = pack_surviving_locals(&original_locals, param_count, &dead);
+
+            // Step 6: Z3 verification — revert if the transformed function
+            // is not observationally equivalent to the original.
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("eliminate_dead_locals: reverting function (verification rejected)");
+                crate::stats::record_revert("eliminate_dead_locals");
+                func.instructions = original_instructions;
+                func.locals = original_locals;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Count LocalGet references for every local index in an instruction
+    /// tree. Recurses into Block / Loop / If bodies — matches the recursion
+    /// shape of `remap_instructions` (lib.rs:10106) so the two analyses
+    /// see the same tree.
+    fn count_local_reads(
+        instructions: &[crate::Instruction],
+        counts: &mut std::collections::BTreeMap<u32, usize>,
+    ) {
+        use crate::Instruction;
+        for instr in instructions {
+            match instr {
+                Instruction::LocalGet(idx) => {
+                    *counts.entry(*idx).or_insert(0) += 1;
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    count_local_reads(body, counts);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    count_local_reads(then_body, counts);
+                    count_local_reads(else_body, counts);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Replace `LocalSet dead` with `Drop` and remove `LocalTee dead` for
+    /// every local in the dead set. Walks nested control-flow bodies.
+    ///
+    /// Stack-effect rationale (see insight at the call site):
+    ///   LocalSet idx : [T] → []     → Drop (which is also [T] → [])
+    ///   LocalTee idx : [T] → [T]    → remove (the [T] passes through)
+    fn neutralize_dead_writes(
+        instructions: &mut Vec<crate::Instruction>,
+        dead: &std::collections::BTreeSet<u32>,
+    ) {
+        use crate::Instruction;
+        let mut i = 0;
+        while i < instructions.len() {
+            match &mut instructions[i] {
+                Instruction::LocalSet(idx) if dead.contains(idx) => {
+                    instructions[i] = Instruction::Drop;
+                    i += 1;
+                }
+                Instruction::LocalTee(idx) if dead.contains(idx) => {
+                    instructions.remove(i);
+                    // Don't increment i — re-examine the new instruction
+                    // at this position.
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    neutralize_dead_writes(body, dead);
+                    i += 1;
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    neutralize_dead_writes(then_body, dead);
+                    neutralize_dead_writes(else_body, dead);
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Rebuild a locals declaration vector after removing the indices in
+    /// `dead`. Preserves the original declaration order of survivors and
+    /// produces a `Vec<(count, type)>` in run-length form (consecutive
+    /// same-type survivors are merged into a single entry).
+    fn pack_surviving_locals(
+        original: &[(u32, crate::ValueType)],
+        param_count: u32,
+        dead: &std::collections::BTreeSet<u32>,
+    ) -> Vec<(u32, crate::ValueType)> {
+        let mut surviving_types: Vec<crate::ValueType> = Vec::new();
+        let mut idx = param_count;
+        for (count, ty) in original {
+            for _ in 0..*count {
+                if !dead.contains(&idx) {
+                    surviving_types.push(*ty);
+                }
+                idx += 1;
+            }
+        }
+
+        // Run-length encode (count, type) pairs.
+        let mut out: Vec<(u32, crate::ValueType)> = Vec::new();
+        for ty in surviving_types {
+            if let Some(last) = out.last_mut()
+                && last.1 == ty
+            {
+                last.0 += 1;
+            } else {
+                out.push((1, ty));
+            }
+        }
+        out
+    }
+
     #[derive(Debug, Clone)]
     struct LiveRange {
         local_idx: u32,
@@ -15016,5 +15233,182 @@ mod tests {
         let terms = terms::instructions_to_terms(&instructions).expect("Failed to convert");
         let result = terms::terms_to_instructions(&terms).expect("Failed to convert back");
         assert_eq!(result, vec![Instruction::DataDrop(0)]);
+    }
+
+    // eliminate_dead_locals tests (v0.6.0 PR-B)
+    //
+    // Targets: gale "default-then-override" pattern where a local is
+    // written but never read. The pass is path-insensitive — sound
+    // regardless of BrIf/BrTable/early-Return control flow that gates
+    // simplify_locals and coalesce_locals.
+
+    #[test]
+    fn test_eliminate_dead_locals_basic_write_only() {
+        // The exact gale pattern from gale_bitarray_alloc_validate:
+        // local 3 written with EINVAL default but never read.
+        let wat = r#"(module
+            (func $test (param i32) (param i32) (result i32)
+                (local i32) ;; local 2 — dead
+                i32.const -22
+                local.set 2
+                local.get 0
+                local.get 1
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("Failed to parse");
+        let bytes_before = encode::encode_wasm(&module).expect("encode").len();
+        let locals_before = module.functions[0].locals.clone();
+        assert_eq!(locals_before, vec![(1, ValueType::I32)]);
+
+        optimize::eliminate_dead_locals(&mut module).expect("eliminate_dead_locals");
+
+        // The dead local should be gone from the declaration.
+        assert_eq!(
+            module.functions[0].locals,
+            vec![],
+            "Dead local must be removed from declaration"
+        );
+
+        // The dead LocalSet should have been replaced by Drop.
+        let has_dead_set = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalSet(2)));
+        assert!(!has_dead_set, "Dead LocalSet must be neutralized");
+
+        // Output must validate as wasm.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode after");
+        wasmparser::validate(&wasm_bytes).expect("output must validate");
+        assert!(
+            wasm_bytes.len() < bytes_before,
+            "Eliminating a dead local must reduce binary size"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_locals_preserves_used_locals() {
+        // A local that IS read must survive — even if some writes
+        // to it look redundant. Path-sensitivity is Pick #3, not this pass.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32) ;; local 1 — read in addition below
+                i32.const 7
+                local.set 1
+                local.get 0
+                local.get 1
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let locals_before = module.functions[0].locals.clone();
+
+        optimize::eliminate_dead_locals(&mut module).expect("pass");
+
+        assert_eq!(
+            module.functions[0].locals, locals_before,
+            "Live local must survive"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_locals_localtee_neutralization() {
+        // LocalTee writing to a dead local must be REMOVED (not replaced
+        // with Drop). LocalTee's stack effect is [T] -> [T], so removing
+        // the instruction leaves the value passing through. Replacing
+        // with Drop would consume the stack value and break a downstream
+        // consumer.
+        let wat = r#"(module
+            (func $test (param i32) (result i32)
+                (local i32) ;; local 1 — dead (only LocalTee writes, no LocalGet)
+                local.get 0
+                i32.const 1
+                i32.add
+                local.tee 1
+                i32.const 2
+                i32.mul
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_locals(&mut module).expect("pass");
+
+        let has_localtee = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalTee(_)));
+        assert!(!has_localtee, "Dead LocalTee must be removed entirely");
+
+        // The function must still encode and validate.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes)
+            .expect("LocalTee removal must preserve stack — value passes through");
+
+        // Local declaration is gone.
+        assert_eq!(module.functions[0].locals, vec![]);
+    }
+
+    #[test]
+    fn test_eliminate_dead_locals_packs_indices() {
+        // After dropping a dead middle local, surviving locals must be
+        // packed to dense indices starting at param_count. Locals that
+        // were 2,3,4 with #3 dead become 2,3 (was 4 -> now 3).
+        let wat = r#"(module
+            (func $test (param i32) (param i32) (result i32)
+                (local i32 i32 i32) ;; locals 2,3,4 — only 4 is dead
+                i32.const 1
+                local.set 2
+                i32.const 2
+                local.set 4   ;; dead
+                local.get 2
+                local.get 3   ;; reads local 3, keeps it alive
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        optimize::eliminate_dead_locals(&mut module).expect("pass");
+
+        // Two locals survive (2 and 3, the previously-dead 4 is gone).
+        let total_declared: u32 = module.functions[0].locals.iter().map(|(c, _)| *c).sum();
+        assert_eq!(total_declared, 2, "One of three declared locals dropped");
+
+        // After pack-down, no instruction references local index 4.
+        let has_idx_4 = module.functions[0].instructions.iter().any(|i| {
+            matches!(
+                i,
+                Instruction::LocalGet(4) | Instruction::LocalSet(4) | Instruction::LocalTee(4)
+            )
+        });
+        assert!(!has_idx_4, "Index 4 must be remapped or removed");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("validates");
+    }
+
+    #[test]
+    fn test_eliminate_dead_locals_skips_params() {
+        // Parameters are observable to the caller — never eliminate them
+        // even if a function never reads them.
+        let wat = r#"(module
+            (func $test (param i32) (param i32) (result i32)
+                ;; param 1 (idx 1) is never read
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let sig_before = module.functions[0].signature.clone();
+
+        optimize::eliminate_dead_locals(&mut module).expect("pass");
+
+        assert_eq!(
+            module.functions[0].signature, sig_before,
+            "Function signature (params) must never change"
+        );
     }
 }

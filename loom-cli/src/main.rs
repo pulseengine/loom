@@ -50,7 +50,7 @@ enum Commands {
         attestation: bool,
 
         /// Select specific optimization passes (comma-separated)
-        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals
+        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-locals
         /// Example: --passes inline,constant-folding,dce
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
@@ -488,6 +488,15 @@ fn optimize_command(
         loom_core::optimize::simplify_locals(&mut module).context("SimplifyLocals failed")?;
         let after = count_instructions(&module);
         track_pass("simplify-locals", before, after);
+    }
+
+    if should_run("dead-locals") {
+        println!("  Running: dead-locals");
+        let before = count_instructions(&module);
+        loom_core::optimize::eliminate_dead_locals(&mut module)
+            .context("Dead-local elimination failed")?;
+        let after = count_instructions(&module);
+        track_pass("dead-locals", before, after);
     }
 
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
