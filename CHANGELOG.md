@@ -5,6 +5,90 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-11
+
+This release is driven entirely by real-world findings on production
+gale code (Verus-verified kernel-scheduler FFI wasm): closing v0.5.0's
++6.3% CSE size regression, lifting two early-exit guards that made
+LOOM a no-op on kernel-style code, and fixing a Z3 panic that blocked
+the inline pass on i64-heavy modules. Net effect on the gale_ffi
+fixture: code section -0.86% (was +6.3% in v0.5.0). Net effect on
+a 2.3 MB calculator.wasm component: -0.4% from the new dead-store
+pass alone.
+
+### Optimizer correctness (Z3 / inline)
+
+- **Closed `inline_functions` Z3 SortDiffers panic on i64-heavy wasm**
+  (PR-D, closes #98). The verifier's symbolic-locals initialization
+  defaulted to 32-bit width regardless of declared type at three
+  sites; the gale-ffi crate (u64-packed FFI returns) crashed every
+  inline attempt with `SortDiffers { left: BitVec(64), right: BitVec(32) }`.
+  Fix: new helpers `local_type_at` + `bv_width_for_value_type`
+  resolve param/local types correctly at each extension site.
+  Defensive `match_bv_widths` zero-extend helper added for future
+  binop-site backstop.
+
+### Optimizer code size on real workloads
+
+- **CSE cost gate eliminates the gale +6.3% regression** (PR-A).
+  v0.5.0's enhanced CSE deduplicated every duplicate expression
+  including 1-2 byte constants. Replacing `i32.const -EINVAL`
+  (2 bytes) with `local.tee N / local.get N` (4 bytes) plus a new
+  local declaration was unconditionally a size regression.
+  New `Expr::worth_dedup(occurrences)` predicate estimates net byte
+  savings via the formula `net = (N-1)·(cost-2) - 4` and skips when
+  non-positive. Gale code section: 862 → 808 bytes.
+
+- **`eliminate_dead_locals` pass** (PR-B): drops locals declared by
+  a function but never read by any `LocalGet` anywhere in the
+  function body. Targets the gale "default-then-override" pattern
+  (rustc materializes an EINVAL default that every reachable path
+  overwrites). The rule is path-INSENSITIVE — sound regardless of
+  BrIf/BrTable/early-Return control flow — so the pass DOES NOT
+  need the `has_dataflow_unsafe_control_flow` guard that previously
+  made `simplify_locals` and `coalesce_locals` no-ops on every
+  kernel-style function. Gale code section: 808 → 804 bytes.
+  Asymmetric write neutralization: `LocalSet → Drop` preserves
+  `[T] → []`; `LocalTee → removed` lets `[T] → [T]` pass through.
+
+- **`eliminate_dead_stores` pass with full backward liveness** (PR-C):
+  per-position dead-store elimination via backward liveness walk
+  over the structured wasm instruction tree. Handles Block/If
+  precisely (`live-before-if = live-in-then ∪ live-in-else`), Br/
+  BrIf/BrTable via label-stack indexing, Return/Unreachable as
+  no-continuation. Loop bodies use a conservative approximation
+  (everything read anywhere in the body is live throughout) — sound
+  but imprecise inside loops; loop fixpoint precision is a follow-up.
+  Net effect on calculator.wasm: -0.4% from this pass alone (~10 KB
+  on a 2.3 MB component).
+
+### Cleanup follow-ups
+
+- **`vacuum` const+drop peephole** (PR-D). PR-B/PR-C neutralize
+  dead `LocalSet idx` to `Drop`, leaving the value-pusher
+  immediately followed by Drop. New `peephole_const_drop` folds
+  `pure_push;Drop` pairs (constants, LocalGet, GlobalGet), recursing
+  into Block/Loop/If bodies. NOT folded: memory loads, calls,
+  anything that can trap — discarding the result does not discard
+  the trap.
+
+### Research outputs
+
+- `docs/research/gale-v0.5.0/source-pattern-analysis.md` — eight
+  optimization-relevant patterns found in gale source with
+  file:line citations (FSM dispatch, default-then-override, Verus
+  `decreases` bounded loops, tail-call dispatch, leaf-inline +
+  const-prop candidates, bit-mask axioms, 2D `match (state, event)`,
+  Verus annotations as trusted axioms).
+- `docs/research/gale-v0.5.0/wasm-opt-gap-analysis.md` — ranked top
+  7 wasm-opt passes by expected payoff on kernel-style code, with
+  per-pick LOC and complexity estimates. Picks #1, #2 (narrowed),
+  and #3 are shipped in this release.
+
+### Test count
+
+303 → 317 tests passing (+14 across all v0.6.0 PRs).
+
 ## [0.5.0] - 2026-05-02
 
 This release closes a real soundness bug discovered on production

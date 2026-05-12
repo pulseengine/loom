@@ -775,20 +775,86 @@ fn merge_states(
 fn block_type_width(block_type: &BlockType) -> Option<u32> {
     match block_type {
         BlockType::Empty => None,
-        BlockType::Value(vt) => match vt {
-            crate::ValueType::I32 => Some(32),
-            crate::ValueType::I64 => Some(64),
-            crate::ValueType::F32 => Some(32),
-            crate::ValueType::F64 => Some(64),
-        },
+        BlockType::Value(vt) => Some(bv_width_for_value_type(*vt)),
         BlockType::Func { results, .. } => {
             // For multi-value, return width of first result (simplified)
-            results.first().map(|vt| match vt {
-                crate::ValueType::I32 => 32,
-                crate::ValueType::I64 => 64,
-                crate::ValueType::F32 => 32,
-                crate::ValueType::F64 => 64,
-            })
+            results.first().map(|vt| bv_width_for_value_type(*vt))
+        }
+    }
+}
+
+/// Bitvector width (in bits) for a wasm `ValueType`. Single source of truth
+/// shared across all encoding sites — replaces several copy-pasted match
+/// blocks that previously hardcoded the same mapping.
+#[cfg(feature = "verification")]
+fn bv_width_for_value_type(t: crate::ValueType) -> u32 {
+    match t {
+        crate::ValueType::I32 | crate::ValueType::F32 => 32,
+        crate::ValueType::I64 | crate::ValueType::F64 => 64,
+    }
+}
+
+/// Resolve the wasm-declared `ValueType` of local index `idx` in `func`.
+///
+/// Local indices in wasm are flat across params + declared locals: idx 0..N
+/// are the parameters (in order), then `func.locals` declares additional
+/// locals as `(count, type)` runs that get unrolled.
+///
+/// Returns `None` for indices beyond declared locals — the caller should
+/// treat these as a verifier-side bug (every well-formed wasm reference is
+/// in range), but we don't panic. Used to fix the i64-vs-i32 SortDiffers
+/// panic in `inline_functions` (loom#98): when an optimization adds new
+/// locals, the verifier was extending its symbolic state with hardcoded
+/// 32-bit BVs regardless of declared type, which crashed Z3 binops on
+/// any i64-typed local read.
+#[cfg(feature = "verification")]
+fn local_type_at(func: &Function, idx: usize) -> Option<crate::ValueType> {
+    let param_count = func.signature.params.len();
+    if idx < param_count {
+        return Some(func.signature.params[idx]);
+    }
+    let mut cur = param_count;
+    for (count, ty) in &func.locals {
+        let next = cur + *count as usize;
+        if idx < next {
+            return Some(*ty);
+        }
+        cur = next;
+    }
+    None
+}
+
+/// Pad two BVs to a matching width by zero-extending the shorter one.
+/// Defensive backstop for any encoding site that pops two operands and
+/// applies a width-sensitive Z3 op (bvadd, bvsub, eq, ...) — well-formed
+/// wasm guarantees matched widths by construction, but bugs upstream
+/// (e.g., loom#98 wrong-width local default) used to surface as a
+/// `SortDiffers` panic deep in the z3 crate. With this helper the panic
+/// becomes a quiet correctness-preserving extension.
+///
+/// Zero-extension is the right choice for a backstop because (a) wasm
+/// integers are bag-of-bits; the bit pattern is preserved on the original
+/// width, and (b) widening with zero never injects "new" set bits that
+/// downstream comparisons could see, so a false-equivalent verdict is
+/// avoided.
+///
+/// Currently unused at call sites — the loom#98 fix is at the root cause
+/// (local-extension width bug). Kept available for a follow-up that wires
+/// it into binop encoding as defense-in-depth.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn match_bv_widths(lhs: BV, rhs: BV) -> (BV, BV) {
+    let lw = lhs.get_size();
+    let rw = rhs.get_size();
+    match lw.cmp(&rw) {
+        std::cmp::Ordering::Equal => (lhs, rhs),
+        std::cmp::Ordering::Less => {
+            let extended = lhs.zero_ext(rw - lw);
+            (extended, rhs)
+        }
+        std::cmp::Ordering::Greater => {
+            let extended = rhs.zero_ext(lw - rw);
+            (lhs, extended)
         }
     }
 }
@@ -1031,7 +1097,10 @@ fn verify_loops_kinduction(
             // Create symbolic state representing "after arbitrary iteration k"
             // This state is the same for both original and optimized (inductive hypothesis)
 
-            // Create symbolic locals for inductive state (using thread-local context)
+            // Create symbolic locals for inductive state (using thread-local context).
+            // Each symbolic constant gets the bit width of its declared local
+            // type. Previously hardcoded to 32, which crashed Z3 binops on
+            // i64-typed locals (loom#98).
             let num_locals = original
                 .locals
                 .iter()
@@ -1039,7 +1108,12 @@ fn verify_loops_kinduction(
                 .sum::<usize>()
                 + original.signature.params.len();
             let mut inductive_locals_orig: Vec<BV> = (0..num_locals)
-                .map(|i| BV::new_const(format!("ind_local_{}", i), 32))
+                .map(|i| {
+                    let width = local_type_at(original, i)
+                        .map(bv_width_for_value_type)
+                        .unwrap_or(32);
+                    BV::new_const(format!("ind_local_{}", i), width)
+                })
                 .collect();
 
             let mut inductive_locals_opt: Vec<BV> = inductive_locals_orig.clone();
@@ -2597,9 +2671,16 @@ fn encode_function_to_smt_impl_inner(
         let needed_locals = declared_local_count.max(max_used_local + 1);
 
         while locals.len() < needed_locals {
-            // Add zero-initialized locals for any extra locals in the optimized function
-            // Use i32 as default type since we don't know the actual type from the index alone
-            locals.push(BV::from_u64(0, 32));
+            // Loom#98 fix: extend with the DECLARED type, not a hardcoded
+            // 32-bit default. The previous code crashed the inline pass on
+            // gale-ffi (i64-packed-return wasm) because i64 locals declared
+            // by the optimized function were padded as 32-bit, then any
+            // i64 binop on them tripped Z3's `SortDiffers` panic.
+            let idx = locals.len();
+            let width = local_type_at(func, idx)
+                .map(bv_width_for_value_type)
+                .unwrap_or(32);
+            locals.push(BV::from_u64(0, width));
         }
     } else {
         // Create fresh inputs (for standalone encoding)
