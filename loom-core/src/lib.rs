@@ -16332,4 +16332,156 @@ mod tests {
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
     }
+
+    // Soundness regression tests for the null-check / store-hoist guard
+    // (v0.6.0 PR-E follow-up).
+    //
+    // Background: the gale v0.4.0 measurement report noted three
+    // functions (gale_sem_count_take, gale_spinlock_acquire_nested,
+    // gale_timer_expire) where, on the v0.4.0-era artifact, stores
+    // appeared hoisted above null-pointer checks. v0.5.0's early-exit
+    // guard work (extending `has_dataflow_unsafe_control_flow` to flag
+    // nested `Return`/`Br`) closed the hoist hole; this test pins
+    // that the canonical pattern remains sound through v0.6.0+
+    // optimization pipelines.
+
+    #[test]
+    fn test_null_check_before_store_preserved_through_optimization() {
+        // The gale_sem_count_take shape: param 0 is a pointer that may
+        // be null; null-check comes first; if non-null, load, conditional
+        // bail, then store-back-decremented. The store MUST NOT be
+        // reordered above the null-check.
+        let wat = r#"(module
+            (memory 1)
+            (func $sem_count_take (export "test") (param i32) (result i32)
+                (local i32)
+                local.get 0
+                i32.eqz
+                if
+                    i32.const -22
+                    return
+                end
+                local.get 0
+                i32.load
+                local.tee 1
+                i32.eqz
+                if
+                    i32.const -16
+                    return
+                end
+                local.get 0
+                local.get 1
+                i32.const 1
+                i32.sub
+                i32.store
+                i32.const 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        // Run the full optimization-relevant pipeline that touched the
+        // hoist hole in v0.4.0.
+        optimize::constant_folding(&mut module).expect("constant_folding");
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).expect("cse");
+        optimize::optimize_advanced_instructions(&mut module).expect("advanced");
+        optimize::simplify_branches(&mut module).expect("branches");
+        optimize::eliminate_dead_code(&mut module).expect("dce");
+        optimize::merge_blocks(&mut module).expect("merge");
+        optimize::vacuum(&mut module).expect("vacuum");
+        optimize::simplify_locals(&mut module).expect("simplify_locals");
+        optimize::eliminate_dead_stores(&mut module).expect("dead_stores");
+        optimize::eliminate_dead_locals(&mut module).expect("dead_locals");
+        optimize::vacuum(&mut module).expect("vacuum_final");
+
+        // The null-check (i32.eqz on param 0) MUST appear before the
+        // i32.store. We assert this by finding the index of the first
+        // i32.store and the first i32.eqz reading param 0, then
+        // comparing positions.
+        let instrs = &module.functions[0].instructions;
+        let mut first_store: Option<usize> = None;
+        let mut first_null_check: Option<usize> = None;
+        for (i, instr) in instrs.iter().enumerate() {
+            if matches!(instr, Instruction::I32Store { .. }) && first_store.is_none() {
+                first_store = Some(i);
+            }
+            if matches!(instr, Instruction::I32Eqz) && first_null_check.is_none() {
+                first_null_check = Some(i);
+            }
+        }
+        let store_pos = first_store.expect("must contain i32.store");
+        let null_check_pos = first_null_check.expect("must contain i32.eqz");
+        assert!(
+            null_check_pos < store_pos,
+            "Null check (i32.eqz at {null_check_pos}) MUST precede store \
+             (i32.store at {store_pos}). v0.4.0 hoisted the store above \
+             the check, which would null-deref. v0.5.0+ closes this; this \
+             test pins it."
+        );
+
+        // Output must validate.
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // Pipeline order regression: PR #99 added a const+drop peephole
+    // inside `vacuum`, but `vacuum` only ran BEFORE `dead-stores` /
+    // `dead-locals`, so the const+drop pairs those passes create were
+    // never folded. The pipeline now runs `vacuum` again as
+    // `vacuum-final` after both dead-* passes. This test pins that the
+    // peephole actually catches the in-pipeline residue.
+
+    #[test]
+    fn test_vacuum_final_folds_const_drop_from_dead_local() {
+        // A function with a dead local that gets neutralized by
+        // dead-locals: the LocalSet becomes Drop, leaving the i32.const
+        // pushed and immediately Drop'd.
+        let wat = r#"(module
+            (func $f (param i32) (result i32)
+                (local i32) ;; idx 1 — declared, never read
+                i32.const -22
+                local.set 1
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        // Step 1: dead-locals neutralizes LocalSet to Drop.
+        optimize::eliminate_dead_locals(&mut module).expect("dead_locals");
+
+        let has_drop_after_dead_locals = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Drop));
+        assert!(
+            has_drop_after_dead_locals,
+            "Sanity: dead-locals must have inserted a Drop"
+        );
+
+        // Step 2: final vacuum sweep should fold the `i32.const; Drop`
+        // pair created in step 1.
+        optimize::vacuum(&mut module).expect("vacuum_final");
+
+        let drops_after = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Drop))
+            .count();
+        let consts_after = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Const(-22)))
+            .count();
+        assert_eq!(
+            drops_after, 0,
+            "Final vacuum must have folded the const+drop pair: \
+             {} drops remained, {} i32.const -22 instructions remained",
+            drops_after, consts_after
+        );
+        assert_eq!(consts_after, 0, "The dead constant should also be gone");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
 }

@@ -50,7 +50,7 @@ enum Commands {
         attestation: bool,
 
         /// Select specific optimization passes (comma-separated)
-        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals
+        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
         /// Example: --passes inline,constant-folding,dce
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
@@ -506,6 +506,22 @@ fn optimize_command(
             .context("Dead-local elimination failed")?;
         let after = count_instructions(&module);
         track_pass("dead-locals", before, after);
+    }
+
+    // Final vacuum sweep: dead-stores neutralizes LocalSet → Drop and
+    // dead-locals neutralizes LocalSet/LocalTee. The peephole inside
+    // vacuum_instructions folds `pure_push; Drop` pairs (PR #99). But
+    // the earlier vacuum runs BEFORE these passes, so the const+drop
+    // pairs they create never get cleaned up by it. A second sweep
+    // closes the loop. Trades ~tens of milliseconds for the bytes that
+    // would otherwise survive as orphan `i32.const N; drop` residues
+    // in functions matching the gale default-then-override pattern.
+    if should_run("vacuum-final") {
+        println!("  Running: vacuum-final");
+        let before = count_instructions(&module);
+        loom_core::optimize::vacuum(&mut module).context("Final vacuum failed")?;
+        let after = count_instructions(&module);
+        track_pass("vacuum-final", before, after);
     }
 
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
