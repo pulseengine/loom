@@ -10683,6 +10683,95 @@ pub mod optimize {
                     Expr::Unary { operand, .. } => operand.is_pure(),
                 }
             }
+
+            /// Estimate the wasm-encoded byte cost of materializing this
+            /// expression once.
+            fn cost_bytes(&self) -> usize {
+                match self {
+                    Expr::Unknown => 0,
+                    Expr::Const32(v) => 1 + signed_leb128_bytes_i32(*v),
+                    Expr::Const64(v) => 1 + signed_leb128_bytes_i64(*v),
+                    Expr::LocalGet(idx) => 1 + unsigned_leb128_bytes(*idx as u64),
+                    Expr::Binary { left, right, .. } => left.cost_bytes() + right.cost_bytes() + 1,
+                    Expr::Unary { operand, .. } => operand.cost_bytes() + 1,
+                }
+            }
+
+            /// Net byte savings from CSE-ing N occurrences of this
+            /// expression. Positive = win, non-positive = skip.
+            ///
+            /// Cost model:
+            ///   first occurrence:  keep original + add local.tee N
+            ///                      (~2 bytes for opcode + LEB128 idx,
+            ///                      assuming idx ≤ 127)
+            ///   each later use:    replace original with local.get N
+            ///                      (~2 bytes), saving (cost - 2) bytes
+            ///   header growth:     +2 bytes for new local declaration
+            ///                      (1 byte count + 1 byte type)
+            ///
+            /// So:  savings = (N-1) * (cost - 2) - 2 (tee) - 2 (header)
+            ///
+            /// Examples (with this gate):
+            ///   i32.const 42 (cost=2, N=2):  savings = 1*0 - 4 = -4  → skip
+            ///   i32.const 42 (cost=2, N=10): savings = 9*0 - 4 = -4  → skip
+            ///   i32.add of LocalGet+Const42 (cost=5, N=2):
+            ///                                 savings = 1*3 - 4 = -1  → skip
+            ///   i32.add of LocalGet+Const42 (cost=5, N=3):
+            ///                                 savings = 2*3 - 4 = 2   → keep
+            ///   big i32.const (cost=6, N=2):  savings = 1*4 - 4 = 0   → skip
+            ///   big i32.const (cost=6, N=3):  savings = 2*4 - 4 = 4   → keep
+            ///
+            /// Tuned against the gale v0.4.0 measurement (CSE-ing
+            /// `-EINVAL` into local.tee/local.get grew kernel-FFI code
+            /// section by +6.3%).
+            fn worth_dedup(&self, occurrences: usize) -> bool {
+                if occurrences < 2 {
+                    return false;
+                }
+                let cost = self.cost_bytes() as i64;
+                let savings_per_later = (cost - 2).max(0); // never negative — replacing 1-byte materialization with 2-byte local.get is a regression we won't take
+                let net = (occurrences as i64 - 1) * savings_per_later - 4;
+                net > 0
+            }
+        }
+
+        // LEB128 byte-length helpers (matches wasm-encoder's encoding).
+        fn unsigned_leb128_bytes(mut v: u64) -> usize {
+            let mut n = 1;
+            while v >= 0x80 {
+                v >>= 7;
+                n += 1;
+            }
+            n
+        }
+        fn signed_leb128_bytes_i32(v: i32) -> usize {
+            // Signed LEB128: bits needed including sign, divided by 7
+            // (round up). Small values: -64..=63 fit in 1 byte; -8192..=8191
+            // in 2 bytes; etc.
+            let mut v = v as i64;
+            let mut n = 0;
+            loop {
+                n += 1;
+                let byte = (v & 0x7f) as u8;
+                v >>= 7;
+                let sign_bit_set = byte & 0x40 != 0;
+                if (v == 0 && !sign_bit_set) || (v == -1 && sign_bit_set) {
+                    return n;
+                }
+            }
+        }
+        fn signed_leb128_bytes_i64(v: i64) -> usize {
+            let mut v = v;
+            let mut n = 0;
+            loop {
+                n += 1;
+                let byte = (v & 0x7f) as u8;
+                v >>= 7;
+                let sign_bit_set = byte & 0x40 != 0;
+                if (v == 0 && !sign_bit_set) || (v == -1 && sign_bit_set) {
+                    return n;
+                }
+            }
         }
 
         for func in &mut module.functions {
@@ -10860,13 +10949,19 @@ pub mod optimize {
             let mut duplicates_to_eliminate = Vec::new();
 
             for (hash, positions) in &hash_to_positions {
-                if positions.len() > 1 {
-                    // Check if the expression is pure
-                    if let Some((expr, _)) = expr_at_position.get(&positions[0]) {
-                        if expr.is_pure() {
-                            duplicates_to_eliminate.push((*hash, positions.clone()));
-                        }
-                    }
+                if positions.len() > 1
+                    && let Some((expr, _)) = expr_at_position.get(&positions[0])
+                    && expr.is_pure()
+                    // Cost gate: deduplicating into local.tee/local.get
+                    // adds 4 fixed bytes (tee + new local declaration)
+                    // plus amortizes only on the (N-1) later occurrences.
+                    // For cheap expressions (1-2 byte materialization) the
+                    // replacement is always a regression. For 5-byte
+                    // expressions it breaks even at N=3. Skip when the
+                    // net savings are non-positive.
+                    && expr.worth_dedup(positions.len())
+                {
+                    duplicates_to_eliminate.push((*hash, positions.clone()));
                 }
             }
 
@@ -13652,13 +13747,66 @@ mod tests {
     }
 
     #[test]
-    fn test_cse_phase4_duplicate_constants() {
-        // Test that CSE Phase 4 eliminates duplicate constants
-        // Use a case where the same constant is used multiple times in expressions
+    fn test_cse_phase4_duplicate_constants_above_cost_threshold() {
+        // CSE-ing duplicate constants is only a size win when the constant
+        // materializes in more bytes than the local.tee/local.get pair plus
+        // the new local-declaration overhead. Use a 5-byte LEB128 value
+        // (i32.const 0x12345678) so dedup is profitable.
+        //
+        // The earlier version of this test used `i32.const 42` (a 2-byte
+        // total), which CSE would dedup for instruction-count savings but
+        // grew code-section bytes. v0.6.0 added a cost gate (Expr::worth_dedup)
+        // that suppresses this regression. See gale v0.4.0 measurement:
+        // CSE-ing -EINVAL grew kernel-FFI code section by +6.3%.
         let wat = r#"(module
             (func $test (result i32)
                 (local $result i32)
-                ;; Use the same constant multiple times
+                ;; Use the same large constant multiple times (5-byte LEB128)
+                (local.set $result (i32.const 0x12345678))
+                (local.set $result (i32.add (local.get $result) (i32.const 0x12345678)))
+                (local.set $result (i32.add (local.get $result) (i32.const 0x12345678)))
+                (local.get $result)
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).unwrap();
+
+        let count_before = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Const(0x1234_5678)))
+            .count();
+        assert_eq!(
+            count_before, 3,
+            "Should have 3 duplicate constants before CSE"
+        );
+
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).unwrap();
+
+        let const_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Const(0x1234_5678)))
+            .count();
+
+        assert!(
+            const_count < count_before,
+            "CSE should reduce duplicates of large constants (5+ byte LEB128)"
+        );
+
+        let wasm_bytes = encode::encode_wasm(&module).unwrap();
+        wasmparser::validate(&wasm_bytes).expect("Generated WASM should be valid");
+    }
+
+    #[test]
+    fn test_cse_phase4_keeps_small_constants() {
+        // Mirror of the above: a 2-byte constant must NOT be deduplicated,
+        // because local.tee/local.get + new-local cost more than the
+        // original two materializations. Pin the gale regression fix:
+        // the CSE pass must leave cheap-constant patterns unchanged.
+        let wat = r#"(module
+            (func $test (result i32)
+                (local $result i32)
                 (local.set $result (i32.const 42))
                 (local.set $result (i32.add (local.get $result) (i32.const 42)))
                 (local.set $result (i32.add (local.get $result) (i32.const 42)))
@@ -13667,45 +13815,34 @@ mod tests {
         )"#;
 
         let mut module = parse::parse_wat(wat).unwrap();
+        let locals_before = module.functions[0].locals.clone();
+        let instr_count_before = module.functions[0].instructions.len();
 
-        // Count i32.const 42 instructions before CSE
-        let count_before = module.functions[0]
-            .instructions
-            .iter()
-            .filter(|i| matches!(i, Instruction::I32Const(42)))
-            .count();
-        assert_eq!(
-            count_before, 3,
-            "Should have 3 duplicate constants before CSE"
-        );
-
-        // Apply enhanced CSE with Phase 4
         optimize::eliminate_common_subexpressions_enhanced(&mut module).unwrap();
 
-        // After CSE, should have 1 i32.const + local.tee, then 2 local.get
+        // Cheap constants must survive — neither locals nor instruction
+        // count may grow when the cost gate refuses dedup.
+        assert_eq!(
+            module.functions[0].locals, locals_before,
+            "CSE on cheap constants must not add locals (would grow function header)"
+        );
+        assert_eq!(
+            module.functions[0].instructions.len(),
+            instr_count_before,
+            "CSE on cheap constants must not add local.tee/local.get instructions"
+        );
+
         let const_count = module.functions[0]
             .instructions
             .iter()
             .filter(|i| matches!(i, Instruction::I32Const(42)))
             .count();
-        let local_tee_count = module.functions[0]
-            .instructions
-            .iter()
-            .filter(|i| matches!(i, Instruction::LocalTee(_)))
-            .count();
-
-        // Should eliminate duplicate constants
-        assert!(
-            const_count < count_before,
-            "CSE should reduce number of i32.const instructions"
+        assert_eq!(
+            const_count, 3,
+            "Cheap constants must survive CSE — dedup would grow code size. \
+             See docs/research/gale-v0.4.0/measurement-report.md"
         );
 
-        if const_count == 1 && local_tee_count >= 1 {
-            // CSE worked - we have 1 const with tee and gets for duplicates
-            eprintln!("✓ CSE Phase 4 successfully eliminated duplicates");
-        }
-
-        // Verify the optimized module is still valid
         let wasm_bytes = encode::encode_wasm(&module).unwrap();
         wasmparser::validate(&wasm_bytes).expect("Generated WASM should be valid");
     }
