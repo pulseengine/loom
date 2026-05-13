@@ -5,6 +5,90 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-13
+
+Infrastructure-and-cleanup release. Closes the trivial pipeline-order
+gap in v0.6.0's vacuum, lands function-summary interprocedural
+analysis (IPA) as the foundation for cross-call optimization, and
+adds verification-aware canonicalization as the IR-normalization
+substrate that downstream passes (and the Z3 verifier) compose
+better against.
+
+### Optimization
+
+- **Pipeline order fix: `vacuum-final` step** (PR-E, #101). v0.6.0's
+  PR #99 added a `pure_push;Drop` peephole to `vacuum`, but vacuum
+  ran BEFORE `dead-stores`/`dead-locals` in the pipeline — so the
+  const+drop pairs those passes create were never folded. Added a
+  second `vacuum-final` sweep after the dead-* passes. **Measured on
+  gale_in_baseline (1.9 KB Verus-verified kernel FFI): code section
+  811 B (baseline) → 795 B (v0.7.0), -1.97% net.** Compared to v0.5.0's
+  +6.3% regression, that's a 6.7-point swing on real kernel-scheduler
+  code, with a 30-LOC change.
+
+- **Function-summary interprocedural analysis (IPA)** (PR-F, #102).
+  New module `loom-core/src/summary.rs` (~250 LOC). Computes
+  per-function `is_pure` / `is_no_trap` summaries via
+  optimistic-then-demote fixpoint over the call graph. `CallIndirect`
+  and unsupported instructions conservatively mark caller impure +
+  may-trap. Mutual recursion converges naturally. Vacuum's
+  `peephole_const_drop` extended to fold `Call f; Drop` for pure +
+  no-trap + zero-arg + single-result helpers — the safe minimum. No
+  measurable change on gale (no zero-arg drops there); infrastructure
+  for future CSE cross-call dedup and DCE-on-pure-calls.
+
+- **Verification-aware canonicalization pass** (PR-G, #103). Two
+  rewrites:
+  - `if/else → select` for single-value if/else whose both arms are
+    each one pure pusher. Wasm's `select` is path-INSENSITIVE, which
+    makes every downstream pass and the Z3 verifier reason about it
+    without branch analysis. Restricted to pure-pusher arms (constants,
+    `local.get`, `global.get`) because `select` evaluates both arms
+    eagerly — a trapping or side-effecting arm would change behavior.
+  - `local.set X; local.get X → local.tee X` peephole. Equivalent
+    stack effect, saves 2 bytes per occurrence. Index must match
+    exactly. Safe regardless of context.
+  Wired in early (right after `constant-folding`, before `cse`) so
+  the rest of the pipeline sees canonical forms.
+
+### Tests
+
+- New tests across PR-E, PR-F, PR-G (288+ loom-core lib tests pass).
+- Soundness regression test pinning the v0.4.0-era store-hoist
+  invariant (`test_null_check_before_store_preserved_through_optimization`):
+  runs the full v0.7.0 pipeline on the gale `sem_count_take` shape
+  and asserts `i32.eqz` precedes `i32.store`.
+
+### Research
+
+Four v0.7.0-planning research documents land alongside the code:
+
+- `docs/research/v0.7.0/issue-triage-68-75.md` — verdicts on #68-#75
+  (notably: #69 is a merged PR not an issue; #68 is ~40% already
+  shipped in `fused_optimizer.rs`; #75 duplicates #70).
+- `docs/research/v0.7.0/optimization-methods-survey.md` — 13-family
+  compiler-optimization survey with verdicts for v0.7.0/v0.8.0.
+  Recommended order: function-summary IPA (this release), verification-
+  aware canonicalization (this release), Souper-style verified peephole
+  synthesis, Component-Model adapter specialization, ægraph mid-end
+  (deferred to v0.8.0).
+- `docs/research/v0.7.0/gale-deep-scan.md` — gale-specific opportunity
+  catalog with file:line citations and a 10-clause Verus axiom
+  ingestion shortlist.
+- `docs/research/v0.7.0/algorithmic-solver-feasibility.md` — Souper-
+  shaped SMT-driven peephole synthesis recommended for v0.7.0+,
+  4-5 weeks, ~1500 LOC.
+
+### Deferred to v0.8.0
+
+- Souper-shaped SMT-driven peephole synthesis.
+- Arg-aware extension of the pure-call-drop fold (pop N preceding
+  pure pushers when arg-count is N).
+- Pure-arithmetic-expression arms in canonicalize (broader if/select).
+- CSE cross-call dedup using summaries.
+- DCE on pure calls with unused results.
+- Cranelift-style acyclic ægraph mid-end.
+
 ## [0.6.0] - 2026-05-11
 
 This release is driven entirely by real-world findings on production
