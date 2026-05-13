@@ -7507,6 +7507,202 @@ pub mod optimize {
         }
     }
 
+    /// Verification-aware canonicalization (v0.7.0 PR-B).
+    ///
+    /// Two rewrites that put the IR in a form the rest of the pipeline
+    /// (and the Z3 verifier) handles more uniformly:
+    ///
+    /// 1. **`if/else → select`**: a single-value `if (result T) ... else ... end`
+    ///    whose two arms are each a single pure-pusher gets rewritten as
+    ///    `then; else; cond; select`. Select is path-insensitive, so
+    ///    every downstream pass and the verifier can reason about it
+    ///    without branch analysis. Force-multiplier for CSE and
+    ///    constant-folding.
+    ///
+    /// 2. **`local.set X; local.get X → local.tee X`**: equivalent stack
+    ///    effect (`[T] → [T]`), saves 2 bytes per occurrence (one fewer
+    ///    instruction encoded with op+idx). Safe regardless of context.
+    ///
+    /// Both transforms are pure rewriting — sound by construction and
+    /// validated by Z3 translation. Place early in the pipeline so
+    /// subsequent passes see canonical forms.
+    pub fn canonicalize(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+
+        for func in &mut module.functions {
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            let guard = ValidationGuard::with_context(func, "canonicalize", ctx.clone());
+            let translator = TranslationValidator::new(func, "canonicalize");
+            let original_instructions = func.instructions.clone();
+
+            // Apply both rewrites. Tee normalization first (peephole),
+            // then if/else → select (structural rewrite). The order
+            // matters: if-to-select can introduce stack patterns that
+            // benefit from a subsequent tee normalization, so we run
+            // tee → if-to-select → tee.
+            func.instructions = canonicalize_tee(&func.instructions);
+            func.instructions = canonicalize_if_to_select(&func.instructions);
+            func.instructions = canonicalize_tee(&func.instructions);
+
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("canonicalize: reverting function (verification rejected)");
+                crate::stats::record_revert("canonicalize");
+                func.instructions = original_instructions;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recognize `LocalSet X; LocalGet X` pairs and replace with
+    /// `LocalTee X`. Equivalent stack effect, saves one instruction
+    /// (2 bytes encoded). Recurses into nested control-flow bodies.
+    fn canonicalize_tee(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
+        let mut i = 0;
+        while i < instructions.len() {
+            let recursed = match &instructions[i] {
+                Instruction::Block { block_type, body } => Instruction::Block {
+                    block_type: block_type.clone(),
+                    body: canonicalize_tee(body),
+                },
+                Instruction::Loop { block_type, body } => Instruction::Loop {
+                    block_type: block_type.clone(),
+                    body: canonicalize_tee(body),
+                },
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => Instruction::If {
+                    block_type: block_type.clone(),
+                    then_body: canonicalize_tee(then_body),
+                    else_body: canonicalize_tee(else_body),
+                },
+                other => other.clone(),
+            };
+
+            // Peek-pattern: LocalSet(X) followed by LocalGet(X) → LocalTee(X).
+            if let Instruction::LocalSet(idx) = &recursed
+                && let Some(Instruction::LocalGet(next_idx)) = instructions.get(i + 1)
+                && idx == next_idx
+            {
+                out.push(Instruction::LocalTee(*idx));
+                i += 2;
+                continue;
+            }
+
+            out.push(recursed);
+            i += 1;
+        }
+        out
+    }
+
+    /// Recognize a single-value `if/else` whose two arms are each one
+    /// pure pusher and rewrite as `then; else; cond; select`.
+    ///
+    /// Pattern:
+    ///   COND_push          ; pure pusher (constant or local/global get)
+    ///   If (result T)
+    ///     then_pusher      ; pure pusher of type T
+    ///   else
+    ///     else_pusher      ; pure pusher of type T
+    ///   end
+    ///
+    /// Becomes:
+    ///   then_pusher        ; eager evaluation — safe because pure
+    ///   else_pusher        ; eager evaluation — safe because pure
+    ///   COND_push          ; condition last, where Select expects it
+    ///   Select
+    ///
+    /// Why "pure pushers" on all three: Select evaluates both arms
+    /// eagerly (no laziness), so a trapping or side-effecting arm
+    /// would change behavior. Restricting to pure pushers preserves
+    /// semantics by construction; broader cases (e.g., arithmetic
+    /// expressions that are themselves pure) can be added later.
+    fn canonicalize_if_to_select(instructions: &[Instruction]) -> Vec<Instruction> {
+        let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
+        let mut i = 0;
+        while i < instructions.len() {
+            let recursed = match &instructions[i] {
+                Instruction::Block { block_type, body } => Instruction::Block {
+                    block_type: block_type.clone(),
+                    body: canonicalize_if_to_select(body),
+                },
+                Instruction::Loop { block_type, body } => Instruction::Loop {
+                    block_type: block_type.clone(),
+                    body: canonicalize_if_to_select(body),
+                },
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => Instruction::If {
+                    block_type: block_type.clone(),
+                    then_body: canonicalize_if_to_select(then_body),
+                    else_body: canonicalize_if_to_select(else_body),
+                },
+                other => other.clone(),
+            };
+
+            // Try the if/else → select pattern. Requires:
+            //   1. recursed is an If with BlockType::Value(_)
+            //   2. then_body and else_body are each exactly one
+            //      pure-pusher instruction.
+            //   3. The previous instruction in `out` (the cond) is
+            //      itself a pure pusher (we'll re-order it).
+            if let Instruction::If {
+                block_type: BlockType::Value(_),
+                then_body,
+                else_body,
+            } = &recursed
+                && then_body.len() == 1
+                && else_body.len() == 1
+                && is_canonical_pure_pusher(&then_body[0])
+                && is_canonical_pure_pusher(&else_body[0])
+                && let Some(last) = out.last()
+                && is_canonical_pure_pusher(last)
+            {
+                let cond = out.pop().unwrap();
+                let then_val = then_body[0].clone();
+                let else_val = else_body[0].clone();
+                out.push(then_val);
+                out.push(else_val);
+                out.push(cond);
+                out.push(Instruction::Select);
+                i += 1;
+                continue;
+            }
+
+            out.push(recursed);
+            i += 1;
+        }
+        out
+    }
+
+    /// Pure pushers that are safe to re-order for `if/else → select`
+    /// canonicalization. Same predicate as vacuum's `is_pure_pusher`
+    /// but without the IPA-call-aware extension — we want strictly
+    /// no-side-effect, no-trap, pure-value-from-constant-or-local
+    /// instructions here.
+    fn is_canonical_pure_pusher(instr: &Instruction) -> bool {
+        matches!(
+            instr,
+            Instruction::I32Const(_)
+                | Instruction::I64Const(_)
+                | Instruction::F32Const(_)
+                | Instruction::F64Const(_)
+                | Instruction::LocalGet(_)
+                | Instruction::GlobalGet(_)
+        )
+    }
+
     /// Vacuum Cleanup Pass (Phase 17 - Issue #20)
     /// Final cleanup pass that removes nops, unwraps trivial blocks, and simplifies degenerate patterns
     pub fn vacuum(module: &mut Module) -> Result<()> {
@@ -16397,6 +16593,134 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // PR-G (v0.7.0): verification-aware canonicalization tests.
+
+    #[test]
+    fn test_canonicalize_if_else_to_select() {
+        // (if (result i32) (then 1) (else 0)) where cond is local.get
+        // → 1; 0; cond; select
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                if (result i32)
+                    i32.const 1
+                else
+                    i32.const 0
+                end
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::canonicalize(&mut module).expect("canonicalize");
+
+        // No If should remain.
+        let has_if = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::If { .. }));
+        assert!(!has_if, "single-value if/else of pure pushers must become select");
+
+        // Select must appear.
+        let has_select = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Select));
+        assert!(has_select, "select must replace the if/else");
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_canonicalize_keeps_complex_if_arms() {
+        // An if/else with multi-instruction arms must NOT be turned
+        // into select — the arms are not single pure pushers, so the
+        // re-ordering would change behavior.
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                if (result i32)
+                    local.get 0
+                    i32.const 1
+                    i32.add
+                else
+                    i32.const 0
+                end
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::canonicalize(&mut module).expect("canonicalize");
+
+        // If must survive — at least one arm has multiple instructions.
+        let has_if = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::If { .. }));
+        assert!(
+            has_if,
+            "if with multi-instruction arms must NOT canonicalize to select"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_localset_localget_to_tee() {
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                (local i32)
+                local.get 0
+                local.set 1
+                local.get 1
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::canonicalize(&mut module).expect("canonicalize");
+
+        let has_tee = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalTee(_)));
+        assert!(has_tee, "local.set;local.get pair must collapse to local.tee");
+
+        // No LocalSet should remain (the pair was the only set).
+        let has_set = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalSet(_)));
+        assert!(!has_set, "local.set should be gone (folded into tee)");
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_canonicalize_does_not_collapse_mismatched_indices() {
+        // local.set 1; local.get 2 — different indices, NOT a tee opportunity.
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                (local i32 i32)
+                local.get 0
+                local.set 1
+                local.get 2
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::canonicalize(&mut module).expect("canonicalize");
+
+        let has_set = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalSet(1)));
+        let has_get = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalGet(2)));
+        assert!(has_set, "local.set 1 must survive (different idx from get)");
+        assert!(has_get, "local.get 2 must survive");
     }
 
     // PR-F (v0.7.0): function-summary IPA enables vacuum to fold

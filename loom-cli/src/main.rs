@@ -50,7 +50,7 @@ enum Commands {
         attestation: bool,
 
         /// Select specific optimization passes (comma-separated)
-        /// Available: inline,precompute,constant-folding,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
+        /// Available: inline,precompute,constant-folding,canonicalize,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
         /// Example: --passes inline,constant-folding,dce
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
@@ -429,6 +429,16 @@ fn optimize_command(
         loom_core::optimize::constant_folding(&mut module).context("Constant folding failed")?;
         let after = count_instructions(&module);
         track_pass("constant-folding", before, after);
+    }
+
+    // Canonicalize early so downstream passes (CSE, branches, dce) see
+    // the if/else → select form and the local.tee normal form.
+    if should_run("canonicalize") {
+        println!("  Running: canonicalize");
+        let before = count_instructions(&module);
+        loom_core::optimize::canonicalize(&mut module).context("Canonicalize failed")?;
+        let after = count_instructions(&module);
+        track_pass("canonicalize", before, after);
     }
 
     if should_run("cse") {
