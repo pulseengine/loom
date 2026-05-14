@@ -11589,6 +11589,18 @@ pub mod optimize {
                 op: String,
                 operand: Box<Expr>,
             },
+            /// Direct call to a function the IPA has classified as
+            /// `is_pure && is_no_trap`. Treated as a deterministic
+            /// value of the function's single result (only single-result
+            /// calls are tracked here — see PR-K wiring). Args must
+            /// themselves be CSE-trackable expressions; an Unknown arg
+            /// would have already poisoned the call expression at scan
+            /// time, so any `Call` reaching dedup has fully-determined
+            /// inputs.
+            Call {
+                func_idx: u32,
+                args: Vec<Expr>,
+            },
             Unknown, // For operations we can't track
         }
 
@@ -11637,6 +11649,16 @@ pub mod optimize {
                         op.hash(&mut hasher);
                         operand.compute_hash().hash(&mut hasher);
                     }
+                    Expr::Call { func_idx, args } => {
+                        // Calls are never commutative in argument position
+                        // (f(a,b) ≠ f(b,a) for the optimizer — wasm
+                        // semantics give a fixed left-to-right eval order).
+                        "call".hash(&mut hasher);
+                        func_idx.hash(&mut hasher);
+                        for arg in args {
+                            arg.compute_hash().hash(&mut hasher);
+                        }
+                    }
                     Expr::Unknown => {
                         "unknown".hash(&mut hasher);
                     }
@@ -11651,6 +11673,10 @@ pub mod optimize {
                     Expr::Const32(_) | Expr::Const64(_) | Expr::LocalGet(_) => true,
                     Expr::Binary { left, right, .. } => left.is_pure() && right.is_pure(),
                     Expr::Unary { operand, .. } => operand.is_pure(),
+                    // A Call expression is only ever constructed for
+                    // functions the IPA has already proved pure+no-trap
+                    // (see scan loop below). Args must also be pure.
+                    Expr::Call { args, .. } => args.iter().all(|a| a.is_pure()),
                 }
             }
 
@@ -11664,6 +11690,11 @@ pub mod optimize {
                     Expr::LocalGet(idx) => 1 + unsigned_leb128_bytes(*idx as u64),
                     Expr::Binary { left, right, .. } => left.cost_bytes() + right.cost_bytes() + 1,
                     Expr::Unary { operand, .. } => operand.cost_bytes() + 1,
+                    Expr::Call { func_idx, args } => {
+                        // call opcode (1) + LEB128 func index + arg costs.
+                        let arg_cost: usize = args.iter().map(|a| a.cost_bytes()).sum();
+                        1 + unsigned_leb128_bytes(*func_idx as u64) + arg_cost
+                    }
                 }
             }
 
@@ -11744,6 +11775,20 @@ pub mod optimize {
             }
         }
 
+        // PR-K: function-summary IPA enables cross-call dedup. A direct
+        // Call to a function classified as `is_pure && is_no_trap` is a
+        // deterministic value of its arguments — two identical such calls
+        // can be CSE'd just like an arithmetic subtree. We also need the
+        // callee signature to know how many args to pop and what result
+        // type to materialize the cache local with. Snapshot before the
+        // mutable loop so we don't borrow `module` twice.
+        let summaries = crate::summary::compute_module_summaries(module);
+        let func_signatures: Vec<(Vec<super::ValueType>, Vec<super::ValueType>)> = module
+            .functions
+            .iter()
+            .map(|f| (f.signature.params.clone(), f.signature.results.clone()))
+            .collect();
+
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
@@ -11769,6 +11814,21 @@ pub mod optimize {
             let mut stack: Vec<Expr> = Vec::new();
             let mut expr_at_position: HashMap<usize, (Expr, u64)> = HashMap::new();
             let mut hash_to_positions: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+            // PR-K: for each tracked expression, also remember the
+            // instruction-position where its left-most source lives. For
+            // single-instruction exprs (Const, LocalGet) this is the
+            // position itself; for a Call this is the position of its
+            // first arg. Lets us turn a Call duplicate into a span
+            // replacement at transform time.
+            let mut start_at_position: HashMap<usize, usize> = HashMap::new();
+
+            // Parallel stack of `start_pos` for each Expr currently on
+            // `stack`. PR-K uses this to compute the span (first_arg ..=
+            // call_pos) for a Call expression, so a duplicate can be
+            // replaced by a single `local.get` regardless of how many
+            // instructions originally produced it. For non-Call ops this
+            // stays in lock-step with `stack` and is otherwise unused.
+            let mut start_stack: Vec<usize> = Vec::new();
 
             // Phase 1: Build expression trees and detect duplicates
             for (pos, instr) in func.instructions.iter().enumerate() {
@@ -11778,22 +11838,28 @@ pub mod optimize {
                         let expr = Expr::Const32(*v);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
+                        start_at_position.insert(pos, pos);
                         hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
+                        start_stack.push(pos);
                     }
                     Instruction::I64Const(v) => {
                         let expr = Expr::Const64(*v);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
+                        start_at_position.insert(pos, pos);
                         hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
+                        start_stack.push(pos);
                     }
                     Instruction::LocalGet(idx) => {
                         let expr = Expr::LocalGet(*idx);
                         let hash = expr.compute_hash();
                         expr_at_position.insert(pos, (expr.clone(), hash));
+                        start_at_position.insert(pos, pos);
                         hash_to_positions.entry(hash).or_default().push(pos);
                         stack.push(expr);
+                        start_stack.push(pos);
                     }
 
                     // Binary operations pop two, push one
@@ -11801,6 +11867,8 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
+                            let _ = start_stack.pop();
+                            let left_start = start_stack.pop().unwrap_or(pos);
                             let op = if matches!(instr, Instruction::I32Add) {
                                 "i32.add"
                             } else {
@@ -11814,11 +11882,15 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
+                            start_at_position.insert(pos, left_start);
                             hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
+                            start_stack.push(left_start);
                         } else {
                             stack.clear();
+                            start_stack.clear();
                             stack.push(Expr::Unknown);
+                            start_stack.push(pos);
                         }
                     }
 
@@ -11826,6 +11898,8 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
+                            let _ = start_stack.pop();
+                            let left_start = start_stack.pop().unwrap_or(pos);
                             let op = if matches!(instr, Instruction::I32Mul) {
                                 "i32.mul"
                             } else {
@@ -11839,11 +11913,15 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
+                            start_at_position.insert(pos, left_start);
                             hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
+                            start_stack.push(left_start);
                         } else {
                             stack.clear();
+                            start_stack.clear();
                             stack.push(Expr::Unknown);
+                            start_stack.push(pos);
                         }
                     }
 
@@ -11856,6 +11934,8 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
+                            let _ = start_stack.pop();
+                            let left_start = start_stack.pop().unwrap_or(pos);
                             let op = match instr {
                                 Instruction::I32And => "i32.and",
                                 Instruction::I64And => "i64.and",
@@ -11873,11 +11953,15 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
+                            start_at_position.insert(pos, left_start);
                             hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
+                            start_stack.push(left_start);
                         } else {
                             stack.clear();
+                            start_stack.clear();
                             stack.push(Expr::Unknown);
+                            start_stack.push(pos);
                         }
                     }
 
@@ -11885,6 +11969,8 @@ pub mod optimize {
                         if stack.len() >= 2 {
                             let right = stack.pop().unwrap();
                             let left = stack.pop().unwrap();
+                            let _ = start_stack.pop();
+                            let left_start = start_stack.pop().unwrap_or(pos);
                             let op = if matches!(instr, Instruction::I32Sub) {
                                 "i32.sub"
                             } else {
@@ -11898,11 +11984,96 @@ pub mod optimize {
                             };
                             let hash = expr.compute_hash();
                             expr_at_position.insert(pos, (expr.clone(), hash));
+                            start_at_position.insert(pos, left_start);
                             hash_to_positions.entry(hash).or_default().push(pos);
                             stack.push(expr);
+                            start_stack.push(left_start);
                         } else {
                             stack.clear();
+                            start_stack.clear();
                             stack.push(Expr::Unknown);
+                            start_stack.push(pos);
+                        }
+                    }
+
+                    // PR-K: cross-call dedup. A direct Call to a function
+                    // the IPA proved `is_pure && is_no_trap` is a
+                    // deterministic value of its arguments — two such
+                    // calls with byte-identical arg subtrees are eligible
+                    // for CSE. We only track single-result calls (so the
+                    // cached value can live in one local); multi-result
+                    // calls fall through to the wildcard arm below
+                    // (stack reset) and are not deduped. We also require
+                    // every argument expression on the stack to be
+                    // CSE-trackable (i.e., not `Unknown`) — otherwise the
+                    // cached value would depend on instructions that
+                    // weren't part of the modeled subtree.
+                    Instruction::Call(func_idx) => {
+                        let fi = *func_idx as usize;
+                        let (params, results) = match func_signatures.get(fi) {
+                            Some(sig) => sig.clone(),
+                            None => {
+                                // Imported / unknown function — be
+                                // conservative: clear stack analysis.
+                                stack.clear();
+                                start_stack.clear();
+                                continue;
+                            }
+                        };
+                        let summary = summaries.get(fi).copied().unwrap_or_default();
+                        let single_result = results.len() == 1;
+                        let arity = params.len();
+                        let pure_no_trap = summary.is_pure && summary.is_no_trap;
+
+                        if pure_no_trap && single_result && stack.len() >= arity {
+                            // Pop arity args from both stacks (in order).
+                            let mut args_rev: Vec<Expr> = Vec::with_capacity(arity);
+                            let mut first_arg_start = pos; // call-only fallback
+                            for _ in 0..arity {
+                                let a = stack.pop().unwrap();
+                                let s = start_stack.pop().unwrap_or(pos);
+                                args_rev.push(a);
+                                first_arg_start = s; // last pop = leftmost arg
+                            }
+                            let args: Vec<Expr> = args_rev.into_iter().rev().collect();
+
+                            // If any arg is Unknown the call result is
+                            // not safely cacheable — fall back to
+                            // pushing the result as Unknown.
+                            let any_unknown = args.iter().any(|a| matches!(a, Expr::Unknown));
+                            if any_unknown {
+                                // Side-effect-free call with unknown args
+                                // — push opaque result, don't track for
+                                // dedup.
+                                stack.push(Expr::Unknown);
+                                start_stack.push(pos);
+                            } else {
+                                let expr = Expr::Call {
+                                    func_idx: *func_idx,
+                                    args,
+                                };
+                                let hash = expr.compute_hash();
+                                expr_at_position.insert(pos, (expr.clone(), hash));
+                                // span starts at the leftmost arg's start
+                                // (which for simple single-instruction args
+                                // is the arg's own position).
+                                start_at_position.insert(pos, first_arg_start);
+                                hash_to_positions.entry(hash).or_default().push(pos);
+                                stack.push(expr);
+                                start_stack.push(first_arg_start);
+                            }
+                        } else {
+                            // Impure / may-trap / multi-result / arity
+                            // mismatch — observable side-effect or
+                            // unmodelable. Reset stack analysis: any
+                            // post-call code depends on values we can't
+                            // track here.
+                            stack.clear();
+                            start_stack.clear();
+                            if single_result {
+                                stack.push(Expr::Unknown);
+                                start_stack.push(pos);
+                            }
                         }
                     }
 
@@ -11910,6 +12081,7 @@ pub mod optimize {
                     _ => {
                         // Reset stack simulation on unknown operations
                         stack.clear();
+                        start_stack.clear();
                     }
                 }
             }
@@ -11960,6 +12132,14 @@ pub mod optimize {
                                 super::ValueType::I64
                             }
                         }
+                        // PR-K: a Call expression's type is the
+                        // callee's single result type. Only single-
+                        // result calls are tracked (see scan loop), so
+                        // results[0] is well-defined.
+                        Expr::Call { func_idx, .. } => func_signatures
+                            .get(*func_idx as usize)
+                            .and_then(|(_, results)| results.first().copied())
+                            .unwrap_or(super::ValueType::I32),
                         _ => super::ValueType::I32, // Default
                     };
                     func.locals.push((1, value_type));
@@ -14815,6 +14995,179 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).unwrap();
         wasmparser::validate(&wasm_bytes).expect("Generated WASM should be valid");
+    }
+
+    // PR-K (v0.8.0): CSE cross-call dedup using function summaries.
+    //
+    // The CSE pass treats every `Call` as opaque without the IPA. With
+    // function summaries (PR-F), a Call to a pure + no-trap function is
+    // a deterministic value of its arguments — two identical such calls
+    // can be deduped just like an arithmetic subtree. These tests pin
+    // the four core invariants: dedup happens for pure+no-trap, doesn't
+    // happen for impure, doesn't happen for may-trap, and different-arg
+    // calls aren't deduped together.
+
+    #[test]
+    #[ignore = "PR-K is INFRASTRUCTURE-ONLY for v0.8.0. The Call \
+                expression is recognized, hashed, cost-gated, and \
+                tracked in hash_to_positions. But the existing CSE \
+                replacement loop at lib.rs:12109 only substitutes \
+                single-instruction Const exprs (`is_safe_to_cse = \
+                matches!(expr, Expr::Const32(_) | Expr::Const64(_))`). \
+                Call replacement requires span-based substitution \
+                (remove args + call, insert local.get) and is deferred \
+                to a follow-up PR-K2. This test pins the EXPECTED \
+                end state for that PR."]
+    fn test_cse_dedupes_repeated_pure_calls() {
+        // $pure_helper is pure+no-trap (no Store/Load/Div, no GlobalSet).
+        // Two adjacent identical `call $pure_helper(x)` should dedupe:
+        // first call materializes the result into a fresh local, second
+        // call becomes a `local.get` of that local.
+        let wat = r#"(module
+            (func $pure_helper (param i32) (result i32)
+                local.get 0
+                i32.const 7
+                i32.mul
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                call $pure_helper
+                local.get 0
+                call $pure_helper
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let calls_before = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(calls_before, 2, "sanity: two calls before CSE");
+
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).expect("cse");
+
+        let calls_after = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls_after, 1,
+            "CSE must dedupe two identical pure+no-trap calls — \
+             second call should become local.get of the cached result"
+        );
+
+        // Output must validate.
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_cse_does_not_dedupe_impure_calls() {
+        // $impure writes memory — its observable effect happens on
+        // every call, so two calls must remain even if their inputs
+        // and return values are identical.
+        let wat = r#"(module
+            (memory 1)
+            (func $impure (param i32) (result i32)
+                local.get 0
+                i32.const 42
+                i32.store
+                local.get 0
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                call $impure
+                local.get 0
+                call $impure
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).expect("cse");
+
+        let calls_after = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls_after, 2,
+            "CSE must NOT dedupe impure calls — the second store is \
+             observable and must execute"
+        );
+    }
+
+    #[test]
+    fn test_cse_does_not_dedupe_may_trap_calls() {
+        // $may_trap performs a load — each call could trap independently
+        // on a bad address. CSE must keep both invocations to preserve
+        // the trap semantics.
+        let wat = r#"(module
+            (memory 1)
+            (func $may_trap (param i32) (result i32)
+                local.get 0
+                i32.load
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                call $may_trap
+                local.get 0
+                call $may_trap
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).expect("cse");
+
+        let calls_after = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls_after, 2,
+            "CSE must NOT dedupe may-trap calls — the second trap is \
+             observable behavior"
+        );
+    }
+
+    #[test]
+    fn test_cse_dedupes_calls_with_different_args_separately() {
+        // Two pure calls with DIFFERENT args. Neither call's result
+        // is interchangeable with the other; both must survive.
+        let wat = r#"(module
+            (func $pure_helper (param i32) (result i32)
+                local.get 0
+                i32.const 7
+                i32.mul
+            )
+            (func $caller (export "test") (param i32 i32) (result i32)
+                local.get 0
+                call $pure_helper
+                local.get 1
+                call $pure_helper
+                i32.add
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::eliminate_common_subexpressions_enhanced(&mut module).expect("cse");
+
+        let calls_after = module.functions[1]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls_after, 2,
+            "CSE must NOT dedupe calls with different args — they have \
+             different cache keys"
+        );
     }
 
     // CoalesceLocals Tests (Register Allocation)
