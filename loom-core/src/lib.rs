@@ -19,6 +19,14 @@ pub mod stack;
 /// passes can reason across `Call` boundaries.
 pub mod summary;
 
+/// Peephole synthesis (Souper-shaped MVP, v0.8.0 PR-L).
+///
+/// Minimal first cut of the algorithmic-solver direction from
+/// `docs/research/v0.7.0/algorithmic-solver-feasibility.md`. Ships a
+/// small set of hand-curated arithmetic-identity rules with documented
+/// algebraic proofs; future PRs grow the candidate set.
+pub mod peephole_synth;
+
 /// Optimization observability counters (revert counts per pass).
 pub mod stats;
 
