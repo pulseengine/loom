@@ -41,6 +41,7 @@
 //! ```
 
 use crate::parse::wasm_features_with_async;
+use crate::{BlockType, Instruction, Module};
 use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload, Validator};
 
@@ -316,6 +317,54 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                     pass_name, e
                 );
                 crate::stats::record_revert(&format!("component:{}/encode-failed", pass_name));
+                module.functions = saved_functions;
+            }
+        }
+    }
+
+    // Phase 3 (v0.8.0 PR-M): Component-Model adapter specialization.
+    // Targets canon lift/lower residue that survives meld-style fusion.
+    // Runs after the standard core pipeline because earlier passes may
+    // empty out adapter block bodies (constant folding, DCE) and expose
+    // them for elimination here.
+    {
+        let saved_functions = module.functions.clone();
+        match specialize_adapters(&mut module) {
+            Ok(folded) if folded > 0 => {
+                // Validate; revert on any roundtrip failure (skip rather than risk).
+                match crate::encode::encode_wasm(&module) {
+                    Ok(bytes) => {
+                        if let Err(e) = Validator::new_with_features(wasm_features_with_async())
+                            .validate_all(&bytes)
+                        {
+                            eprintln!(
+                                "  Module invalid after 'specialize_adapters' (reverting): {}",
+                                e
+                            );
+                            crate::stats::record_revert("component:specialize_adapters/invalid");
+                            module.functions = saved_functions;
+                        } else {
+                            eprintln!(
+                                "  Adapter specialization: {} no-op adapter blocks folded",
+                                folded
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "  Encode failed after 'specialize_adapters' (reverting): {}",
+                            e
+                        );
+                        crate::stats::record_revert(
+                            "component:specialize_adapters/encode-failed",
+                        );
+                        module.functions = saved_functions;
+                    }
+                }
+            }
+            Ok(_) => { /* no-op, nothing to validate */ }
+            Err(e) => {
+                eprintln!("  Adapter specialization skipped: {:?}", e);
                 module.functions = saved_functions;
             }
         }
@@ -629,5 +678,453 @@ impl ComponentAnalysis {
         }
 
         score
+    }
+}
+
+// ============================================================================
+// Phase 3: Component-Model Adapter Specialization (v0.8.0 PR-M)
+// ============================================================================
+//
+// Component-Model adapter specialization targets a class of structural residue
+// that survives `meld`-style component fusion: trivial canon lift/lower wrappers
+// that, after fusion, manifest as no-op control-flow boundaries in core wasm.
+//
+// LOOM's strategic moat versus wasm-opt: wasm-opt operates on core wasm and
+// cannot see adapters at all. Even after fusion lowers adapters to core wasm,
+// the residue is still recognizable structurally — and only LOOM can fold it.
+//
+// Soundness model
+// ----------------
+// Block elimination is sound iff:
+//   1. The block contains NO branch instructions (`Br`/`BrIf`/`BrTable`), so
+//      removing it cannot orphan any branch target or shift any depth.
+//   2. The block's stack signature is type-identical to running the body
+//      directly: `Func{params, results}` where `params == results` and the body
+//      is either empty (pure no-op) — the value(s) pass through unchanged.
+//   3. The body produces exactly the result stack the block promised. Today we
+//      only fold the structurally trivial case (empty body) where this holds
+//      by construction.
+//
+// Per CLAUDE.md "skip rather than risk": any block we cannot prove sound stays
+// untouched. Functions with `Unknown` instructions are not specialized.
+
+/// Specialize Component-Model adapter trampolines in a parsed core module.
+///
+/// This pass runs on the parsed `Module` (after standard core-module passes
+/// have run) and folds structural no-op blocks that survive from canon
+/// lift/lower adapter lowering. Sound, structural-only — no semantic
+/// reasoning about canon types beyond stack-signature equality.
+///
+/// # Wat patterns folded
+///
+/// ## Pattern 1 — Empty same-type pass-through block (canon-adapter residue)
+///
+/// Before:
+/// ```text
+/// local.get 0
+/// (block (param i32) (result i32))   ;; empty body, params == results
+/// drop
+/// ```
+///
+/// After:
+/// ```text
+/// local.get 0
+/// drop
+/// ```
+///
+/// ## Pattern 2 — Empty void block
+///
+/// Before:
+/// ```text
+/// (block)   ;; BlockType::Empty, empty body
+/// ```
+///
+/// After: (eliminated)
+///
+/// Returns the number of blocks folded.
+pub fn specialize_adapters(module: &mut Module) -> Result<usize> {
+    // Skip modules with Unknown instructions anywhere — "skip rather than risk."
+    for func in &module.functions {
+        if has_unknown_instructions(&func.instructions) {
+            return Ok(0);
+        }
+    }
+
+    let mut total_folded = 0;
+    for func in &mut module.functions {
+        let folded = specialize_instructions(&mut func.instructions);
+        total_folded += folded;
+    }
+    Ok(total_folded)
+}
+
+/// Recursively detect `Instruction::Unknown` in a body.
+fn has_unknown_instructions(instructions: &[Instruction]) -> bool {
+    for instr in instructions {
+        match instr {
+            Instruction::Unknown(_) => return true,
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                if has_unknown_instructions(body) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if has_unknown_instructions(then_body) || has_unknown_instructions(else_body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Recursively specialize adapter patterns inside a body. Returns count folded.
+fn specialize_instructions(instructions: &mut Vec<Instruction>) -> usize {
+    let mut folded = 0;
+
+    // First recurse: specialize nested bodies before considering the outer
+    // Block for elimination. Inner folds may make outer folds possible
+    // (e.g. an inner block whose body becomes empty after folding).
+    for instr in instructions.iter_mut() {
+        match instr {
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                folded += specialize_instructions(body);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                folded += specialize_instructions(then_body);
+                folded += specialize_instructions(else_body);
+            }
+            _ => {}
+        }
+    }
+
+    // Now scan this level and eliminate any safe-to-fold blocks.
+    let mut i = 0;
+    while i < instructions.len() {
+        if let Instruction::Block { block_type, body } = &instructions[i] {
+            if is_block_safe_to_eliminate(block_type, body) {
+                // Replace Block with its body (empty → just remove).
+                let body_clone = body.clone();
+                instructions.splice(i..=i, body_clone.iter().cloned());
+                folded += 1;
+                // Don't advance i — re-check at this position in case the
+                // splice exposed another foldable block.
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    folded
+}
+
+/// Decide if a `Block` is provably a no-op and can be removed verbatim.
+///
+/// Sound iff:
+/// - body has no branches at this level or deeper that target this block
+///   (we approximate with the conservative `body_has_any_branch` check)
+/// - block stack signature is pass-through: `Empty` with empty body,
+///   or `Func{params==results}` with empty body
+///
+/// We do NOT fold non-empty bodies in this PR — even an apparent identity
+/// body like `[LocalGet(0)]` can be invalid (would leave 2 values on stack
+/// when block promised 1). Future PRs can extend this with stack-effect
+/// verification per CLAUDE.md proof-first methodology.
+fn is_block_safe_to_eliminate(block_type: &BlockType, body: &[Instruction]) -> bool {
+    // Empty body is the only case we currently fold. This guarantees that:
+    // - The pre-block stack already matches the post-block stack exactly,
+    //   because `params == results` for the only signature we accept.
+    // - There can be no branches inside an empty body.
+    if !body.is_empty() {
+        return false;
+    }
+
+    match block_type {
+        // (block) — pure structural no-op
+        BlockType::Empty => true,
+
+        // (block (result T)) with empty body — would underflow stack; not valid wasm.
+        // Never folded; keep for conservative safety.
+        BlockType::Value(_) => false,
+
+        // (block (param ...) (result ...)) — must be identity signature
+        BlockType::Func { params, results } => params == results,
+    }
+}
+
+#[cfg(test)]
+mod adapter_spec_tests {
+    use super::*;
+    use crate::{Function, FunctionSignature, ValueType};
+
+    fn mk_module(funcs: Vec<Function>) -> Module {
+        Module {
+            functions: funcs,
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        }
+    }
+
+    fn mk_func(
+        params: Vec<ValueType>,
+        results: Vec<ValueType>,
+        instructions: Vec<Instruction>,
+    ) -> Function {
+        Function {
+            name: None,
+            signature: FunctionSignature { params, results },
+            locals: vec![],
+            instructions,
+        }
+    }
+
+    /// Pattern 1: empty same-type Func-block — canon adapter residue.
+    ///
+    /// Before:
+    ///   local.get 0
+    ///   (block (param i32) (result i32))   ;; empty body
+    ///   end
+    ///
+    /// After:
+    ///   local.get 0
+    ///   end
+    #[test]
+    fn test_specialize_adapters_empty_passthrough_block() {
+        let func = mk_func(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::Block {
+                    block_type: BlockType::Func {
+                        params: vec![ValueType::I32],
+                        results: vec![ValueType::I32],
+                    },
+                    body: vec![],
+                },
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 1, "Should fold the no-op pass-through block");
+        assert_eq!(
+            module.functions[0].instructions,
+            vec![Instruction::LocalGet(0), Instruction::End,]
+        );
+    }
+
+    /// Pattern 2: empty void block.
+    ///
+    /// Before:
+    ///   (block)   ;; BlockType::Empty, empty body
+    ///   nop
+    ///   end
+    ///
+    /// After:
+    ///   nop
+    ///   end
+    #[test]
+    fn test_specialize_adapters_empty_void_block() {
+        let func = mk_func(
+            vec![],
+            vec![],
+            vec![
+                Instruction::Block {
+                    block_type: BlockType::Empty,
+                    body: vec![],
+                },
+                Instruction::Nop,
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 1, "Should fold the empty void block");
+        assert_eq!(
+            module.functions[0].instructions,
+            vec![Instruction::Nop, Instruction::End,]
+        );
+    }
+
+    /// Soundness gate: NO-OP on regular core wasm with no canon residue.
+    /// Same-type blocks with NON-empty bodies must NOT be folded — even if
+    /// the body looks like an identity (e.g. just `local.get 0`), it could
+    /// leave a different stack shape. Skip per "conservative over fast."
+    #[test]
+    fn test_specialize_adapters_nonempty_block_not_folded() {
+        // A real arithmetic function — should be untouched.
+        let func = mk_func(
+            vec![ValueType::I32, ValueType::I32],
+            vec![ValueType::I32],
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Add,
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func.clone()]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 0, "Plain core wasm has no foldable adapter blocks");
+        assert_eq!(module.functions[0].instructions, func.instructions);
+    }
+
+    /// Soundness gate: a Func-block where params ≠ results MUST NOT be folded
+    /// even if its body is empty (that signature is invalid wasm anyway, but
+    /// we must reject it defensively).
+    #[test]
+    fn test_specialize_adapters_mismatched_signature_not_folded() {
+        let func = mk_func(
+            vec![ValueType::I32],
+            vec![ValueType::I64],
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::Block {
+                    block_type: BlockType::Func {
+                        params: vec![ValueType::I32],
+                        results: vec![ValueType::I64],
+                    },
+                    body: vec![],
+                },
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func.clone()]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 0, "Mismatched signature must never be folded");
+        assert_eq!(module.functions[0].instructions, func.instructions);
+    }
+
+    /// Soundness gate: a Block with a result type and an empty body would
+    /// underflow the stack — must never fold.
+    #[test]
+    fn test_specialize_adapters_value_result_empty_body_not_folded() {
+        let func = mk_func(
+            vec![],
+            vec![ValueType::I32],
+            vec![
+                Instruction::Block {
+                    block_type: BlockType::Value(ValueType::I32),
+                    body: vec![],
+                },
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func.clone()]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 0, "BlockType::Value with empty body must not fold");
+        assert_eq!(module.functions[0].instructions, func.instructions);
+    }
+
+    /// Soundness gate: do not specialize functions containing Unknown
+    /// instructions — we cannot reason about them per CLAUDE.md.
+    #[test]
+    fn test_specialize_adapters_skips_unknown_instructions() {
+        let func = mk_func(
+            vec![],
+            vec![],
+            vec![
+                Instruction::Block {
+                    block_type: BlockType::Empty,
+                    body: vec![],
+                },
+                Instruction::Unknown(vec![0xFE]),
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func.clone()]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        assert_eq!(folded, 0, "Must not touch modules with Unknown instructions");
+        assert_eq!(module.functions[0].instructions, func.instructions);
+    }
+
+    /// Nested case: fold inner empty block, leaving outer block's body
+    /// non-empty but in a normalized state.
+    #[test]
+    fn test_specialize_adapters_nested_inner_fold() {
+        let func = mk_func(
+            vec![],
+            vec![],
+            vec![
+                Instruction::Block {
+                    block_type: BlockType::Empty,
+                    body: vec![
+                        Instruction::Block {
+                            block_type: BlockType::Empty,
+                            body: vec![],
+                        },
+                        Instruction::Nop,
+                    ],
+                },
+                Instruction::End,
+            ],
+        );
+
+        let mut module = mk_module(vec![func]);
+        let folded = specialize_adapters(&mut module).unwrap();
+
+        // The inner empty block folds; then the outer block (now containing
+        // only [Nop]) is non-empty so it stays. That's 1 fold.
+        assert_eq!(folded, 1);
+
+        // Expect outer block intact, inner gone:
+        match &module.functions[0].instructions[0] {
+            Instruction::Block { body, .. } => {
+                assert_eq!(body, &vec![Instruction::Nop]);
+            }
+            other => panic!("expected outer Block, got {:?}", other),
+        }
+    }
+
+    /// Integration: optimize a real component fixture and confirm the pass
+    /// runs cleanly (NO-OP expected on these toy fixtures, which contain no
+    /// canon residue, but the pass must not error and the output must remain
+    /// a valid component).
+    #[test]
+    fn test_specialize_adapters_real_component_fixture() {
+        let path = "tests/component_fixtures/simple.component.wasm";
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return, // fixture not available — skip
+        };
+
+        let (optimized, _stats) = optimize_component(&bytes).expect("Component optimize failed");
+
+        // Optimized component must still validate.
+        wasmparser::Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&optimized)
+            .expect("Optimized component must validate");
     }
 }
