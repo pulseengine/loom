@@ -5,6 +5,94 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-14
+
+**Measurement and harvest release.** First objective measurements of
+LOOM against wasm-opt -O3 across multiple workloads, plus harvesting
+of v0.8.0's infrastructure into concrete wins on component-shaped
+fixtures. Three PRs landed in parallel via worktree-isolated agents
+(K2 = CSE span-replacement infrastructure + verifier-gap finding,
+L2 = peephole rule set growth + missing pipeline wiring, P = corpus
+harness + measurement report).
+
+### Measurement (finally)
+
+The first corpus-wide measurement harness (PR-P) reveals where
+v0.8.0's infrastructure actually pays off:
+
+| Workload | Baseline | LOOM | wasm-opt -O3 | LOOM Δ% | wasm-opt Δ% |
+|---|---:|---:|---:|---:|---:|
+| gale | 1,941 | 1,846 | 1,925 | **−4.9%** | −0.8% |
+| calculator_root | 2,337,724 | 2,327,794 | (errors) | −0.4% | n/a |
+| simple_component | 261 | 212 | (errors) | **−18.8%** | n/a |
+| calc_component | 442 | 392 | (errors) | **−11.3%** | n/a |
+
+**Two strategic facts established:**
+1. LOOM beats wasm-opt -O3 on gale by 4.1 points at total-file
+   level. First measured workload where LOOM dominates.
+2. PR-M (v0.8.0 component adapter specialization) delivers −11% to
+   −19% on small adapter-heavy components. The percentage dilutes
+   on large components because most bytes are core code. The
+   strategic moat is real: wasm-opt cannot process Component-Model
+   components at all (errors out on every one).
+
+### Optimization
+
+- **PR-L2 (#112): grow Souper rule set to 12 identities + wire into
+  pipeline.** PR-L (v0.8.0) shipped the module but DID NOT register
+  the pass with the CLI optimizer — discovered during measurement
+  via the new `--stats` per-pass breakdown. PR-L2 fixes the wiring
+  and adds 9 new rules (i32.mul·1, i32.sub-0, three shift-by-zero
+  variants, four i64 identities), each with documented one-line
+  algebraic proof. 24 tests pass (was 6).
+
+- **PR-K2 (#111): span-based CSE replacement infrastructure +
+  verifier-gap finding.** PR-K (v0.8.0) recognized pure+no-trap
+  Call expressions in CSE but couldn't replace them because the
+  existing replacement loop only handled single-instruction Const
+  exprs. PR-K2 implements `CSEAction::ReplaceSpanWithLoad` with
+  five defense-in-depth gates (single-instruction args, span-length
+  invariant, occupied-bitmap overlap rejection, no-set-between-calls
+  hazard check, cost gate). **Critical finding**: the Z3
+  translation validator models every `Instruction::Call` as a fresh
+  symbolic constant, so it rejects every CSE dedup with a
+  counterexample. Per LOOM's proof-first policy, the tests stay
+  `#[ignore]`'d until PR-K3 fixes the verifier to model pure+no-trap
+  calls as uninterpreted-function applications `f(args)`.
+
+### Infrastructure
+
+- **PR-P (#110): corpus-wide measurement harness.** New
+  `scripts/measure_corpus.sh` + `docs/measurements/v0.9.0-corpus-baseline.md`.
+  Runs LOOM and wasm-opt -O3 across configured fixtures, validates
+  every output via wasm-tools, hard-errors on invalid wasm, emits
+  a markdown delta table per release. The harness flagged a +45.6%
+  regression on gale during initial validation — investigation
+  showed the cause was the `--attestation true` default embedding
+  a ~980-byte security custom section. The harness now passes
+  `--attestation false` for measurement runs so the byte-delta
+  column reflects optimization quality, not security overhead.
+
+### Tests
+
+- **+42 tests** across the three PRs: PR-L2 (+18 fire/negative
+  pairs), PR-K2 (+1 ignored, +1 reframed), PR-P (harness produces
+  validation-or-fail results per workload).
+
+### Deferred to v1.0.0
+
+- **PR-K3 (verifier-side)**: model pure+no-trap `Call` in
+  `verify.rs` as uninterpreted-function applications. Unblocks
+  PR-K2's tests and the entire cross-call dedup feature.
+- **PR-L3**: power-of-2 mul/div → shift rules (needs overflow-guard
+  reasoning for signed div).
+- **PR-Q**: land a real corpus (httparse, nom_numbers, state_machine,
+  json_lite, loom-self-build) under `tests/corpus/`. The harness
+  is ready; it just marks them `n/a` today.
+- Pure-arithmetic-expression arms in canonicalize (broader
+  `if/else → select`).
+- Cranelift-style acyclic ægraph mid-end.
+
 ## [0.8.0] - 2026-05-14
 
 Cross-call optimization release. Four PRs landed in parallel via
