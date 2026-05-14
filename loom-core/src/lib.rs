@@ -7718,12 +7718,15 @@ pub mod optimize {
         // call to a pure helper survives `Drop` because we can't prove
         // the absence of effects.
         //
-        // Why zero-arg only: a Call consumes its arguments from the
-        // stack. Removing the Call without also removing the arg
-        // pushers leaves dangling values that break stack balance.
-        // The broader fold (pop N preceding pure pushers when arg-count
-        // is N, AND each is a pure pusher) is sound but lives in a
-        // follow-up. The zero-arg case is the safe minimum.
+        // PR-J (v0.8.0): extend the fold to N>0 args by also popping
+        // the N preceding pure pushers from the already-emitted output.
+        // Soundness: each pure pusher consumes 0 / produces 1; N of
+        // them at the tail of `out` exactly cover the call's N args
+        // and contribute nothing else observable, so removing them
+        // (and the Call, and the Drop) preserves the stack and the
+        // observable behavior. If any of the last N is not a pure
+        // pusher, or fewer than N entries exist (args came from outside
+        // the local region), the fold is skipped.
         let summaries = crate::summary::compute_module_summaries(module);
         // Snapshot per-function (param_count, result_count) before the
         // mutable loop. The fold requires param_count == 0 and
@@ -7878,7 +7881,10 @@ pub mod optimize {
     /// nested control-flow bodies. Used by `vacuum_instructions` to
     /// mop up the leftovers from `eliminate_dead_locals` and
     /// `eliminate_dead_stores`, plus PR-F's `Call f; Drop` folding
-    /// when `f` is pure + no-trap + single-result.
+    /// when `f` is pure + no-trap + single-result, plus PR-J's
+    /// arg-aware extension that additionally pops N preceding pure
+    /// pushers when `f` takes N args and they were all produced by
+    /// pure pushers we just emitted into `out`.
     fn peephole_const_drop(
         instructions: Vec<Instruction>,
         summaries: &[crate::summary::FunctionSummary],
@@ -7910,7 +7916,52 @@ pub mod optimize {
                 other => other,
             };
 
-            // Match the pair pattern.
+            // PR-J: arg-aware `Call f; Drop` fold. If `instr` is a
+            // pure + no-trap + single-result Call with N>0 params and
+            // the next instruction is Drop, attempt to also peel off
+            // the N preceding pure pushers from `out`. Each pure
+            // pusher consumes 0 / produces 1, so N of them in a row
+            // at the tail of `out` exactly cover the call's N args
+            // and contribute nothing else observable. If any of the
+            // last N entries in `out` is NOT a pure pusher (or `out`
+            // has fewer than N entries — meaning some args came from
+            // outside the current straight-line region), we leave
+            // everything alone.
+            if matches!(iter.peek(), Some(Instruction::Drop)) {
+                if let Instruction::Call(idx) = &instr {
+                    let i = *idx as usize;
+                    if i < summaries.len()
+                        && i < signatures.len()
+                        && summaries[i].is_pure
+                        && summaries[i].is_no_trap
+                        && signatures[i].1 == 1
+                    {
+                        let n = signatures[i].0;
+                        if n == 0 {
+                            // PR-F zero-arg case — fold the Call+Drop.
+                            iter.next(); // consume the Drop
+                            continue;
+                        }
+                        // N>0: check the tail of `out` for N pure pushers.
+                        if out.len() >= n {
+                            let tail_start = out.len() - n;
+                            let all_pure = out[tail_start..]
+                                .iter()
+                                .all(|p| is_pure_pusher(p, summaries, signatures));
+                            if all_pure {
+                                // Pop the N pure pushers, drop the Call,
+                                // consume the Drop. Net stack effect: zero.
+                                out.truncate(tail_start);
+                                iter.next(); // consume the Drop
+                                continue;
+                            }
+                        }
+                        // Fall through: not safe to fold — keep the Call.
+                    }
+                }
+            }
+
+            // Match the pair pattern (single pure pusher + Drop).
             if is_pure_pusher(&instr, summaries, signatures)
                 && matches!(iter.peek(), Some(Instruction::Drop))
             {
@@ -7925,13 +7976,20 @@ pub mod optimize {
     /// Side-effect-free, non-trapping instructions whose result can be
     /// safely discarded with their immediately-following `Drop`.
     ///
+    /// Each variant returning `true` must have stack signature (0, 1):
+    /// consume zero values, produce exactly one. This is what makes
+    /// the PR-J arg-aware fold sound — N pure pushers in a row push
+    /// exactly N values and nothing else, so they can be removed
+    /// alongside a Call that consumes those N values.
+    ///
     /// PR-F (v0.7.0): extended to also accept `Call f` when the callee
-    /// is pure + no-trap + produces exactly one value. The pure+no-trap
+    /// is pure + no-trap + zero-arg + single-result. The pure+no-trap
     /// constraint is the interprocedural justification that the call's
     /// only effect is producing the value we're about to drop;
     /// single-result is required because `Drop` consumes exactly one
-    /// stack slot — a multi-result call would leave the remaining
-    /// values orphaned on the stack.
+    /// stack slot; zero-arg keeps the (0, 1) invariant so that a Call
+    /// to a pure-zero-arg helper can itself appear as an argument to
+    /// a larger PR-J fold.
     fn is_pure_pusher(
         instr: &Instruction,
         summaries: &[crate::summary::FunctionSummary],
@@ -16764,10 +16822,10 @@ mod tests {
     }
 
     #[test]
-    fn test_vacuum_keeps_pure_call_drop_with_args() {
-        // Pure+no-trap helper but takes args. The safe-minimum rule
-        // doesn't fold this (would leave args dangling on stack).
-        // Pin that we don't accidentally fold it.
+    fn test_vacuum_folds_pure_call_drop_with_pure_args() {
+        // PR-J: pure+no-trap helper with 1 arg, and the arg is a pure
+        // pusher. The fold pops the pure-pusher arg AND the Call AND
+        // the Drop. Net stack effect: zero, same as before.
         let wat = r#"(module
             (func $pure_with_arg (param i32) (result i32)
                 local.get 0
@@ -16789,13 +16847,161 @@ mod tests {
             .instructions
             .iter()
             .any(|i| matches!(i, Instruction::Call(_)));
+        let has_drop = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Drop));
         assert!(
-            has_call,
-            "Pure helper with args must NOT be folded under the zero-arg rule \
-             (would leave the arg dangling on the stack)"
+            !has_call,
+            "PR-J: pure helper with pure-pusher args must be folded"
         );
+        assert!(!has_drop, "Paired Drop must also be folded");
 
         // Output must validate.
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_folds_pure_call_drop_with_multiple_pure_args() {
+        // PR-J: pure+no-trap helper with 3 args, all pure pushers
+        // (constant, local.get, global.get). All four (the three
+        // arg pushers, the Call) and the Drop must vanish.
+        let wat = r#"(module
+            (global $g i32 (i32.const 5))
+            (func $pure_3 (param i32 i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                i32.add
+                local.get 2
+                i32.add
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                i32.const 1
+                local.get 0
+                global.get $g
+                call $pure_3
+                drop
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        let has_drop = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Drop));
+        let has_global_get = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::GlobalGet(_)));
+        let has_const_1 = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Const(1)));
+        assert!(!has_call, "PR-J: multi-arg pure call must be folded");
+        assert!(!has_drop, "Paired Drop must also be folded");
+        assert!(
+            !has_global_get,
+            "Pure-pusher arg (global.get) must be folded away"
+        );
+        assert!(
+            !has_const_1,
+            "Pure-pusher arg (i32.const 1) must be folded away"
+        );
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_keeps_call_drop_with_impure_arg() {
+        // PR-J soundness: the helper is pure+no-trap, but one of its
+        // args is `i32.load` — a may-trap pusher. We must NOT fold,
+        // because removing the load erases an observable trap.
+        let wat = r#"(module
+            (memory 1)
+            (func $pure_with_arg (param i32) (result i32)
+                local.get 0
+                i32.const 1
+                i32.add
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                i32.load
+                call $pure_with_arg
+                drop
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        let has_load = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Load { .. }));
+        assert!(
+            has_call,
+            "Call must NOT be folded when an arg is may-trap (i32.load)"
+        );
+        assert!(has_load, "i32.load must survive — its trap is observable");
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_vacuum_keeps_call_drop_when_args_unavailable() {
+        // PR-J defensive: the helper takes 1 arg, but the
+        // immediately-preceding entry in `out` is `i32.add` — not a
+        // pure pusher (i32.add consumes 2 / produces 1, so removing
+        // it alone would unbalance the stack). The fold must bail
+        // out per the "last N must all be pure pushers" rule.
+        //
+        // This is the closest WAT-expressible analogue to the
+        // "args came from outside the local region" case: the arg
+        // exists on the stack but wasn't placed there by a pure
+        // pusher, so the peephole cannot prove it's safe to remove.
+        let wat = r#"(module
+            (func $pure_with_arg (param i32) (result i32)
+                local.get 0
+                i32.const 1
+                i32.add
+            )
+            (func $caller (export "test") (param i32) (result i32)
+                local.get 0
+                local.get 0
+                i32.add
+                call $pure_with_arg
+                drop
+                local.get 0
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::vacuum(&mut module).expect("vacuum");
+
+        let has_call = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        assert!(
+            has_call,
+            "Call must NOT be folded when an arg-producer is not a pure pusher (i32.add)"
+        );
+
         let bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&bytes).expect("output validates");
     }
