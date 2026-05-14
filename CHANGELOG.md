@@ -5,6 +5,108 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-14
+
+Cross-call optimization release. Four PRs landed in parallel via
+worktree-isolated agents — three completed by agents, one rescued
+from an agent timeout. Two PRs build directly on PR-F's function-
+summary IPA (PR-J extends the pure-call-drop fold to N args; PR-K
+wires Call recognition into CSE), one ships the harness for
+algorithmic-solver-driven optimization (PR-L), and one delivers
+LOOM's first concrete win on post-meld component output (PR-M).
+
+### Optimization
+
+- **PR-J (#105): arg-aware pure-call-drop fold.** Extends PR-F
+  (v0.7.0). v0.7.0's vacuum peephole only folded ZERO-arg
+  \`Call f; Drop\` pairs because removing a Call without removing
+  its arg-pushers would leave dangling values on the stack. PR-J
+  lifts that restriction when the N preceding instructions are
+  themselves all pure pushers — N pure pushers contribute exactly
+  N values and nothing observable; removing them alongside the
+  Call+Drop preserves stack balance and observable behavior. A
+  pure pusher's signature is (consumes 0, produces 1), so this
+  is sound by stack-effect arithmetic.
+
+- **PR-K (#106): CSE cross-call dedup recognition (INFRASTRUCTURE).**
+  Adds \`Expr::Call { func_idx, args }\` to the CSE expression
+  model. The CSE scan loop now recognizes pure + no-trap +
+  single-result calls as deterministic values of their args,
+  hashing and cost-gating them alongside arithmetic subtrees.
+  The REPLACEMENT side (turning a duplicate call site into a
+  \`local.get\`) requires span-based substitution and is deferred
+  to a follow-up PR-K2. This PR ships the recognition + the
+  three safety guarantees (impure / may-trap / different-args
+  must NOT dedupe).
+
+- **PR-L (#107): Souper-shaped peephole synthesis MVP.** Minimal
+  first cut of the algorithmic-solver direction from
+  \`docs/research/v0.7.0/algorithmic-solver-feasibility.md\`. New
+  module \`loom-core/src/peephole_synth.rs\` with the harness +
+  three hand-curated right-identity rules with documented
+  algebraic proofs: x+0=x, x|0=x, x&(-1)=x. Iterate-to-fixpoint
+  linear scan with stack-validation safety net. A follow-up
+  PR-L2 adds the startup-time Z3 candidate-admission gate once
+  the rule set grows past hand-audit size.
+
+- **PR-M (#108): Component-Model adapter specialization.** LOOM's
+  first concrete win on post-\`meld\`-fusion output. wasm-opt
+  operates on core wasm and cannot see adapter residue at all;
+  this is LOOM's strategic moat. New \`specialize_adapters\` pass
+  (Phase 3 of the component pipeline) folds canon lift/lower
+  trampolines: empty blocks with identity signatures get
+  unwrapped. Two-layer revert safety net (encoder+validator
+  check after fold; \`is_block_safe_to_eliminate\` requires
+  byte-identical types).
+
+### Tests
+
+- New tests across the four PRs: PR-J (+4), PR-K (+3 pass + 1
+  ignored for PR-K2), PR-L (+6), PR-M (+8). 308+ loom-core lib
+  tests pass.
+
+### Infrastructure
+
+- **Worktree-isolated agent parallelism**. The v0.8.0 sprint
+  validated parallel PR development using \`git worktree\` —
+  each agent in its own working directory + target/ cache. PR-M
+  recovered from an agent stream timeout (497 LOC + 8 tests
+  intact in worktree); rescue time was under 10 minutes. Without
+  worktrees, concurrent \`cargo build\` runs would have clobbered
+  each other's target/ caches.
+
+### Soundness reasoning
+
+Every PR explicitly enumerates the safety conditions it relies
+on:
+- PR-J: stack-effect arithmetic (pure pusher = consumes 0,
+  produces 1).
+- PR-K: IPA correctness (pure ∧ no-trap ∧ args-determinate).
+- PR-L: algebraic identity proofs documented per-candidate.
+- PR-M: byte-identical block type, empty body, two-layer
+  revert.
+
+### Measurement
+
+No measurable change on gale_in_baseline (still 795 B / -1.97%
+from v0.7.0). Gale's wasm doesn't have the patterns these passes
+target (no pure-call-drop chains, no duplicated pure calls, no
+trivial arithmetic identities, no component adapters). This
+release is INFRASTRUCTURE — the wins compound when applied to
+component-shaped workloads (calculator-class) and to hand-written
+wasm that hasn't already been folded by an upstream compiler.
+
+### Deferred to v0.9.0
+
+- **PR-K2**: span-based CSE replacement (the replacement half
+  of cross-call dedup).
+- **PR-L2**: Z3 startup-time candidate admission gate for
+  peephole synthesis.
+- **PR-N**: Verus-clause ingestion MVP per the gale deep-scan
+  shortlist (10 ranked clauses with file:line citations).
+- **PR-O**: Cranelift-style acyclic ægraph mid-end (from the
+  optimization-methods survey).
+
 ## [0.7.0] - 2026-05-13
 
 Infrastructure-and-cleanup release. Closes the trivial pipeline-order
