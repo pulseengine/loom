@@ -50,7 +50,7 @@ enum Commands {
         attestation: bool,
 
         /// Select specific optimization passes (comma-separated)
-        /// Available: inline,precompute,constant-folding,canonicalize,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
+        /// Available: inline,precompute,constant-folding,canonicalize,peephole-synth,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
         /// Example: --passes inline,constant-folding,dce
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
@@ -439,6 +439,19 @@ fn optimize_command(
         loom_core::optimize::canonicalize(&mut module).context("Canonicalize failed")?;
         let after = count_instructions(&module);
         track_pass("canonicalize", before, after);
+    }
+
+    // Souper-shaped peephole synthesis (PR-L2): hand-curated arithmetic
+    // identity rules (12 candidates). Runs AFTER canonicalize (so the
+    // canonical operand-order is in place) and BEFORE cse (so the
+    // identity-eliminated forms feed CSE's value-numbering).
+    if should_run("peephole-synth") {
+        println!("  Running: peephole-synth");
+        let before = count_instructions(&module);
+        loom_core::peephole_synth::apply_peephole_synth(&mut module)
+            .context("Peephole synthesis failed")?;
+        let after = count_instructions(&module);
+        track_pass("peephole-synth", before, after);
     }
 
     if should_run("cse") {
