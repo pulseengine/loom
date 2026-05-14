@@ -69,6 +69,9 @@ WORKLOADS=(
   "json_lite|tests/corpus/json_lite.wasm|minimal JSON tokenizer"
   "loom|tests/corpus/loom.wasm|LOOM self-build (dogfood target)"
   "calculator|tests/calculator.wasm|component-shaped fixture"
+  "calculator_root|calculator.wasm|2.3 MB component (root, large)"
+  "simple_component|loom-core/tests/component_fixtures/simple.component.wasm|tiny component (adapter-heavy)"
+  "calc_component|loom-core/tests/component_fixtures/calc.component.wasm|small component (adapter-heavy)"
 )
 
 # --- Helpers ---------------------------------------------------------------
@@ -175,7 +178,7 @@ for entry in "${WORKLOADS[@]}"; do
   LOOM_LOG="${TMP_DIR}/${NAME}.loom.log"
   LOOM_BYTES="n/a"
   LOOM_OK=0
-  if "${LOOM}" optimize "${FIXTURE}" -o "${LOOM_OUT}" >"${LOOM_LOG}" 2>&1; then
+  if "${LOOM}" optimize "${FIXTURE}" --attestation false -o "${LOOM_OUT}" >"${LOOM_LOG}" 2>&1; then
     if validate_wasm "${LOOM_OUT}" "${NAME} (LOOM output)"; then
       LOOM_BYTES="$(file_size "${LOOM_OUT}")"
       LOOM_OK=1
@@ -211,7 +214,7 @@ for entry in "${WORKLOADS[@]}"; do
   WL_LOG="${TMP_DIR}/${NAME}.wopt-loom.log"
   WL_BYTES="n/a"
   if [[ "${WOPT_OK}" -eq 1 ]]; then
-    if "${LOOM}" optimize "${WOPT_OUT}" -o "${WL_OUT}" >"${WL_LOG}" 2>&1; then
+    if "${LOOM}" optimize "${WOPT_OUT}" --attestation false -o "${WL_OUT}" >"${WL_LOG}" 2>&1; then
       if validate_wasm "${WL_OUT}" "${NAME} (wasm-opt -> LOOM output)"; then
         WL_BYTES="$(file_size "${WL_OUT}")"
       else
