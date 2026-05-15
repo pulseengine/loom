@@ -24,7 +24,7 @@
 #[cfg(feature = "verification")]
 use z3::ast::{Array, BV, Bool};
 #[cfg(feature = "verification")]
-use z3::{Config, SatResult, Solver, Sort, with_z3_config};
+use z3::{Config, FuncDecl, SatResult, Solver, Sort, with_z3_config};
 
 /// Feature flag for IEEE 754 float verification using Z3 FPA theory
 /// When enabled, float operations are verified with proper IEEE 754 semantics
@@ -49,6 +49,14 @@ pub struct VerificationSignatureContext {
     pub function_signatures: Vec<FunctionSignature>,
     /// Type signatures for CallIndirect (indexed by type index)
     pub type_signatures: Vec<FunctionSignature>,
+    /// IPA summaries indexed by local-function index (PR-K3). Imported
+    /// functions have no summary entry; their slot in this vector is
+    /// `None`. When a Call's callee is pure + no-trap + single-result,
+    /// the verifier encodes the result as an uninterpreted-function
+    /// application `f(args)` instead of a fresh symbolic constant —
+    /// which makes Z3 prove two identical calls have equal results
+    /// under congruence closure. This unblocks cross-call CSE dedup.
+    pub function_summaries: Vec<Option<crate::summary::FunctionSummary>>,
 }
 
 #[cfg(feature = "verification")]
@@ -61,24 +69,32 @@ impl VerificationSignatureContext {
     /// Create a signature context from a module
     pub fn from_module(module: &Module) -> Self {
         let mut function_signatures = Vec::new();
+        let mut function_summaries: Vec<Option<crate::summary::FunctionSummary>> = Vec::new();
 
         // First, add imported function signatures (they come first in indexing)
+        // PR-K3: imported functions have no summary — their callee body
+        // is opaque. We always conservatively encode their calls as fresh
+        // symbolics with full havoc; that's the existing behavior.
         for import in &module.imports {
             if let ImportKind::Func(type_idx) = &import.kind {
                 if let Some(sig) = module.types.get(*type_idx as usize) {
                     function_signatures.push(sig.clone());
+                    function_summaries.push(None);
                 }
             }
         }
 
-        // Then add local function signatures
-        for func in &module.functions {
+        // Then add local function signatures + their summaries.
+        let local_summaries = crate::summary::compute_module_summaries(module);
+        for (func, summary) in module.functions.iter().zip(local_summaries.iter()) {
             function_signatures.push(func.signature.clone());
+            function_summaries.push(Some(*summary));
         }
 
         VerificationSignatureContext {
             function_signatures,
             type_signatures: module.types.clone(),
+            function_summaries,
         }
     }
 
@@ -90,6 +106,19 @@ impl VerificationSignatureContext {
     /// Get the signature for a type by its index (for indirect calls)
     pub fn get_type_signature(&self, type_idx: u32) -> Option<&FunctionSignature> {
         self.type_signatures.get(type_idx as usize)
+    }
+
+    /// PR-K3: check whether a callee is pure + no-trap and therefore
+    /// safe to encode as a deterministic uninterpreted function
+    /// `f(args)` in the SMT representation. Returns true only when
+    /// IPA proved both purity and no-trap; imported / unknown / non-
+    /// pure / may-trap callees return false, falling back to the
+    /// conservative fresh-symbolic + havoc encoding.
+    pub fn is_pure_no_trap_call(&self, func_idx: u32) -> bool {
+        match self.function_summaries.get(func_idx as usize) {
+            Some(Some(s)) => s.is_pure && s.is_no_trap,
+            _ => false,
+        }
     }
 }
 
@@ -3976,11 +4005,18 @@ fn encode_function_to_smt_impl_inner(
                 // For verification, we can't inline calls (would need interprocedural analysis)
                 // Instead, we properly model the stack effects:
                 // 1. Pop the correct number of arguments
-                // 2. Push fresh symbolic values for results
+                // 2. Push results — fresh symbolic, OR (PR-K3) an
+                //    uninterpreted-function application f(args) when
+                //    the callee is pure + no-trap. The latter makes
+                //    Z3's congruence closure prove two identical pure
+                //    calls equal — which unblocks cross-call CSE dedup.
                 // 3. Havoc globals/memory that the called function might modify
+                //    (skipped for pure + no-trap callees, per IPA).
                 if let Some(ctx_ref) = sig_ctx {
                     if let Some(sig) = ctx_ref.get_function_signature(*func_idx) {
                         // Pop arguments (in reverse order, as they were pushed)
+                        // and stash them for PR-K3 uninterpreted-function application.
+                        let mut args_rev: Vec<BV> = Vec::with_capacity(sig.params.len());
                         for i in 0..sig.params.len() {
                             if stack.is_empty() {
                                 return Err(anyhow!(
@@ -3990,46 +4026,103 @@ fn encode_function_to_smt_impl_inner(
                                 ));
                             }
                             // SAFETY: guarded by is_empty check above
-                            let _ = stack.pop().unwrap();
+                            args_rev.push(stack.pop().unwrap());
                         }
-                        // Push results
-                        for (i, result_type) in sig.results.iter().enumerate() {
-                            let width = match result_type {
+                        // Reverse to source order (arg0, arg1, ...).
+                        args_rev.reverse();
+                        let args: Vec<BV> = args_rev;
+
+                        // PR-K3: when callee is pure + no-trap AND has
+                        // exactly one result, encode the result as
+                        // `pure_call_<func_idx>(args)`. Z3 congruence
+                        // closure makes two such expressions with equal
+                        // args prove-equal, which is what makes CSE
+                        // dedup of pure calls verifiable. Multi-result
+                        // calls fall through to the fresh-symbolic
+                        // path; supporting them needs a tuple sort
+                        // which is more invasive.
+                        let pure_no_trap = ctx_ref.is_pure_no_trap_call(*func_idx);
+                        if pure_no_trap && sig.results.len() == 1 {
+                            let result_type = sig.results[0];
+                            let result_width: u32 = match result_type {
                                 crate::ValueType::I32 | crate::ValueType::F32 => 32,
                                 crate::ValueType::I64 | crate::ValueType::F64 => 64,
                             };
-                            stack.push(BV::new_const(
-                                format!("call_{}_result_{}", func_idx, i),
-                                width,
-                            ));
-                        }
+                            // Build domain sorts from arg widths. FuncDecl::new
+                            // takes a slice of &Sort; we own the Sorts via a Vec
+                            // and create refs only at call time.
+                            let domain_sorts_owned: Vec<Sort> = sig
+                                .params
+                                .iter()
+                                .map(|p| {
+                                    Sort::bitvector(match p {
+                                        crate::ValueType::I32 | crate::ValueType::F32 => 32,
+                                        crate::ValueType::I64 | crate::ValueType::F64 => 64,
+                                    })
+                                })
+                                .collect();
+                            let domain_refs: Vec<&Sort> = domain_sorts_owned.iter().collect();
+                            let range_sort = Sort::bitvector(result_width);
 
-                        // Havoc all globals that this function might modify
-                        // This is conservative but sound - we assume the call could
-                        // modify any global it has write access to
-                        // NOTE: For now we havoc ALL globals after any call since we
-                        // don't have the function summaries available in this context.
-                        // A future improvement would pass summaries through and only
-                        // havoc the specific globals the callee modifies.
-                        static CALL_COUNTER: std::sync::atomic::AtomicU64 =
-                            std::sync::atomic::AtomicU64::new(0);
-                        let call_id =
-                            CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        for (idx, global) in globals.iter_mut().enumerate() {
-                            // Replace with fresh symbolic value to model potential modification
-                            *global = BV::new_const(
-                                format!("global_{}_after_call_{}_{}", idx, func_idx, call_id),
-                                global.get_size(),
+                            // FuncDecl is symbol-deduplicated by Z3: every call
+                            // with the same name + sorts in the same context
+                            // resolves to the SAME function decl. That's what
+                            // gives us congruence equality on identical args.
+                            let decl_name = format!("pure_call_{}", func_idx);
+                            let decl = FuncDecl::new(decl_name.as_str(), &domain_refs, &range_sort);
+
+                            // Apply to the actual arg BVs.
+                            let arg_refs: Vec<&dyn z3::ast::Ast> =
+                                args.iter().map(|a| a as &dyn z3::ast::Ast).collect();
+                            let result_dyn = decl.apply(&arg_refs);
+                            if let Some(result_bv) = result_dyn.as_bv() {
+                                stack.push(result_bv);
+                            } else {
+                                // Defensive: if the dynamic isn't a BV
+                                // (shouldn't happen given range_sort),
+                                // fall back to the fresh-symbolic path.
+                                stack.push(BV::new_const(
+                                    format!("call_{}_result_fallback", func_idx),
+                                    result_width,
+                                ));
+                            }
+                            // CRITICAL: skip the global/memory havoc.
+                            // Pure + no-trap means no observable side
+                            // effects — globals and memory are unchanged
+                            // by this call.
+                        } else {
+                            // Existing conservative encoding: fresh
+                            // symbolic per result + full havoc.
+                            for (i, result_type) in sig.results.iter().enumerate() {
+                                let width = match result_type {
+                                    crate::ValueType::I32 | crate::ValueType::F32 => 32,
+                                    crate::ValueType::I64 | crate::ValueType::F64 => 64,
+                                };
+                                stack.push(BV::new_const(
+                                    format!("call_{}_result_{}", func_idx, i),
+                                    width,
+                                ));
+                            }
+
+                            // Havoc all globals that this function might modify.
+                            // Conservative but sound - we assume the call could
+                            // modify any global it has write access to.
+                            static CALL_COUNTER: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(0);
+                            let call_id =
+                                CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            for (idx, global) in globals.iter_mut().enumerate() {
+                                *global = BV::new_const(
+                                    format!("global_{}_after_call_{}_{}", idx, func_idx, call_id),
+                                    global.get_size(),
+                                );
+                            }
+                            memory = Array::new_const(
+                                format!("mem_after_call_{}_{}", func_idx, call_id),
+                                &Sort::bitvector(32),
+                                &Sort::bitvector(8),
                             );
                         }
-
-                        // Memory is also potentially modified by the call
-                        // Create a fresh memory array to model this
-                        memory = Array::new_const(
-                            format!("mem_after_call_{}_{}", func_idx, call_id),
-                            &Sort::bitvector(32),
-                            &Sort::bitvector(8),
-                        );
                     } else {
                         // Unknown function - conservative: assume returns i32
                         stack.push(BV::new_const("call_unknown_result", 32));
