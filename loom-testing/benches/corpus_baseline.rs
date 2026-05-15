@@ -789,11 +789,15 @@ fn emit_report() {
     println!("{md}");
     println!("==========       end markdown report       ==========\n");
 
+    // Write to a `-criterion.md` sidecar so we never clobber the
+    // shell-harness-generated `v<X>-corpus-baseline.md`. The sidecar is
+    // overwritten every bench run -- if you want history, copy it to a
+    // versioned name before re-running.
     let workspace_version = env!("CARGO_PKG_VERSION");
     let report_path = env
         .repo_root
         .join("docs/measurements")
-        .join(format!("v{workspace_version}-corpus-baseline.md"));
+        .join(format!("v{workspace_version}-corpus-baseline-criterion.md"));
     if let Some(parent) = report_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
