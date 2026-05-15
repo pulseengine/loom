@@ -58,6 +58,45 @@ if command -v "${WASM_OPT}" >/dev/null 2>&1; then
   HAVE_WASM_OPT=1
 fi
 
+MELD="${MELD:-meld}"
+HAVE_MELD=0
+if command -v "${MELD}" >/dev/null 2>&1; then
+  HAVE_MELD=1
+fi
+
+# Per-invocation timeout (seconds). Large components can take >60min in
+# LOOM's Z3-verified pipeline. The harness should not hang the developer's
+# machine — any single tool invocation that exceeds PER_RUN_TIMEOUT is
+# killed and the column for that workload is marked "timeout".
+PER_RUN_TIMEOUT="${PER_RUN_TIMEOUT:-300}"  # 5 minutes default
+TIMEOUT_BIN=""
+if command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="timeout"
+fi
+# Wrap a command with the timeout if available; otherwise run as-is.
+with_timeout() {
+  if [[ -n "${TIMEOUT_BIN}" ]]; then
+    "${TIMEOUT_BIN}" "${PER_RUN_TIMEOUT}" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Detect whether a wasm file is a Component-Model component vs a core
+# module. Components start with `\0asm \r\0\1\0`, core modules with
+# `\0asm \1\0\0\0`. We sniff the 8-byte header.
+is_component() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then return 1; fi
+  local byte4
+  byte4="$(xxd -l 1 -s 4 -p "${path}" 2>/dev/null || echo "")"
+  # \r = 0d
+  if [[ "${byte4}" == "0d" ]]; then return 0; fi
+  return 1
+}
+
 # --- Workloads -------------------------------------------------------------
 # Format: "<display_name>|<path-relative-to-repo-root>|<note>"
 # Paths missing on disk are reported as n/a (skipped silently).
@@ -118,23 +157,26 @@ code_section_bytes() {
     echo "n/a"
     return
   fi
-  # `wasm-tools dump` prints section summaries; look for the "code section".
-  # Different versions format slightly differently, so we tolerate either
-  # "code section" or "Code section" anywhere on the line and pull the
-  # first whitespace-separated integer-like token after the keyword.
-  local line
-  line="$("${WASM_TOOLS}" dump "${path}" 2>/dev/null | grep -i -m1 'code section' || true)"
-  if [[ -z "${line}" ]]; then
-    echo "n/a"
-    return
-  fi
-  # Extract the first number on the line; if none, fall back to n/a.
-  local n
-  n="$(echo "${line}" | grep -oE '[0-9]+' | head -n1 || true)"
-  if [[ -z "${n}" ]]; then
+  # `wasm-tools objdump` lines look like:
+  #   code        | 0x3ae - 0x6d9 |  811 bytes | 28 count
+  # We sum across all "code" sections (components contain multiple). Lines
+  # whose first whitespace-trimmed column is exactly "code" are matched.
+  # Component-Model files don't have a top-level code section per se, but
+  # `objdump` recurses into embedded core modules.
+  local total
+  total="$("${WASM_TOOLS}" objdump "${path}" 2>/dev/null \
+    | awk -F'|' '{
+        col1 = $1; gsub(/^[ \t]+|[ \t]+$/, "", col1)
+        if (col1 == "code") {
+          col3 = $3; gsub(/^[ \t]+|[ \t]+$/, "", col3)
+          n = col3 + 0
+          sum += n
+        }
+      } END { if (NR == 0) print "n/a"; else print sum }')"
+  if [[ -z "${total}" ]]; then
     echo "n/a"
   else
-    echo "${n}"
+    echo "${total}"
   fi
 }
 
@@ -145,6 +187,7 @@ LOOM_VERSION="$("${LOOM}" --version 2>/dev/null || echo unknown)"
 RUN_TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 declare -a ROWS=()        # "name|base|loom|wopt|wopt_loom|loom_pct|wopt_pct|note|missing|red"
+declare -a MELD_ROWS=()   # "name|meld_base|wopt|loom|wopt_pct|loom_pct|note" — for component fixtures only
 declare -a MISSING=()
 declare -a HELPS=()
 declare -a NEUTRAL=()
@@ -159,14 +202,14 @@ for entry in "${WORKLOADS[@]}"; do
 
   if [[ ! -f "${FIXTURE}" ]]; then
     MISSING+=("${NAME}")
-    ROWS+=("${NAME}|n/a|n/a|n/a|n/a|n/a|n/a|${NOTE}|1|0")
+    ROWS+=("${NAME}|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|${NOTE}|1|0")
     continue
   fi
 
   BASE_BYTES="$(file_size "${FIXTURE}")"
   if [[ "${BASE_BYTES}" == "0" ]]; then
     MISSING+=("${NAME} (zero-byte)")
-    ROWS+=("${NAME}|n/a|n/a|n/a|n/a|n/a|n/a|${NOTE}|1|0")
+    ROWS+=("${NAME}|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|n/a|${NOTE}|1|0")
     continue
   fi
 
@@ -178,7 +221,7 @@ for entry in "${WORKLOADS[@]}"; do
   LOOM_LOG="${TMP_DIR}/${NAME}.loom.log"
   LOOM_BYTES="n/a"
   LOOM_OK=0
-  if "${LOOM}" optimize "${FIXTURE}" --attestation false -o "${LOOM_OUT}" >"${LOOM_LOG}" 2>&1; then
+  if with_timeout "${LOOM}" optimize "${FIXTURE}" --attestation false -o "${LOOM_OUT}" >"${LOOM_LOG}" 2>&1; then
     if validate_wasm "${LOOM_OUT}" "${NAME} (LOOM output)"; then
       LOOM_BYTES="$(file_size "${LOOM_OUT}")"
       LOOM_OK=1
@@ -195,7 +238,7 @@ for entry in "${WORKLOADS[@]}"; do
   WOPT_BYTES="n/a"
   WOPT_OK=0
   if [[ "${HAVE_WASM_OPT}" -eq 1 ]]; then
-    if "${WASM_OPT}" -O3 "${FIXTURE}" -o "${WOPT_OUT}" >"${WOPT_LOG}" 2>&1; then
+    if with_timeout "${WASM_OPT}" -O3 "${FIXTURE}" -o "${WOPT_OUT}" >"${WOPT_LOG}" 2>&1; then
       if validate_wasm "${WOPT_OUT}" "${NAME} (wasm-opt output)"; then
         WOPT_BYTES="$(file_size "${WOPT_OUT}")"
         WOPT_OK=1
@@ -214,7 +257,7 @@ for entry in "${WORKLOADS[@]}"; do
   WL_LOG="${TMP_DIR}/${NAME}.wopt-loom.log"
   WL_BYTES="n/a"
   if [[ "${WOPT_OK}" -eq 1 ]]; then
-    if "${LOOM}" optimize "${WOPT_OUT}" --attestation false -o "${WL_OUT}" >"${WL_LOG}" 2>&1; then
+    if with_timeout "${LOOM}" optimize "${WOPT_OUT}" --attestation false -o "${WL_OUT}" >"${WL_LOG}" 2>&1; then
       if validate_wasm "${WL_OUT}" "${NAME} (wasm-opt -> LOOM output)"; then
         WL_BYTES="$(file_size "${WL_OUT}")"
       else
@@ -226,8 +269,18 @@ for entry in "${WORKLOADS[@]}"; do
   fi
 
   # ---- 5. compute deltas -------------------------------------------------
+  # FILE bytes include type / import / export / global / custom (debug, names,
+  # attestation) sections. CODE bytes are the function-body section only —
+  # the optimizer-relevant content. Debug or attestation churn can move file
+  # bytes without changing what was optimized, so we report both.
+  LOOM_CODE="$(code_section_bytes "${LOOM_OUT}")"
+  WOPT_CODE="$(code_section_bytes "${WOPT_OUT}")"
+  WL_CODE="$(code_section_bytes "${WL_OUT}")"
+
   LOOM_PCT="$(pct_delta "${LOOM_BYTES}" "${BASE_BYTES}")"
   WOPT_PCT="$(pct_delta "${WOPT_BYTES}" "${BASE_BYTES}")"
+  LOOM_CODE_PCT="$(pct_delta "${LOOM_CODE}" "${BASE_CODE}")"
+  WOPT_CODE_PCT="$(pct_delta "${WOPT_CODE}" "${BASE_CODE}")"
 
   RED=0
   # Red rule 1: LOOM produced LARGER output than baseline.
@@ -258,7 +311,59 @@ for entry in "${WORKLOADS[@]}"; do
     fi
   fi
 
-  ROWS+=("${NAME}|${BASE_BYTES}|${LOOM_BYTES}|${WOPT_BYTES}|${WL_BYTES}|${LOOM_PCT}|${WOPT_PCT}|${NOTE}|0|${RED}")
+  ROWS+=("${NAME}|${BASE_BYTES}|${LOOM_BYTES}|${WOPT_BYTES}|${WL_BYTES}|${LOOM_PCT}|${WOPT_PCT}|${BASE_CODE}|${LOOM_CODE}|${WOPT_CODE}|${LOOM_CODE_PCT}|${WOPT_CODE_PCT}|${NOTE}|0|${RED}")
+
+  # ---- 6. Component-only: meld → core, then wasm-opt + LOOM on the meld output -
+  #
+  # For Component-Model fixtures, wasm-opt can't process the component
+  # directly. But meld fuses the component into a core module, which
+  # wasm-opt CAN handle. The meld-output is its OWN baseline (it
+  # represents the "fused core" form of the component, structurally
+  # different from the original) — we don't compare it to the component
+  # baseline. Deltas in this section are relative to the meld output.
+  if is_component "${FIXTURE}" && [[ "${HAVE_MELD}" -eq 1 ]]; then
+    MELD_OUT="${TMP_DIR}/${NAME}.melded.wasm"
+    MELD_LOG="${TMP_DIR}/${NAME}.meld.log"
+    MELD_BYTES="n/a"
+    MELD_OK=0
+    if with_timeout "${MELD}" fuse "${FIXTURE}" -o "${MELD_OUT}" --no-attestation \
+         >"${MELD_LOG}" 2>&1; then
+      if validate_wasm "${MELD_OUT}" "${NAME} (meld output)"; then
+        MELD_BYTES="$(file_size "${MELD_OUT}")"
+        MELD_OK=1
+      else
+        MELD_BYTES="invalid"
+      fi
+    else
+      MELD_BYTES="error"
+    fi
+
+    MELD_WOPT="n/a"
+    MELD_LOOM="n/a"
+    if [[ "${MELD_OK}" -eq 1 ]]; then
+      # wasm-opt on melded core
+      MWO="${TMP_DIR}/${NAME}.melded.wopt.wasm"
+      if [[ "${HAVE_WASM_OPT}" -eq 1 ]]; then
+        if with_timeout "${WASM_OPT}" -O3 "${MELD_OUT}" -o "${MWO}" >/dev/null 2>&1; then
+          if validate_wasm "${MWO}" "${NAME} (meld→wasm-opt)"; then
+            MELD_WOPT="$(file_size "${MWO}")"
+          fi
+        fi
+      fi
+      # LOOM on melded core
+      MLO="${TMP_DIR}/${NAME}.melded.loom.wasm"
+      if with_timeout "${LOOM}" optimize "${MELD_OUT}" --attestation false \
+           -o "${MLO}" >/dev/null 2>&1; then
+        if validate_wasm "${MLO}" "${NAME} (meld→LOOM)"; then
+          MELD_LOOM="$(file_size "${MLO}")"
+        fi
+      fi
+    fi
+
+    MELD_WOPT_PCT="$(pct_delta "${MELD_WOPT}" "${MELD_BYTES}")"
+    MELD_LOOM_PCT="$(pct_delta "${MELD_LOOM}" "${MELD_BYTES}")"
+    MELD_ROWS+=("${NAME}|${MELD_BYTES}|${MELD_WOPT}|${MELD_LOOM}|${MELD_WOPT_PCT}|${MELD_LOOM_PCT}|${NOTE}")
+  fi
 done
 
 # --- Emit report -----------------------------------------------------------
@@ -314,12 +419,16 @@ done
     echo
   fi
 
-  echo "## Results"
+  echo "## Results — file size (total bytes incl. all sections)"
   echo
-  echo "| Workload | Baseline | LOOM | wasm-opt -O3 | wasm-opt -> LOOM | LOOM Δ% vs base | wasm-opt Δ% vs base | Note |"
+  echo "_File bytes include type / import / export / global and custom sections_"
+  echo "_(name, debug, attestation, dylink). These can change without code changes;_"
+  echo "_see the **code-section table** below for optimizer-relevant deltas._"
+  echo
+  echo "| Workload | Baseline | LOOM | wasm-opt -O3 | wasm-opt → LOOM | LOOM Δ% | wasm-opt Δ% | Note |"
   echo "|---|---:|---:|---:|---:|---:|---:|---|"
   for row in "${ROWS[@]}"; do
-    IFS='|' read -r NAME BASE L W WL LP WP NOTE _MISSING RED <<< "${row}"
+    IFS='|' read -r NAME BASE L W WL LP WP _BC _LC _WC _LCP _WCP NOTE _MISSING RED <<< "${row}"
     PREFIX=""
     if [[ "${RED}" == "1" ]]; then
       PREFIX=":red_circle: "
@@ -327,6 +436,39 @@ done
     echo "| ${PREFIX}${NAME} | ${BASE} | ${L} | ${W} | ${WL} | ${LP} | ${WP} | ${NOTE} |"
   done
   echo
+
+  echo "## Results — code section only (optimizer-relevant)"
+  echo
+  echo "_Bytes of the wasm code section (function bodies) only — the surface_"
+  echo "_an optimizer actually changes. Use these deltas to compare optimizer_"
+  echo "_effectiveness fairly (independent of debug-info / attestation noise)._"
+  echo
+  echo "| Workload | Baseline (code) | LOOM (code) | wasm-opt (code) | LOOM code Δ% | wasm-opt code Δ% | Note |"
+  echo "|---|---:|---:|---:|---:|---:|---|"
+  for row in "${ROWS[@]}"; do
+    IFS='|' read -r NAME _BASE _L _W _WL _LP _WP BC LC WC LCP WCP NOTE _MISSING _RED <<< "${row}"
+    echo "| ${NAME} | ${BC} | ${LC} | ${WC} | ${LCP} | ${WCP} | ${NOTE} |"
+  done
+  echo
+
+  # Second table: components-via-meld baseline (only if any meld rows produced).
+  if [[ "${#MELD_ROWS[@]}" -gt 0 ]]; then
+    echo "## Components via meld (fused-core baseline)"
+    echo
+    echo "_For Component-Model fixtures, wasm-opt cannot process the component"
+    echo "directly. \`meld fuse\` produces a single core module from the component;"
+    echo "that fused core is its own baseline and is structurally different from the"
+    echo "original component. The deltas below compare wasm-opt and LOOM against the"
+    echo "**meld output** as baseline._"
+    echo
+    echo "| Workload | meld baseline | wasm-opt -O3 | LOOM | wasm-opt Δ% | LOOM Δ% | Note |"
+    echo "|---|---:|---:|---:|---:|---:|---|"
+    for row in "${MELD_ROWS[@]}"; do
+      IFS='|' read -r N MB MW ML MWP MLP MN <<< "${row}"
+      echo "| ${N} | ${MB} | ${MW} | ${ML} | ${MWP} | ${MLP} | ${MN} |"
+    done
+    echo
+  fi
 
   echo "## Methodology"
   echo
