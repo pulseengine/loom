@@ -1,0 +1,30 @@
+# LOOM wasm-opt pinned version
+#
+# This file pins the wasm-opt (binaryen) version that the corpus measurement
+# harness (scripts/measure_corpus.sh and the criterion-based
+# `cargo bench -p loom-testing --bench corpus_baseline`) compares LOOM against.
+#
+# Pin format:   wasm-opt --version output's "version_NNN" token, ONE per file.
+# Example:      version_116
+#
+# Why pin?
+#   wasm-opt's optimization output changes from release to release. Our
+#   baseline tables in docs/measurements/*.md are only comparable if the
+#   wasm-opt version is held constant. The bench / script check this pin
+#   on startup and warn/upgrade as appropriate.
+#
+# Update workflow:
+#   1. Decide a new pin (e.g., when binaryen ships a meaningful release).
+#   2. Install the new wasm-opt locally:
+#        cargo install wasm-opt --locked --version <X>      # crates.io shim
+#        # or:
+#        brew upgrade binaryen                              # macOS
+#   3. Run `wasm-opt --version` and copy the `version_NNN` token here.
+#   4. Re-run the bench:
+#        cargo bench -p loom-testing --bench corpus_baseline
+#   5. Commit the pin bump together with the refreshed
+#      docs/measurements/<loom-version>-corpus-baseline.md.
+#
+# Auto-bumping is intentionally NOT done -- we want every wasm-opt-version
+# change in our baselines to be a deliberate, reviewable commit.
+version_116

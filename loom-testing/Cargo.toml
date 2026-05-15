@@ -38,3 +38,15 @@ required-features = ["runtime"]
 name = "emi"
 path = "src/bin/emi.rs"
 required-features = ["runtime"]
+
+# Criterion-driven corpus baseline (replaces scripts/measure_corpus.sh as the
+# primary entry point; the shell script remains as a fallback).
+#
+# Run with:
+#   cargo bench -p loom-testing --bench corpus_baseline
+#
+# Smoke test (criterion --test runs each bench once with no measurement):
+#   cargo bench -p loom-testing --bench corpus_baseline -- --test
+[[bench]]
+name = "corpus_baseline"
+harness = false
