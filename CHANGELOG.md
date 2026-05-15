@@ -5,6 +5,89 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-05-15
+
+**v1.0.0 — verifier-completion release.** Lifts the verifier-side
+blocker that kept cross-call CSE dedup dormant for two releases,
+adds the size-threshold fallback that unblocks LOOM on large
+bodies, ships a corpus-wide cargo bench, and pins the wasm-opt
+comparison version. Three of the five planned tracks landed
+(A: verifier, B: size-threshold, E: bench). Track C (directize)
+and Track D (real corpus fixtures) were deferred when their
+agents stalled.
+
+### Verifier (unblocks dormant infrastructure)
+
+- **PR-K3 (#115, Track A): model pure+no-trap `Call` as
+  uninterpreted function for Z3 congruence.** The Z3 translation
+  validator modeled every `Instruction::Call` as a fresh
+  `BV::new_const`, so two identical pure helper calls produced
+  INDEPENDENT symbolic constants — Z3 found counter-examples for
+  every CSE dedup attempt, which `verify_or_revert` dutifully
+  reverted. PR-K3 encodes pure+no-trap+single-result callees as
+  `pure_call_<idx>(args)` via `FuncDecl::apply`; Z3's congruence
+  closure proves two identical such expressions equal. Combined
+  with passing the sig context through CSE's `TranslationValidator`,
+  the v0.8.0 PR-K + v0.9.0 PR-K2 cross-call dedup feature now
+  actually fires.
+
+- **PR-K3.2 (#115, Track B): size-threshold fallback on Z3
+  invocation.** The per-function Z3 validator scales poorly on
+  large bodies (>60 min on the meld-fused 2.3 MB calculator
+  core). Bodies above `LOOM_Z3_MAX_INSTRUCTIONS` (default 2000,
+  env-overridable) skip Z3 and rely on the stack validator that
+  every pass already runs. Conservative-over-fast in the opposite
+  direction: we ship a result we couldn't deeply verify rather
+  than fail to ship at all on real workloads. Per-pass
+  `<pass>/z3-size-skipped` stat records when the gate fires.
+
+### Measurement (closing the loop)
+
+- **PR-bench (#116, Track E): criterion-based corpus baseline +
+  wasm-opt version pinning.** New `loom-testing/benches/corpus_baseline.rs`
+  (~870 LOC) replicates `scripts/measure_corpus.sh` as a cargo
+  bench. Output to stdout + versioned report file. wasm-opt
+  version pin at `scripts/wasm-opt.pinned` (currently
+  `version_116`); bench startup compares installed vs pinned,
+  prints non-fatal warning on mismatch, marks columns `n/a` if
+  wasm-opt absent.
+
+### Tests
+
+- Five CSE tests now pass (was 3 pass + 2 ignored since v0.9.0):
+  - `test_cse_dedupes_repeated_pure_calls`
+  - `test_cse_dedupes_pure_clamp_calls_via_span_replacement`
+  - plus the three safety tests (impure / may-trap / different-args)
+- All 10 `summary::` IPA tests continue to pass.
+- 330+ loom-core lib tests pass.
+
+### Deferred from v1.0.0 sprint
+
+- **PR-C (Track C): `directize` MVP.** Agent stalled. Defer to v1.0.1.
+- **PR-Q (Track D): real corpus fixtures.** Agent stalled (couldn't
+  build httparse / nom_numbers / etc. in time budget). Defer to v1.0.1.
+  The harness honest-marks them `n/a` today.
+
+### Deferred to future (still tracked)
+
+- PR-L3: power-of-2 mul/div → shift rules.
+- Pure-arithmetic-expression arms in canonicalize (broader
+  `if/else → select`).
+- Cranelift-style acyclic ægraph mid-end.
+- Z3 verifier completeness (full exit-state equivalence,
+  BrTable path predicates, float `rustc_apfloat`).
+
+### What v1.0.0 means
+
+v1.0.0 marks the point where LOOM's cross-call optimization
+infrastructure is **end-to-end functional**: recognition (PR-K),
+replacement (PR-K2), and verification (PR-K3) all in place.
+Combined with the measurement harness (PR-P, PR-R, PR-bench),
+LOOM ships its first release where the optimization-vs-baseline
+story is fully measurable and the strategic moat (Component-Model
+adapter specialization) is empirically validated against
+wasm-opt -O3 on multiple workloads.
+
 ## [0.9.0] - 2026-05-14
 
 **Measurement and harvest release.** First objective measurements of
