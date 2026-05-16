@@ -192,6 +192,47 @@ const CANDIDATES: &[Candidate] = &[
         pattern: &[Instruction::I64Const(1), Instruction::I64Mul],
         replacement: &[],
     },
+
+    // ─── Power-of-2 mul → shl (v1.0.2 PR-L3) ─────────────────────────────
+    //
+    // Proof template: for k > 0, ∀x: BV32. x * 2^k = x << k (mod 2^32).
+    // wasm `i32.shl` shifts by `(c2 mod 32)`. For k < 32, `c2 mod 32 = k`,
+    // so the shifted value matches the multiplication exactly under
+    // two's-complement semantics. Same for i64 with k < 64.
+    //
+    // Why we only ship k where 2^k's LEB128 encoding is longer than k's:
+    // both `i32.const C; i32.mul` and `i32.const K; i32.shl` are 2
+    // instructions. The byte saving is the difference between their
+    // LEB128 encodings of the constant. For k ≤ 6, log2(2^k) and k have
+    // the same LEB128 width (1 byte each) → no saving. For k ≥ 7, the
+    // power-of-two needs ≥ 2 bytes while k still fits in 1 → real save.
+    //
+    // We ship a small set of common multipliers; future PR can expand.
+
+    Candidate {
+        name: "i32_mul_128_to_shl_7",
+        // x * 128 → x << 7; saves 1 byte (LEB128(128)=2, LEB128(7)=1).
+        pattern: &[Instruction::I32Const(128), Instruction::I32Mul],
+        replacement: &[Instruction::I32Const(7), Instruction::I32Shl],
+    },
+    Candidate {
+        name: "i32_mul_1024_to_shl_10",
+        // x * 1024 → x << 10; saves 1 byte (LEB128(1024)=2, LEB128(10)=1).
+        pattern: &[Instruction::I32Const(1024), Instruction::I32Mul],
+        replacement: &[Instruction::I32Const(10), Instruction::I32Shl],
+    },
+    Candidate {
+        name: "i32_mul_65536_to_shl_16",
+        // x * 65536 → x << 16; saves 2 bytes (LEB128(65536)=3, LEB128(16)=1).
+        pattern: &[Instruction::I32Const(65536), Instruction::I32Mul],
+        replacement: &[Instruction::I32Const(16), Instruction::I32Shl],
+    },
+    Candidate {
+        name: "i32_mul_1048576_to_shl_20",
+        // x * 2^20 → x << 20; saves 2 bytes (LEB128(2^20)=3, LEB128(20)=1).
+        pattern: &[Instruction::I32Const(1048576), Instruction::I32Mul],
+        replacement: &[Instruction::I32Const(20), Instruction::I32Shl],
+    },
 ];
 
 /// Apply all shipped peephole candidates to every function in the
@@ -603,6 +644,94 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::I64Mul));
         assert!(!has_mul, "i64.mul must be gone after fold");
+    }
+
+    // ─── PR-L3: power-of-2 mul → shl ─────────────────────────────────────
+
+    #[test]
+    fn test_i32_mul_128_to_shl_7() {
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                i32.const 128
+                i32.mul
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let folds = apply_peephole_synth(&mut module).expect("apply");
+        assert_eq!(folds, 1, "x*128 → x<<7 must fire");
+
+        let has_mul = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Mul));
+        assert!(!has_mul, "i32.mul must be gone after fold");
+        let has_shl = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Shl));
+        assert!(has_shl, "i32.shl must replace it");
+        let has_seven = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Const(7)));
+        assert!(has_seven, "shift amount 7 must be present");
+    }
+
+    #[test]
+    fn test_i32_mul_1024_to_shl_10() {
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                i32.const 1024
+                i32.mul
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let folds = apply_peephole_synth(&mut module).expect("apply");
+        assert_eq!(folds, 1, "x*1024 → x<<10 must fire");
+    }
+
+    #[test]
+    fn test_i32_mul_65536_to_shl_16() {
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                i32.const 65536
+                i32.mul
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let folds = apply_peephole_synth(&mut module).expect("apply");
+        assert_eq!(folds, 1, "x*65536 → x<<16 must fire");
+    }
+
+    #[test]
+    fn test_pow2_mul_does_not_fold_non_power_of_2() {
+        // x * 3 is NOT a power of 2 — must not fold.
+        // Also covers k < 7 cases (e.g., x * 8) where we deliberately
+        // don't ship the rule because it wouldn't save bytes.
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                i32.const 3
+                i32.mul
+                local.get 0
+                i32.const 8
+                i32.mul
+                i32.add
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let folds = apply_peephole_synth(&mut module).expect("apply");
+        assert_eq!(folds, 0, "x*3 and x*8 must not fold (not in candidate set)");
+
+        let mul_count = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Mul))
+            .count();
+        assert_eq!(mul_count, 2, "both muls must survive");
     }
 
     // ─── PR-L2: negative cases (constant must be the identity element) ──

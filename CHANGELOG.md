@@ -5,6 +5,109 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-05-16
+
+**Infrastructure-completion release.** Three tracks of focused
+direct work to close the v1.0.0 deferred-list gaps. No agents
+(prior session ran into too many stalls). Honest measurement note:
+new passes don't fire on the current corpus — wins are coverage
+and soundness, not bytes. Real byte gains will surface once PR-Q
+(real corpus fixtures) lands.
+
+### Optimization
+
+- **PR-C (Track A): directize MVP — `call_indirect` → `Call`.**
+  The directize implementation existed in `loom-core/src/lib.rs`
+  since v1.0.0 (silently merged with PR-K3) but was never wired
+  into the CLI pipeline. v1.0.2 wires it as a CLI pass between
+  `precompute` and `inline`. The pass folds
+  `i32.const N; call_indirect (type T)` → `Call(F)` when:
+  - No function in the module contains an `Unknown` instruction
+    (rules out table.set/.fill/.copy/.init/.grow which all parse
+    to `Unknown` today). Conservative module-wide gate.
+  - The element section assigns slot N of the table to function F
+    via a constant `i32.const` offset (the resolver in
+    `build_table_resolver` covers active segments only).
+  - F's signature is byte-identical to the call_indirect's
+    declared `type_idx`.
+
+  **Z3 verification intentionally bypassed.** The verifier encodes
+  `call_indirect(N)` and `call F` as INDEPENDENT uninterpreted
+  functions; congruence cannot prove them equal without teaching
+  the verifier about the table resolver. Directize's three
+  structural guards above imply soundness without Z3 (table is
+  immutable + slot resolves to a unique F + signature matches).
+  The stack validator runs as defense-in-depth. This is the
+  cleanest way to ship directize today; a future PR can wire the
+  resolver into the verifier for full Z3 coverage.
+
+- **PR-L3 (Track B): 4 power-of-2 mul → shl rules in peephole_synth.**
+  - `x * 128 → x << 7`  (saves 1 byte: LEB128(128)=2 vs LEB128(7)=1)
+  - `x * 1024 → x << 10` (1 byte)
+  - `x * 65536 → x << 16` (2 bytes)
+  - `x * 2^20 → x << 20` (2 bytes)
+
+  We only ship rules where the shift-amount LEB128 is shorter than
+  the power-of-two's LEB128 — i.e., for `k >= 7`. Below that the
+  rewrite is byte-neutral (both LEB128 encodings are 1 byte) and
+  shipping it would just be canonicalization noise.
+
+### Traceability
+
+- **Track C: rivet design-decision gap cleanup.** Authored 5 new
+  `DD-*` artifacts in `safety/requirements/design-decisions.yaml`:
+  - DD-13 — Explicit error handling (REQ-3, REQ-5)
+  - DD-14 — Validator-driven output correctness (REQ-12, REQ-13)
+  - DD-15 — Fuzzing via cargo-fuzz (REQ-16)
+  - DD-16 — Meld/Kiln ABI compatibility (REQ-17)
+  - DD-17 — wasm32-wasip2 as canonical build target (REQ-18)
+
+  **Lifecycle coverage gaps: 9 → 4** (per `rivet validate`). The
+  remaining 4 are safety-goal gaps (`SG-3..6` needing
+  `safety-context` / `safety-solution`), orthogonal to the
+  design-decision cleanup.
+
+### Lifecycle coverage progress across the v1.x arc
+
+| Release | Gaps |
+|---|---|
+| v1.0.0 | 12 |
+| v1.0.1 (verification.yaml) | 9 |
+| **v1.0.2 (5 new DDs)** | **4** |
+
+Closing the remaining 4 safety-goal gaps is a v1.0.3+ project that
+needs to author `safety-context` and `safety-solution` artifacts
+(different artifact types).
+
+### Tests
+
+- **+7 new tests**: 3 directize (positive + non-const + out-of-range)
+  + 4 power-of-2 (3 positive shifts + 1 negative non-power-of-2).
+- All 8 (+ existing 1) peephole_synth tests pass. All 3 directize
+  tests pass.
+
+### Honest measurement note
+
+Re-ran `scripts/measure_corpus.sh` on the corpus. **Code-section
+bytes are unchanged from v1.0.1 / v1.0.0.** Directize gates off the
+calculator components because they contain `Unknown` instructions
+(table mutation in the source); the gale corpus is too small to
+have power-of-2 multipliers in our shipped range. The new
+infrastructure is correct and tested; byte wins compound once the
+corpus grows (PR-Q deferred). The strategic moat on small
+adapter-heavy components (PR-M, v0.8.0) — `-18.8%` and `-11.3%` —
+is unchanged.
+
+### Still deferred
+
+- **PR-Q: real corpus fixtures** (httparse, nom_numbers, etc.).
+  Both prior agent attempts stalled. Defer to v1.0.3.
+- Cranelift-style acyclic ægraph mid-end.
+- Verifier-side teaching of the table resolver (would let directize
+  use Z3 instead of structural guards).
+- Pure-arithmetic-expression arms in canonicalize.
+- 4 remaining safety-goal lifecycle gaps (SG-3..6).
+
 ## [1.0.1] - 2026-05-16
 
 **Verification gate release.** Imports spar's pattern

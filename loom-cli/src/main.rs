@@ -50,7 +50,7 @@ enum Commands {
         attestation: bool,
 
         /// Select specific optimization passes (comma-separated)
-        /// Available: inline,precompute,constant-folding,canonicalize,peephole-synth,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
+        /// Available: directize,inline,precompute,constant-folding,canonicalize,peephole-synth,cse,advanced,branches,dce,merge-blocks,vacuum,simplify-locals,dead-stores,dead-locals,vacuum-final
         /// Example: --passes inline,constant-folding,dce
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
@@ -407,6 +407,21 @@ fn optimize_command(
     };
 
     // Run selected passes in optimal order with tracking
+    // Directize early — resolves call_indirect → direct call before
+    // inline, so the inliner sees a strictly larger set of direct calls
+    // it can fold through. Conservative: skips the entire module if any
+    // function contains an Unknown instruction (which is how the parser
+    // represents table.set / .fill / .copy / .init / .grow today), and
+    // skips individual call_indirect sites whose constant table index
+    // can't be resolved to a unique function via the element section.
+    if should_run("directize") {
+        println!("  Running: directize");
+        let before = count_instructions(&module);
+        loom_core::optimize::directize(&mut module).context("Directize failed")?;
+        let after = count_instructions(&module);
+        track_pass("directize", before, after);
+    }
+
     if should_run("inline") {
         println!("  Running: inline");
         let before = count_instructions(&module);
