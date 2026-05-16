@@ -284,3 +284,141 @@ artifacts:
         target: REQ-6
       - type: satisfies
         target: REQ-7
+
+  - id: DD-13
+    type: design-decision
+    title: Explicit error handling — no silent failures or fallbacks
+    status: approved
+    description: >
+      Every error condition in the optimizer pipeline must be handled
+      explicitly. When an optimization cannot prove its transformation
+      sound, it MUST revert to the original instructions and record a
+      `record_revert(<pass-name>)` stat counter, never silently keep an
+      unverified result. Per-pass `verify_or_revert` is the load-bearing
+      mechanism; per-function stack validation is the safety net.
+    fields:
+      rationale: >
+        Silent failures violate REQ-3. The proof-first philosophy in
+        CLAUDE.md depends on every transformation being either proven or
+        rejected — there's no third state. The `record_revert` counter
+        provides observability so operators can see when verification
+        rejected a transform (and aggregate per-pass via the
+        `--stats` CLI flag).
+      alternatives: >
+        Alternative 1: best-effort optimization (rejected: violates the
+        proof-first invariant). Alternative 2: panic on verification
+        failure (rejected: a single uncoverable function should not abort
+        the whole optimization run; per-function revert is safer).
+    links:
+      - type: satisfies
+        target: REQ-3
+      - type: satisfies
+        target: REQ-5
+
+  - id: DD-14
+    type: design-decision
+    title: Validator-driven output correctness — every optimization output passes wasm-tools validate
+    status: approved
+    description: >
+      Every wasm binary produced by LOOM must pass
+      `wasm-tools validate`. The CI `Validate WebAssembly Output` job
+      and the `loom-testing` differential framework enforce this on the
+      full fixture corpus. Internally, every optimization pass is wrapped
+      in `ValidationGuard` which checks stack signatures on the output
+      and reverts on mismatch.
+    fields:
+      rationale: >
+        REQ-12 demands valid WASM output unconditionally. Internal stack
+        validation (`crate::stack::validation`) catches structural
+        violations BEFORE encoding, so an output that passes encoding is
+        very likely to validate. Running `wasm-tools validate`
+        externally on every fixture in CI provides a second independent
+        check.
+      alternatives: >
+        Alternative 1: trust internal validation only (rejected: a bug
+        in our validator would silently produce invalid output).
+        Alternative 2: validate only some passes (rejected: every pass
+        could in principle break stack discipline).
+    links:
+      - type: satisfies
+        target: REQ-12
+      - type: satisfies
+        target: REQ-13
+
+  - id: DD-15
+    type: design-decision
+    title: Fuzzing via cargo-fuzz with `fuzz/fuzz_targets/`
+    status: approved
+    description: >
+      Fuzzing targets live under `fuzz/fuzz_targets/` and are runnable
+      via `cargo fuzz run <target>`. The current set covers parser,
+      optimizer pipeline, and round-trip identity. Nightly CI runs an
+      extended campaign; PR CI runs a smoke check (`cargo check` on the
+      fuzz crate) to catch build breakage.
+    fields:
+      rationale: >
+        REQ-16 demands fuzzing coverage. cargo-fuzz is the standard
+        Rust fuzzing harness (libFuzzer backend), zero-config to set up
+        once the workspace has the `fuzz/` subdirectory. The smoke
+        check is cheap and prevents fuzz-target bit-rot.
+      alternatives: >
+        Alternative 1: AFL++ via cargo-afl (rejected: more setup
+        overhead, similar coverage). Alternative 2: property-based
+        testing only via proptest (rejected: proptest is great for
+        per-function properties but doesn't cover the parser's adversarial-
+        input surface; we use BOTH).
+    links:
+      - type: satisfies
+        target: REQ-16
+
+  - id: DD-16
+    type: design-decision
+    title: Meld/Kiln ABI compatibility — differential testing on meld-fused output
+    status: approved
+    description: >
+      LOOM is designed to optimize wasm produced upstream by `meld`
+      (component fusion) and `kiln` (Rust→wasm compilation). The
+      `scripts/measure_corpus.sh` and `loom-testing/benches/corpus_baseline.rs`
+      harnesses run LOOM on `meld fuse <component>` output and report
+      byte deltas. Differential testing in `loom-testing/` checks that
+      LOOM-optimized binaries behave identically to baseline.
+    fields:
+      rationale: >
+        REQ-17 demands ABI compatibility with meld and kiln. Real
+        compatibility is empirical, not declarative — running the
+        pipeline end-to-end and validating the output is the load-bearing
+        check. The v1.0.0 cargo bench (`corpus_baseline`) makes this
+        comparison reproducible on every PR.
+      alternatives: >
+        Alternative 1: declare ABI compatibility (rejected: ABI breaks
+        in practice without being declared). Alternative 2: golden-file
+        regression tests only (rejected: golden files need careful
+        maintenance and don't catch new failure modes).
+    links:
+      - type: satisfies
+        target: REQ-17
+
+  - id: DD-17
+    type: design-decision
+    title: "wasm32-wasip2 as the canonical wasm build target"
+    status: approved
+    description: >
+      LOOM compiles to wasm32-wasip2 for the self-build (dogfooding)
+      and component-export paths. The choice of wasip2 over wasi-p1 or
+      no-wasi reflects the Component Model alignment: components are
+      the format LOOM targets in production.
+    fields:
+      rationale: >
+        REQ-18 demands wasm build target support. wasm32-wasip2 is the
+        current stable Rust target for Component-Model-aware wasm; it
+        is what `cargo component build` produces by default. Building
+        LOOM to wasm-p1 would prevent the dogfooding test from
+        exercising the component pipeline.
+      alternatives: >
+        Alternative 1: wasm32-unknown-unknown (rejected: no WASI
+        primitives, can't run as a CLI). Alternative 2: wasm32-wasi
+        (preview1) (rejected: less aligned with the Component Model
+        future direction).
+    links:
+      - type: satisfies
+        target: REQ-18
