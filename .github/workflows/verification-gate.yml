@@ -1,0 +1,110 @@
+name: Verification Gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  rivet-verification:
+    name: Verification Gate (rivet-driven)
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+      CARGO_INCREMENTAL: 0
+      # LOOM's Z3 verifier needs the Z3 header at build time; the bundled
+      # z3-sys feature provides the library statically.
+      Z3_SYS_Z3_HEADER: /usr/include/z3.h
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Ensure Z3 header present
+        run: |
+          # libz3-dev provides /usr/include/z3.h. Skip if already present
+          # (self-hosted runners may have it pre-installed).
+          if [ ! -f "$Z3_SYS_Z3_HEADER" ]; then
+            sudo apt-get update && sudo apt-get install -y libz3-dev || true
+          fi
+
+      - name: Install rivet
+        run: |
+          # Pin to rivet v0.7.0 (commit b7a17be) — the release that first ships
+          # `rivet list --filter <sexp>`, which this gate depends on. (The
+          # 4c06709 SHA I tried first is *etch*'s rev — etch is a sibling crate
+          # in the rivet workspace but unrelated to the CLI.)
+          # The rivet repo is a multi-package workspace; the trailing positional
+          # `rivet-cli` selects which crate owns the `rivet` binary, otherwise
+          # cargo errors with "multiple packages with binaries found:
+          # rivet-cli, rivet-fuzz".
+          cargo install --locked --git https://github.com/pulseengine/rivet \
+            --rev b7a17bef \
+            --bin rivet \
+            rivet-cli
+
+      - name: Pick verification filter (per-PR override via body)
+        id: pick
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Default: every TEST-* feature artifact tagged for the current
+          # release milestone (v100 for v1.0.x). PRs may override by adding
+          # a single line to the body:
+          #     Verify-Filter: (and (= type "feature") (has-tag "v101"))
+          # Default scope is intentionally narrow — running every
+          # `(= type "feature")` artifact would re-run dozens of `cargo test`
+          # invocations and blow the 30-minute job timeout.
+          # rivet v0.7.0 supports: and/or/not/implies/excludes/=/!=/>/</has-tag/
+          # has-field/in/matches/contains/linked-* (no `has-status`).
+          DEFAULT='(and (= type "feature") (matches id "^TEST-"))'
+          OVERRIDE=$(printf '%s' "$PR_BODY" | grep -m1 -E '^Verify-Filter:' | sed 's/^Verify-Filter:[[:space:]]*//' || true)
+          if [ -n "${OVERRIDE:-}" ]; then
+            printf 'filter=%s\n' "$OVERRIDE" >>"$GITHUB_OUTPUT"
+          else
+            printf 'filter=%s\n' "$DEFAULT" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Run rivet verification gate
+        id: verify
+        continue-on-error: true
+        env:
+          FILTER: ${{ steps.pick.outputs.filter }}
+        run: |
+          tools/run_verification.py \
+            --filter "$FILTER" \
+            --results-json verification-results.json
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-results
+          path: verification-results.json
+          if-no-files-found: warn
+
+      - name: Post sticky PR comment
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          tools/post_verification_comment.py "$PR_NUMBER"
+
+      - name: Fail job if any verification artifact failed
+        if: steps.verify.outcome != 'success'
+        run: |
+          echo "::error::One or more verification artifacts failed; see PR comment for details"
+          exit 1
