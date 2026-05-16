@@ -5,6 +5,70 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-05-16
+
+**Verification gate release.** Imports spar's pattern
+(commit ba329f3d) of making rivet artifacts EXECUTABLE rather
+than purely descriptive. Every requirement REQ-1 through REQ-18
+now has at least one `TEST-*` feature artifact with
+`fields.method: automated-test` and `fields.steps[].run` shell
+commands, linked via `satisfies`.
+
+### Added
+
+- **`safety/requirements/verification.yaml`** (16 TEST-* artifacts).
+  Each is `type: feature` with executable steps that the
+  Verification Gate CI job runs. Coverage:
+  - TEST-Z3-VERIFICATION-CORE → REQ-1, REQ-6
+  - TEST-IPA-FUNCTION-SUMMARIES → REQ-1, REQ-4
+  - TEST-CSE-SAFETY-GUARDS → REQ-2, REQ-3, REQ-4, REQ-5
+  - TEST-CSE-CROSS-CALL-DEDUP → REQ-1, REQ-3
+  - TEST-ROCQ-PROOFS → REQ-7
+  - TEST-SELF-OPTIMIZATION → REQ-8
+  - TEST-WASM-SPEC-COVERAGE → REQ-9
+  - TEST-CLI-PIPELINE → REQ-10
+  - TEST-COMPONENT-OPTIMIZER → REQ-11
+  - TEST-VALID-WASM-OUTPUT → REQ-12, REQ-13
+  - TEST-STACK-VALIDATION → REQ-13
+  - TEST-DETERMINISTIC-OUTPUT → REQ-14
+  - TEST-CORPUS-HARNESS → REQ-15
+  - TEST-FUZZING-SMOKE → REQ-16
+  - TEST-ABI-COMPATIBILITY → REQ-17
+  - TEST-WASM-BUILD-TARGET → REQ-18
+
+- **`tools/run_verification.py`** — ported from spar. Executes every
+  `type: feature` artifact's `fields.steps[].run` commands. Reads
+  artifacts via `rivet list --filter <sexp>` + `rivet get`, runs
+  each step under `bash -c`, writes a `verification-results.json`
+  summary with passed/failed/skipped lists.
+
+- **`tools/post_verification_comment.py`** — ported from spar.
+  Upserts a single marker-tagged PR comment showing N/M passed,
+  per-artifact pass/fail table, and a `<details>` block of failed
+  IDs. Finds the marker via `gh api` and PATCHes the body; creates
+  a new comment only on first run.
+
+- **`.github/workflows/verification-gate.yml`** — new CI job on PRs.
+  Installs rivet at the pinned `b7a17bef` commit (v0.7.0 — first
+  release that ships `rivet list --filter <sexp>`). Default filter:
+  `(and (= type "feature") (matches id "^TEST-"))`. Per-PR override
+  via `Verify-Filter:` line in the PR body. 30-minute timeout.
+
+### Coverage improvement
+
+- **Lifecycle coverage gaps: 12 → 9** (per `rivet validate`).
+  Closes all "missing: feature" gaps for REQ-2, REQ-3, REQ-12,
+  REQ-13, REQ-14, REQ-17. Remaining 9 are pre-existing
+  `design-decision` / `safety-context` / `safety-solution` gaps
+  (separate cleanup).
+
+### Cross-project pattern
+
+This is the second pulseengine project (after spar) to adopt the
+executable-rivet-artifacts pattern. The same tooling will work
+for kiln, meld, witness, and gale once their requirement sets
+are similarly mapped.
+
 ## [1.0.0] - 2026-05-15
 
 **v1.0.0 — verifier-completion release.** Lifts the verifier-side
