@@ -236,3 +236,141 @@ artifacts:
         target: SG-1
       - type: scopes
         target: SG-2
+
+  - id: SC-CTXT-2
+    type: safety-context
+    title: SG-3 — verifier scope and external-tool assumptions
+    status: approved
+    fields:
+      statement: >
+        SG-3 (LOOM verification system faithfully models WebAssembly
+        semantics) is bounded by the wasm subset LOOM's Z3 translation
+        validator currently covers. Float operations are partially modeled
+        (NaN propagation matches the spec for the basic ops; rustc_apfloat
+        bit-exactness is deferred — see CHANGELOG v0.5.0 deferred-items).
+        BrTable arms are abstracted as fresh-symbolic returns rather than
+        per-arm path predicates. Memory and globals are havoc'd after each
+        Call that the IPA cannot prove pure+no-trap. The verifier is
+        TRUSTED to encode the operations it claims to support; gaps in
+        coverage are tracked via lifecycle artifacts and CHANGELOG
+        deferred-items lists, not by silently broadening claims.
+    links:
+      - type: scopes
+        target: SG-3
+
+  - id: SC-CTXT-3
+    type: safety-context
+    title: SG-4 — determinism scope (compiler input → output, not runtime)
+    status: approved
+    fields:
+      statement: >
+        SG-4 (LOOM optimization output is deterministic) means that for
+        a fixed input module M and fixed LOOM version/build, running
+        `loom optimize M` produces byte-identical output across runs,
+        platforms, and machines. It does NOT mean that DIFFERENT LOOM
+        versions produce identical output — release-to-release output
+        changes are expected as new passes ship. DD-8 (HashMap usage
+        policy) and DD-4 (fixed pipeline ordering) are the load-bearing
+        mechanisms. The TEST-DETERMINISTIC-OUTPUT artifact in
+        verification.yaml runs the same input twice and asserts byte
+        equality.
+    links:
+      - type: scopes
+        target: SG-4
+
+  - id: SC-CTXT-4
+    type: safety-context
+    title: SG-5 — Component Model interface preservation scope
+    status: approved
+    fields:
+      statement: >
+        SG-5 (Component Model optimization preserves interface contracts)
+        is bounded by what the component-model optimizer at
+        loom-core/src/component_optimizer.rs currently handles: canon
+        lift/lower adapter specialization (PR-M, v0.8.0), per-core-module
+        invocation of the standard pipeline, and structural validation of
+        the component post-fusion. Resource handles, async streams, and
+        the future canonical-async ABI are NOT YET in scope; their
+        preservation is asserted by structural pass-through, not by
+        semantic verification. TEST-COMPONENT-OPTIMIZER exercises the
+        shipped surface; broader resource-semantic claims need the v1.x
+        async-aware verifier work.
+    links:
+      - type: scopes
+        target: SG-5
+
+  - id: SC-CTXT-5
+    type: safety-context
+    title: SG-6 — conservative-skip scope and observability
+    status: approved
+    fields:
+      statement: >
+        SG-6 (LOOM correctly skips functions it cannot safely optimize)
+        means every pass that encounters an Unknown instruction or an
+        ISLE-unsupported opcode in a function exits that function
+        unchanged AND records a stats counter via record_revert. The CLI
+        --stats flag surfaces these counts so operators can detect when
+        coverage is incomplete on their workload. DD-2 (skip-function
+        strategy) is the design decision; DD-13 (no silent failures) is
+        the observability guarantee. The skip semantics are tested
+        indirectly by every pass's unit tests (they exercise
+        has_unknown_instructions / has_unsupported_isle_instructions
+        gates).
+    links:
+      - type: scopes
+        target: SG-6
+
+  # ══════════════════════════════════════════════════════════════════════
+  # Safety Solutions (additional — covering SG-4, SG-5, SG-6)
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: SOL-6
+    type: safety-solution
+    title: Per-pass revert counter + --stats surfacing
+    status: approved
+    fields:
+      evidence-type: test
+      description: >
+        Every optimization pass that runs the Z3 translation validator
+        wraps the transform in verify_or_revert. On rejection, the
+        function is reverted to its pre-transform state AND a counter
+        is incremented via crate::stats::record_revert(<pass>). The CLI
+        --stats output prints a Verification Reverts section listing
+        per-pass revert counts. This makes the conservative-skip
+        behavior observable rather than silent.
+    links:
+      - type: supports
+        target: SG-6
+
+  - id: SOL-7
+    type: safety-solution
+    title: Byte-identical output regression test on canonical fixtures
+    status: approved
+    fields:
+      evidence-type: test
+      description: >
+        TEST-DETERMINISTIC-OUTPUT in verification.yaml asserts that
+        running `loom optimize` twice on a fixed input produces
+        byte-identical output. Combined with DD-8 (BTreeMap policy)
+        and DD-4 (fixed pipeline ordering), this enforces SG-4 in CI on
+        every PR via the Verification Gate.
+    links:
+      - type: supports
+        target: SG-4
+
+  - id: SOL-8
+    type: safety-solution
+    title: Component-Model pass-through validation post-optimization
+    status: approved
+    fields:
+      evidence-type: test
+      description: >
+        The component_optimizer.rs pipeline runs wasm-tools validate
+        (component variant) on the optimized component before emitting
+        the final binary. PR-M's specialize_adapters pass has a
+        two-layer revert: structural type-match guard plus
+        post-fold validator-re-check. Failures revert the function set
+        for the affected core module.
+    links:
+      - type: supports
+        target: SG-5
