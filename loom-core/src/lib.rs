@@ -38,6 +38,14 @@ pub mod stats;
 /// to follow-up PRs.
 pub mod egraph;
 
+/// Island-model parallel optimization — v1.0.4 PR-islands (issue #71).
+///
+/// Runs N independent pass orderings concurrently, each on a cloned copy of
+/// the input module, then picks the smallest valid result. Each island still
+/// passes the existing Z3 + stack validation gates independently — soundness
+/// is not traded for speed.
+pub mod islands;
+
 /// Internal representation of a WebAssembly module
 #[derive(Debug, Clone)]
 pub struct Module {

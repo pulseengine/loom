@@ -29,6 +29,11 @@ thiserror = { workspace = true }
 # LEB128 encoding
 leb128 = "0.2"
 
+# Parallel island-model optimization (v1.0.4 PR-islands, issue #71).
+# Scoped to loom-core only — the dependency boundary stays tight; CLI does
+# not depend on rayon, it just dispatches into the per-island entry point.
+rayon = "1"
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = "0.5"
