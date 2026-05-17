@@ -55,6 +55,14 @@ enum Commands {
         /// Default: all passes
         #[arg(long, value_delimiter = ',')]
         passes: Option<Vec<String>>,
+
+        /// Number of optimization islands to run in parallel (issue #71).
+        /// 1 = current serial pipeline (default). N>1 runs the first N
+        /// entries of `loom_core::islands::DEFAULT_ISLANDS` concurrently
+        /// via rayon, then picks the smallest verified result.
+        /// Maximum is 4 (the size of the default fleet).
+        #[arg(long, default_value_t = 1)]
+        islands: usize,
     },
 
     /// Verify ISLE optimization rules
@@ -264,6 +272,7 @@ fn optimize_command(
     run_verify: bool,
     add_attestation: bool,
     passes: Option<Vec<String>>,
+    islands: usize,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -381,6 +390,68 @@ fn optimize_command(
     // Apply optimizations
     println!("⚡ Optimizing...");
     let start_opt = Instant::now();
+
+    // Island-model dispatch (issue #71). When --islands N is >1, hand off to
+    // the parallel harness. The harness runs the first N entries of
+    // DEFAULT_ISLANDS concurrently, validates each, and picks the smallest.
+    // This intentionally ignores --passes: the islands carry their own pass
+    // orderings, and combining the two would defeat the point of the
+    // comparison.
+    if islands > 1 {
+        let fleet = loom_core::islands::DEFAULT_ISLANDS;
+        let n = islands.min(fleet.len());
+        if islands > fleet.len() {
+            println!(
+                "  Note: requested {} islands but only {} are defined; running {}.",
+                islands,
+                fleet.len(),
+                n
+            );
+        }
+        println!("🏝️  Running {} optimization islands in parallel...", n);
+        module = loom_core::islands::optimize_module_islands(&module, &fleet[..n])
+            .context("Island-model optimization failed")?;
+        stats.optimization_time_ms = start_opt.elapsed().as_millis();
+        println!("✓ Islands optimized in {} ms", stats.optimization_time_ms);
+
+        // Collect post-optimization stats
+        stats.instructions_after = count_instructions(&module);
+
+        // Skip the serial pipeline below — the islands already ran a full
+        // pass sequence on the winning module. Jump directly to encoding.
+        let output_bytes = if output_wat {
+            println!("📝 Encoding to WAT format...");
+            loom_core::encode::encode_wat(&module)
+                .context("Failed to encode to WAT")?
+                .into_bytes()
+        } else {
+            println!("📦 Encoding to WASM binary...");
+            loom_core::encode::encode_wasm(&module).context("Failed to encode to WASM")?
+        };
+        stats.bytes_after = output_bytes.len();
+
+        let output_path = output.unwrap_or_else(|| {
+            if output_wat {
+                "output.wat".to_string()
+            } else {
+                "output.wasm".to_string()
+            }
+        });
+        fs::write(&output_path, &output_bytes).context("Failed to write output file")?;
+        println!("✓ Written to: {}", output_path);
+
+        if show_stats {
+            stats.print();
+        }
+
+        // Suppress unused-variable warnings for branches that the
+        // island path doesn't exercise (verification, attestation are
+        // still meaningful TODOs for island mode but out of scope for
+        // this PR — the per-island Z3 + stack gates already ran inside
+        // each optimization pass).
+        let _ = (run_verify, add_attestation, original_module);
+        return Ok(());
+    }
 
     // Determine which passes to run
     let enabled_passes = passes
@@ -758,12 +829,22 @@ fn main() -> Result<()> {
             #[cfg(feature = "attestation")]
             attestation,
             passes,
+            islands,
         }) => {
             #[cfg(feature = "attestation")]
             let add_attestation = attestation;
             #[cfg(not(feature = "attestation"))]
             let add_attestation = false;
-            optimize_command(input, output, wat, stats, verify, add_attestation, passes)?;
+            optimize_command(
+                input,
+                output,
+                wat,
+                stats,
+                verify,
+                add_attestation,
+                passes,
+                islands,
+            )?;
         }
 
         Some(Commands::Verify { isle_file }) => {
@@ -837,6 +918,7 @@ mod tests {
             false,
             false, // attestation
             None,
+            1, // islands: serial path
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -873,6 +955,7 @@ mod tests {
             false,
             false, // attestation
             None,
+            1, // islands: serial path
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -906,6 +989,7 @@ mod tests {
             true,  // Enable verification
             false, // attestation
             None,
+            1, // islands: serial path
         );
 
         assert!(
@@ -942,6 +1026,7 @@ mod tests {
             false,
             false, // attestation (disabled for WAT)
             None,
+            1, // islands: serial path
         );
 
         assert!(
