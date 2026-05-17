@@ -57,6 +57,16 @@ pub struct VerificationSignatureContext {
     /// which makes Z3 prove two identical calls have equal results
     /// under congruence closure. This unblocks cross-call CSE dedup.
     pub function_summaries: Vec<Option<crate::summary::FunctionSummary>>,
+    /// v1.0.4 Track B: element-section table resolver `(table_idx, slot) → func_idx`.
+    /// Populated from `crate::optimize::build_table_resolver`. When a
+    /// `call_indirect` is preceded by a constant `i32.const N` (visible
+    /// to the Z3 encoder as a literal BV), the encoder can resolve the
+    /// callee statically and encode the result as `pure_call_<F>(args)`
+    /// — exactly like the PR-K3 direct-call encoding. This unblocks
+    /// directize's Z3 verification: the encoded `call_indirect` BV and
+    /// the encoded `call F` BV become structurally equal under
+    /// Z3's congruence closure.
+    pub table_resolver: std::collections::HashMap<(u32, u32), u32>,
 }
 
 #[cfg(feature = "verification")]
@@ -91,10 +101,36 @@ impl VerificationSignatureContext {
             function_summaries.push(Some(*summary));
         }
 
+        // v1.0.4 Track B: build the element-section table resolver. A failure
+        // to parse the section produces an empty resolver — directize will
+        // then leave call_indirect untouched, mirroring the v1.0.2 behavior.
+        let table_resolver = crate::optimize::build_table_resolver(module).unwrap_or_default();
+
         VerificationSignatureContext {
             function_signatures,
             type_signatures: module.types.clone(),
             function_summaries,
+            table_resolver,
+        }
+    }
+
+    /// v1.0.4 Track B: look up the function index at `(table_idx, slot)`,
+    /// returning `Some(func_idx)` only if the slot resolves AND the
+    /// resolved function's signature is byte-identical to the
+    /// indirect-call type. Returns `None` otherwise (caller falls back
+    /// to the existing fresh-symbolic + havoc encoding).
+    pub fn resolve_indirect_call(
+        &self,
+        table_idx: u32,
+        slot: u32,
+        expected_type: &FunctionSignature,
+    ) -> Option<u32> {
+        let func_idx = *self.table_resolver.get(&(table_idx, slot))?;
+        let target_sig = self.function_signatures.get(func_idx as usize)?;
+        if target_sig == expected_type {
+            Some(func_idx)
+        } else {
+            None
         }
     }
 
@@ -4195,21 +4231,137 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Indirect call - properly model stack effects using type signature
-            // Indirect calls are maximally conservative since we don't know what function is called
-            Instruction::CallIndirect { type_idx, .. } => {
-                // Pop table index first
+            //
+            // v1.0.4 Track B: when the indirect-call slot is statically
+            // known (the index BV simplifies to a literal `u64`) AND the
+            // element-section table resolver knows the function at that
+            // slot AND its signature matches the indirect-call type, we
+            // encode the result as `pure_call_<F>(args)` — exactly the
+            // PR-K3 path used for direct `call F`. This makes the
+            // verifier's BV for `i32.const N; call_indirect (type T)`
+            // structurally equal to the BV for `call F` under Z3
+            // congruence closure, unblocking directize's Z3 verification.
+            //
+            // When the index is dynamic (non-concrete) OR the resolver
+            // doesn't cover the slot OR signatures don't match, we fall
+            // back to the existing conservative encoding: fresh-symbolic
+            // result + havoc of all globals and memory.
+            Instruction::CallIndirect { type_idx, table_idx } => {
+                // Pop table index first.
                 if stack.is_empty() {
                     return Err(anyhow!(
                         "Stack underflow in CallIndirect: missing table index"
                     ));
                 }
                 // SAFETY: guarded by is_empty check above
-                let _table_idx = stack.pop().unwrap();
+                let slot_bv = stack.pop().unwrap();
+                let concrete_slot: Option<u32> = slot_bv
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok());
 
                 // Use type signature to properly model stack effects
                 if let Some(ctx_ref) = sig_ctx {
                     if let Some(sig) = ctx_ref.get_type_signature(*type_idx) {
-                        // Pop arguments
+                        // v1.0.4 Track B: try to resolve to a concrete callee.
+                        let resolved_func: Option<u32> = concrete_slot.and_then(|slot| {
+                            ctx_ref.resolve_indirect_call(*table_idx, slot, sig)
+                        });
+
+                        if let Some(func_idx) = resolved_func {
+                            // Pop arguments into a Vec we own, so we can
+                            // apply them to the uninterpreted function.
+                            let mut args_rev: Vec<BV> = Vec::with_capacity(sig.params.len());
+                            for i in 0..sig.params.len() {
+                                if stack.is_empty() {
+                                    return Err(anyhow!(
+                                        "Stack underflow in CallIndirect: missing arg {} of {}",
+                                        i + 1,
+                                        sig.params.len()
+                                    ));
+                                }
+                                args_rev.push(stack.pop().unwrap());
+                            }
+                            args_rev.reverse();
+                            let args = args_rev;
+
+                            // Resolved-call encoding mirrors the PR-K3
+                            // direct-Call path: emit `pure_call_<F>(args)`
+                            // via Z3 FuncDecl::apply so two equal indirect
+                            // calls (same slot, same args) prove equal.
+                            //
+                            // ONLY single-result calls go through this
+                            // path (multi-result would need a tuple sort,
+                            // out of scope). Multi-result falls through
+                            // to the fresh-symbolic + havoc encoding.
+                            if sig.results.len() == 1 {
+                                let result_type = sig.results[0];
+                                let result_width: u32 = match result_type {
+                                    crate::ValueType::I32 | crate::ValueType::F32 => 32,
+                                    crate::ValueType::I64 | crate::ValueType::F64 => 64,
+                                };
+                                let domain_sorts_owned: Vec<Sort> = sig
+                                    .params
+                                    .iter()
+                                    .map(|p| {
+                                        Sort::bitvector(match p {
+                                            crate::ValueType::I32
+                                            | crate::ValueType::F32 => 32,
+                                            crate::ValueType::I64
+                                            | crate::ValueType::F64 => 64,
+                                        })
+                                    })
+                                    .collect();
+                                let domain_refs: Vec<&Sort> =
+                                    domain_sorts_owned.iter().collect();
+                                let range_sort = Sort::bitvector(result_width);
+                                // Use the same decl name PR-K3 uses for
+                                // direct Call — so a direct-call and the
+                                // resolved-indirect-call to the same
+                                // function reduce to the SAME Z3 expression.
+                                let decl_name = format!("pure_call_{}", func_idx);
+                                let decl = FuncDecl::new(
+                                    decl_name.as_str(),
+                                    &domain_refs,
+                                    &range_sort,
+                                );
+                                let arg_refs: Vec<&dyn z3::ast::Ast> =
+                                    args.iter().map(|a| a as &dyn z3::ast::Ast).collect();
+                                let result_dyn = decl.apply(&arg_refs);
+                                if let Some(result_bv) = result_dyn.as_bv() {
+                                    stack.push(result_bv);
+                                } else {
+                                    stack.push(BV::new_const(
+                                        format!("call_indirect_{}_result_fallback", func_idx),
+                                        result_width,
+                                    ));
+                                }
+                                // NO havoc — pure_call encoding implies
+                                // no side effects, exactly like PR-K3's
+                                // direct-call path. Soundness: directize's
+                                // structural guards ensure the resolved
+                                // function is genuinely the target;
+                                // its purity is then a property of THAT
+                                // function (handled by PR-K3's pure_call_*
+                                // function symbol).
+                                continue;
+                            }
+                            // Multi-result resolved indirect calls: push
+                            // each result back to the args we already
+                            // popped (so the stack winds up where the
+                            // unresolved path would expect), then fall
+                            // through to the fresh-symbolic path.
+                            for a in args.into_iter().rev() {
+                                stack.push(a);
+                            }
+                            // Re-push the slot so the fall-through path
+                            // sees the original stack shape.
+                            stack.push(slot_bv.clone());
+                            // Re-pop slot in the fall-through.
+                            let _ = stack.pop().unwrap();
+                        }
+
+                        // Pop arguments (fall-through path: unresolved
+                        // indirect or multi-result resolved indirect).
                         for i in 0..sig.params.len() {
                             if stack.is_empty() {
                                 return Err(anyhow!(

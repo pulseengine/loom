@@ -7793,6 +7793,12 @@ pub mod optimize {
         let module_types: Vec<crate::FunctionSignature> = module.types.clone();
 
         let ctx = ValidationContext::from_module(module);
+        // v1.0.4 Track B: the verify_sig_ctx carries the same table
+        // resolver, so the per-function Z3 translator can resolve
+        // `i32.const N; call_indirect` to a concrete callee and encode
+        // it as `pure_call_<F>(args)` — proving the directize fold
+        // equivalent under congruence closure.
+        let verify_sig_ctx = crate::verify::VerificationSignatureContext::from_module(module);
 
         for func in &mut module.functions {
             // Already excluded above, but kept for parallelism with other passes.
@@ -7802,6 +7808,20 @@ pub mod optimize {
 
             let guard = ValidationGuard::with_context(func, "directize", ctx.clone());
 
+            // v1.0.4 Track B: Z3 verification is BACK. Construct the
+            // translator BEFORE mutation so it captures the pre-fold
+            // function as the "original". The verifier now resolves
+            // `i32.const N; call_indirect (type T)` to the same
+            // `pure_call_<F>(args)` expression PR-K3 uses for direct
+            // `call F` — so `call_indirect → call F` proves equivalent
+            // under Z3 congruence closure (see verify.rs around the
+            // `Instruction::CallIndirect` encoder).
+            let translator = crate::verify::TranslationValidator::new_with_context(
+                func,
+                "directize",
+                verify_sig_ctx.clone(),
+            );
+
             let new_instructions = directize_instructions(
                 &func.instructions,
                 &table_resolver,
@@ -7809,42 +7829,25 @@ pub mod optimize {
                 &module_types,
             );
 
-            // Only run validation if we actually changed something.
-            //
-            // No Z3 translation validation here. The Z3 verifier encodes
-            // `call_indirect(N)` and `call F` as independent uninterpreted
-            // functions — congruence cannot prove them equal without
-            // teaching the verifier about the element-section's table
-            // resolver (an invasive change deferred to a future PR).
-            //
-            // Directize's soundness is established by the three
-            // structural guards we ENFORCE BEFORE this loop:
-            //   1. `has_unknown_instructions(func)` rules out table.set /
-            //      .fill / .copy / .init / .grow on every function in
-            //      the module — so the table cannot be mutated at
-            //      runtime.
-            //   2. The element-segment-resolver `table_resolver` only
-            //      covers active segments with constant `i32.const`
-            //      offsets that resolve to known function indices.
-            //   3. The fold only fires when the resolved function's
-            //      signature is byte-identical to the call_indirect's
-            //      declared `type_idx`.
-            //
-            // Together these imply `call_indirect (type T) N` and
-            // `call <resolver[N]>` are observationally identical for
-            // every input — no Z3 needed. The stack validator below
-            // catches any structural breakage as a defense-in-depth.
+            // Structural guards (no Unknown + slot resolves + signature
+            // matches) remain as defense-in-depth, but Z3 is now the
+            // load-bearing proof.
             if new_instructions != func.instructions {
                 func.instructions = new_instructions;
                 let _ = guard.validate(func);
+                translator.verify_or_revert(func);
             }
         }
 
         Ok(())
     }
 
-    /// Per-table-index map: slot offset → function index resolved from active element segments.
-    type TableResolver = std::collections::HashMap<(u32, u32), u32>;
+    /// Per-table-index map: slot offset → function index resolved from active
+    /// element segments. v1.0.4 PR-Track-B exposes this `pub(crate)` so the
+    /// Z3 verifier (`crate::verify`) can re-use the resolver to prove
+    /// `i32.const N; call_indirect (type T)` equivalent to `call F` where
+    /// `F = resolver[(table_idx, N)]`.
+    pub(crate) type TableResolver = std::collections::HashMap<(u32, u32), u32>;
 
     /// Parse the raw element section bytes and build a resolver
     /// `(table_idx, slot_offset) -> func_idx` for active segments whose
@@ -7853,7 +7856,7 @@ pub mod optimize {
     /// so `directize_instructions` will leave their call_indirects alone.
     ///
     /// Returns an error if the section bytes themselves are malformed.
-    fn build_table_resolver(module: &Module) -> Result<TableResolver> {
+    pub(crate) fn build_table_resolver(module: &Module) -> Result<TableResolver> {
         use wasmparser::{BinaryReader, ElementItems, ElementKind, FromReader};
 
         let mut resolver = TableResolver::new();
