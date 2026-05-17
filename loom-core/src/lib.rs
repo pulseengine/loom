@@ -30,6 +30,14 @@ pub mod peephole_synth;
 /// Optimization observability counters (revert counts per pass).
 pub mod stats;
 
+/// Acyclic equality graph (ægraph) MVP — v1.0.3 Track 2.
+///
+/// Infrastructure-only data structure for future Cranelift-style
+/// per-rewrite-verifiable optimization work. Ships hash-consing and the
+/// acyclic invariant; rewrite rules / pipeline integration are deferred
+/// to follow-up PRs.
+pub mod egraph;
+
 /// Internal representation of a WebAssembly module
 #[derive(Debug, Clone)]
 pub struct Module {
