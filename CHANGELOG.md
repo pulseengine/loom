@@ -5,6 +5,90 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-05-17
+
+**Five parallel tracks release.** Four agent worktrees + one
+direct-work track addressing the v1.0.2 deferred-list. Three
+tracks shipped real work; one track's agent died and was deferred
+to v1.0.4.
+
+### Tracks landed
+
+- **Track 1 (PR-Q): real corpus fixtures.** Third attempt after
+  two prior agent stalls. This attempt used NO external crate
+  dependencies — locally-authored 749 LOC of Rust source across
+  three fixtures (httparse / json_lite / state_machine), each
+  built to wasm32-unknown-unknown and committed as 4.7 KB / 3.5
+  KB / 1.7 KB `.wasm` files under `tests/corpus/`. Each validates
+  via `wasm-tools validate`. Three of the previously-`n/a` rows
+  in the measurement harness now have real numbers.
+
+- **Track 2 (PR-egraph): ægraph MVP.** Acyclic Cranelift-style
+  e-graph substrate at `loom-core/src/egraph.rs` (~432 LOC + 7
+  tests). Hash-consing, acyclic invariant, basic extraction. No
+  rewrite engine yet — the substrate is in place for future PRs
+  to add union-find driven rewrites with per-rule Z3 proofs.
+
+- **Track 4 (safety-goals): close all 4 remaining lifecycle gaps.**
+  Added 4 safety-context artifacts (SC-CTXT-2..5) and 3 new
+  safety-solution artifacts (SOL-6..8). `rivet validate` no
+  longer reports a "Lifecycle coverage gaps" section. The 9
+  remaining errors are pre-existing schema-fit issues (SG
+  decomposition + CP link types) unrelated to this PR.
+
+- **Track 5 (issue triage + roadmap): 11 open issues classified.**
+  4 CLOSE (already shipped: #45 Rocq foundation, #47 compose
+  associativity proof, #50 ISLE rule verification; duplicate:
+  #75); 4 KEEP with roadmap entries (#48, #68, #70, #71); 3
+  DEFER (#72, #73, #74). Roadmap at
+  `docs/research/v1.0.3/issue-roadmap.md` (~2200 words).
+
+### Track deferred to v1.0.4
+
+- **Track 3 (verifier table-resolver teaching).** Agent died with
+  no work product. The directize Z3 bypass stays in place for
+  v1.0.3 (structural guards still imply soundness).
+
+### Issues closed via this release
+
+- #45 (Rocq foundation) — proofs/ tree complete; TEST-ROCQ-PROOFS
+  runs them in CI.
+- #47 (StackSignature::compose associativity) — 23 Qed's, 0
+  Admitted's in proofs/rust_verified/stack_signature_proofs.v.
+- #50 (Crocus-style ISLE rule verification) — loom-core/src/verify_rules.rs
+  has been Crocus-shaped since day 1.
+- #75 (P3 async callback trampolines) — duplicate of #70.
+
+### Lifecycle coverage progress across the v1.x arc
+
+| Release | Gaps |
+|---|---:|
+| v1.0.0 | 12 |
+| v1.0.1 | 9 |
+| v1.0.2 | 4 |
+| **v1.0.3** | **0 gaps** (9 pre-existing schema errors remain) |
+
+### Tests
+
+ægraph MVP adds 7 tests. Track 1 adds 3 corpus fixtures the harness
+can measure. All 335+ existing loom-core lib tests continue to pass.
+
+### Strategic moat unchanged
+
+| Workload | LOOM Δ% | wasm-opt Δ% |
+|---|---:|---:|
+| simple_component | **−18.8%** | wasm-opt errors |
+| calc_component | **−11.3%** | wasm-opt errors |
+| gale | −4.9% file / −2.0% code | −0.8% file / −2.0% code |
+
+### Still deferred to v1.0.4+
+
+- Track 3: verifier table-resolver teaching (lets directize use Z3).
+- ægraph rewrite engine (Track 2 shipped only the substrate).
+- KEEP issues from the roadmap: #48, #68 (Tier-1.1 + 2.2), #70, #71.
+- Schema-fit cleanup for the 9 pre-existing `rivet validate` errors
+  (SG decomposition link types, CP link-type declarations).
+
 ## [1.0.2] - 2026-05-16
 
 **Infrastructure-completion release.** Three tracks of focused
