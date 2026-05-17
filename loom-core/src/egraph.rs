@@ -9,9 +9,9 @@
 //! substrate — which is exactly what LOOM's "provably correct" mission
 //! requires.
 //!
-//! ## Scope of this PR
+//! ## Scope (v1.0.3 substrate + v1.0.4 Track C rewrite engine)
 //!
-//! INFRASTRUCTURE ONLY. This module ships:
+//! This module ships:
 //!
 //! 1. An [`ENode`] sum type covering a small subset of i32 arithmetic
 //!    and bitwise ops (enough to demonstrate structural sharing on
@@ -20,13 +20,20 @@
 //!    one e-class id) and enforces the acyclic invariant.
 //! 3. Conversion helpers between LOOM's [`crate::Instruction`] enum and
 //!    e-graph nodes ([`ENode::from_instruction`] / [`EGraph::extract`]).
+//! 4. **v1.0.4 Track C:** [`EGraph::union`] for merging e-classes,
+//!    [`EGraph::rebuild`] for congruence-closure propagation, a
+//!    [`Pattern`] / [`Rule`] API plus [`EGraph::apply_rules`] /
+//!    [`EGraph::saturate_with_rules`], and three hand-proven i32
+//!    identity rules (see [`identity_rules`]) — each carrying its
+//!    one-line algebraic proof at the construction site.
 //!
 //! What is intentionally *not* in this PR (future work, see module
 //! docs at the bottom):
 //!
-//! - A `union` / rewrite engine (rewrite rules that merge classes).
-//! - A real cost model (we use a node-count proxy in `extract`).
-//! - Integration with the optimizer pipeline.
+//! - Pipeline integration — the rewrite engine is a library, not a
+//!   pass yet.
+//! - A real cost model (extraction still uses the node-count proxy).
+//! - Commutativity normalization (rules must match exact arg order).
 //!
 //! ## Soundness invariants
 //!
@@ -216,9 +223,9 @@ pub struct EGraph {
     /// Hash-cons cache: e-node -> the e-class id that first hosted an
     /// isomorphic node. Drives structural sharing.
     cons: HashMap<ENode, EClassId>,
-    /// Inline union-find over e-class ids. Currently every class is its
-    /// own root; the field exists so a future `union()` PR can plug in
-    /// without changing the public API of `add` / `extract`.
+    /// Inline union-find over e-class ids. v1.0.3 left this dormant;
+    /// v1.0.4 (this PR) drives it from [`EGraph::union`] and
+    /// [`EGraph::rebuild`].
     uf: UnionFind,
 }
 
@@ -326,6 +333,331 @@ impl EGraph {
         }
         out.push(node.op.to_instruction());
     }
+
+    /// Unify two e-classes.
+    ///
+    /// After this call, `find(a) == find(b)`. Returns `true` if a real
+    /// merge happened (the roots were distinct beforehand), `false` if
+    /// `a` and `b` were already in the same class.
+    ///
+    /// Cost: O(α(N)) amortized per call thanks to path compression +
+    /// union-by-rank in the inline [`UnionFind`]. Note that this call
+    /// does NOT propagate congruence on its own — call [`EGraph::rebuild`]
+    /// after a batch of unions to restore the congruence-closure
+    /// invariant.
+    ///
+    /// ## Soundness
+    ///
+    /// Union is the substrate primitive — it merely declares two classes
+    /// equal. It is the *caller's* responsibility to ensure the two
+    /// classes are semantically equivalent (proven by a rewrite rule,
+    /// Z3, or algebraic identity). [`EGraph::apply_rules`] is the
+    /// supported way to drive union from proven rules.
+    pub fn union(&mut self, a: EClassId, b: EClassId) -> bool {
+        let ra = self.uf.find(a);
+        let rb = self.uf.find(b);
+        if ra == rb {
+            return false;
+        }
+        self.uf.union(a, b);
+        true
+    }
+
+    /// Propagate congruence-closure: keep unifying e-classes whose nodes
+    /// have the same operator AND whose children are pairwise in the
+    /// same class (under the current union-find), until a fixpoint is
+    /// reached.
+    ///
+    /// Returns the number of additional unions performed during rebuild
+    /// (not counting any unions performed before this call).
+    ///
+    /// ## Cost
+    ///
+    /// Each pass is `O(N)` over e-nodes, with each `find` taking
+    /// `O(α(N))` amortized. The number of passes is bounded by the
+    /// number of distinct equivalence classes (each pass that produces
+    /// any work strictly shrinks the class count). In the worst case
+    /// this is `O(N² · α(N))`, but in practice (small rule sets,
+    /// shallow ASTs) it terminates in 1–3 passes.
+    ///
+    /// ## Why we need this
+    ///
+    /// Consider two `Add(x, c_a)` and `Add(x, c_b)` parent classes that
+    /// differ only in which constant they reference. After a rule
+    /// unions `c_a` with `c_b`, the parents still reference distinct
+    /// child ids — but they're now equal-up-to-find. Since i32.add is a
+    /// function (equal inputs ⇒ equal outputs), the parents must also
+    /// be equal. That implication is what congruence closure formalizes.
+    pub fn rebuild(&mut self) -> usize {
+        let mut total = 0usize;
+        loop {
+            // Group e-classes by their canonicalized (op, children-roots)
+            // signature. Two classes with the same signature are
+            // congruent — their e-nodes compute the same value because
+            // their operator is the same and their operands are already
+            // proven equal.
+            let mut sigs: HashMap<(Op, Vec<EClassId>), EClassId> = HashMap::new();
+            let mut merges: Vec<(EClassId, EClassId)> = Vec::new();
+            for idx in 0..self.nodes.len() {
+                let id = EClassId(idx as u32);
+                let root = self.uf.find(id);
+                let node = &self.nodes[idx];
+                let canon_children: Vec<EClassId> =
+                    node.children.iter().map(|c| self.uf.find(*c)).collect();
+                let sig = (node.op, canon_children);
+                if let Some(prev) = sigs.get(&sig) {
+                    let prev_root = self.uf.find(*prev);
+                    if prev_root != root {
+                        merges.push((root, prev_root));
+                    }
+                } else {
+                    sigs.insert(sig, root);
+                }
+            }
+            if merges.is_empty() {
+                break;
+            }
+            for (a, b) in merges {
+                if self.union(a, b) {
+                    total += 1;
+                }
+            }
+        }
+        total
+    }
+
+    /// Apply a set of [`Rule`]s across the entire e-graph until no
+    /// further unions are produced in one pass.
+    ///
+    /// Each pass walks every existing e-class and tries to match each
+    /// rule's LHS against it. On a match, the matched class is unioned
+    /// with the class produced by the rule's RHS (which may need to be
+    /// freshly added to the graph if it isn't already present, e.g. for
+    /// non-trivial RHS shapes — the three identity rules shipped here
+    /// have wildcard RHS so no new classes are allocated).
+    ///
+    /// Returns the total number of effective unions performed.
+    pub fn apply_rules(&mut self, rules: &[Rule]) -> usize {
+        let mut total = 0usize;
+        loop {
+            let mut pass_unions = 0usize;
+            // Snapshot the class count so we don't repeatedly visit
+            // classes that we create mid-pass (e.g. when adding the RHS
+            // of a rule for the first time).
+            let snapshot = self.nodes.len();
+            for idx in 0..snapshot {
+                let class_id = EClassId(idx as u32);
+                for rule in rules {
+                    let mut bindings: HashMap<u32, EClassId> = HashMap::new();
+                    if !self.match_pattern(&rule.lhs, class_id, &mut bindings) {
+                        continue;
+                    }
+                    let Some(rhs_class) = self.instantiate(&rule.rhs, &bindings) else {
+                        // RHS referenced an unbound wildcard — rule is
+                        // malformed; skip rather than panic.
+                        continue;
+                    };
+                    if self.union(class_id, rhs_class) {
+                        pass_unions += 1;
+                    }
+                }
+            }
+            total += pass_unions;
+            if pass_unions == 0 {
+                break;
+            }
+        }
+        total
+    }
+
+    /// Convenience: apply rules and run congruence-closure rebuild
+    /// alternately until a complete fixpoint is reached.
+    ///
+    /// Returns the total number of unions performed (rule-driven plus
+    /// congruence-driven).
+    pub fn saturate_with_rules(&mut self, rules: &[Rule]) -> usize {
+        let mut total = 0usize;
+        loop {
+            let r = self.apply_rules(rules);
+            let c = self.rebuild();
+            total += r + c;
+            if r == 0 && c == 0 {
+                break;
+            }
+        }
+        total
+    }
+
+    /// Try to match a [`Pattern`] against an existing e-class.
+    ///
+    /// On success, `bindings` is populated with the wildcard variable
+    /// number → matched e-class id mappings discovered during the
+    /// match. If the same wildcard appears multiple times in the
+    /// pattern, all occurrences must bind to e-classes in the same
+    /// union-find root (linear matching).
+    fn match_pattern(
+        &mut self,
+        pat: &Pattern,
+        class_id: EClassId,
+        bindings: &mut HashMap<u32, EClassId>,
+    ) -> bool {
+        let class_root = self.uf.find(class_id);
+        match pat {
+            Pattern::Wild(var) => {
+                if let Some(existing) = bindings.get(var) {
+                    self.uf.find(*existing) == class_root
+                } else {
+                    bindings.insert(*var, class_root);
+                    true
+                }
+            }
+            Pattern::Node(op, children) => {
+                let node = self.nodes[class_id.0 as usize].clone();
+                if node.op != *op || node.children.len() != children.len() {
+                    return false;
+                }
+                for (child_pat, child_id) in children.iter().zip(node.children.iter()) {
+                    if !self.match_pattern(child_pat, *child_id, bindings) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// Materialize a pattern as a concrete e-class id under the given
+    /// wildcard bindings. Returns `None` if the pattern references an
+    /// unbound wildcard.
+    fn instantiate(
+        &mut self,
+        pat: &Pattern,
+        bindings: &HashMap<u32, EClassId>,
+    ) -> Option<EClassId> {
+        match pat {
+            Pattern::Wild(var) => bindings.get(var).copied(),
+            Pattern::Node(op, children) => {
+                let mut child_ids = Vec::with_capacity(children.len());
+                for c in children {
+                    child_ids.push(self.instantiate(c, bindings)?);
+                }
+                // Hash-cons via the normal API.
+                self.add(ENode::new(*op, child_ids)).ok()
+            }
+        }
+    }
+}
+
+/// A pattern used by [`Rule`] to describe both LHS (match) and RHS
+/// (replacement) shapes.
+///
+/// We deviate slightly from the literal "LHS/RHS are `ENode`"
+/// formulation in favour of an explicit wildcard variant:
+///
+/// - [`Pattern::Wild`] matches any e-class, and binds the named
+///   variable to that class. Multiple occurrences of the same variable
+///   must all bind to e-classes in the same union-find root (linear
+///   matching).
+/// - [`Pattern::Node`] matches an e-node with the given operator whose
+///   children pattern-match positionally.
+///
+/// Sentinel-`EClassId` wildcards would collide with real class ids
+/// once a graph grows past `u32::MAX`-many classes, and they cannot
+/// represent a bare-wildcard RHS like the `x` in `x + 0 == x`. The
+/// explicit enum sidesteps both issues cleanly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    /// A wildcard, identified by a small integer. Two occurrences of
+    /// the same wildcard in a pattern must bind to the same e-class.
+    Wild(u32),
+    /// A concrete operator applied to sub-patterns. Arity must match
+    /// `op.arity()`; this is checked by the matcher and by
+    /// [`EGraph::instantiate`] via the underlying [`EGraph::add`] call.
+    Node(Op, Vec<Pattern>),
+}
+
+impl Pattern {
+    /// Construct a node pattern.
+    pub fn node(op: Op, children: Vec<Pattern>) -> Self {
+        Pattern::Node(op, children)
+    }
+
+    /// Construct a wildcard pattern.
+    pub fn wild(var: u32) -> Self {
+        Pattern::Wild(var)
+    }
+}
+
+/// A single algebraic rewrite rule.
+///
+/// The rule fires when [`EGraph::apply_rules`] finds an e-class
+/// matching `lhs`; it then materializes `rhs` (substituting bound
+/// wildcards) and unions the matched class with the RHS class. Each
+/// rule must come with a one-line algebraic proof comment at its
+/// construction site (see [`identity_rules`] below).
+#[derive(Debug, Clone)]
+pub struct Rule {
+    /// Human-readable name (used for telemetry and to make failing
+    /// tests legible).
+    pub name: &'static str,
+    /// Pattern that selects an e-class to rewrite.
+    pub lhs: Pattern,
+    /// Pattern that produces the replacement e-class.
+    pub rhs: Pattern,
+}
+
+impl Rule {
+    /// Construct a rule directly.
+    pub fn new(name: &'static str, lhs: Pattern, rhs: Pattern) -> Self {
+        Rule { name, lhs, rhs }
+    }
+}
+
+/// The three hand-proven i32 identity rules shipped in v1.0.4 Track C.
+///
+/// Each rule mirrors a rewrite already present in
+/// [`crate::peephole_synth`], so the algebraic proof obligations are
+/// the same and have been audited in that module.
+///
+/// 1. `x + 0 == x` — additive identity in `Z/2^32`. The unique element
+///    `e` such that `∀ x. x + e = x` in i32 two's-complement is `0`.
+/// 2. `x * 1 == x` — multiplicative identity in `Z/2^32`. The unique
+///    element `e` such that `∀ x. x * e = x` in i32 two's-complement
+///    is `1`.
+/// 3. `x & -1 == x` — bitwise-AND identity (all-ones mask). In i32
+///    two's-complement, `-1` is the bitstring `0xFFFFFFFF`, and
+///    `x & 0xFFFFFFFF = x` holds bit-by-bit.
+pub fn identity_rules() -> Vec<Rule> {
+    vec![
+        // Proof: ∀x: BV32. x + 0 = x (additive identity in Z/2^32).
+        Rule::new(
+            "i32_add_zero_identity",
+            Pattern::node(
+                Op::I32Add,
+                vec![Pattern::wild(0), Pattern::node(Op::Const(0), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV32. x * 1 = x (multiplicative identity in Z/2^32).
+        Rule::new(
+            "i32_mul_one_identity",
+            Pattern::node(
+                Op::I32Mul,
+                vec![Pattern::wild(0), Pattern::node(Op::Const(1), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV32. x & 0xFFFFFFFF = x (bitwise-AND all-ones
+        // identity in i32 two's-complement; -1 == 0xFFFFFFFF).
+        Rule::new(
+            "i32_and_neg_one_identity",
+            Pattern::node(
+                Op::I32And,
+                vec![Pattern::wild(0), Pattern::node(Op::Const(-1), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+    ]
 }
 
 /// Errors produced by [`EGraph::add`].
@@ -405,7 +737,6 @@ impl UnionFind {
         EClassId(x)
     }
 
-    #[allow(dead_code)] // wired for the future rewrite engine
     fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
         let ra = self.find(a).0;
         let rb = self.find(b).0;
@@ -585,29 +916,196 @@ mod tests {
         let id = g.add(node).unwrap();
         assert_eq!(g.extract(id).len(), 3); // c1, c2, add
     }
+
+    // -----------------------------------------------------------------
+    // v1.0.4 Track C — union, rebuild, rule engine tests
+    // -----------------------------------------------------------------
+
+    /// After unioning two leaf constants, congruence-closure rebuild
+    /// must also unify the two `Add` parents that reference them. This
+    /// is the canonical congruence-closure scenario: `f(a) ≟ f(b)`
+    /// given `a ≟ b`.
+    #[test]
+    fn test_egraph_union_propagates_via_congruence() {
+        let mut g = EGraph::new();
+        // Two constants with distinct values so they get distinct
+        // classes from hash-consing.
+        let c_a = g.add(ENode::new(Op::Const(100), vec![])).unwrap();
+        let c_b = g.add(ENode::new(Op::Const(200), vec![])).unwrap();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        // Two adds that differ ONLY in which constant they reference.
+        let add_a = g.add(ENode::new(Op::I32Add, vec![x, c_a])).unwrap();
+        let add_b = g.add(ENode::new(Op::I32Add, vec![x, c_b])).unwrap();
+        assert_ne!(add_a, add_b);
+
+        // Manually declare the constants equal (normally the conclusion
+        // of a rule; here we exercise the substrate primitive directly).
+        assert!(g.union(c_a, c_b));
+        // Before rebuild, the two parents have unequal roots — union
+        // alone does not propagate congruence.
+        assert_ne!(g.find(add_a), g.find(add_b));
+        let unions = g.rebuild();
+        assert!(unions >= 1, "rebuild must merge the two add parents");
+        assert_eq!(
+            g.find(add_a),
+            g.find(add_b),
+            "Add(x, c_a) and Add(x, c_b) must be in the same class after rebuild"
+        );
+    }
+
+    /// `Add(LocalGet 0, Const(0))` must be unified with `LocalGet 0`
+    /// after applying the identity rule set.
+    #[test]
+    fn test_rule_x_plus_zero_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let add = g.add(ENode::new(Op::I32Add, vec![x, zero])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1, "rule should fire at least once");
+        assert_eq!(
+            g.find(add),
+            g.find(x),
+            "Add(x, 0) and x must collapse to the same class"
+        );
+    }
+
+    /// `Mul(LocalGet 0, Const(1))` must be unified with `LocalGet 0`.
+    #[test]
+    fn test_rule_x_times_one_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let one = g.add(ENode::new(Op::Const(1), vec![])).unwrap();
+        let mul = g.add(ENode::new(Op::I32Mul, vec![x, one])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1);
+        assert_eq!(g.find(mul), g.find(x));
+    }
+
+    /// `And(LocalGet 0, Const(-1))` must be unified with `LocalGet 0`.
+    #[test]
+    fn test_rule_x_and_negone_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let neg_one = g.add(ENode::new(Op::Const(-1), vec![])).unwrap();
+        let and = g.add(ENode::new(Op::I32And, vec![x, neg_one])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1);
+        assert_eq!(g.find(and), g.find(x));
+    }
+
+    /// `Add(LocalGet 0, Const(1))` must NOT fire the `x + 0` rule —
+    /// the constant is non-zero, so the LHS doesn't match. This guards
+    /// against the most basic class of overfiring bug: ignoring the
+    /// concrete `Const(0)` literal in the LHS pattern.
+    #[test]
+    fn test_rules_dont_overfire() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let one = g.add(ENode::new(Op::Const(1), vec![])).unwrap();
+        let add = g.add(ENode::new(Op::I32Add, vec![x, one])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert_eq!(n, 0, "no identity rule should match Add(x, 1)");
+        assert_ne!(
+            g.find(add),
+            g.find(x),
+            "Add(x, 1) must NOT collapse to x"
+        );
+    }
+
+    /// Saturation on a finite egraph must terminate in a bounded number
+    /// of passes. We build a small graph with all three identity
+    /// patterns nested, saturate, and confirm both that termination
+    /// occurs and that every nested identity collapsed to the
+    /// expected root class. Idempotency (second saturation = no-op) is
+    /// the fixpoint witness.
+    #[test]
+    fn test_saturation_terminates() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let one = g.add(ENode::new(Op::Const(1), vec![])).unwrap();
+        let neg_one = g.add(ENode::new(Op::Const(-1), vec![])).unwrap();
+
+        // Build (((x * 1) + 0) & -1) — every layer is an identity.
+        let mul = g.add(ENode::new(Op::I32Mul, vec![x, one])).unwrap();
+        let add = g.add(ENode::new(Op::I32Add, vec![mul, zero])).unwrap();
+        let and = g.add(ENode::new(Op::I32And, vec![add, neg_one])).unwrap();
+
+        let rules = identity_rules();
+        let total = g.saturate_with_rules(&rules);
+        assert!(
+            total >= 3,
+            "expected at least one union per layer, got {}",
+            total
+        );
+
+        // All three layers must have collapsed onto x.
+        assert_eq!(g.find(mul), g.find(x));
+        assert_eq!(g.find(add), g.find(x));
+        assert_eq!(g.find(and), g.find(x));
+
+        // A second saturation must be a no-op (fixpoint witness).
+        let again = g.saturate_with_rules(&rules);
+        assert_eq!(again, 0, "saturation must be idempotent at fixpoint");
+    }
+
+    /// Sanity: a graph with no rule-matching shapes is not mutated by
+    /// apply_rules.
+    #[test]
+    fn test_rule_no_match_is_noop() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let _y = g.add(ENode::new(Op::LocalGet(1), vec![])).unwrap();
+        let before = g.len();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert_eq!(n, 0);
+        assert_eq!(g.len(), before, "no new classes on a no-match graph");
+        assert_eq!(g.find(x), x);
+    }
 }
 
 // ---------------------------------------------------------------------
-// Follow-up work (v1.0.4+)
+// Follow-up work (v1.0.5+)
 // ---------------------------------------------------------------------
 //
-// 1. **Rewrite engine.** Add a `union(a, b)` API plus a small driver
-//    that walks the existing ISLE pattern set and merges semantically
-//    equal classes. Each rewrite must come with its proof obligation
-//    (Z3 or algebraic) per LOOM's correctness mandate.
+// 1. **Rewrite-time cost model.** The current extractor walks the
+//    stored canonical node for each class; after `apply_rules` merges
+//    classes, the chosen representative is whichever node the class
+//    was originally created with. A real implementation should pick
+//    the cost-minimal node from each merged class (per-op latency /
+//    size weights, dynamic programming).
 //
-// 2. **Wider op coverage.** Extend [`Op`] to cover i64 arithmetic,
+// 2. **More rules.** Mirror the remaining peephole_synth identities
+//    (i64 add/or/sub/shl/shr_s/shr_u zero, i32 sub/or zero, i32 shr
+//    zero, …) plus strength reductions (`x * 2^k → x << k`). Each
+//    rule still needs its one-line algebraic proof at the
+//    construction site, and we should start gating non-trivial rules
+//    behind Z3 at startup as the candidate set grows.
+//
+// 3. **Pipeline integration.** Once measurements confirm savings on
+//    the corpus, feed function bodies through the ægraph
+//    (instructions_to_ir → saturate → extract) for the supported op
+//    subset and round-trip back. Gate behind a CLI flag until corpus
+//    measurements confirm wins.
+//
+// 4. **Commutativity normalization.** Today rules must match exact
+//    argument order. A canonicalization pre-pass that sorts
+//    commutative operands (e.g. by class id) would let one rule
+//    match both `Add(x, 0)` and `Add(0, x)`. Must be wired carefully
+//    so as not to change extraction order in observable ways.
+//
+// 5. **Wider op coverage.** Extend [`Op`] to cover i64 arithmetic,
 //    comparisons, conversions, and memory ops as the rewrite engine
-//    needs them. Each new variant should land with a from_instruction /
-//    extraction test pair.
-//
-// 3. **Real cost model.** Replace the trivial post-order extractor with
-//    a true cost-driven selector: per-op latency / size weights, dynamic
-//    programming over classes, and tie-breaking that prefers ops the
-//    backend can fuse.
-//
-// 4. **Integration with `canonicalize` / `simplify_with_env`.** Once the
-//    rewrite engine lands, the existing pipeline should optionally feed
-//    function bodies through the ægraph instead of the term rewriter
-//    for the supported op subset, and round-trip back via `extract`.
-//    Gate this behind a CLI flag until corpus measurements confirm wins.
+//    needs them. Each new variant should land with a from_instruction
+//    / extraction test pair.
