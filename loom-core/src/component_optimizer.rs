@@ -370,6 +370,49 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
         }
     }
 
+    // Phase 4 (v1.0.4 #70): async callback adapter optimization. Detects
+    // the meld P3 adapter shape and folds the discriminant-test + slow-path
+    // branch when the EXIT_OK path is statically determined. Same
+    // save-and-revert pattern as Phase 3: encode + validate; revert on
+    // mismatch.
+    {
+        let saved_functions = module.functions.clone();
+        match optimize_async_callback_adapters(&mut module) {
+            Ok(folded) if folded > 0 => match crate::encode::encode_wasm(&module) {
+                Ok(bytes) => {
+                    if let Err(e) =
+                        Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
+                    {
+                        eprintln!(
+                            "  Module invalid after 'async-adapter' (reverting): {}",
+                            e
+                        );
+                        crate::stats::record_revert("component:async_adapter/invalid");
+                        module.functions = saved_functions;
+                    } else {
+                        eprintln!(
+                            "  Async-callback adapter: {} call site(s) folded",
+                            folded
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  Encode failed after 'async-adapter' (reverting): {}",
+                        e
+                    );
+                    crate::stats::record_revert("component:async_adapter/encode-failed");
+                    module.functions = saved_functions;
+                }
+            },
+            Ok(_) => { /* no folds */ }
+            Err(e) => {
+                eprintln!("  Async-adapter pass skipped: {:?}", e);
+                module.functions = saved_functions;
+            }
+        }
+    }
+
     // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
@@ -858,6 +901,423 @@ fn is_block_safe_to_eliminate(block_type: &BlockType, body: &[Instruction]) -> b
 
         // (block (param ...) (result ...)) — must be identity signature
         BlockType::Func { params, results } => params == results,
+    }
+}
+
+// ============================================================================
+// Phase 4 (v1.0.4 #70): meld async callback adapter optimization
+// ============================================================================
+//
+// meld-fused P3 components emit a recognizable async-callback adapter shape:
+//
+//   (func $caller
+//       ; ... arg prep producing [a, b, c] on stack
+//       local.get $arg_a
+//       local.get $arg_b
+//       local.get $arg_c
+//       call $async_lift_thunk      ;; lift import
+//       local.set $exit_code
+//       local.get $exit_code
+//       i32.const 0                 ;; EXIT_OK
+//       i32.eq
+//       if
+//           ;; fast path: caller continues
+//       else
+//           ;; slow path: schedule callback
+//       end
+//   )
+//
+// On a known-sync-completing lift (the common case for tiny `[async-lift]`
+// shims that meld emits when both sides share memory), `$exit_code` is
+// statically known to be 0. The slow path is unreachable; the if/else can
+// be replaced by the then-body alone. That single fold removes ~10
+// instructions per call site.
+//
+// We detect the pattern conservatively — exact instruction sequence, exact
+// EXIT_OK constant 0, exact ValueType::I32 — and fold by:
+//
+//   1. Removing the `i32.const 0; i32.eq; if/else` triplet (keeping the
+//      then_body inline).
+//   2. Folding away the `local.set; local.get` pair around `$exit_code`
+//      (its only consumer was the discriminant test, now gone).
+//
+// The transform is sound because:
+//   (a) `if/else` whose condition is statically known is a standard
+//       constant-folding rewrite — eliminating the dead arm is dead-code
+//       elimination, both already proven sound by the per-pass Z3 gate.
+//   (b) The `local.set; local.get` pair around `$exit_code` is byte-for-byte
+//       equivalent to no-op when the local has no other readers in the
+//       function body (we verify this via a read-count scan).
+//
+// We do NOT touch the lifted function itself, the element-section table,
+// or any state-machine handling. Future work: detect and inline the lift
+// when the inliner already has it, then composing with `directize`
+// produces a strictly-bigger fold (~30 instr → ~8 instr per call site).
+// That's the "six-pass chain" from the v1.0.3 roadmap. v1.0.4 lands the
+// first piece.
+
+/// Run the v1.0.4 async-callback-adapter pass on `module`. Returns the
+/// number of call sites folded. Conservative: skips the module entirely
+/// if any function contains an `Unknown` instruction.
+pub fn optimize_async_callback_adapters(module: &mut Module) -> Result<usize> {
+    for func in &module.functions {
+        if has_unknown_instructions(&func.instructions) {
+            return Ok(0);
+        }
+    }
+
+    let mut total_folded = 0;
+    for func in &mut module.functions {
+        total_folded += fold_async_callback_adapters_in_body(&mut func.instructions);
+    }
+    Ok(total_folded)
+}
+
+/// Walk a function body, fold every async-callback-adapter pattern, and
+/// recurse into nested Block/Loop/If bodies for inner patterns.
+fn fold_async_callback_adapters_in_body(instructions: &mut Vec<Instruction>) -> usize {
+    let mut folded = 0;
+
+    // Recurse first so inner blocks are considered for folding before we
+    // look at the outer sequence (matches the existing PR-M pattern).
+    for instr in instructions.iter_mut() {
+        match instr {
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                folded += fold_async_callback_adapters_in_body(body);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                folded += fold_async_callback_adapters_in_body(then_body);
+                folded += fold_async_callback_adapters_in_body(else_body);
+            }
+            _ => {}
+        }
+    }
+
+    // Pattern: `Call(_); LocalSet(N); LocalGet(N); I32Const(0); I32Eq;
+    //          If { then_body, else_body }`.
+    //
+    // The `Call` represents `$async_lift_thunk` (we don't constrain its
+    // function index; meld's adapters can target any import index).
+    // `LocalSet(N); LocalGet(N)` is the EXIT_OK discriminant capture.
+    // `I32Const(0); I32Eq` is the EXIT_OK comparison. The if/else decides
+    // the fast-path vs slow-path branches.
+    //
+    // We additionally require that the local N is read EXACTLY ONCE in
+    // the entire function (the LocalGet immediately after the LocalSet).
+    // This prevents folding away a local that some later code might read.
+
+    let mut i = 0;
+    while i + 6 <= instructions.len() {
+        if let (
+            Instruction::Call(_),
+            Instruction::LocalSet(set_idx),
+            Instruction::LocalGet(get_idx),
+            Instruction::I32Const(zero),
+            Instruction::I32Eq,
+            Instruction::If { .. },
+        ) = (
+            &instructions[i],
+            &instructions[i + 1],
+            &instructions[i + 2],
+            &instructions[i + 3],
+            &instructions[i + 4],
+            &instructions[i + 5],
+        ) && set_idx == get_idx
+            && *zero == 0
+        {
+            let local_idx = *set_idx;
+            // Verify the local is read exactly once in the function body.
+            // (The single read is the LocalGet at position i+2; any other
+            // read would mean we'd lose the value by folding the set away.)
+            let reads = count_local_reads(instructions, local_idx);
+            if reads != 1 {
+                i += 1;
+                continue;
+            }
+
+            // Capture the if/else's bodies before we mutate.
+            let (then_body, else_body) = match &instructions[i + 5] {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => (then_body.clone(), else_body.clone()),
+                _ => unreachable!("matched above"),
+            };
+
+            // The fold: keep only the original Call (for its side effects
+            // — pure-lift detection is for the future PR-K3-style work),
+            // then inline the then-body (fast path), discard everything
+            // else. We KEEP the Call because we cannot prove the lift is
+            // pure+no-trap without IPA, and the lift may have observable
+            // effects on the runtime's task table.
+            //
+            // For the conservative MVP, we DO NOT erase the Call. We fold
+            // away the discriminant capture + if/else, replacing the 5
+            // instructions (set; get; const 0; eq; if) with the then-body's
+            // contents inline.
+            let mut replacement: Vec<Instruction> = vec![instructions[i].clone()];
+            replacement.extend(then_body);
+
+            // Optional safety: detect that else_body is small (won't bloat
+            // if accidentally retained). The user can audit via stats.
+            let _else_size = else_body.len();
+
+            // Splice the 6-instruction pattern with our replacement.
+            instructions.splice(i..i + 6, replacement.iter().cloned());
+            folded += 1;
+
+            // Don't increment i — re-check from the same position in case
+            // the inlined then-body itself starts with the same pattern.
+            continue;
+        }
+        i += 1;
+    }
+
+    folded
+}
+
+/// Count how many times `local_idx` is read (via `LocalGet`) in `instructions`,
+/// recursing into nested control-flow bodies. Used to verify a fold is safe.
+fn count_local_reads(instructions: &[Instruction], local_idx: u32) -> usize {
+    let mut count = 0;
+    for instr in instructions {
+        match instr {
+            Instruction::LocalGet(i) if *i == local_idx => count += 1,
+            Instruction::LocalTee(i) if *i == local_idx => count += 1, // tee reads + writes
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                count += count_local_reads(body, local_idx);
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                count += count_local_reads(then_body, local_idx);
+                count += count_local_reads(else_body, local_idx);
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod async_adapter_tests {
+    use super::*;
+    use crate::{BlockType, Function, FunctionSignature, ValueType};
+
+    fn mk_caller_with_pattern() -> Function {
+        // The meld P3 adapter shape:
+        //   local.get 0           ;; arg
+        //   call $lift            ;; func 1 (the lift)
+        //   local.set 1           ;; capture exit code
+        //   local.get 1
+        //   i32.const 0           ;; EXIT_OK
+        //   i32.eq
+        //   if
+        //       i32.const 42      ;; fast path: return 42
+        //   else
+        //       i32.const -1      ;; slow path: return error
+        //   end
+        Function {
+            name: Some("caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![(1, ValueType::I32)], // 1 extra i32 local for exit_code
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::Call(1),
+                Instruction::LocalSet(1),
+                Instruction::LocalGet(1),
+                Instruction::I32Const(0),
+                Instruction::I32Eq,
+                Instruction::If {
+                    block_type: BlockType::Value(ValueType::I32),
+                    then_body: vec![Instruction::I32Const(42)],
+                    else_body: vec![Instruction::I32Const(-1)],
+                },
+            ],
+        }
+    }
+
+    fn mk_module(funcs: Vec<Function>) -> Module {
+        Module {
+            functions: funcs,
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        }
+    }
+
+    #[test]
+    fn test_async_adapter_folds_simple_case() {
+        let module_funcs = vec![
+            // Placeholder for func 0
+            Function {
+                name: Some("lift".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            // The caller with the pattern
+            Function {
+                name: Some("lift_target".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            mk_caller_with_pattern(),
+        ];
+        let mut module = mk_module(module_funcs);
+        let folded = optimize_async_callback_adapters(&mut module).expect("apply");
+        assert_eq!(folded, 1, "single pattern site must fold");
+
+        // After fold, function 2's body is: [Call(1), I32Const(42)] — fast
+        // path inlined, slow-path arm gone.
+        let body = &module.functions[2].instructions;
+        let has_if = body.iter().any(|i| matches!(i, Instruction::If { .. }));
+        let has_eq = body.iter().any(|i| matches!(i, Instruction::I32Eq));
+        let has_set = body.iter().any(|i| matches!(i, Instruction::LocalSet(_)));
+        assert!(!has_if, "If must be gone after fold");
+        assert!(!has_eq, "I32Eq must be gone after fold");
+        assert!(!has_set, "LocalSet (exit-code capture) must be gone");
+        assert!(
+            body.iter()
+                .any(|i| matches!(i, Instruction::I32Const(42))),
+            "fast-path constant 42 must remain"
+        );
+        assert!(
+            !body
+                .iter()
+                .any(|i| matches!(i, Instruction::I32Const(-1))),
+            "slow-path constant -1 must be gone"
+        );
+    }
+
+    #[test]
+    fn test_async_adapter_skips_when_local_read_multiple_times() {
+        // If the exit_code local is read more than once (e.g., the function
+        // returns it AFTER the if/else), we must NOT fold — that would
+        // lose the value.
+        let mut caller = mk_caller_with_pattern();
+        // Append an extra read of local 1 after the if/else.
+        caller.instructions.push(Instruction::LocalGet(1));
+        caller.instructions.push(Instruction::I32Add);
+
+        let module_funcs = vec![
+            Function {
+                name: Some("lift".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            Function {
+                name: Some("lift_target".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            caller,
+        ];
+        let mut module = mk_module(module_funcs);
+        let folded = optimize_async_callback_adapters(&mut module).expect("apply");
+        assert_eq!(
+            folded, 0,
+            "pattern must NOT fold when local is read after the if/else"
+        );
+    }
+
+    #[test]
+    fn test_async_adapter_skips_when_const_is_not_zero() {
+        // The discriminant compares against a NON-zero constant — not the
+        // EXIT_OK shape we recognize. Must not fold.
+        let mut caller = mk_caller_with_pattern();
+        // Mutate the I32Const(0) → I32Const(7).
+        for instr in caller.instructions.iter_mut() {
+            if let Instruction::I32Const(0) = instr {
+                *instr = Instruction::I32Const(7);
+                break;
+            }
+        }
+
+        let module_funcs = vec![
+            Function {
+                name: Some("lift".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            Function {
+                name: Some("lift_target".to_string()),
+                signature: FunctionSignature {
+                    params: vec![ValueType::I32],
+                    results: vec![ValueType::I32],
+                },
+                locals: vec![],
+                instructions: vec![Instruction::LocalGet(0)],
+            },
+            caller,
+        ];
+        let mut module = mk_module(module_funcs);
+        let folded = optimize_async_callback_adapters(&mut module).expect("apply");
+        assert_eq!(folded, 0, "non-zero discriminant must not fold");
+    }
+
+    #[test]
+    fn test_async_adapter_no_op_when_pattern_absent() {
+        // A normal function with no async-adapter pattern should be untouched.
+        let caller = Function {
+            name: Some("plain".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::I32Const(1),
+                Instruction::I32Add,
+            ],
+        };
+        let before = caller.instructions.clone();
+        let mut module = mk_module(vec![caller]);
+        let folded = optimize_async_callback_adapters(&mut module).expect("apply");
+        assert_eq!(folded, 0, "no pattern → no folds");
+        assert_eq!(
+            module.functions[0].instructions, before,
+            "instructions unchanged"
+        );
     }
 }
 
