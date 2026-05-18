@@ -5,6 +5,117 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-05-18
+
+**Four-track parallel release with full success.** All four tracks
+shipped real work this time (vs v1.0.3 where Track 3 died). Two
+tracks by me (#70 async-adapter, verifier table-resolver retry),
+two by agents (ægraph rewrite engine, island-model parallel
+optimization). Plus a new-issues triage sweep that found zero new
+issues since v1.0.3 (the bar to close).
+
+### Optimization
+
+- **#70 / Track A — async-callback adapter pass** (PR #125). New
+  Phase 4 in the component pipeline. Detects the meld P3 async-callback
+  adapter shape and folds the discriminant test + slow-path branch
+  when EXIT_OK is statically true. Three safety guards: no `Unknown`
+  in module, local-read-count = 1, `I32Const == 0`. Per-fold
+  encode + wasm-tools validate with revert on mismatch. 4 new tests.
+  ~460 LOC. First piece of the six-pass chain from the v1.0.3 roadmap
+  (detect + fold the discriminant pattern). Steps 2-6 — inline,
+  directize, constant-fold, forward task.return shim, DCE start_task
+  init — are infrastructure that already exists in the pipeline.
+  Composing them on the post-detection IR is v1.0.5+ work.
+
+- **#71 / Track D — island-model parallel optimization** (PR #128).
+  New `loom-core/src/islands.rs` (~580 LOC) + CLI `--islands N` flag.
+  Runs N IslandConfigs concurrently via rayon. Each independently
+  passes the existing Z3 + stack validation gates. Picks
+  `min_by_key(encoded_size)` with deterministic name lex tie-break.
+  Parallelism confirmed by timing: N=4 takes 1.4× wall time for 4×
+  serial work. On gale all 4 default configs converge to 1846 bytes
+  (a fixed-point after v0.7.0+ pipeline hardening — the safety net
+  is in place for future passes that might re-introduce
+  ordering-dependent regressions). 6 new tests.
+
+### Verifier
+
+- **Track B — element-section table resolver in Z3** (PR #126).
+  Drops directize's Z3 bypass from v1.0.2. The verifier now resolves
+  `i32.const N; call_indirect (type T)` to the same
+  `pure_call_<F>(args)` Z3 expression PR-K3 uses for direct
+  `call F` — so `call_indirect → call F` proves equivalent under
+  congruence closure. Changes:
+  - `VerificationSignatureContext` gains a `table_resolver: HashMap<(u32, u32), u32>`
+    field, populated via `crate::optimize::build_table_resolver`.
+  - New `resolve_indirect_call(table_idx, slot, expected_type)` helper.
+  - The CallIndirect encoder checks `BV::as_u64()` for concreteness;
+    if concrete AND resolved AND signature matches, encodes the result
+    as `pure_call_<F>(args)` and skips the global/memory havoc.
+  - `directize()` reconstructs `TranslationValidator::new_with_context`
+    with the populated sig context. Z3 verification is BACK; the
+    structural guards remain as defense-in-depth.
+
+  All 3 existing directize tests pass with Z3 ACTIVE.
+
+### ægraph
+
+- **Track C — rewrite engine + 3 identity rules** (PR #127). Builds
+  on the v1.0.3 substrate. Adds:
+  - `EGraph::union(a, b)` + `rebuild()` for congruence-closure
+    propagation. Fixpoint bounded by equivalence-class count.
+  - `Pattern` enum + `Rule` struct describing the LHS pattern and
+    the RHS instantiation. Wildcards via `Pattern::Wild`.
+  - `apply_rules` + `saturate_with_rules` driving the iterative
+    pattern-match-and-union.
+  - Three hand-proven rules: `x + 0 == x`, `x * 1 == x`,
+    `x & -1 == x`.
+  - 7 new tests (14 total egraph tests, all pass).
+
+  Still library-only — no pipeline integration. v1.0.5 next: cost-model
+  extraction, more rules (commutativity normalization, i64 set, power-of-2
+  shifts), then pipeline gating behind a CLI flag once corpus measurements
+  confirm wins.
+
+### Issue triage
+
+- **Subagent sweep**: zero new GitHub issues since the v1.0.3 triage.
+  Open set is still `{#48, #68, #70, #71, #72, #73, #74}`. The only
+  post-cutoff filing (#98 Z3 SortDiffers panic on i64-heavy wasm) was
+  already shipped fixed in v0.6.0 via PRs #99/#100.
+
+### Tests
+
++20 new tests across the four tracks. All loom-core lib tests pass
+(380+ total).
+
+### Strategic moat unchanged
+
+| Workload | LOOM Δ% | wasm-opt Δ% |
+|---|---:|---:|
+| simple_component | **−18.8%** | wasm-opt errors |
+| calc_component | **−11.3%** | wasm-opt errors |
+| gale | −4.9% file / −2.0% code | −0.8% file / −2.0% code |
+
+### Honest measurement note
+
+Code-section bytes UNCHANGED on the current corpus. The four tracks
+ship infrastructure (async-adapter, verifier teaching, ægraph engine,
+island parallelism) — none of which surface byte deltas on the existing
+fixtures. v1.0.5+ will ship the consumers: ægraph pipeline integration,
+the async-adapter six-pass chain, and corpus extensions targeting the
+specific shapes #70/#71 are designed for.
+
+### Still deferred to v1.0.5+
+
+- ægraph pipeline integration + cost-driven extraction + more rules.
+- The full six-pass chain composition from #70 (inline, directize,
+  const-fold, forward, DCE on the post-detection IR).
+- KEEP issues from the roadmap: #48, #68 (Tier-1.1 + 2.2).
+- 9 pre-existing rivet schema-fit errors (SG decomposition, CP link
+  types).
+
 ## [1.0.3] - 2026-05-17
 
 **Five parallel tracks release.** Four agent worktrees + one
