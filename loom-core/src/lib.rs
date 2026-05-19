@@ -7671,12 +7671,30 @@ pub mod optimize {
                     // Try to greedily extend a (0→1) tree starting at i.
                     let (tree_end, root) = try_build_egraph_tree(instructions, i);
                     if let Some((root_class, mut egraph)) = root {
-                        // Saturate + extract. v1.1.0 Track B: extract is
-                        // now cost-driven (memoized byte-cost DP via
-                        // Op::encoded_byte_cost), so the v1.0.5 manual
-                        // UF-root scan is gone.
+                        // Saturate + extract.
                         let _folds = egraph.saturate_with_rules(rules);
-                        let extracted = egraph.extract(root_class);
+
+                        // Workaround for the v1.0.4 substrate's extract():
+                        // it always extracts the node originally stored at
+                        // class_id, ignoring union-find merging. To pick
+                        // the smaller representative after a rule fire,
+                        // we scan ALL class ids that root to the same UF
+                        // class as `root_class` and pick the smallest
+                        // extraction. v1.0.6 follow-up: move this logic
+                        // into egraph::extract() as cost-driven extraction.
+                        let target_root = egraph.find(root_class);
+                        let n_classes = egraph.len();
+                        let mut best = egraph.extract(root_class);
+                        for k in 0..n_classes as u32 {
+                            let cid = crate::egraph::EClassId(k);
+                            if egraph.find(cid) == target_root {
+                                let candidate = egraph.extract(cid);
+                                if candidate.len() < best.len() {
+                                    best = candidate;
+                                }
+                            }
+                        }
+                        let extracted = best;
 
                         // Splice only if strictly shorter — node-count
                         // metric. Cost model is v1.0.6+ work.
@@ -7748,7 +7766,7 @@ pub mod optimize {
                 Instruction::I32Const(_)
                 | Instruction::I64Const(_)
                 | Instruction::LocalGet(_) => 0,
-                Instruction::I32Eqz => 1,
+                Instruction::I32Eqz | Instruction::I64Eqz => 1,
                 Instruction::I32Add
                 | Instruction::I32Sub
                 | Instruction::I32Mul
@@ -7758,7 +7776,17 @@ pub mod optimize {
                 | Instruction::I32Shl
                 | Instruction::I32ShrS
                 | Instruction::I32ShrU
-                | Instruction::I32Eq => 2,
+                | Instruction::I32Eq
+                | Instruction::I64Add
+                | Instruction::I64Sub
+                | Instruction::I64Mul
+                | Instruction::I64And
+                | Instruction::I64Or
+                | Instruction::I64Xor
+                | Instruction::I64Shl
+                | Instruction::I64ShrS
+                | Instruction::I64ShrU
+                | Instruction::I64Eq => 2,
                 _ => break,
             };
             if sim_stack.len() < arity {
