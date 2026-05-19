@@ -111,6 +111,7 @@ WORKLOADS=(
   "calculator_root|calculator.wasm|2.3 MB component (root, large)"
   "simple_component|loom-core/tests/component_fixtures/simple.component.wasm|tiny component (adapter-heavy)"
   "calc_component|loom-core/tests/component_fixtures/calc.component.wasm|small component (adapter-heavy)"
+  "meld_fused|tests/corpus/meld_fused.wasm|real meld-fused multi-component core (Track 3 target — see tests/corpus/MELD_FUSED_README.md)"
 )
 
 # --- Helpers ---------------------------------------------------------------
