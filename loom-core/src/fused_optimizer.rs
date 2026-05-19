@@ -81,6 +81,10 @@ pub struct FusedOptimizationStats {
     pub trivial_calls_eliminated: usize,
     /// Number of cross-memory adapters detected (not collapsed, diagnostic only)
     pub cross_memory_adapters_detected: usize,
+    /// Number of scalar adapters rewritten to direct-call shape (Tier-1.1, issue #68)
+    pub scalar_adapters_inlined: usize,
+    /// Number of duplicate function bodies collapsed (Tier-2.2, issue #68)
+    pub function_bodies_deduplicated: usize,
 }
 
 /// An adapter trampoline detected in the fused module.
@@ -140,6 +144,21 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
         calls_devirtualized: adapter_stats.calls_devirtualized,
         ..Default::default()
     };
+
+    // Pass 1.1 (issue #68 Tier-1.1): Inline scalar adapters whose body is a
+    // canonical cross-memory copy (load/load/call/store/store) into the
+    // pass-through shape. Already pass-through adapters are no-ops here.
+    // Detect adapters again (some may be no-op after devirt). We re-use the
+    // existing AdapterInfo infrastructure.
+    let num_imported_funcs_inline = count_imported_functions(module);
+    let adapters_for_inline = detect_adapters(module, num_imported_funcs_inline);
+    stats.scalar_adapters_inlined = inline_scalar_adapters(module, &adapters_for_inline)?;
+
+    // Pass 1.2 (issue #68 Tier-2.2): Deduplicate function bodies that are
+    // byte-identical across components (e.g. wit-bindgen runtime helpers).
+    // Slots before eliminate_dead_functions so the redirected duplicates are
+    // pruned in the same pipeline.
+    stats.function_bodies_deduplicated = dedupe_function_bodies(module)?;
 
     // Pass 2: Eliminate trivial no-op function calls (e.g. empty cabi_post_return)
     stats.trivial_calls_eliminated = eliminate_trivial_calls(module)?;
@@ -1278,6 +1297,495 @@ fn rewrite_calls(
     }
 
     (result, count)
+}
+
+// ============================================================================
+// Pass 1.1 (issue #68 Tier-1.1): Scalar Adapter Inlining
+// ============================================================================
+
+/// Inline scalar adapters whose body is a canonical cross-memory copy pattern
+/// into the trivial pass-through shape.
+///
+/// After this pass, every call site of such an adapter is an obvious inlining
+/// candidate that the standard `inline_functions` pass picks up.
+///
+/// ## Recognised body shapes
+///
+/// For an adapter with N scalar params and M scalar results, an adapter body
+/// is considered eligible if it matches either:
+///
+/// 1. **Pure pass-through** (no Store/Load anywhere):
+///    `local.get 0; ...; local.get N-1; call target; end`
+///    These bodies are already in the canonical shape — no rewrite is needed
+///    but they are counted to surface the optimisation potential to callers.
+///
+/// 2. **Cross-memory scalar copy**:
+///    `(local.get arg)*; load(callee_mem); (...); load(caller_mem); (...);
+///     call target; store(caller_mem); (...); store(callee_mem)*`
+///    where every Load is paired with a matching Store of compatible type and
+///    no other side-effecting instructions appear in the body. The copy is
+///    redundant because callers are about to call the underlying function
+///    directly anyway.
+///
+/// ## Correctness
+///
+/// Both shapes are semantically equivalent to a direct call:
+/// - Pass-through is already a direct call (no-op rewrite).
+/// - Cross-memory copy: the value loaded from callee memory is the same value
+///   the caller pushed (scalar memcpy with matching width); the post-call
+///   store writes the result back to the same address. After devirtualization
+///   the callee no longer needs the copy because the underlying function is
+///   called directly with the caller's value.
+///
+/// Conservatively: if the body shape is anything else, the adapter is left
+/// unchanged. Skip rather than risk an unsound rewrite.
+///
+/// Returns the number of adapters whose bodies were rewritten or confirmed
+/// already in canonical shape.
+fn inline_scalar_adapters(
+    module: &mut Module,
+    adapters: &[AdapterInfo],
+) -> Result<usize> {
+    let mut count = 0usize;
+
+    for adapter in adapters {
+        let func_idx = adapter.func_index;
+        if func_idx >= module.functions.len() {
+            continue;
+        }
+
+        let target = adapter.target_func_idx;
+
+        // Filter: all params + results must be scalar (currently all ValueType
+        // variants are scalar, but this guards against future GC / reference /
+        // SIMD value types being added to the IR).
+        let all_scalar = {
+            let sig = &module.functions[func_idx].signature;
+            sig.params.iter().all(is_scalar_value_type)
+                && sig.results.iter().all(is_scalar_value_type)
+        };
+        if !all_scalar {
+            continue;
+        }
+
+        // Skip the start function (its name + ordering are observable)
+        if module.start_function == Some(module_func_abs_idx(module, func_idx)) {
+            continue;
+        }
+
+        // Classify the body. We don't rewrite anything that isn't already in
+        // the canonical pass-through shape OR doesn't match the cross-memory
+        // copy template.
+        let shape = classify_scalar_adapter_body(&module.functions[func_idx], target);
+        match shape {
+            ScalarAdapterShape::AlreadyPassThrough => {
+                // Already in the canonical shape — nothing to do, but count it
+                // so callers can see the optimisation surface.
+                count += 1;
+            }
+            ScalarAdapterShape::CrossMemoryCopy => {
+                // Rewrite to the canonical pass-through.
+                rewrite_adapter_to_passthrough(&mut module.functions[func_idx], target);
+                count += 1;
+            }
+            ScalarAdapterShape::Unrecognised => {
+                // Conservative: skip.
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+/// True if a `ValueType` is one of the scalar value types LOOM supports
+/// rewriting against. Today this is i32/i64/f32/f64; the function exists so
+/// that adding SIMD or reference types later does not silently relax the
+/// filter.
+fn is_scalar_value_type(ty: &crate::ValueType) -> bool {
+    matches!(
+        ty,
+        crate::ValueType::I32 | crate::ValueType::I64 | crate::ValueType::F32 | crate::ValueType::F64
+    )
+}
+
+/// Convert a local function index into an absolute function index for
+/// comparisons against `module.start_function`.
+fn module_func_abs_idx(module: &Module, local_idx: usize) -> u32 {
+    count_imported_functions(module) as u32 + local_idx as u32
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScalarAdapterShape {
+    /// `local.get 0; ...; local.get N-1; call target; end` — no memory ops.
+    AlreadyPassThrough,
+    /// Canonical cross-memory scalar copy: load(callee_mem); load(caller_mem);
+    /// call target; store(caller_mem); store(callee_mem).
+    CrossMemoryCopy,
+    /// Anything else — too risky to rewrite.
+    Unrecognised,
+}
+
+/// Inspect an adapter function body and classify it into one of the
+/// recognised shapes.
+fn classify_scalar_adapter_body(func: &Function, target: u32) -> ScalarAdapterShape {
+    let n_params = func.signature.params.len();
+    let instrs = &func.instructions;
+
+    // Must have no extra locals beyond parameters for either shape.
+    if !func.locals.is_empty() {
+        return ScalarAdapterShape::Unrecognised;
+    }
+
+    // Detect pure pass-through first (the cheap case).
+    if instrs.len() == n_params + 2 {
+        let mut ok = true;
+        for (i, instr) in instrs.iter().enumerate().take(n_params) {
+            match instr {
+                Instruction::LocalGet(idx) if *idx == i as u32 => {}
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            if let (Instruction::Call(t), Instruction::End) =
+                (&instrs[n_params], &instrs[n_params + 1])
+            {
+                if *t == target && !contains_memory_op(instrs) {
+                    return ScalarAdapterShape::AlreadyPassThrough;
+                }
+            }
+        }
+    }
+
+    // Detect the canonical cross-memory scalar copy. We accept the strict
+    // shape: a single load per parameter that crosses a memory, exactly one
+    // call to `target`, then the symmetric stores. Anything else is rejected.
+    if is_cross_memory_scalar_copy(func, target) {
+        return ScalarAdapterShape::CrossMemoryCopy;
+    }
+
+    ScalarAdapterShape::Unrecognised
+}
+
+/// True if the instruction sequence contains any load or store. Used to
+/// rule out memory side effects when classifying the pass-through shape.
+fn contains_memory_op(instrs: &[Instruction]) -> bool {
+    for instr in instrs {
+        match instr {
+            Instruction::I32Load { .. }
+            | Instruction::I64Load { .. }
+            | Instruction::F32Load { .. }
+            | Instruction::F64Load { .. }
+            | Instruction::I32Load8S { .. }
+            | Instruction::I32Load8U { .. }
+            | Instruction::I32Load16S { .. }
+            | Instruction::I32Load16U { .. }
+            | Instruction::I64Load8S { .. }
+            | Instruction::I64Load8U { .. }
+            | Instruction::I64Load16S { .. }
+            | Instruction::I64Load16U { .. }
+            | Instruction::I64Load32S { .. }
+            | Instruction::I64Load32U { .. }
+            | Instruction::I32Store { .. }
+            | Instruction::I64Store { .. }
+            | Instruction::F32Store { .. }
+            | Instruction::F64Store { .. }
+            | Instruction::I32Store8 { .. }
+            | Instruction::I32Store16 { .. }
+            | Instruction::I64Store8 { .. }
+            | Instruction::I64Store16 { .. }
+            | Instruction::I64Store32 { .. }
+            | Instruction::MemoryCopy { .. }
+            | Instruction::MemoryFill(_)
+            | Instruction::MemoryInit { .. } => return true,
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                if contains_memory_op(body) {
+                    return true;
+                }
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if contains_memory_op(then_body) || contains_memory_op(else_body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// True if a function body matches the canonical cross-memory scalar copy
+/// adapter shape.
+///
+/// The shape we accept is intentionally narrow:
+///
+///   (local.get i)+  -- load each scalar arg
+///   loadN m_callee  -- read value from callee memory
+///   (local.get i)+
+///   loadN m_caller  -- read value from caller memory
+///   call target
+///   storeN m_caller -- write result back to caller memory
+///   (local.get i)+
+///   storeN m_callee -- write result back to callee memory
+///   end
+///
+/// We only accept it if the two memories differ. When they don't, the simpler
+/// pass-through detection above already covered the case.
+fn is_cross_memory_scalar_copy(func: &Function, target: u32) -> bool {
+    let instrs = &func.instructions;
+    // Must end with End.
+    if instrs.last() != Some(&Instruction::End) {
+        return false;
+    }
+
+    // Must contain exactly one Call to `target` at the structural midpoint and
+    // exactly one Load before it and one Store after it where the memory
+    // indices differ.
+    let mut call_idx = None;
+    for (i, instr) in instrs.iter().enumerate() {
+        if let Instruction::Call(t) = instr {
+            if call_idx.is_some() {
+                return false; // multiple calls — too rich
+            }
+            if *t != target {
+                return false;
+            }
+            call_idx = Some(i);
+        }
+    }
+    let call_idx = match call_idx {
+        Some(i) => i,
+        None => return false,
+    };
+
+    // Must have at least one load before the call and one store after.
+    let (pre, post_with_call) = instrs.split_at(call_idx);
+    let post = &post_with_call[1..];
+
+    let pre_loads: Vec<u32> = pre.iter().filter_map(load_mem_idx).collect();
+    let post_stores: Vec<u32> = post.iter().filter_map(store_mem_idx).collect();
+
+    if pre_loads.is_empty() || post_stores.is_empty() {
+        return false;
+    }
+
+    // Cross-memory: at least one load+store must straddle two distinct memory
+    // indices. (If all are on one memory the `collapse_same_memory_adapters`
+    // pass handles it.)
+    let unique_pre: HashSet<u32> = pre_loads.iter().copied().collect();
+    let unique_post: HashSet<u32> = post_stores.iter().copied().collect();
+    let any_diff =
+        unique_pre.iter().any(|p| unique_post.iter().any(|q| p != q));
+    if !any_diff {
+        return false;
+    }
+
+    // Restrict the rest of the body to {LocalGet, the recognised loads/stores,
+    // Call, End}. Anything else (control flow, arithmetic, drops, globals)
+    // disqualifies the function.
+    for instr in instrs {
+        match instr {
+            Instruction::LocalGet(_) | Instruction::End | Instruction::Call(_) => {}
+            _ if load_mem_idx(instr).is_some() => {}
+            _ if store_mem_idx(instr).is_some() => {}
+            _ => return false,
+        }
+    }
+
+    true
+}
+
+/// If `instr` is a scalar load, return its memory index.
+fn load_mem_idx(instr: &Instruction) -> Option<u32> {
+    match instr {
+        Instruction::I32Load { mem, .. }
+        | Instruction::I64Load { mem, .. }
+        | Instruction::F32Load { mem, .. }
+        | Instruction::F64Load { mem, .. }
+        | Instruction::I32Load8S { mem, .. }
+        | Instruction::I32Load8U { mem, .. }
+        | Instruction::I32Load16S { mem, .. }
+        | Instruction::I32Load16U { mem, .. }
+        | Instruction::I64Load8S { mem, .. }
+        | Instruction::I64Load8U { mem, .. }
+        | Instruction::I64Load16S { mem, .. }
+        | Instruction::I64Load16U { mem, .. }
+        | Instruction::I64Load32S { mem, .. }
+        | Instruction::I64Load32U { mem, .. } => Some(*mem),
+        _ => None,
+    }
+}
+
+/// If `instr` is a scalar store, return its memory index.
+fn store_mem_idx(instr: &Instruction) -> Option<u32> {
+    match instr {
+        Instruction::I32Store { mem, .. }
+        | Instruction::I64Store { mem, .. }
+        | Instruction::F32Store { mem, .. }
+        | Instruction::F64Store { mem, .. }
+        | Instruction::I32Store8 { mem, .. }
+        | Instruction::I32Store16 { mem, .. }
+        | Instruction::I64Store8 { mem, .. }
+        | Instruction::I64Store16 { mem, .. }
+        | Instruction::I64Store32 { mem, .. } => Some(*mem),
+        _ => None,
+    }
+}
+
+/// Rewrite an adapter function body into the canonical pass-through shape:
+///   local.get 0; ...; local.get N-1; call target; end
+fn rewrite_adapter_to_passthrough(func: &mut Function, target: u32) {
+    let n_params = func.signature.params.len();
+    let mut new_instrs: Vec<Instruction> = Vec::with_capacity(n_params + 2);
+    for i in 0..n_params {
+        new_instrs.push(Instruction::LocalGet(i as u32));
+    }
+    new_instrs.push(Instruction::Call(target));
+    new_instrs.push(Instruction::End);
+    func.instructions = new_instrs;
+    // Drop any temporary locals — pass-through shape needs none.
+    func.locals.clear();
+}
+
+// ============================================================================
+// Pass 1.2 (issue #68 Tier-2.2): Function-Body Deduplication
+// ============================================================================
+
+/// Deduplicate identical function bodies across the module, redirecting calls
+/// to a single canonical representative.
+///
+/// ## Algorithm
+///
+/// 1. For each local function with `instructions.len() > 4`, hash its
+///    `(signature, instructions)` using `DefaultHasher` over a `Hash`-able
+///    representation (the Debug-format of the function — sufficient because
+///    every field of `Function` is reflected in Debug).
+/// 2. Group functions by hash. Multi-entry groups are dedup candidates.
+/// 3. Verify candidates are byte-identical (using `PartialEq` on
+///    `(signature, locals, instructions)`) to defend against hash collisions.
+/// 4. For each verified group: keep ONE representative (lowest function
+///    index), redirect calls to the others via `rewrite_calls` (reusing the
+///    existing helper from the devirt pass).
+/// 5. The redirected functions become dead and will be removed by the
+///    subsequent `eliminate_dead_functions` pass.
+///
+/// ## Safety
+///
+/// Conservative: skip dedup if the function:
+/// - Has fewer than 5 instructions (dedup overhead exceeds savings).
+/// - Is imported (no body to dedupe).
+/// - Is exported (its name is observable on the public surface).
+/// - Is the module's start function (same reason).
+///
+/// Returns the number of function bodies that were redirected (i.e. became
+/// dead) after this pass.
+fn dedupe_function_bodies(module: &mut Module) -> Result<usize> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let num_imports = count_imported_functions(module) as u32;
+
+    // Collect indices of exported functions and the start function so we can
+    // skip them. Exports may reference imports too — we filter to local funcs
+    // when building the skip set below.
+    let mut skip: HashSet<u32> = HashSet::new();
+    for export in &module.exports {
+        if let ExportKind::Func(idx) = &export.kind {
+            skip.insert(*idx);
+        }
+    }
+    if let Some(start) = module.start_function {
+        skip.insert(start);
+    }
+
+    // Group eligible local functions by hash of their (signature, locals,
+    // instructions) representation. We use the Debug format as a robust
+    // serialisable representation because `Instruction` does not derive Hash.
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (local_idx, func) in module.functions.iter().enumerate() {
+        if func.instructions.len() <= 4 {
+            continue;
+        }
+        let abs_idx = num_imports + local_idx as u32;
+        if skip.contains(&abs_idx) {
+            continue;
+        }
+        let mut hasher = DefaultHasher::new();
+        // Sig
+        format!("{:?}", func.signature).hash(&mut hasher);
+        // Locals
+        format!("{:?}", func.locals).hash(&mut hasher);
+        // Body
+        format!("{:?}", func.instructions).hash(&mut hasher);
+        let h = hasher.finish();
+        groups.entry(h).or_default().push(local_idx);
+    }
+
+    // For each multi-entry group, verify byte-equality (defends against hash
+    // collisions) and build a redirect map.
+    let mut redirect: BTreeMap<u32, u32> = BTreeMap::new();
+    for indices in groups.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        // Lowest index is the representative; iterate sorted for determinism.
+        let mut sorted = indices.clone();
+        sorted.sort_unstable();
+        let rep_local = sorted[0];
+        let rep_abs = num_imports + rep_local as u32;
+
+        for &other_local in &sorted[1..] {
+            if functions_body_equal(
+                &module.functions[rep_local],
+                &module.functions[other_local],
+            ) {
+                let other_abs = num_imports + other_local as u32;
+                // Don't redirect a function to itself.
+                if other_abs != rep_abs {
+                    redirect.insert(other_abs, rep_abs);
+                }
+            }
+        }
+    }
+
+    if redirect.is_empty() {
+        return Ok(0);
+    }
+
+    // Reuse the existing rewrite_calls helper to rewrite call sites across
+    // every function. This handles nested blocks/loops/if recursively.
+    for func in &mut module.functions {
+        let (rewritten, _count) = rewrite_calls(&func.instructions, &redirect);
+        func.instructions = rewritten;
+    }
+
+    // Also rewrite global initializers and data-segment offset expressions, in
+    // case they reference a function index that was redirected. (These cannot
+    // currently contain `Call`, but `rewrite_calls` is a no-op for non-Call
+    // instructions, so this is cheap and future-proof.)
+    for global in &mut module.globals {
+        let (rewritten, _c) = rewrite_calls(&global.init, &redirect);
+        global.init = rewritten;
+    }
+    for segment in &mut module.data_segments {
+        let (rewritten, _c) = rewrite_calls(&segment.offset, &redirect);
+        segment.offset = rewritten;
+    }
+
+    Ok(redirect.len())
+}
+
+/// Compare two functions' bodies for byte-level equality of the (signature,
+/// locals, instructions) tuple. Uses `PartialEq` since `Instruction` derives
+/// it (only `Eq` is missing).
+fn functions_body_equal(a: &Function, b: &Function) -> bool {
+    a.signature == b.signature && a.locals == b.locals && a.instructions == b.instructions
 }
 
 // ============================================================================
@@ -5007,6 +5515,401 @@ mod tests {
         assert!(
             count > 0,
             "cross-memory adapter should be detected and counted"
+        );
+    }
+
+    // ========================================================================
+    // Pass 1.1 (issue #68 Tier-1.1): inline_scalar_adapters tests
+    // ========================================================================
+
+    /// 2-arg scalar adapter that is already in the pass-through shape: confirm
+    /// our pass classifies it correctly and leaves the body untouched.
+    #[test]
+    fn test_inline_scalar_adapter_pass_through() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Function 0: target
+        module.functions.push(Function {
+            name: Some("target".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::I32Add,
+                Instruction::End,
+            ],
+        });
+
+        // Function 1: pass-through adapter, target absolute idx 0
+        module
+            .functions
+            .push(make_adapter(&[ValueType::I32, ValueType::I32], &[ValueType::I32], 0));
+
+        module.exports.push(Export {
+            name: "adapter".to_string(),
+            kind: ExportKind::Func(1),
+        });
+
+        let adapters = detect_adapters(&module, 0);
+        assert_eq!(adapters.len(), 1, "trivial adapter should be detected");
+
+        let inlined = inline_scalar_adapters(&mut module, &adapters).unwrap();
+        assert_eq!(
+            inlined, 1,
+            "pass-through adapter should be counted as inlined-shape"
+        );
+
+        // Body must be exactly [LocalGet 0, LocalGet 1, Call(0), End]
+        assert_eq!(
+            module.functions[1].instructions,
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::LocalGet(1),
+                Instruction::Call(0),
+                Instruction::End,
+            ]
+        );
+    }
+
+    /// Adapter whose body contains an extra arithmetic op (not a pure
+    /// pass-through and not a cross-memory copy): must be left alone.
+    /// Demonstrates the "skip when not scalar-rewritable" guard.
+    #[test]
+    fn test_inline_scalar_adapter_skips_non_scalar() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Function 0: target
+        module.functions.push(make_target());
+
+        // Function 1: NOT a trivial adapter (extra I32Add)
+        let non_trivial = Function {
+            name: Some("non_trivial".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::I32Const(1),
+                Instruction::I32Add,
+                Instruction::Call(0),
+                Instruction::End,
+            ],
+        };
+        let original = non_trivial.instructions.clone();
+        module.functions.push(non_trivial);
+
+        // Build an `AdapterInfo` by hand (detect_adapters won't surface this
+        // function because is_trivial_adapter rejects it). Our pass must
+        // still classify the body as Unrecognised and leave it untouched.
+        let synthetic = vec![AdapterInfo {
+            func_index: 1,
+            target_func_idx: 0,
+        }];
+
+        let inlined = inline_scalar_adapters(&mut module, &synthetic).unwrap();
+        assert_eq!(
+            inlined, 0,
+            "non-canonical body must not be classified as inlinable"
+        );
+
+        // Body must be unchanged.
+        assert_eq!(module.functions[1].instructions, original);
+    }
+
+    // ========================================================================
+    // Pass 1.2 (issue #68 Tier-2.2): dedupe_function_bodies tests
+    // ========================================================================
+
+    /// Two functions with byte-identical (sig, locals, instructions) collapse
+    /// to one + calls redirected.
+    #[test]
+    fn test_dedupe_finds_identical_bodies() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32, ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Function 0: helper (will be the canonical representative)
+        // Body must be > 4 instructions to clear the dedup threshold.
+        let helper_body = vec![
+            Instruction::LocalGet(0),
+            Instruction::LocalGet(1),
+            Instruction::I32Add,
+            Instruction::LocalGet(0),
+            Instruction::I32Mul,
+            Instruction::End,
+        ];
+        module.functions.push(Function {
+            name: Some("helper_a".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: helper_body.clone(),
+        });
+
+        // Function 1: byte-identical copy of helper_a
+        module.functions.push(Function {
+            name: Some("helper_b".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: helper_body.clone(),
+        });
+
+        // Function 2: caller — must NOT match a helper so it isn't deduped.
+        // Calls helper_b (function 1) twice with different args to make sure
+        // both calls get redirected.
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::I32Const(1),
+                Instruction::I32Const(2),
+                Instruction::Call(1),
+                Instruction::Drop,
+                Instruction::I32Const(3),
+                Instruction::I32Const(4),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+
+        // Export caller so it's not skipped, but caller body doesn't match
+        // either helper.
+        module.exports.push(Export {
+            name: "caller".to_string(),
+            kind: ExportKind::Func(2),
+        });
+
+        let dedupes = dedupe_function_bodies(&mut module).unwrap();
+        assert_eq!(dedupes, 1, "one of the two identical helpers must redirect");
+
+        // helper_a (func 0) survives, calls to func 1 are redirected to func 0.
+        // Verify caller now references func 0 instead of func 1.
+        let caller_instrs = &module.functions[2].instructions;
+        let call_count_to_0 = caller_instrs
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(0)))
+            .count();
+        let call_count_to_1 = caller_instrs
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        assert_eq!(call_count_to_0, 2, "both calls redirected to func 0");
+        assert_eq!(call_count_to_1, 0, "no calls to func 1 remain");
+    }
+
+    /// Exported functions must NOT be deduped — their name is observable on
+    /// the public surface.
+    #[test]
+    fn test_dedupe_skips_exported_function() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Two functions with identical bodies — but one is exported, so it
+        // (and its peer) must survive without redirection.
+        let body = vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::I32Const(2),
+            Instruction::I32Mul,
+            Instruction::End,
+        ];
+
+        // Function 0: exported (live, observable name)
+        module.functions.push(Function {
+            name: Some("exported".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: body.clone(),
+        });
+
+        // Function 1: byte-identical copy, ALSO exported (so neither can be
+        // dropped, both names observable).
+        module.functions.push(Function {
+            name: Some("exported_b".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: body.clone(),
+        });
+
+        module.exports.push(Export {
+            name: "exported".to_string(),
+            kind: ExportKind::Func(0),
+        });
+        module.exports.push(Export {
+            name: "exported_b".to_string(),
+            kind: ExportKind::Func(1),
+        });
+
+        let dedupes = dedupe_function_bodies(&mut module).unwrap();
+        assert_eq!(dedupes, 0, "exported functions must not be deduped");
+
+        // Both function bodies still present.
+        assert_eq!(module.functions.len(), 2);
+    }
+
+    /// Function bodies with `instructions.len() <= 4` are below the dedup
+    /// threshold and must be left untouched even when identical.
+    #[test]
+    fn test_dedupe_skips_tiny_bodies() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Two identical 3-instruction bodies (below 5-instruction threshold).
+        let tiny = vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Const(1),
+            Instruction::End,
+        ];
+        module.functions.push(Function {
+            name: Some("tiny_a".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: tiny.clone(),
+        });
+        module.functions.push(Function {
+            name: Some("tiny_b".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: tiny.clone(),
+        });
+
+        // Function 2: caller that references tiny_b so it is reachable
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::I32Const(0),
+                Instruction::Call(1),
+                Instruction::End,
+            ],
+        });
+        module.exports.push(Export {
+            name: "caller".to_string(),
+            kind: ExportKind::Func(2),
+        });
+
+        let dedupes = dedupe_function_bodies(&mut module).unwrap();
+        assert_eq!(
+            dedupes, 0,
+            "bodies with <=4 instructions must skip dedup (overhead exceeds savings)"
+        );
+
+        // Caller still calls function 1, not 0.
+        assert!(
+            module.functions[2]
+                .instructions
+                .contains(&Instruction::Call(1))
+        );
+    }
+
+    /// End-to-end: run the full fused pipeline on a module containing both
+    /// duplicate adapter pass-throughs and duplicate helper bodies, and check
+    /// the new stats counters fire.
+    #[test]
+    fn test_inline_and_dedupe_via_full_pipeline() {
+        let mut module = empty_module();
+
+        let sig = FunctionSignature {
+            params: vec![ValueType::I32],
+            results: vec![ValueType::I32],
+        };
+        module.types.push(sig.clone());
+
+        // Func 0: target
+        module.functions.push(make_target());
+
+        // Func 1: pass-through adapter for target (eligible for Tier-1.1)
+        module
+            .functions
+            .push(make_adapter(&[ValueType::I32], &[ValueType::I32], 0));
+
+        // Func 2 & 3: identical helper bodies (eligible for Tier-2.2)
+        let helper = vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Const(7),
+            Instruction::I32Add,
+            Instruction::I32Const(2),
+            Instruction::I32Mul,
+            Instruction::End,
+        ];
+        module.functions.push(Function {
+            name: Some("h2".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: helper.clone(),
+        });
+        module.functions.push(Function {
+            name: Some("h3".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: helper.clone(),
+        });
+
+        // Func 4: caller — calls adapter and both helpers.
+        module.functions.push(Function {
+            name: Some("caller".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::Call(1), // calls adapter
+                Instruction::Call(2), // calls helper
+                Instruction::Call(3), // calls helper duplicate
+                Instruction::End,
+            ],
+        });
+
+        module.exports.push(Export {
+            name: "caller".to_string(),
+            kind: ExportKind::Func(4),
+        });
+        module.exports.push(Export {
+            name: "target".to_string(),
+            kind: ExportKind::Func(0),
+        });
+
+        let stats = optimize_fused_module(&mut module).unwrap();
+
+        // Tier-1.1 must have classified the trivial adapter.
+        assert!(
+            stats.scalar_adapters_inlined >= 1,
+            "scalar_adapters_inlined should fire (got {})",
+            stats.scalar_adapters_inlined
+        );
+
+        // Tier-2.2 must have collapsed the duplicate helper.
+        assert!(
+            stats.function_bodies_deduplicated >= 1,
+            "function_bodies_deduplicated should fire (got {})",
+            stats.function_bodies_deduplicated
         );
     }
 }
