@@ -13702,6 +13702,284 @@ pub mod optimize {
     pub fn optimize_loops(module: &mut Module) -> Result<()> {
         loop_invariant_code_motion(module)
     }
+
+    // ========================================================================
+    // forward_global_shim (v1.0.5 #70 chain, step 5.5)
+    // ========================================================================
+    //
+    // The meld P3 async-callback adapter often forwards a `task.return` result
+    // through a small shim:
+    //
+    //     global.set $g
+    //     global.get $g     ;; immediately follows the matching set
+    //
+    // When the only writer of `$g` in the entire module is this single
+    // `global.set`, the round-trip is byte-for-byte equivalent to keeping
+    // the value on the stack. We can erase both instructions.
+    //
+    // Soundness model
+    // ----------------
+    // The fold is sound iff:
+    //
+    //   (a) the `global.get` immediately follows the `global.set` (no
+    //       intervening instruction can observe the global), and
+    //
+    //   (b) the global has exactly ONE writer across the entire module — the
+    //       very `global.set` we are folding. Any other writer might race
+    //       (call boundary, control-flow merge) and observably change the
+    //       value the `global.get` would read, so we conservatively skip.
+    //
+    // We additionally require the global to be of a value-bearing primitive
+    // type — but `global.get` and `global.set` already type-check the I/O,
+    // so the byte-for-byte equivalence holds for any single-type global.
+    //
+    // Conservative bailouts:
+    //   - any function containing `Unknown` instructions disables the pass
+    //     module-wide (we cannot count writers we cannot decode).
+    //   - any nested write inside Block/Loop/If counts as a writer, so the
+    //     fold is rejected (we don't reason about path conditions).
+
+    /// Fold `GlobalSet(idx); GlobalGet(idx)` pairs where `idx` has exactly
+    /// one writer across the whole module. Returns the number of pairs folded.
+    pub fn forward_global_shim(module: &mut Module) -> Result<usize> {
+        // Bail if any function has Unknown instructions; we cannot reliably
+        // count writers in opaque bodies.
+        for func in &module.functions {
+            if has_unknown_instructions(func) {
+                return Ok(0);
+            }
+        }
+
+        // First, build a per-global writer count across the entire module.
+        let mut writer_count: std::collections::BTreeMap<u32, usize> =
+            std::collections::BTreeMap::new();
+        for func in &module.functions {
+            count_global_writes(&func.instructions, &mut writer_count);
+        }
+
+        let mut total_folded = 0;
+        for func in &mut module.functions {
+            total_folded += fold_global_shim_in_body(&mut func.instructions, &writer_count);
+        }
+        Ok(total_folded)
+    }
+
+    /// Count occurrences of `GlobalSet(idx)` in `instructions`, recursing
+    /// into nested control-flow bodies. Used to verify "exactly one writer."
+    fn count_global_writes(
+        instructions: &[Instruction],
+        out: &mut std::collections::BTreeMap<u32, usize>,
+    ) {
+        for instr in instructions {
+            match instr {
+                Instruction::GlobalSet(idx) => {
+                    *out.entry(*idx).or_insert(0) += 1;
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    count_global_writes(body, out);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    count_global_writes(then_body, out);
+                    count_global_writes(else_body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Walk a function body looking for `GlobalSet(N); GlobalGet(N)` pairs
+    /// where `N` has exactly one writer in the module. Recurses into nested
+    /// Block/Loop/If bodies. Returns the number of pairs folded.
+    fn fold_global_shim_in_body(
+        instructions: &mut Vec<Instruction>,
+        writer_count: &std::collections::BTreeMap<u32, usize>,
+    ) -> usize {
+        let mut folded = 0;
+
+        // Recurse first so inner patterns are folded before we look at the
+        // outer sequence (matches the existing async-adapter pattern).
+        for instr in instructions.iter_mut() {
+            match instr {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    folded += fold_global_shim_in_body(body, writer_count);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    folded += fold_global_shim_in_body(then_body, writer_count);
+                    folded += fold_global_shim_in_body(else_body, writer_count);
+                }
+                _ => {}
+            }
+        }
+
+        // Scan this level for adjacent GlobalSet/GlobalGet pairs.
+        let mut i = 0;
+        while i + 2 <= instructions.len() {
+            if let (Instruction::GlobalSet(set_idx), Instruction::GlobalGet(get_idx)) =
+                (&instructions[i], &instructions[i + 1])
+                && set_idx == get_idx
+            {
+                let idx = *set_idx;
+                // Confirm exactly one writer in the whole module.
+                if writer_count.get(&idx).copied().unwrap_or(0) == 1 {
+                    instructions.drain(i..i + 2);
+                    folded += 1;
+                    // Don't advance; another pair may be exposed.
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        folded
+    }
+
+    #[cfg(test)]
+    mod forward_global_tests {
+        use super::*;
+        use crate::{Function, FunctionSignature, Module};
+
+        fn mk_module(funcs: Vec<Function>) -> Module {
+            Module {
+                functions: funcs,
+                memories: vec![],
+                tables: vec![],
+                globals: vec![],
+                types: vec![],
+                exports: vec![],
+                imports: vec![],
+                data_segments: vec![],
+                element_section_bytes: None,
+                start_function: None,
+                custom_sections: vec![],
+                type_section_bytes: None,
+                global_section_bytes: None,
+            }
+        }
+
+        fn mk_func(instructions: Vec<Instruction>) -> Function {
+            Function {
+                name: None,
+                signature: FunctionSignature {
+                    params: vec![],
+                    results: vec![],
+                },
+                locals: vec![],
+                instructions,
+            }
+        }
+
+        #[test]
+        fn test_forward_global_shim_folds_simple_pair() {
+            let func = mk_func(vec![
+                Instruction::I32Const(7),
+                Instruction::GlobalSet(0),
+                Instruction::GlobalGet(0),
+                Instruction::Drop,
+            ]);
+            let mut module = mk_module(vec![func]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(folded, 1, "single shim pair must fold");
+            // After fold: [I32Const(7), Drop]
+            let body = &module.functions[0].instructions;
+            assert_eq!(
+                body,
+                &vec![Instruction::I32Const(7), Instruction::Drop],
+                "GlobalSet/GlobalGet pair removed"
+            );
+        }
+
+        #[test]
+        fn test_forward_global_shim_skips_multiple_writers() {
+            // Two functions write to the SAME global; the pair in func 0
+            // must NOT fold because func 1 also writes the global.
+            let func0 = mk_func(vec![
+                Instruction::I32Const(7),
+                Instruction::GlobalSet(0),
+                Instruction::GlobalGet(0),
+                Instruction::Drop,
+            ]);
+            let func1 = mk_func(vec![
+                Instruction::I32Const(99),
+                Instruction::GlobalSet(0),
+            ]);
+            let mut module = mk_module(vec![func0, func1]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(
+                folded, 0,
+                "multiple writers across module disqualify the fold"
+            );
+        }
+
+        #[test]
+        fn test_forward_global_shim_skips_intervening_op() {
+            // GlobalSet(0); Nop; GlobalGet(0) — Nop is between them, no fold.
+            let func = mk_func(vec![
+                Instruction::I32Const(7),
+                Instruction::GlobalSet(0),
+                Instruction::Nop,
+                Instruction::GlobalGet(0),
+                Instruction::Drop,
+            ]);
+            let mut module = mk_module(vec![func]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(
+                folded, 0,
+                "intervening instruction between Set and Get prevents fold"
+            );
+        }
+
+        #[test]
+        fn test_forward_global_shim_skips_mismatched_indices() {
+            // GlobalSet(0); GlobalGet(1) — different indices, no fold.
+            let func = mk_func(vec![
+                Instruction::I32Const(7),
+                Instruction::GlobalSet(0),
+                Instruction::GlobalGet(1),
+                Instruction::Drop,
+            ]);
+            let mut module = mk_module(vec![func]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(folded, 0, "different global indices must not fold");
+        }
+
+        #[test]
+        fn test_forward_global_shim_no_op_on_plain_function() {
+            let func = mk_func(vec![
+                Instruction::I32Const(1),
+                Instruction::I32Const(2),
+                Instruction::I32Add,
+                Instruction::Drop,
+            ]);
+            let before = func.instructions.clone();
+            let mut module = mk_module(vec![func]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(folded, 0, "no pattern → no folds");
+            assert_eq!(module.functions[0].instructions, before);
+        }
+
+        #[test]
+        fn test_forward_global_shim_skips_unknown_instructions() {
+            let func = mk_func(vec![
+                Instruction::I32Const(7),
+                Instruction::GlobalSet(0),
+                Instruction::GlobalGet(0),
+                Instruction::Unknown(vec![0xFE]),
+            ]);
+            let before = func.instructions.clone();
+            let mut module = mk_module(vec![func]);
+            let folded = forward_global_shim(&mut module).expect("apply");
+            assert_eq!(folded, 0, "Unknown instructions disable the pass");
+            assert_eq!(module.functions[0].instructions, before);
+        }
+    }
 }
 
 /// Component Model Support

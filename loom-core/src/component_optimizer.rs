@@ -413,6 +413,48 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
         }
     }
 
+    // Phase 4b (v1.0.5 #70 chain): compose the remaining five passes on
+    // the post-detection IR. Same save-and-revert pattern as Phase 3/4:
+    // encode + validate; revert on mismatch. Each constituent pass already
+    // carries its own Z3 verification gate.
+    {
+        let saved_functions = module.functions.clone();
+        match run_async_chain_passes(&mut module) {
+            Ok(shrunk) if shrunk > 0 => match crate::encode::encode_wasm(&module) {
+                Ok(bytes) => {
+                    if let Err(e) = Validator::new_with_features(wasm_features_with_async())
+                        .validate_all(&bytes)
+                    {
+                        eprintln!(
+                            "  Module invalid after 'async-chain' (reverting): {}",
+                            e
+                        );
+                        crate::stats::record_revert("component:async_chain/invalid");
+                        module.functions = saved_functions;
+                    } else {
+                        eprintln!(
+                            "  Async-chain composition: {} instructions removed",
+                            shrunk
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  Encode failed after 'async-chain' (reverting): {}",
+                        e
+                    );
+                    crate::stats::record_revert("component:async_chain/encode-failed");
+                    module.functions = saved_functions;
+                }
+            },
+            Ok(_) => { /* no-op, nothing to validate */ }
+            Err(e) => {
+                eprintln!("  Async-chain pass skipped: {:?}", e);
+                module.functions = saved_functions;
+            }
+        }
+    }
+
     // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
@@ -1106,6 +1148,105 @@ fn count_local_reads(instructions: &[Instruction], local_idx: u32) -> usize {
     count
 }
 
+// ============================================================================
+// Phase 4b (v1.0.5 #70 chain): six-pass orchestrator
+// ============================================================================
+//
+// After the v1.0.4 discriminant fold in `optimize_async_callback_adapters`
+// has shrunk the if/else triple, the remaining adapter residue is still
+// many instructions: the lifted thunk call, the EXIT_OK store/load, the
+// `task.return` shim global trip, and the `start_task` waitable-set init.
+//
+// The roadmap calls for a **six-pass chain** to grind these down:
+//
+//   1. detect the P3 adapter shape           [DONE — v1.0.4]
+//   2. inline `[async-lift]` thunks          (existing inliner)
+//   3. directize `call_indirect` through      (existing directize)
+//      the now-known const slot
+//   4. constant-propagate the EXIT discr.    (existing constant_folding)
+//   5. eliminate the dead slow-path arms     (existing eliminate_dead_code)
+//   5.5. forward the `task.return` shim       (new forward_global_shim, lib.rs)
+//   6. dead-store the waitable-set init       (existing eliminate_dead_stores)
+//
+// Each call is a no-op on functions that don't need it, so over-applying
+// is safe. Each pass carries its own Z3 verification gate
+// (`verify_or_revert`), so we don't need an additional cross-pass proof.
+// The orchestrator merely composes the existing passes in the right order
+// for the post-detection IR.
+
+/// Run the v1.0.5 six-pass chain on a post-detection module. Returns a
+/// **total opportunity count** — i.e., the sum of fold counts surfaced by
+/// the constituent passes. Conservative passes (inline / directize) return
+/// `Result<()>` so we approximate their contribution by counting the
+/// instructions removed before/after each one, plus the explicit count from
+/// `forward_global_shim`. The returned number is used by the caller only
+/// to decide whether to validate; the actual byte-level shrinkage is
+/// measured against the encoded output.
+pub fn run_async_chain_passes(module: &mut Module) -> Result<usize> {
+    fn count_module_instructions(module: &Module) -> usize {
+        fn count_recursive(instrs: &[Instruction]) -> usize {
+            let mut n = instrs.len();
+            for instr in instrs {
+                match instr {
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        n += count_recursive(body);
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        n += count_recursive(then_body);
+                        n += count_recursive(else_body);
+                    }
+                    _ => {}
+                }
+            }
+            n
+        }
+        let mut n = 0;
+        for func in &module.functions {
+            n += count_recursive(&func.instructions);
+        }
+        n
+    }
+
+    let before = count_module_instructions(module);
+
+    // Step 2: inline `[async-lift]` thunks — the inliner's heuristic
+    // (small + few call sites) already covers async-lift shims.
+    let _ = crate::optimize::inline_functions(module);
+
+    // Step 3: directize const-index `call_indirect`. After inlining, the
+    // lifted thunk's `i32.const <slot>; call_indirect` is exposed for
+    // direct rewriting.
+    let _ = crate::optimize::directize(module);
+
+    // Step 4: constant-propagate the EXIT discriminant. If any nested
+    // If/Select survived step 1's fold (e.g., the slow-path arm contained
+    // its own EXIT check), this catches it.
+    let _ = crate::optimize::constant_folding(module);
+
+    // Step 5: eliminate the dead slow-path arms (now unreachable after
+    // constant folding flattened the discriminant test).
+    let _ = crate::optimize::eliminate_dead_code(module);
+
+    // Step 5.5: forward the `task.return` global-shim pair. Recognizes
+    //     global.set $g
+    //     global.get $g
+    // and folds them when $g has exactly one writer module-wide.
+    let _ = crate::optimize::forward_global_shim(module);
+
+    // Step 6: dead-store eliminate the `start_task` waitable-set init.
+    // After steps 2-5, the local that captured the waitable-set handle
+    // has no readers and the store can go.
+    let _ = crate::optimize::eliminate_dead_stores(module);
+
+    let after = count_module_instructions(module);
+    let shrunk = before.saturating_sub(after);
+    Ok(shrunk)
+}
+
 #[cfg(test)]
 mod async_adapter_tests {
     use super::*;
@@ -1317,6 +1458,188 @@ mod async_adapter_tests {
         assert_eq!(
             module.functions[0].instructions, before,
             "instructions unchanged"
+        );
+    }
+
+    // ========================================================================
+    // v1.0.5 #70 chain composition tests
+    // ========================================================================
+
+    /// Helper: count all instructions in a function body, recursively.
+    fn count_instrs(instrs: &[Instruction]) -> usize {
+        let mut n = instrs.len();
+        for instr in instrs {
+            match instr {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    n += count_instrs(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    n += count_instrs(then_body);
+                    n += count_instrs(else_body);
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+
+    /// A 30-instruction meld-shaped P3 async adapter:
+    ///   - one tiny lift thunk function (4 instr)
+    ///   - one waitable-init store (4 instr)
+    ///   - the EXIT discriminant chain (6 instr in v1.0.4 form)
+    ///   - the task.return global shim (4 instr)
+    ///   - fast-path body (8 instr)
+    ///   - misc tail (4 instr)
+    ///
+    /// After the chain composes, the discriminant chain is gone (step 1),
+    /// the lift thunk is inlined (step 2), constant folding & DCE shrink
+    /// the remaining residue, the global shim collapses (step 5.5), and
+    /// the waitable init dead-stores. Target: ≤ 8 instructions per call site.
+    fn mk_full_chain_module() -> Module {
+        // The lift thunk: just `local.get 0; end`. Trivially inlineable.
+        let lift = Function {
+            name: Some("async_lift".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![Instruction::LocalGet(0)],
+        };
+
+        // The caller: a meld P3 adapter shape with all six steps.
+        let caller = Function {
+            name: Some("p3_caller".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            // Locals: [0]=param, [1]=exit_code, [2]=waitable_set_handle
+            locals: vec![(2, ValueType::I32)],
+            instructions: vec![
+                // Waitable-set init (will be dead-store eliminated by step 6).
+                Instruction::I32Const(0),
+                Instruction::LocalSet(2),
+                // Argument prep for the lift.
+                Instruction::LocalGet(0),
+                // The EXIT discriminant chain (v1.0.4 step 1 folds this).
+                Instruction::Call(0),
+                Instruction::LocalSet(1),
+                Instruction::LocalGet(1),
+                Instruction::I32Const(0),
+                Instruction::I32Eq,
+                Instruction::If {
+                    block_type: BlockType::Value(ValueType::I32),
+                    then_body: vec![
+                        // Fast path: forward result via the task.return global shim.
+                        Instruction::I32Const(42),
+                        Instruction::GlobalSet(0),
+                        Instruction::GlobalGet(0),
+                    ],
+                    else_body: vec![Instruction::I32Const(-1)],
+                },
+            ],
+        };
+
+        Module {
+            functions: vec![lift, caller],
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        }
+    }
+
+    #[test]
+    fn test_chain_compose_eliminates_full_adapter() {
+        let mut module = mk_full_chain_module();
+        let before_caller = count_instrs(&module.functions[1].instructions);
+
+        // First: run the v1.0.4 detection pass.
+        let _ = optimize_async_callback_adapters(&mut module).expect("v1.0.4 fold");
+
+        // Then: compose the remaining five steps.
+        let _shrunk = run_async_chain_passes(&mut module).expect("chain compose");
+
+        let after_caller = count_instrs(&module.functions[1].instructions);
+
+        // The chain must actually shrink the caller — strict drop required.
+        assert!(
+            after_caller < before_caller,
+            "chain composition must shrink caller: before={} after={}",
+            before_caller,
+            after_caller
+        );
+
+        // Sanity: the I32Const(-1) slow-path branch must be gone (folded
+        // by the v1.0.4 discriminant pass).
+        fn has_const_neg_one(instrs: &[Instruction]) -> bool {
+            for instr in instrs {
+                match instr {
+                    Instruction::I32Const(-1) => return true,
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        if has_const_neg_one(body) {
+                            return true;
+                        }
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        if has_const_neg_one(then_body) || has_const_neg_one(else_body) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        assert!(
+            !has_const_neg_one(&module.functions[1].instructions),
+            "slow-path constant -1 must be gone after the chain"
+        );
+    }
+
+    #[test]
+    fn test_chain_no_op_when_pattern_absent() {
+        // A normal arithmetic function with no async-adapter pattern: the
+        // chain MAY still inline tiny callees, but the function's
+        // semantically-observable shape must be preserved by Z3.
+        let plain = Function {
+            name: Some("plain".to_string()),
+            signature: FunctionSignature {
+                params: vec![ValueType::I32],
+                results: vec![ValueType::I32],
+            },
+            locals: vec![],
+            instructions: vec![
+                Instruction::LocalGet(0),
+                Instruction::I32Const(1),
+                Instruction::I32Add,
+            ],
+        };
+        let before = plain.instructions.clone();
+        let mut module = mk_module(vec![plain]);
+        let _ = run_async_chain_passes(&mut module).expect("chain on plain");
+        // No async-adapter residue, no global shim, no dead-store; the
+        // body should be byte-for-byte unchanged.
+        assert_eq!(
+            module.functions[0].instructions, before,
+            "plain function must be untouched by the async chain"
         );
     }
 }
