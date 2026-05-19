@@ -527,6 +527,20 @@ fn optimize_command(
         track_pass("canonicalize", before, after);
     }
 
+    // v1.0.5 Track 1: ægraph-based optimization. Runs AFTER canonicalize
+    // (canonical operand order makes pattern matching deterministic) and
+    // BEFORE peephole-synth (so the egraph engine gets first crack at
+    // identity folds — the substrate is richer than peephole's linear
+    // pattern matcher). Disabled by default for v1.0.5 since the
+    // candidate set is tiny; opt-in via --passes egraph.
+    if should_run("egraph") {
+        println!("  Running: egraph");
+        let before = count_instructions(&module);
+        loom_core::optimize::egraph_optimize(&mut module).context("egraph_optimize failed")?;
+        let after = count_instructions(&module);
+        track_pass("egraph", before, after);
+    }
+
     // Souper-shaped peephole synthesis (PR-L2): hand-curated arithmetic
     // identity rules (12 candidates). Runs AFTER canonicalize (so the
     // canonical operand-order is in place) and BEFORE cse (so the
