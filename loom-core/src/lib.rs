@@ -7671,30 +7671,12 @@ pub mod optimize {
                     // Try to greedily extend a (0→1) tree starting at i.
                     let (tree_end, root) = try_build_egraph_tree(instructions, i);
                     if let Some((root_class, mut egraph)) = root {
-                        // Saturate + extract.
+                        // Saturate + extract. v1.1.0 Track B: extract is
+                        // now cost-driven (memoized byte-cost DP via
+                        // Op::encoded_byte_cost), so the v1.0.5 manual
+                        // UF-root scan is gone.
                         let _folds = egraph.saturate_with_rules(rules);
-
-                        // Workaround for the v1.0.4 substrate's extract():
-                        // it always extracts the node originally stored at
-                        // class_id, ignoring union-find merging. To pick
-                        // the smaller representative after a rule fire,
-                        // we scan ALL class ids that root to the same UF
-                        // class as `root_class` and pick the smallest
-                        // extraction. v1.0.6 follow-up: move this logic
-                        // into egraph::extract() as cost-driven extraction.
-                        let target_root = egraph.find(root_class);
-                        let n_classes = egraph.len();
-                        let mut best = egraph.extract(root_class);
-                        for k in 0..n_classes as u32 {
-                            let cid = crate::egraph::EClassId(k);
-                            if egraph.find(cid) == target_root {
-                                let candidate = egraph.extract(cid);
-                                if candidate.len() < best.len() {
-                                    best = candidate;
-                                }
-                            }
-                        }
-                        let extracted = best;
+                        let extracted = egraph.extract(root_class);
 
                         // Splice only if strictly shorter — node-count
                         // metric. Cost model is v1.0.6+ work.

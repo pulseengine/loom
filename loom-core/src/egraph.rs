@@ -129,6 +129,26 @@ impl Op {
         }
     }
 
+    /// v1.1.0 Track B: encoded-byte cost of this op as a single wasm
+    /// instruction. Used by [`EGraph::extract`] (cost-driven extraction)
+    /// to pick the cheapest representative from a union-find class
+    /// after rule firing.
+    ///
+    /// Approximations match the wasm-encoder LEB128 behavior:
+    /// - 1-byte opcode for arithmetic/comparison ops (`add`, `mul`, …).
+    /// - 1-byte opcode + LEB128(operand) for ops with an immediate
+    ///   (`const`, `local.get`). The LEB128 width is exact via
+    ///   `leb128_size`.
+    pub fn encoded_byte_cost(&self) -> usize {
+        match self {
+            Op::Const(v) => 1 + signed_leb128_size_i32(*v),
+            Op::Const64(v) => 1 + signed_leb128_size_i64(*v),
+            Op::LocalGet(idx) => 1 + unsigned_leb128_size(*idx as u64),
+            // All other ops are 1-byte opcodes.
+            _ => 1,
+        }
+    }
+
     /// Convert this operator back to a stack-machine instruction.
     fn to_instruction(self) -> Instruction {
         match self {
@@ -320,18 +340,152 @@ impl EGraph {
     ///
     /// Returns the emitted instructions in evaluation order (deepest
     /// child first), suitable for direct splicing into a function body.
-    pub fn extract(&self, class_id: EClassId) -> Vec<Instruction> {
+    /// v1.1.0 Track B: cost-driven extraction. For the requested class,
+    /// finds the union-find root, scans every class id whose `find()`
+    /// resolves to the same root, computes each candidate's total
+    /// encoded-byte cost via [`Op::encoded_byte_cost`], and emits the
+    /// instruction sequence of the cheapest candidate.
+    ///
+    /// This replaces the v1.0.4 substrate behavior where `extract`
+    /// always emitted the node originally stored at `class_id`,
+    /// ignoring union-find merges. The v1.0.5 Track 1 pipeline pass
+    /// had to scan UF-roots itself as a workaround; that workaround is
+    /// now obsolete.
+    ///
+    /// The `&mut self` requirement comes from the underlying union-find
+    /// `find()` performing path compression. Returns the emitted
+    /// instructions in evaluation order (deepest child first), suitable
+    /// for direct splicing into a function body.
+    ///
+    /// ## Cost-equal tie-break
+    ///
+    /// When two candidates have equal cost, the one with the lower
+    /// `EClassId.0` wins. This makes extraction deterministic across
+    /// runs.
+    pub fn extract(&mut self, class_id: EClassId) -> Vec<Instruction> {
+        let mut cache: std::collections::HashMap<EClassId, usize> =
+            std::collections::HashMap::new();
         let mut out = Vec::new();
-        self.extract_into(class_id, &mut out);
+        self.extract_into(class_id, &mut out, &mut cache);
         out
     }
 
-    fn extract_into(&self, class_id: EClassId, out: &mut Vec<Instruction>) {
-        let node = &self.nodes[class_id.0 as usize];
-        for child in &node.children {
-            self.extract_into(*child, out);
+    /// Compute the minimum cost of extracting a subtree rooted at
+    /// `class_id`'s union-find root. Memoizes intermediate results in
+    /// `cache` keyed by UF root id to avoid combinatorial blowup when
+    /// large merged classes are explored.
+    ///
+    /// Algorithm: dynamic programming over class ids in topological
+    /// order (lowest id first, exploiting the acyclic invariant —
+    /// every child id is strictly less than its parent). For each UF
+    /// root, the best cost is `min over nodes in the class of
+    /// (op_cost + sum of children's cached best costs)`.
+    fn subtree_cost(
+        &mut self,
+        class_id: EClassId,
+        cache: &mut std::collections::HashMap<EClassId, usize>,
+    ) -> usize {
+        let root = self.uf.find(class_id);
+        if let Some(&hit) = cache.get(&root) {
+            return hit;
         }
-        out.push(node.op.to_instruction());
+        // Mark in-progress with MAX to break any cycles defensively
+        // (the acyclic invariant should rule this out, but cheap to be
+        // safe).
+        cache.insert(root, usize::MAX);
+
+        let n = self.nodes.len();
+        let mut best = usize::MAX;
+        for k in 0..n as u32 {
+            let cid = EClassId(k);
+            if self.uf.find(cid) != root {
+                continue;
+            }
+            // For this candidate node, total cost = op cost + sum of
+            // children's UF-root best costs.
+            let node_op_cost = self.nodes[cid.0 as usize].op.encoded_byte_cost();
+            let child_count = self.nodes[cid.0 as usize].children.len();
+            let mut subtree = node_op_cost;
+            let mut bad = false;
+            for child_idx in 0..child_count {
+                let child = self.nodes[cid.0 as usize].children[child_idx];
+                // Acyclic invariant: child id < cid (the parent's id).
+                // Without this guard, recursion can't bottom out.
+                if child.0 >= cid.0 {
+                    bad = true;
+                    break;
+                }
+                let child_cost = self.subtree_cost(child, cache);
+                if child_cost == usize::MAX {
+                    bad = true;
+                    break;
+                }
+                subtree = subtree.saturating_add(child_cost);
+            }
+            if !bad && subtree < best {
+                best = subtree;
+            }
+        }
+        cache.insert(root, best);
+        best
+    }
+
+    fn extract_into(
+        &mut self,
+        class_id: EClassId,
+        out: &mut Vec<Instruction>,
+        cache: &mut std::collections::HashMap<EClassId, usize>,
+    ) {
+        // Follow UF root + pick cheapest representative for this class.
+        let target_root = self.uf.find(class_id);
+        let n = self.nodes.len();
+
+        let mut best_id = class_id;
+        let mut best_cost = usize::MAX;
+        for k in 0..n as u32 {
+            let cid = EClassId(k);
+            if self.uf.find(cid) != target_root {
+                continue;
+            }
+            // The cost of EXTRACTING (i.e., emitting this specific node
+            // + recursive children) — compute via the same DP that
+            // `subtree_cost` uses but evaluated specifically at THIS
+            // node (not the class minimum).
+            let node_op_cost = self.nodes[cid.0 as usize].op.encoded_byte_cost();
+            let child_count = self.nodes[cid.0 as usize].children.len();
+            let mut subtree = node_op_cost;
+            let mut bad = false;
+            for child_idx in 0..child_count {
+                let child = self.nodes[cid.0 as usize].children[child_idx];
+                if child.0 >= cid.0 {
+                    bad = true;
+                    break;
+                }
+                let c = self.subtree_cost(child, cache);
+                if c == usize::MAX {
+                    bad = true;
+                    break;
+                }
+                subtree = subtree.saturating_add(c);
+            }
+            if bad {
+                continue;
+            }
+            if subtree < best_cost || (subtree == best_cost && cid.0 < best_id.0) {
+                best_cost = subtree;
+                best_id = cid;
+            }
+        }
+
+        // Recurse into children of the chosen representative, then emit
+        // this op.
+        let child_count = self.nodes[best_id.0 as usize].children.len();
+        for child_idx in 0..child_count {
+            let child = self.nodes[best_id.0 as usize].children[child_idx];
+            self.extract_into(child, out, cache);
+        }
+        let op = self.nodes[best_id.0 as usize].op;
+        out.push(op.to_instruction());
     }
 
     /// Unify two e-classes.
@@ -627,6 +781,48 @@ impl Rule {
 /// 3. `x & -1 == x` — bitwise-AND identity (all-ones mask). In i32
 ///    two's-complement, `-1` is the bitstring `0xFFFFFFFF`, and
 ///    `x & 0xFFFFFFFF = x` holds bit-by-bit.
+/// v1.1.0 Track B: LEB128 size helpers for the cost model.
+/// These mirror the wasm-encoder LEB128 behavior used by
+/// [`Op::encoded_byte_cost`].
+fn unsigned_leb128_size(mut v: u64) -> usize {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
+}
+
+fn signed_leb128_size_i32(v: i32) -> usize {
+    let mut v = v as i64;
+    let mut n = 0;
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        n += 1;
+        let sign_bit = (byte & 0x40) != 0;
+        if (v == 0 && !sign_bit) || (v == -1 && sign_bit) {
+            break;
+        }
+    }
+    n
+}
+
+fn signed_leb128_size_i64(v: i64) -> usize {
+    let mut v = v;
+    let mut n = 0;
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        n += 1;
+        let sign_bit = (byte & 0x40) != 0;
+        if (v == 0 && !sign_bit) || (v == -1 && sign_bit) {
+            break;
+        }
+    }
+    n
+}
+
 pub fn identity_rules() -> Vec<Rule> {
     vec![
         // Proof: ∀x: BV32. x + 0 = x (additive identity in Z/2^32).
