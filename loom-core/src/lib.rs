@@ -7547,6 +7547,272 @@ pub mod optimize {
     ///    effect (`[T] → [T]`), saves 2 bytes per occurrence (one fewer
     ///    instruction encoded with op+idx). Safe regardless of context.
     ///
+    /// v1.0.5 Track 1: ægraph-based optimization pass.
+    ///
+    /// Feeds each function's straight-line expression trees through the
+    /// ægraph (`crate::egraph`) and applies the v1.0.4 Track C identity
+    /// rules (`x+0=x`, `x*1=x`, `x&(-1)=x`). The substrate has had a
+    /// rewrite engine since v1.0.4 but no pipeline consumer; this lands
+    /// the consumer behind the existing `verify_or_revert` safety net.
+    ///
+    /// ## Scope (this MVP)
+    ///
+    /// Only **straight-line maximal expression trees** that produce ONE
+    /// stack value from operands all visible to the egraph (i.e., no
+    /// loads / calls / control flow inside the tree). For each candidate
+    /// position:
+    ///
+    /// 1. Find the longest prefix of consecutive instructions ending at
+    ///    the position whose net stack effect is `(0 → 1)` and that
+    ///    contains only egraph-supported ops (see
+    ///    [`ENode::from_instruction`] for the supported op set).
+    /// 2. Build the e-graph by walking that prefix in stack order.
+    /// 3. Saturate with `identity_rules`.
+    /// 4. Extract a (potentially smaller) instruction sequence from the
+    ///    root e-class.
+    /// 5. If the extracted sequence is strictly shorter (or equal cost),
+    ///    splice it in.
+    ///
+    /// ## Why this is sound today even before pipeline-wide ægraph integration
+    ///
+    /// - Each candidate tree has 0 consumed values + 1 produced value,
+    ///   so replacing it with any other sequence with the same stack
+    ///   signature preserves the function's overall stack discipline.
+    /// - The rules in `identity_rules()` are hand-proven algebraic
+    ///   identities; they're verified individually at egraph-test time.
+    /// - The per-function `TranslationValidator::verify_or_revert` (which
+    ///   every pass uses) gates the result through Z3 — any unsoundness
+    ///   in the egraph engine reverts the function untouched.
+    ///
+    /// ## What this does NOT yet do
+    ///
+    /// - Cost-driven extraction (extracts node-count minimum, not a
+    ///   per-op cost model).
+    /// - Trees that span loads / calls / control flow.
+    /// - Multi-result extraction.
+    /// - Wider op coverage (i64 arith, comparisons, conversions).
+    /// - Commutativity normalization.
+    ///
+    /// All deferred to v1.0.6+.
+    pub fn egraph_optimize(module: &mut Module) -> Result<()> {
+        use crate::egraph::identity_rules;
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::TranslationValidator;
+
+        let ctx = ValidationContext::from_module(module);
+        let verify_sig_ctx = crate::verify::VerificationSignatureContext::from_module(module);
+        let rules = identity_rules();
+
+        for func in &mut module.functions {
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            let guard = ValidationGuard::with_context(func, "egraph_optimize", ctx.clone());
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "egraph_optimize",
+                verify_sig_ctx.clone(),
+            );
+
+            let original_instructions = func.instructions.clone();
+            func.instructions = egraph_optimize_body(&original_instructions, &rules);
+
+            if func.instructions != original_instructions {
+                let _ = guard.validate(func);
+                translator.verify_or_revert(func);
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively process a body: find maximal egraph-supported subtrees,
+    /// saturate, extract, splice. Recurses into Block/Loop/If bodies.
+    fn egraph_optimize_body(
+        instructions: &[Instruction],
+        rules: &[crate::egraph::Rule],
+    ) -> Vec<Instruction> {
+        let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
+
+        // First pass: recurse into nested bodies. We don't try to fold
+        // across the block boundary — the substrate doesn't model
+        // control-flow op equivalences yet, so any tree that crosses
+        // a Block/Loop/If boundary stays put.
+        let mut i = 0;
+        while i < instructions.len() {
+            match &instructions[i] {
+                Instruction::Block { block_type, body } => {
+                    out.push(Instruction::Block {
+                        block_type: block_type.clone(),
+                        body: egraph_optimize_body(body, rules),
+                    });
+                    i += 1;
+                }
+                Instruction::Loop { block_type, body } => {
+                    out.push(Instruction::Loop {
+                        block_type: block_type.clone(),
+                        body: egraph_optimize_body(body, rules),
+                    });
+                    i += 1;
+                }
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    out.push(Instruction::If {
+                        block_type: block_type.clone(),
+                        then_body: egraph_optimize_body(then_body, rules),
+                        else_body: egraph_optimize_body(else_body, rules),
+                    });
+                    i += 1;
+                }
+                _ => {
+                    // Try to greedily extend a (0→1) tree starting at i.
+                    let (tree_end, root) = try_build_egraph_tree(instructions, i);
+                    if let Some((root_class, mut egraph)) = root {
+                        // Saturate + extract.
+                        let _folds = egraph.saturate_with_rules(rules);
+
+                        // Workaround for the v1.0.4 substrate's extract():
+                        // it always extracts the node originally stored at
+                        // class_id, ignoring union-find merging. To pick
+                        // the smaller representative after a rule fire,
+                        // we scan ALL class ids that root to the same UF
+                        // class as `root_class` and pick the smallest
+                        // extraction. v1.0.6 follow-up: move this logic
+                        // into egraph::extract() as cost-driven extraction.
+                        let target_root = egraph.find(root_class);
+                        let n_classes = egraph.len();
+                        let mut best = egraph.extract(root_class);
+                        for k in 0..n_classes as u32 {
+                            let cid = crate::egraph::EClassId(k);
+                            if egraph.find(cid) == target_root {
+                                let candidate = egraph.extract(cid);
+                                if candidate.len() < best.len() {
+                                    best = candidate;
+                                }
+                            }
+                        }
+                        let extracted = best;
+
+                        // Splice only if strictly shorter — node-count
+                        // metric. Cost model is v1.0.6+ work.
+                        let tree_len = tree_end - i + 1;
+                        if extracted.len() < tree_len {
+                            out.extend(extracted);
+                            i = tree_end + 1;
+                            continue;
+                        }
+                    }
+                    out.push(instructions[i].clone());
+                    i += 1;
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Greedily build the longest egraph-supported (0→1)-net-effect tree
+    /// starting at `start`. Returns `(end_index_inclusive, Some((root_class, egraph)))`
+    /// on success, or `(start, None)` on failure (e.g., the first
+    /// instruction isn't egraph-supported).
+    fn try_build_egraph_tree(
+        instructions: &[Instruction],
+        start: usize,
+    ) -> (usize, Option<(crate::egraph::EClassId, crate::egraph::EGraph)>) {
+        use crate::egraph::{EClassId, EGraph, ENode};
+
+        let mut egraph = EGraph::new();
+        // Stack of e-class ids representing the symbolic stack during the
+        // tree-building scan. Each egraph-supported instruction pops its
+        // operands and pushes its result.
+        let mut sim_stack: Vec<EClassId> = Vec::new();
+        let mut end_inclusive = start;
+
+        let mut i = start;
+        while i < instructions.len() {
+            let instr = &instructions[i];
+
+            // Bail at control flow / unsupported ops; tree ends at i-1.
+            match instr {
+                Instruction::Block { .. }
+                | Instruction::Loop { .. }
+                | Instruction::If { .. }
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. }
+                | Instruction::Return
+                | Instruction::Call(_)
+                | Instruction::CallIndirect { .. }
+                | Instruction::Unreachable
+                | Instruction::End
+                | Instruction::Drop
+                | Instruction::Nop
+                | Instruction::LocalSet(_)
+                | Instruction::LocalTee(_)
+                | Instruction::GlobalSet(_) => {
+                    break;
+                }
+                _ => {}
+            }
+
+            // Determine arity of the op directly (the egraph's from_instruction
+            // rejects when child count mismatches arity, so we can't use it
+            // as a probe). For unsupported instructions, the match falls
+            // through to None → bail.
+            let arity = match instr {
+                Instruction::I32Const(_)
+                | Instruction::I64Const(_)
+                | Instruction::LocalGet(_) => 0,
+                Instruction::I32Eqz => 1,
+                Instruction::I32Add
+                | Instruction::I32Sub
+                | Instruction::I32Mul
+                | Instruction::I32And
+                | Instruction::I32Or
+                | Instruction::I32Xor
+                | Instruction::I32Shl
+                | Instruction::I32ShrS
+                | Instruction::I32ShrU
+                | Instruction::I32Eq => 2,
+                _ => break,
+            };
+            if sim_stack.len() < arity {
+                // Tree relies on operands outside the started region —
+                // bail; the prior instruction is the real boundary.
+                break;
+            }
+
+            let child_ids: Vec<EClassId> =
+                sim_stack[sim_stack.len() - arity..].to_vec();
+            let node = match ENode::from_instruction(instr, &child_ids) {
+                Some(n) => n,
+                None => break,
+            };
+            let class_id = match egraph.add(node) {
+                Ok(id) => id,
+                Err(_) => break,
+            };
+            // Pop arity operands and push the result.
+            for _ in 0..arity {
+                sim_stack.pop();
+            }
+            sim_stack.push(class_id);
+            end_inclusive = i;
+            i += 1;
+        }
+
+        // Accept the tree iff sim_stack has exactly ONE entry — the
+        // root of a (0→1) net-stack-effect expression.
+        if sim_stack.len() == 1 {
+            (end_inclusive, Some((sim_stack[0], egraph)))
+        } else {
+            (start, None)
+        }
+    }
+
     /// Both transforms are pure rewriting — sound by construction and
     /// validated by Z3 translation. Place early in the pipeline so
     /// subsequent passes see canonical forms.
@@ -17849,6 +18115,115 @@ mod tests {
             indirects_after, 1,
             "call_indirect to unresolved slot must survive"
         );
+    }
+
+    // v1.0.5 Track 1: ægraph pipeline integration tests.
+
+    #[test]
+    fn test_egraph_optimize_folds_x_plus_zero() {
+        // local.get 0; i32.const 0; i32.add  → local.get 0
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                i32.const 0
+                i32.add
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let before = module.functions[0].instructions.len();
+        optimize::egraph_optimize(&mut module).expect("egraph_optimize");
+        let after = module.functions[0].instructions.len();
+
+        assert!(
+            after < before,
+            "egraph_optimize must shrink x+0 → x. before={} after={}",
+            before,
+            after
+        );
+        // The add must be gone.
+        let has_add = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Add));
+        assert!(!has_add, "i32.add must be folded away");
+
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_egraph_optimize_no_op_on_plain_function() {
+        // Ordinary function with no foldable identities — pass is byte-
+        // for-byte no-op.
+        let wat = r#"(module
+            (func (export "test") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                i32.add
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let before = module.functions[0].instructions.clone();
+        optimize::egraph_optimize(&mut module).expect("egraph_optimize");
+        assert_eq!(
+            module.functions[0].instructions, before,
+            "non-identity function must be untouched"
+        );
+    }
+
+    #[test]
+    fn test_egraph_optimize_skips_across_call() {
+        // Identity sub-tree present, but a Call appears mid-sequence —
+        // the call breaks the egraph tree, but the identity tree AFTER
+        // the call should still fold.
+        let wat = r#"(module
+            (func $helper (param i32) (result i32) local.get 0)
+            (func (export "test") (param i32) (result i32)
+                local.get 0
+                call $helper
+                drop
+                local.get 0
+                i32.const 0
+                i32.add
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::egraph_optimize(&mut module).expect("egraph_optimize");
+        // After-call identity tree must have folded.
+        let has_add = module.functions[1]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Add));
+        assert!(
+            !has_add,
+            "post-call identity tree should still fold"
+        );
+    }
+
+    #[test]
+    fn test_egraph_optimize_recurses_into_blocks() {
+        let wat = r#"(module
+            (func (export "test") (param i32) (result i32)
+                block (result i32)
+                    local.get 0
+                    i32.const 0
+                    i32.add
+                end
+            )
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::egraph_optimize(&mut module).expect("egraph_optimize");
+        let has_add_anywhere = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| {
+                if let Instruction::Block { body, .. } = i {
+                    body.iter().any(|j| matches!(j, Instruction::I32Add))
+                } else {
+                    matches!(i, Instruction::I32Add)
+                }
+            });
+        assert!(!has_add_anywhere, "block-nested identity must fold");
     }
 
     // PR-G (v0.7.0): verification-aware canonicalization tests.
