@@ -5,6 +5,112 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-05-19
+
+**Four-track v1.0.4 follow-through.** Each v1.0.4 infrastructure
+piece grew a real consumer this release. All four tracks shipped
+clean.
+
+### Optimization
+
+- **Track 1 (me): ægraph pipeline integration.** New
+  `pub fn egraph_optimize` consumer for the v1.0.4 Track C
+  substrate. Walks each function's straight-line maximal
+  `(0→1)`-net-stack-effect expression trees, runs them through the
+  egraph with `identity_rules()`, picks the smallest representative
+  via union-find scan. Opt-in via `--passes egraph`. 4 new tests.
+  Works around a substrate gap (extract picks the originally-stored
+  node, ignoring union-find merges) by scanning all class ids in
+  the same UF root for the shortest extraction; v1.0.6 should move
+  this into `egraph::extract` as proper cost-driven extraction.
+
+- **Track 2 (agent, PR #131): #70 six-pass chain composition.**
+  Composes the v1.0.4 async-callback adapter detector with `inline_functions`
+  + `directize` + `constant_folding` + `eliminate_dead_code` + new
+  `forward_global_shim` peephole + `eliminate_dead_stores`. Each
+  pass uses its own `verify_or_revert` Z3 gate. ~600 LOC across
+  `component_optimizer.rs` and `lib.rs`. 8 new tests. Hand-built P3
+  adapter fixture shrinks strictly under the composed chain.
+
+  New peephole `forward_global_shim`: recognizes
+  `GlobalSet(idx); GlobalGet(idx)` pairs and removes both when the
+  global has exactly one writer in the function.
+
+- **Track 3 (agent, PR #132): #68 Tier-1.1 + Tier-2.2.** Two new
+  passes in `fused_optimizer.rs`:
+  - `inline_scalar_adapters` slots between `devirtualize_adapters`
+    and `eliminate_dead_functions`. Filters `AdapterInfo` to adapters
+    with all-scalar params + results and canonical cross-memory-copy
+    body shape; replaces body with a direct stack-passing call.
+  - `dedupe_function_bodies` groups functions by `(signature, body)`
+    hash and redirects calls to the lowest-index representative.
+    Conservative: skips exported / imported / start-function bodies.
+  ~510 LOC. 6 new tests. Byte-neutral on current corpus (no real
+  meld-fused multi-component fixture yet); infrastructure for #68's
+  cross-component story.
+
+### Documentation
+
+- **Track 4 (me): #48 prep survey.** New
+  `docs/research/v1.0.5/rocq-roundtrip-prep.md` (~700 words).
+  Surveys the proofs/ tree's `Admitted` state. Recommends **Path A**
+  for v1.1.0 (close #48 properly, ~1400 LOC Rocq + ~150 LOC Rust
+  subset-extraction tooling) or **Path B** for v1.0.5 cleanup
+  (delete the 3 placeholder Admitteds, signal-noise reduction only).
+  Both paths documented with concrete file-by-file steps.
+
+### Tests
+
++18 new tests (4 Track 1 + 8 Track 2 + 6 Track 3). All 400+
+loom-core lib tests pass.
+
+### Strategic moat unchanged
+
+| Workload | LOOM Δ% | wasm-opt Δ% |
+|---|---:|---:|
+| simple_component | **−18.8%** | wasm-opt errors |
+| calc_component | **−11.3%** | wasm-opt errors |
+| gale | −4.9% file / −2.0% code | −0.8% file / −2.0% code |
+
+### Honest measurement note
+
+Per-fixture byte deltas re-measured by Track 3 agent: gale −4.9%,
+httparse −2.1%, json_lite −3.8%, state_machine −5.9%, calc_component
+−11.3%. All deltas come from the existing pipeline; the new passes
+are byte-neutral on these non-fused fixtures. They will produce wins
+once a real meld-fused multi-component fixture lands (PR-Q extension,
+deferred).
+
+### Suspicious observations from Track 3
+
+The Track 3 agent flagged 4 pre-existing issues worth recording (no
+fixes attempted):
+
+1. `Instruction` derives `PartialEq` but not `Eq` / `Hash`. Forces
+   the dedup pass to hash a Debug-formatted representation rather
+   than a structural hash. Adding `Eq + Hash` would let downstream
+   passes use proper hash sets keyed on instructions directly.
+2. `AdapterInfo` is module-private but `inline_scalar_adapters`
+   needs to share the type with the caller. Both should be
+   `pub(crate)`-lifted together for future cross-module use.
+3. Fused-side stats (`FusedOptimizationStats`) aren't surfaced in
+   the CLI `--stats` output.
+4. `optimize_fused_module` is invoked unconditionally from
+   `optimize_module` and silently swallows errors with `eprintln!`.
+   Intentional best-effort model but combined with #3 means no
+   positive signal that fused-side passes ran on a given input.
+
+### Deferred to v1.0.6+
+
+- Cost-driven ægraph extraction (move the UF-root scan into
+  `egraph::extract()`).
+- ægraph rule set widening (i64 ops, commutativity normalization).
+- Default-on ægraph pass once corpus measurements show wins.
+- Path A for #48 (~1400 LOC Rocq, v1.1.0).
+- Real meld-fused multi-component corpus fixture (will surface
+  Track 3 byte wins).
+- Suspicious observations 1-4 above.
+
 ## [1.0.4] - 2026-05-18
 
 **Four-track parallel release with full success.** All four tracks
