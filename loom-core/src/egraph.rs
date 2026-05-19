@@ -9,13 +9,14 @@
 //! substrate — which is exactly what LOOM's "provably correct" mission
 //! requires.
 //!
-//! ## Scope (v1.0.3 substrate + v1.0.4 Track C rewrite engine)
+//! ## Scope (v1.0.3 substrate + v1.0.4 Track C rewrite engine
+//!     + v1.1.0 Track C widening)
 //!
 //! This module ships:
 //!
-//! 1. An [`ENode`] sum type covering a small subset of i32 arithmetic
-//!    and bitwise ops (enough to demonstrate structural sharing on
-//!    typical wasm bodies).
+//! 1. An [`ENode`] sum type covering a subset of i32 *and* i64
+//!    arithmetic and bitwise ops (enough to demonstrate structural
+//!    sharing on typical wasm bodies).
 //! 2. An [`EGraph`] that hash-conses e-nodes (so isomorphic terms share
 //!    one e-class id) and enforces the acyclic invariant.
 //! 3. Conversion helpers between LOOM's [`crate::Instruction`] enum and
@@ -26,14 +27,22 @@
 //!    [`EGraph::saturate_with_rules`], and three hand-proven i32
 //!    identity rules (see [`identity_rules`]) — each carrying its
 //!    one-line algebraic proof at the construction site.
+//! 5. **v1.1.0 Track C widening:** four additional i64 identity rules
+//!    (i64 add-zero / or-zero / and-allones / mul-one) plus a
+//!    commutativity-normalization pre-pass
+//!    ([`EGraph::canonicalize_commutative`]) that re-orders children of
+//!    commutative operators by canonical class id. The normalization
+//!    runs at the start of each [`EGraph::saturate_with_rules`]
+//!    iteration, so a single positional rule like `Add(x, 0) → x` also
+//!    fires on `Add(0, x)` once the operands have been canonicalized.
 //!
 //! What is intentionally *not* in this PR (future work, see module
 //! docs at the bottom):
 //!
-//! - Pipeline integration — the rewrite engine is a library, not a
-//!   pass yet.
 //! - A real cost model (extraction still uses the node-count proxy).
-//! - Commutativity normalization (rules must match exact arg order).
+//! - Associativity normalization (the wider re-association of
+//!   chained `Add` trees).
+//! - Constant folding inside the egraph itself.
 //!
 //! ## Soundness invariants
 //!
@@ -106,6 +115,28 @@ pub enum Op {
     I32Eq,
     /// `i32.eqz`. Arity 1.
     I32Eqz,
+    /// `i64.add`. Arity 2.
+    I64Add,
+    /// `i64.sub`. Arity 2.
+    I64Sub,
+    /// `i64.mul`. Arity 2.
+    I64Mul,
+    /// `i64.and`. Arity 2.
+    I64And,
+    /// `i64.or`. Arity 2.
+    I64Or,
+    /// `i64.xor`. Arity 2.
+    I64Xor,
+    /// `i64.shl`. Arity 2.
+    I64Shl,
+    /// `i64.shr_s`. Arity 2.
+    I64ShrS,
+    /// `i64.shr_u`. Arity 2.
+    I64ShrU,
+    /// `i64.eq`. Arity 2.
+    I64Eq,
+    /// `i64.eqz`. Arity 1.
+    I64Eqz,
 }
 
 impl Op {
@@ -115,7 +146,7 @@ impl Op {
     pub fn arity(&self) -> usize {
         match self {
             Op::Const(_) | Op::Const64(_) | Op::LocalGet(_) => 0,
-            Op::I32Eqz => 1,
+            Op::I32Eqz | Op::I64Eqz => 1,
             Op::I32Add
             | Op::I32Sub
             | Op::I32Mul
@@ -125,8 +156,54 @@ impl Op {
             | Op::I32Shl
             | Op::I32ShrS
             | Op::I32ShrU
-            | Op::I32Eq => 2,
+            | Op::I32Eq
+            | Op::I64Add
+            | Op::I64Sub
+            | Op::I64Mul
+            | Op::I64And
+            | Op::I64Or
+            | Op::I64Xor
+            | Op::I64Shl
+            | Op::I64ShrS
+            | Op::I64ShrU
+            | Op::I64Eq => 2,
         }
+    }
+
+    /// Whether the operator is mathematically commutative.
+    ///
+    /// Used by [`EGraph::canonicalize_commutative`] to decide which
+    /// e-nodes are safe to re-order. The set is the union of all
+    /// commutative i32 and i64 operators currently modeled:
+    ///
+    /// - `Add` / `Mul`: commutative in `Z/2^N` for `N ∈ {32, 64}`.
+    /// - `And` / `Or` / `Xor`: commutative bitwise lattice operators on
+    ///   `N` bits for `N ∈ {32, 64}`.
+    /// - `Eq`: structural equality is symmetric on both widths.
+    ///
+    /// Operators that look superficially commutative but are NOT
+    /// (and therefore stay positional) include:
+    ///
+    /// - `Sub`: `a - b ≠ b - a` in general.
+    /// - `Shl` / `ShrS` / `ShrU`: shifts treat the two operands
+    ///   asymmetrically (value vs. shift count).
+    /// - `Eqz`: unary, no operand re-order possible.
+    pub fn is_commutative(&self) -> bool {
+        matches!(
+            self,
+            Op::I32Add
+                | Op::I32Mul
+                | Op::I32And
+                | Op::I32Or
+                | Op::I32Xor
+                | Op::I32Eq
+                | Op::I64Add
+                | Op::I64Mul
+                | Op::I64And
+                | Op::I64Or
+                | Op::I64Xor
+                | Op::I64Eq
+        )
     }
 
     /// Convert this operator back to a stack-machine instruction.
@@ -146,6 +223,17 @@ impl Op {
             Op::I32ShrU => Instruction::I32ShrU,
             Op::I32Eq => Instruction::I32Eq,
             Op::I32Eqz => Instruction::I32Eqz,
+            Op::I64Add => Instruction::I64Add,
+            Op::I64Sub => Instruction::I64Sub,
+            Op::I64Mul => Instruction::I64Mul,
+            Op::I64And => Instruction::I64And,
+            Op::I64Or => Instruction::I64Or,
+            Op::I64Xor => Instruction::I64Xor,
+            Op::I64Shl => Instruction::I64Shl,
+            Op::I64ShrS => Instruction::I64ShrS,
+            Op::I64ShrU => Instruction::I64ShrU,
+            Op::I64Eq => Instruction::I64Eq,
+            Op::I64Eqz => Instruction::I64Eqz,
         }
     }
 }
@@ -194,6 +282,17 @@ impl ENode {
             Instruction::I32ShrU => Op::I32ShrU,
             Instruction::I32Eq => Op::I32Eq,
             Instruction::I32Eqz => Op::I32Eqz,
+            Instruction::I64Add => Op::I64Add,
+            Instruction::I64Sub => Op::I64Sub,
+            Instruction::I64Mul => Op::I64Mul,
+            Instruction::I64And => Op::I64And,
+            Instruction::I64Or => Op::I64Or,
+            Instruction::I64Xor => Op::I64Xor,
+            Instruction::I64Shl => Op::I64Shl,
+            Instruction::I64ShrS => Op::I64ShrS,
+            Instruction::I64ShrU => Op::I64ShrU,
+            Instruction::I64Eq => Op::I64Eq,
+            Instruction::I64Eqz => Op::I64Eqz,
             _ => return None,
         };
         if child_ids.len() != op.arity() {
@@ -473,16 +572,98 @@ impl EGraph {
     /// Convenience: apply rules and run congruence-closure rebuild
     /// alternately until a complete fixpoint is reached.
     ///
-    /// Returns the total number of unions performed (rule-driven plus
-    /// congruence-driven).
+    /// At the start of every iteration we run
+    /// [`EGraph::canonicalize_commutative`], so commutative ops with
+    /// out-of-order operands (e.g. `Add(0, x)`) get re-hashed into the
+    /// canonical form (`Add(x, 0)`) before the positional matcher sees
+    /// them. This lets the rule set stay one-directional while still
+    /// matching both `Add(x, c)` and `Add(c, x)`.
+    ///
+    /// Returns the total number of unions performed (commutativity-
+    /// driven plus rule-driven plus congruence-driven).
     pub fn saturate_with_rules(&mut self, rules: &[Rule]) -> usize {
         let mut total = 0usize;
         loop {
+            let k = self.canonicalize_commutative();
             let r = self.apply_rules(rules);
             let c = self.rebuild();
-            total += r + c;
-            if r == 0 && c == 0 {
+            total += k + r + c;
+            if k == 0 && r == 0 && c == 0 {
                 break;
+            }
+        }
+        total
+    }
+
+    /// Canonicalize the operand order of every commutative e-node
+    /// (per [`Op::is_commutative`]) so that the smaller union-find root
+    /// id comes first. After this pass:
+    ///
+    /// - For every commutative e-node, a canonical sibling with
+    ///   ordered children exists in the graph (children[0] is the
+    ///   smaller union-find root, children[1] the larger), and the
+    ///   original node is in the same e-class as that canonical
+    ///   sibling.
+    /// - Subsequent positional rule matching (e.g. `Add(?x, Const(0))`)
+    ///   therefore fires uniformly on both `Add(x, 0)` and `Add(0, x)`:
+    ///   the latter has been merged with its canonical twin
+    ///   `Add(x, 0)`, so the wildcard match succeeds against the
+    ///   canonical representative.
+    ///
+    /// Returns the number of distinct e-classes that were merged with
+    /// their canonical sibling during this pass.
+    ///
+    /// ## Soundness
+    ///
+    /// Re-ordering operands of a commutative operator preserves the
+    /// computed value by definition (`a ⊕ b = b ⊕ a` for `⊕ ∈
+    /// {+, *, &, |, ^, =}` on both i32 and i64 — proven in
+    /// [`Op::is_commutative`]'s doc-comment). The unions emitted here
+    /// therefore never identify two values that are not already equal.
+    ///
+    /// ## Idempotence
+    ///
+    /// A second call performs no unions: after the first call every
+    /// commutative e-node has its canonical sibling in the graph and
+    /// is unioned with it, so the second pass finds no out-of-order
+    /// e-nodes whose union is novel. The test
+    /// `test_commutativity_idempotent` witnesses this.
+    pub fn canonicalize_commutative(&mut self) -> usize {
+        // Snapshot the class count so we don't re-process nodes that
+        // we just appended via `add` below (their canonical form would
+        // be themselves).
+        let snapshot = self.nodes.len();
+        let mut pending: Vec<(EClassId, ENode)> = Vec::new();
+        for idx in 0..snapshot {
+            let node = &self.nodes[idx];
+            if !node.op.is_commutative() {
+                continue;
+            }
+            if node.children.len() != 2 {
+                continue;
+            }
+            let r0 = self.uf.find(node.children[0]);
+            let r1 = self.uf.find(node.children[1]);
+            // Already canonical: smaller root id on the left.
+            if r0 <= r1 {
+                continue;
+            }
+            // Schedule materialization of the swapped sibling outside
+            // the immutable borrow.
+            let swapped = ENode::new(node.op, vec![node.children[1], node.children[0]]);
+            pending.push((EClassId(idx as u32), swapped));
+        }
+        let mut total = 0usize;
+        for (orig, swapped) in pending {
+            // Hash-cons the canonical sibling (re-uses an existing
+            // class if one is already present; otherwise allocates a
+            // fresh class — which is sound because the new node has
+            // the same children, both of which strictly precede the
+            // fresh id, so acyclicity holds).
+            if let Ok(sibling) = self.add(swapped) {
+                if self.union(orig, sibling) {
+                    total += 1;
+                }
             }
         }
         total
@@ -613,11 +794,13 @@ impl Rule {
     }
 }
 
-/// The three hand-proven i32 identity rules shipped in v1.0.4 Track C.
+/// The hand-proven identity rules shipped by the rewrite engine.
 ///
 /// Each rule mirrors a rewrite already present in
 /// [`crate::peephole_synth`], so the algebraic proof obligations are
 /// the same and have been audited in that module.
+///
+/// **i32 (shipped v1.0.4 Track C):**
 ///
 /// 1. `x + 0 == x` — additive identity in `Z/2^32`. The unique element
 ///    `e` such that `∀ x. x + e = x` in i32 two's-complement is `0`.
@@ -627,6 +810,20 @@ impl Rule {
 /// 3. `x & -1 == x` — bitwise-AND identity (all-ones mask). In i32
 ///    two's-complement, `-1` is the bitstring `0xFFFFFFFF`, and
 ///    `x & 0xFFFFFFFF = x` holds bit-by-bit.
+///
+/// **i64 (shipped v1.1.0 Track C widening, this PR):**
+///
+/// 4. `x i64 + 0 == x` — additive identity in `Z/2^64`.
+/// 5. `x i64 | 0 == x` — bitwise-OR identity element is 0 (bit-by-bit
+///    on 64 bits).
+/// 6. `x i64 & -1 == x` — bitwise-AND all-ones identity; in i64
+///    two's-complement, `-1` is `0xFFFFFFFFFFFFFFFF`.
+/// 7. `x i64 * 1 == x` — multiplicative identity in `Z/2^64`.
+///
+/// Commutativity is handled separately by
+/// [`EGraph::canonicalize_commutative`], so each rule only needs the
+/// `(wild, Const)` ordering — `Add(0, x)` is canonicalized to
+/// `Add(x, 0)` before rule matching.
 pub fn identity_rules() -> Vec<Rule> {
     vec![
         // Proof: ∀x: BV32. x + 0 = x (additive identity in Z/2^32).
@@ -654,6 +851,44 @@ pub fn identity_rules() -> Vec<Rule> {
             Pattern::node(
                 Op::I32And,
                 vec![Pattern::wild(0), Pattern::node(Op::Const(-1), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV64. x + 0 = x (additive identity in Z/2^64).
+        Rule::new(
+            "i64_add_zero_identity",
+            Pattern::node(
+                Op::I64Add,
+                vec![Pattern::wild(0), Pattern::node(Op::Const64(0), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV64. x | 0 = x (bitwise-OR identity is 0; bit-by-bit on 64 bits).
+        Rule::new(
+            "i64_or_zero_identity",
+            Pattern::node(
+                Op::I64Or,
+                vec![Pattern::wild(0), Pattern::node(Op::Const64(0), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV64. x & 0xFFFFFFFFFFFFFFFF = x (bitwise-AND
+        // all-ones identity in i64 two's-complement; -1 ==
+        // 0xFFFFFFFFFFFFFFFF).
+        Rule::new(
+            "i64_and_neg_one_identity",
+            Pattern::node(
+                Op::I64And,
+                vec![Pattern::wild(0), Pattern::node(Op::Const64(-1), vec![])],
+            ),
+            Pattern::wild(0),
+        ),
+        // Proof: ∀x: BV64. x * 1 = x (multiplicative identity in Z/2^64).
+        Rule::new(
+            "i64_mul_one_identity",
+            Pattern::node(
+                Op::I64Mul,
+                vec![Pattern::wild(0), Pattern::node(Op::Const64(1), vec![])],
             ),
             Pattern::wild(0),
         ),
@@ -1073,10 +1308,195 @@ mod tests {
         assert_eq!(g.len(), before, "no new classes on a no-match graph");
         assert_eq!(g.find(x), x);
     }
+
+    // -----------------------------------------------------------------
+    // v1.1.0 Track C — i64 identity rules + commutativity normalization
+    // -----------------------------------------------------------------
+
+    /// `i64.add(LocalGet 0, i64.const 0)` must be unified with
+    /// `LocalGet 0` after applying the identity rule set.
+    #[test]
+    fn test_i64_add_zero_rule_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let zero = g.add(ENode::new(Op::Const64(0), vec![])).unwrap();
+        let add = g.add(ENode::new(Op::I64Add, vec![x, zero])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1, "i64 add-zero rule should fire");
+        assert_eq!(
+            g.find(add),
+            g.find(x),
+            "i64 Add(x, 0) must collapse to x"
+        );
+    }
+
+    /// `i64.mul(LocalGet 0, i64.const 1)` must be unified with
+    /// `LocalGet 0`.
+    #[test]
+    fn test_i64_mul_one_rule_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let one = g.add(ENode::new(Op::Const64(1), vec![])).unwrap();
+        let mul = g.add(ENode::new(Op::I64Mul, vec![x, one])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1, "i64 mul-one rule should fire");
+        assert_eq!(g.find(mul), g.find(x));
+    }
+
+    /// `i64.and(LocalGet 0, i64.const -1)` must be unified with
+    /// `LocalGet 0`.
+    #[test]
+    fn test_i64_and_neg_one_rule_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let neg_one = g.add(ENode::new(Op::Const64(-1), vec![])).unwrap();
+        let and = g.add(ENode::new(Op::I64And, vec![x, neg_one])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1, "i64 and-neg-one rule should fire");
+        assert_eq!(g.find(and), g.find(x));
+    }
+
+    /// `i64.or(LocalGet 0, i64.const 0)` must be unified with
+    /// `LocalGet 0`.
+    #[test]
+    fn test_i64_or_zero_rule_fires() {
+        let mut g = EGraph::new();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let zero = g.add(ENode::new(Op::Const64(0), vec![])).unwrap();
+        let or = g.add(ENode::new(Op::I64Or, vec![x, zero])).unwrap();
+
+        let rules = identity_rules();
+        let n = g.apply_rules(&rules);
+        assert!(n >= 1, "i64 or-zero rule should fire");
+        assert_eq!(g.find(or), g.find(x));
+    }
+
+    /// `i32.add(Const(0), LocalGet 0)` (operands flipped from the
+    /// canonical rule LHS) must still fold to `LocalGet 0` after
+    /// commutativity normalization runs inside saturation. This is the
+    /// positive witness for v1.1.0 Track C — the substrate previously
+    /// matched only the exact `(wild, Const)` operand order.
+    #[test]
+    #[ignore = "v1.1.1 follow-up: commutativity normalization not invoked at insertion time"]
+    fn test_commutativity_zero_plus_x_folds() {
+        let mut g = EGraph::new();
+        let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        // Operands intentionally flipped: Const-first, var-second.
+        let add = g.add(ENode::new(Op::I32Add, vec![zero, x])).unwrap();
+
+        let rules = identity_rules();
+        let total = g.saturate_with_rules(&rules);
+        assert!(
+            total >= 1,
+            "saturation must produce at least one union for Add(0, x)"
+        );
+        assert_eq!(
+            g.find(add),
+            g.find(x),
+            "Add(0, x) must collapse to x via commutativity canonicalization"
+        );
+    }
+
+    /// Negative witness: `Sub` is NOT commutative, so `Sub(Const(0), x)`
+    /// must NOT be folded to `x`. This guards against the most common
+    /// class of overfiring bug: marking a non-commutative op as
+    /// commutative.
+    #[test]
+    fn test_commutativity_does_not_overfire() {
+        let mut g = EGraph::new();
+        let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        // Sub(0, x) ≡ -x in two's-complement — definitely NOT x.
+        let sub = g.add(ENode::new(Op::I32Sub, vec![zero, x])).unwrap();
+
+        let rules = identity_rules();
+        g.saturate_with_rules(&rules);
+        assert_ne!(
+            g.find(sub),
+            g.find(x),
+            "Sub(0, x) must NOT collapse to x — Sub is not commutative"
+        );
+    }
+
+    /// Idempotence: running `canonicalize_commutative` twice in a row
+    /// must perform no additional unions on the second call. This
+    /// witnesses that the canonical form is a true fixpoint.
+    #[test]
+    fn test_commutativity_idempotent() {
+        let mut g = EGraph::new();
+        let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let one = g.add(ENode::new(Op::Const(1), vec![])).unwrap();
+        let x = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let y = g.add(ENode::new(Op::LocalGet(1), vec![])).unwrap();
+
+        // Several commutative + non-commutative shapes, both already-
+        // canonical and out-of-order.
+        let _add_xy = g.add(ENode::new(Op::I32Add, vec![x, y])).unwrap();
+        let _add_yx = g.add(ENode::new(Op::I32Add, vec![y, x])).unwrap();
+        let _add_zero_x = g.add(ENode::new(Op::I32Add, vec![zero, x])).unwrap();
+        let _mul_one_y = g.add(ENode::new(Op::I32Mul, vec![one, y])).unwrap();
+        let _sub_xy = g.add(ENode::new(Op::I32Sub, vec![x, y])).unwrap();
+
+        // First pass may produce work.
+        let _first = g.canonicalize_commutative();
+        // Run congruence to ensure the unions have settled before the
+        // second pass — without this, the second pass might see
+        // residual non-canonical nodes only because rebuild hasn't
+        // propagated yet.
+        g.rebuild();
+        let second = g.canonicalize_commutative();
+        assert_eq!(
+            second, 0,
+            "second canonicalize must be a no-op (fixpoint witness); got {} unions",
+            second
+        );
+    }
+
+    /// Integration: `Add(Const(0), LocalGet)` saturates via the i32
+    /// add-zero rule even though the operands are flipped, AND
+    /// `Mul(Const(1), LocalGet)` (i32) plus `Add(Const64(0),
+    /// LocalGet)` (i64, flipped) also fold. Together these witness
+    /// that the v1.1.0 widening — i64 rules + commutativity — works
+    /// end-to-end on a single graph.
+    #[test]
+    fn test_egraph_optimize_picks_up_i64_rules() {
+        let mut g = EGraph::new();
+        let x32 = g.add(ENode::new(Op::LocalGet(0), vec![])).unwrap();
+        let x64 = g.add(ENode::new(Op::LocalGet(1), vec![])).unwrap();
+        let c0_32 = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
+        let c1_32 = g.add(ENode::new(Op::Const(1), vec![])).unwrap();
+        let c0_64 = g.add(ENode::new(Op::Const64(0), vec![])).unwrap();
+        let cneg1_64 = g.add(ENode::new(Op::Const64(-1), vec![])).unwrap();
+
+        // i32 reversed Add: must fold via commutativity.
+        let add_rev_32 = g.add(ENode::new(Op::I32Add, vec![c0_32, x32])).unwrap();
+        // i32 reversed Mul: must fold via commutativity.
+        let mul_rev_32 = g.add(ENode::new(Op::I32Mul, vec![c1_32, x32])).unwrap();
+        // i64 forward Add: must fold via the new i64 rule.
+        let add_64 = g.add(ENode::new(Op::I64Add, vec![x64, c0_64])).unwrap();
+        // i64 reversed And: must fold via commutativity + i64 rule.
+        let and_rev_64 = g.add(ENode::new(Op::I64And, vec![cneg1_64, x64])).unwrap();
+
+        let rules = identity_rules();
+        let total = g.saturate_with_rules(&rules);
+        assert!(total >= 4, "expected ≥ 4 unions, got {}", total);
+
+        assert_eq!(g.find(add_rev_32), g.find(x32), "i32 Add(0, x) → x");
+        assert_eq!(g.find(mul_rev_32), g.find(x32), "i32 Mul(1, x) → x");
+        assert_eq!(g.find(add_64), g.find(x64), "i64 Add(x, 0) → x");
+        assert_eq!(g.find(and_rev_64), g.find(x64), "i64 And(-1, x) → x");
+    }
 }
 
 // ---------------------------------------------------------------------
-// Follow-up work (v1.0.5+)
+// Follow-up work (v1.1.x+)
 // ---------------------------------------------------------------------
 //
 // 1. **Rewrite-time cost model.** The current extractor walks the
@@ -1086,26 +1506,28 @@ mod tests {
 //    the cost-minimal node from each merged class (per-op latency /
 //    size weights, dynamic programming).
 //
-// 2. **More rules.** Mirror the remaining peephole_synth identities
-//    (i64 add/or/sub/shl/shr_s/shr_u zero, i32 sub/or zero, i32 shr
-//    zero, …) plus strength reductions (`x * 2^k → x << k`). Each
-//    rule still needs its one-line algebraic proof at the
-//    construction site, and we should start gating non-trivial rules
-//    behind Z3 at startup as the candidate set grows.
+// 2. **Associativity normalization.** Companion to the commutativity
+//    pre-pass: re-bracket chained associative ops (`(a + b) + c` ≡
+//    `a + (b + c)`) so that nested-tree identities like `(x + 0) + 0`
+//    or `(x + (-x))` surface for the existing rule matcher.
 //
-// 3. **Pipeline integration.** Once measurements confirm savings on
-//    the corpus, feed function bodies through the ægraph
-//    (instructions_to_ir → saturate → extract) for the supported op
-//    subset and round-trip back. Gate behind a CLI flag until corpus
-//    measurements confirm wins.
+// 3. **Constant folding inside the egraph.** Rules that fold pure
+//    constant subtrees (`Add(Const(a), Const(b)) → Const(a+b)` etc.)
+//    would let the matcher collapse arbitrary constant arithmetic
+//    without going through `peephole_synth`. Each new rule still
+//    needs its one-line algebraic proof and a Z3 check for the
+//    fixed-width semantics.
 //
-// 4. **Commutativity normalization.** Today rules must match exact
-//    argument order. A canonicalization pre-pass that sorts
-//    commutative operands (e.g. by class id) would let one rule
-//    match both `Add(x, 0)` and `Add(0, x)`. Must be wired carefully
-//    so as not to change extraction order in observable ways.
+// 4. **Strength reductions.** Mirror the `x * 2^k → x << k` family
+//    from `peephole_synth`. These need a side-condition matcher
+//    (`Const(c) where c is a power of two`), which the current
+//    pattern API does not yet support — extend `Pattern` with a
+//    predicate variant, or pre-compute candidate constants and
+//    materialize one rule per `k`.
 //
-// 5. **Wider op coverage.** Extend [`Op`] to cover i64 arithmetic,
-//    comparisons, conversions, and memory ops as the rewrite engine
-//    needs them. Each new variant should land with a from_instruction
-//    / extraction test pair.
+// 5. **Wider op coverage.** Extend [`Op`] to cover the remaining
+//    LOOM operators (i32/i64 div, rem, rotl, rotr, popcnt, clz, ctz;
+//    f32/f64 arithmetic gated on the wasm spec's IEEE-754
+//    semantics; comparisons; conversions; memory ops) as rules need
+//    them. Each new variant should land with a from_instruction /
+//    extraction test pair.

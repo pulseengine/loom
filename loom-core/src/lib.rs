@@ -7766,7 +7766,7 @@ pub mod optimize {
                 Instruction::I32Const(_)
                 | Instruction::I64Const(_)
                 | Instruction::LocalGet(_) => 0,
-                Instruction::I32Eqz => 1,
+                Instruction::I32Eqz | Instruction::I64Eqz => 1,
                 Instruction::I32Add
                 | Instruction::I32Sub
                 | Instruction::I32Mul
@@ -7776,7 +7776,17 @@ pub mod optimize {
                 | Instruction::I32Shl
                 | Instruction::I32ShrS
                 | Instruction::I32ShrU
-                | Instruction::I32Eq => 2,
+                | Instruction::I32Eq
+                | Instruction::I64Add
+                | Instruction::I64Sub
+                | Instruction::I64Mul
+                | Instruction::I64And
+                | Instruction::I64Or
+                | Instruction::I64Xor
+                | Instruction::I64Shl
+                | Instruction::I64ShrS
+                | Instruction::I64ShrU
+                | Instruction::I64Eq => 2,
                 _ => break,
             };
             if sim_stack.len() < arity {
