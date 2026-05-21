@@ -192,7 +192,6 @@ const CANDIDATES: &[Candidate] = &[
         pattern: &[Instruction::I64Const(1), Instruction::I64Mul],
         replacement: &[],
     },
-
     // ─── Power-of-2 mul → shl (v1.0.2 PR-L3) ─────────────────────────────
     //
     // Proof template: for k > 0, ∀x: BV32. x * 2^k = x << k (mod 2^32).
@@ -208,7 +207,6 @@ const CANDIDATES: &[Candidate] = &[
     // power-of-two needs ≥ 2 bytes while k still fits in 1 → real save.
     //
     // We ship a small set of common multipliers; future PR can expand.
-
     Candidate {
         name: "i32_mul_128_to_shl_7",
         // x * 128 → x << 7; saves 1 byte (LEB128(128)=2, LEB128(7)=1).
@@ -301,9 +299,7 @@ fn apply_to_body(body: &mut Vec<Instruction>) -> usize {
         while i < body.len() {
             let mut hit: Option<&Candidate> = None;
             for c in CANDIDATES {
-                if i + c.pattern.len() <= body.len()
-                    && body[i..i + c.pattern.len()] == *c.pattern
-                {
+                if i + c.pattern.len() <= body.len() && body[i..i + c.pattern.len()] == *c.pattern {
                     hit = Some(c);
                     break;
                 }
@@ -849,7 +845,10 @@ mod tests {
         )"#;
         let mut module = parse::parse_wat(wat).expect("parse");
         let folds = apply_peephole_synth(&mut module).expect("apply");
-        assert_eq!(folds, 0, "i64.and 0 must NOT fold (it's x & 0 = 0, not identity)");
+        assert_eq!(
+            folds, 0,
+            "i64.and 0 must NOT fold (it's x & 0 = 0, not identity)"
+        );
     }
 
     #[test]

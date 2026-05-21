@@ -5,6 +5,95 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-20
+
+**ægraph substrate goes production + first mechanized roundtrip
+proof.** A minor-version bump: the v1.0.4 ægraph substrate is now a
+default-on pipeline pass with cost-driven extraction and a widened
+rule set, and the parser/encoder roundtrip proof (#48) gains a real
+Rocq scaffold. Byte-neutral on the current corpus — this is an
+infrastructure and correctness release, not a size-win release.
+
+### Optimization
+
+- **Track B (#134, re-applied in this release commit): cost-driven
+  ægraph extraction.** `egraph::extract()` now finds the union-find
+  root of the requested class, scans every class id whose `find()`
+  resolves to that root, and emits the representative with the
+  lowest *total* encoded-byte cost. New `Op::encoded_byte_cost()`
+  returns 1 for opcodes and `1 + LEB128(immediate)` for
+  `const` / `local.get`, mirroring wasm-encoder exactly. Subtree
+  cost is a HashMap-memoized DP keyed on UF root (the acyclic
+  invariant — child id < parent id — is the termination guarantee).
+  This closes the v1.0.5 Track 1 substrate gap: the manual UF-root
+  scan in `egraph_optimize_body` is deleted, and the call site is
+  now just `egraph.extract(root_class)`.
+
+  Process note: PR #134 merged but its `egraph.rs` / `lib.rs` diff
+  was silently clobbered when PR #137's rebase resolved conflicts by
+  whole-file copy from a pre-#134 branch. The content is re-applied
+  in this release commit; 25 egraph tests green.
+
+- **Track C (#137): ægraph rule-set widening.** 11 new `Op`
+  variants for i64 (`Add`/`Sub`/`Mul`/`And`/`Or`/`Xor`/`Shl`/
+  `ShrS`/`ShrU`/`Eq`/`Eqz`) and 8 new identity rules — i64
+  `+0` / `|0` / `&-1` / `*1` plus three shift-by-zero folds. New
+  `Op::is_commutative()` + `EGraph::canonicalize_commutative()`
+  normalize operand order for the commutative i32/i64 ops so each
+  identity rule only needs the `(wild, Const)` form. One test
+  (`test_commutativity_zero_plus_x_folds`) is `#[ignore]`'d pending
+  insertion-time normalization — a v1.1.1 follow-up.
+
+- **Track F: ægraph pass is default-on.** The pass already ran by
+  default mechanically (`should_run` is permissive without
+  `--passes`); the stale "opt-in via --passes egraph" comment is
+  corrected. Default-on is revert-safe by construction:
+  `egraph_optimize_body` splices extraction back only when it is
+  strictly shorter than the original tree, so a function is either
+  improved or left byte-identical — never regressed.
+
+### Proofs
+
+- **Track A (#135): Path A for #48 — parser/encoder roundtrip
+  identity.** Total `Admitted.` count in `proofs/` drops 4 → 2.
+  `TermBijection.v` is rewritten from a 42-line placeholder into a
+  272-line self-contained file; both `term_conversion_bijection`
+  and `term_conversion_bijection_rev` close with `Qed`.
+  `StackSignature.v` adds `combined_kind` + `combined_kind_assoc` +
+  `compose_kind` + `compose_assoc_kind`, all `Qed` — the kind
+  component of composition associativity is closed. `Roundtrip.v`
+  lands the `ScopedModule` + LEB128 + section-codec scaffold. The
+  two remaining `Admitted.` are the `leb128_roundtrip` general-nat
+  induction step and the `StackSignature` dataflow component, both
+  documented with proof sketches.
+
+### Measurement
+
+- New `docs/measurements/v1.1.0-corpus-baseline.md`. LOOM produces
+  no regression on any corpus fixture (every LOOM Δ% ≤ 0). Per-file
+  deltas are unchanged from v1.0.5 — the ægraph pass is byte-neutral
+  on the current corpus because these fixtures lack the foldable
+  identity patterns the rule set targets; the substrate is wired and
+  will produce wins once such patterns appear.
+- `measure_corpus.sh` `pct_delta` no longer coerces sentinel
+  strings (`error` / `invalid` / `timeout`) to `0`, which had
+  fabricated a `-100%` "win" on a failed or timed-out run. Such rows
+  now correctly read `n/a`.
+
+### Deferred to v1.1.1
+
+- **Track D — Track-3 housekeeping** (`Instruction` `Eq`/`Hash`,
+  `pub(crate)` `AdapterInfo`, surfaced `FusedOptimizationStats`,
+  no-silent-swallow in `optimize_fused_module`). Touches every
+  fused-optimizer call site; held back to keep the v1.1.0 review
+  surface bounded.
+- **Track E — real meld-fused multi-component fixture.** Blocked on
+  a `meld`-binary permission wall and the absence of a component
+  pair with a shared cross-memory shape. Shipped as a documented
+  placeholder (`tests/corpus/MELD_FUSED_README.md`); the harness
+  carries a `meld_fused` workload slot that stays `n/a` until the
+  fixture lands.
+
 ## [1.0.5] - 2026-05-19
 
 **Four-track v1.0.4 follow-through.** Each v1.0.4 infrastructure

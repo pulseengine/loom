@@ -264,6 +264,7 @@ fn count_instructions_from_bytes(bytes: &[u8]) -> usize {
 }
 
 /// Optimize command implementation
+#[allow(clippy::too_many_arguments)]
 fn optimize_command(
     input: String,
     output: Option<String>,
@@ -527,12 +528,15 @@ fn optimize_command(
         track_pass("canonicalize", before, after);
     }
 
-    // v1.0.5 Track 1: ægraph-based optimization. Runs AFTER canonicalize
-    // (canonical operand order makes pattern matching deterministic) and
-    // BEFORE peephole-synth (so the egraph engine gets first crack at
-    // identity folds — the substrate is richer than peephole's linear
-    // pattern matcher). Disabled by default for v1.0.5 since the
-    // candidate set is tiny; opt-in via --passes egraph.
+    // ægraph-based optimization. Runs AFTER canonicalize (canonical
+    // operand order makes pattern matching deterministic) and BEFORE
+    // peephole-synth (so the egraph engine gets first crack at identity
+    // folds — the substrate is richer than peephole's linear pattern
+    // matcher). Default-on as of v1.1.0: cost-driven extraction (Track B)
+    // plus the widened i64/commutativity rule set (Track C) make it a
+    // net-neutral-or-better pass on the corpus. Each function is reverted
+    // untouched unless extraction is strictly shorter, so default-on
+    // cannot regress output — see egraph_optimize_body.
     if should_run("egraph") {
         println!("  Running: egraph");
         let before = count_instructions(&module);

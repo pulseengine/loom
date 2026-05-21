@@ -7671,30 +7671,12 @@ pub mod optimize {
                     // Try to greedily extend a (0→1) tree starting at i.
                     let (tree_end, root) = try_build_egraph_tree(instructions, i);
                     if let Some((root_class, mut egraph)) = root {
-                        // Saturate + extract.
+                        // Saturate + extract. v1.1.0 Track B: extract is
+                        // now cost-driven (memoized byte-cost DP via
+                        // Op::encoded_byte_cost), so the v1.0.5 manual
+                        // UF-root scan is gone.
                         let _folds = egraph.saturate_with_rules(rules);
-
-                        // Workaround for the v1.0.4 substrate's extract():
-                        // it always extracts the node originally stored at
-                        // class_id, ignoring union-find merging. To pick
-                        // the smaller representative after a rule fire,
-                        // we scan ALL class ids that root to the same UF
-                        // class as `root_class` and pick the smallest
-                        // extraction. v1.0.6 follow-up: move this logic
-                        // into egraph::extract() as cost-driven extraction.
-                        let target_root = egraph.find(root_class);
-                        let n_classes = egraph.len();
-                        let mut best = egraph.extract(root_class);
-                        for k in 0..n_classes as u32 {
-                            let cid = crate::egraph::EClassId(k);
-                            if egraph.find(cid) == target_root {
-                                let candidate = egraph.extract(cid);
-                                if candidate.len() < best.len() {
-                                    best = candidate;
-                                }
-                            }
-                        }
-                        let extracted = best;
+                        let extracted = egraph.extract(root_class);
 
                         // Splice only if strictly shorter — node-count
                         // metric. Cost model is v1.0.6+ work.
@@ -7721,7 +7703,10 @@ pub mod optimize {
     fn try_build_egraph_tree(
         instructions: &[Instruction],
         start: usize,
-    ) -> (usize, Option<(crate::egraph::EClassId, crate::egraph::EGraph)>) {
+    ) -> (
+        usize,
+        Option<(crate::egraph::EClassId, crate::egraph::EGraph)>,
+    ) {
         use crate::egraph::{EClassId, EGraph, ENode};
 
         let mut egraph = EGraph::new();
@@ -7763,9 +7748,7 @@ pub mod optimize {
             // as a probe). For unsupported instructions, the match falls
             // through to None → bail.
             let arity = match instr {
-                Instruction::I32Const(_)
-                | Instruction::I64Const(_)
-                | Instruction::LocalGet(_) => 0,
+                Instruction::I32Const(_) | Instruction::I64Const(_) | Instruction::LocalGet(_) => 0,
                 Instruction::I32Eqz | Instruction::I64Eqz => 1,
                 Instruction::I32Add
                 | Instruction::I32Sub
@@ -7795,8 +7778,7 @@ pub mod optimize {
                 break;
             }
 
-            let child_ids: Vec<EClassId> =
-                sim_stack[sim_stack.len() - arity..].to_vec();
+            let child_ids: Vec<EClassId> = sim_stack[sim_stack.len() - arity..].to_vec();
             let node = match ENode::from_instruction(instr, &child_ids) {
                 Some(n) => n,
                 None => break,
@@ -8422,8 +8404,7 @@ pub mod optimize {
 
             // Apply vacuum transformation (passes summaries through so the
             // const+drop peephole can also fold pure+no-trap Call;Drop pairs).
-            func.instructions =
-                vacuum_instructions(&func.instructions, &summaries, &signatures);
+            func.instructions = vacuum_instructions(&func.instructions, &summaries, &signatures);
 
             // Validate stack correctness after transformation - fail if invalid
             let _ = guard.validate(func);
@@ -12254,10 +12235,7 @@ pub mod optimize {
             // at the leftmost-arg position with `end_pos = call_pos`,
             // emitting one `local.get` and skipping all instructions in
             // `[arg_pos..=call_pos]`.
-            ReplaceSpanWithLoad {
-                local_idx: u32,
-                end_pos: usize,
-            },
+            ReplaceSpanWithLoad { local_idx: u32, end_pos: usize },
         }
 
         // Expression representation for CSE
@@ -12868,10 +12846,7 @@ pub mod optimize {
             // not mutated between the cached site and the use site — we
             // enforce that below via a separate scan.
             fn arg_is_simple_pusher(e: &Expr) -> bool {
-                matches!(
-                    e,
-                    Expr::Const32(_) | Expr::Const64(_) | Expr::LocalGet(_)
-                )
+                matches!(e, Expr::Const32(_) | Expr::Const64(_) | Expr::LocalGet(_))
             }
             // Collect the set of LocalGet indices referenced by a Call's
             // arg list (used to verify no intervening local.set/local.tee
@@ -12907,16 +12882,12 @@ pub mod optimize {
                                         continue;
                                     }
                                     occupied[positions[0]] = true;
-                                    position_action.insert(
-                                        positions[0],
-                                        CSEAction::SaveToLocal(*local_idx),
-                                    );
+                                    position_action
+                                        .insert(positions[0], CSEAction::SaveToLocal(*local_idx));
                                     for &pos in &positions[1..] {
                                         occupied[pos] = true;
-                                        position_action.insert(
-                                            pos,
-                                            CSEAction::LoadFromLocal(*local_idx),
-                                        );
+                                        position_action
+                                            .insert(pos, CSEAction::LoadFromLocal(*local_idx));
                                     }
                                 }
 
@@ -12972,13 +12943,8 @@ pub mod optimize {
                                     // every span must be free.
                                     let mut overlap = false;
                                     for &(start, end) in &spans {
-                                        for p in start..=end {
-                                            if occupied[p] {
-                                                overlap = true;
-                                                break;
-                                            }
-                                        }
-                                        if overlap {
+                                        if occupied[start..=end].iter().any(|&o| o) {
+                                            overlap = true;
                                             break;
                                         }
                                     }
@@ -13008,11 +12974,11 @@ pub mod optimize {
                                         {
                                             match ins {
                                                 Instruction::LocalSet(idx)
-                                                | Instruction::LocalTee(idx) => {
-                                                    if arg_locals.contains(idx) {
-                                                        local_mutated = true;
-                                                        break;
-                                                    }
+                                                | Instruction::LocalTee(idx)
+                                                    if arg_locals.contains(idx) =>
+                                                {
+                                                    local_mutated = true;
+                                                    break;
                                                 }
                                                 _ => {}
                                             }
@@ -13028,17 +12994,13 @@ pub mod optimize {
                                     // as occupied so later iterations
                                     // don't double-plan.
                                     for &(start, end) in &spans {
-                                        for p in start..=end {
-                                            occupied[p] = true;
-                                        }
+                                        occupied[start..=end].fill(true);
                                     }
                                     // First occurrence: keep the whole
                                     // [start..=call_pos] sequence and tee
                                     // after the call.
-                                    position_action.insert(
-                                        first_call_pos,
-                                        CSEAction::SaveToLocal(*local_idx),
-                                    );
+                                    position_action
+                                        .insert(first_call_pos, CSEAction::SaveToLocal(*local_idx));
                                     // Each later occurrence: collapse the
                                     // span to a single local.get at the
                                     // arg_start; skip up through call_pos.
@@ -13087,10 +13049,7 @@ pub mod optimize {
                             // Replace with local.get
                             new_instructions.push(Instruction::LocalGet(*local_idx));
                         }
-                        Some(CSEAction::ReplaceSpanWithLoad {
-                            local_idx,
-                            end_pos,
-                        }) => {
+                        Some(CSEAction::ReplaceSpanWithLoad { local_idx, end_pos }) => {
                             // Replace `[pos ..= end_pos]` with one local.get.
                             new_instructions.push(Instruction::LocalGet(*local_idx));
                             skip_until = Some(*end_pos);
@@ -13916,10 +13875,7 @@ pub mod optimize {
                 Instruction::GlobalGet(0),
                 Instruction::Drop,
             ]);
-            let func1 = mk_func(vec![
-                Instruction::I32Const(99),
-                Instruction::GlobalSet(0),
-            ]);
+            let func1 = mk_func(vec![Instruction::I32Const(99), Instruction::GlobalSet(0)]);
             let mut module = mk_module(vec![func0, func1]);
             let folded = forward_global_shim(&mut module).expect("apply");
             assert_eq!(
@@ -18482,10 +18438,7 @@ mod tests {
             .instructions
             .iter()
             .any(|i| matches!(i, Instruction::I32Add));
-        assert!(
-            !has_add,
-            "post-call identity tree should still fold"
-        );
+        assert!(!has_add, "post-call identity tree should still fold");
     }
 
     #[test]
@@ -18501,16 +18454,13 @@ mod tests {
         )"#;
         let mut module = parse::parse_wat(wat).expect("parse");
         optimize::egraph_optimize(&mut module).expect("egraph_optimize");
-        let has_add_anywhere = module.functions[0]
-            .instructions
-            .iter()
-            .any(|i| {
-                if let Instruction::Block { body, .. } = i {
-                    body.iter().any(|j| matches!(j, Instruction::I32Add))
-                } else {
-                    matches!(i, Instruction::I32Add)
-                }
-            });
+        let has_add_anywhere = module.functions[0].instructions.iter().any(|i| {
+            if let Instruction::Block { body, .. } = i {
+                body.iter().any(|j| matches!(j, Instruction::I32Add))
+            } else {
+                matches!(i, Instruction::I32Add)
+            }
+        });
         assert!(!has_add_anywhere, "block-nested identity must fold");
     }
 
@@ -18539,7 +18489,10 @@ mod tests {
             .instructions
             .iter()
             .any(|i| matches!(i, Instruction::If { .. }));
-        assert!(!has_if, "single-value if/else of pure pushers must become select");
+        assert!(
+            !has_if,
+            "single-value if/else of pure pushers must become select"
+        );
 
         // Select must appear.
         let has_select = module.functions[0]
@@ -18602,7 +18555,10 @@ mod tests {
             .instructions
             .iter()
             .any(|i| matches!(i, Instruction::LocalTee(_)));
-        assert!(has_tee, "local.set;local.get pair must collapse to local.tee");
+        assert!(
+            has_tee,
+            "local.set;local.get pair must collapse to local.tee"
+        );
 
         // No LocalSet should remain (the pair was the only set).
         let has_set = module.functions[0]

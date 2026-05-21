@@ -13,7 +13,7 @@
 //!
 //!   - a markdown table to stdout (so `cargo bench` output is grep-able), AND
 //!   - a versioned report file at
-//!         docs/measurements/v<workspace-version>-corpus-baseline.md
+//!     docs/measurements/v<workspace-version>-corpus-baseline.md
 //!     that mirrors the bash harness's report format.
 //!
 //! The criterion measurement layer wraps each fixture's LOOM run in a
@@ -51,16 +51,52 @@ use criterion::{Criterion, criterion_group, criterion_main};
 // Format mirrors the shell script: (display_name, repo-relative path, note).
 // ---------------------------------------------------------------------------
 const WORKLOADS: &[(&str, &str, &str)] = &[
-    ("gale",             "scripts/mythos/gale_measure/gale_in_baseline.wasm",      "kernel-FFI fixture"),
-    ("httparse",         "tests/corpus/httparse.wasm",                              "HTTP parser"),
-    ("nom_numbers",      "tests/corpus/nom_numbers.wasm",                           "parser-combinator primitives"),
-    ("state_machine",    "tests/corpus/state_machine.wasm",                         "FSM kernel"),
-    ("json_lite",        "tests/corpus/json_lite.wasm",                             "minimal JSON tokenizer"),
-    ("loom",             "tests/corpus/loom.wasm",                                  "LOOM self-build (dogfood target)"),
-    ("calculator",       "tests/calculator.wasm",                                   "component-shaped fixture"),
-    ("calculator_root",  "calculator.wasm",                                         "2.3 MB component (root, large)"),
-    ("simple_component", "loom-core/tests/component_fixtures/simple.component.wasm","tiny component (adapter-heavy)"),
-    ("calc_component",   "loom-core/tests/component_fixtures/calc.component.wasm",  "small component (adapter-heavy)"),
+    (
+        "gale",
+        "scripts/mythos/gale_measure/gale_in_baseline.wasm",
+        "kernel-FFI fixture",
+    ),
+    ("httparse", "tests/corpus/httparse.wasm", "HTTP parser"),
+    (
+        "nom_numbers",
+        "tests/corpus/nom_numbers.wasm",
+        "parser-combinator primitives",
+    ),
+    (
+        "state_machine",
+        "tests/corpus/state_machine.wasm",
+        "FSM kernel",
+    ),
+    (
+        "json_lite",
+        "tests/corpus/json_lite.wasm",
+        "minimal JSON tokenizer",
+    ),
+    (
+        "loom",
+        "tests/corpus/loom.wasm",
+        "LOOM self-build (dogfood target)",
+    ),
+    (
+        "calculator",
+        "tests/calculator.wasm",
+        "component-shaped fixture",
+    ),
+    (
+        "calculator_root",
+        "calculator.wasm",
+        "2.3 MB component (root, large)",
+    ),
+    (
+        "simple_component",
+        "loom-core/tests/component_fixtures/simple.component.wasm",
+        "tiny component (adapter-heavy)",
+    ),
+    (
+        "calc_component",
+        "loom-core/tests/component_fixtures/calc.component.wasm",
+        "small component (adapter-heavy)",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -142,9 +178,8 @@ fn repo_root() -> PathBuf {
 
 fn resolve_env() -> BenchEnv {
     let repo_root = repo_root();
-    let tmp_dir = PathBuf::from(
-        env::var("TMP_DIR").unwrap_or_else(|_| "/tmp/loom-measure-corpus".into()),
-    );
+    let tmp_dir =
+        PathBuf::from(env::var("TMP_DIR").unwrap_or_else(|_| "/tmp/loom-measure-corpus".into()));
     let _ = fs::create_dir_all(&tmp_dir);
 
     let loom = env::var("LOOM")
@@ -155,8 +190,16 @@ fn resolve_env() -> BenchEnv {
     let wasm_opt_name = env::var("WASM_OPT").unwrap_or_else(|_| "wasm-opt".into());
     let meld_name = env::var("MELD").unwrap_or_else(|_| "meld".into());
 
-    let wasm_opt = if tool_exists(&wasm_opt_name) { Some(wasm_opt_name) } else { None };
-    let meld = if tool_exists(&meld_name) { Some(meld_name) } else { None };
+    let wasm_opt = if tool_exists(&wasm_opt_name) {
+        Some(wasm_opt_name)
+    } else {
+        None
+    };
+    let meld = if tool_exists(&meld_name) {
+        Some(meld_name)
+    } else {
+        None
+    };
 
     let per_run_timeout_secs = env::var("PER_RUN_TIMEOUT")
         .ok()
@@ -165,13 +208,11 @@ fn resolve_env() -> BenchEnv {
 
     let loom_version = first_line(&Command::new(&loom).arg("--version").output().ok())
         .unwrap_or_else(|| "unknown".into());
-    let wasm_tools_version = first_line(
-        &Command::new(&wasm_tools).arg("--version").output().ok(),
-    )
-    .unwrap_or_else(|| "unknown".into());
-    let wasm_opt_version = wasm_opt.as_ref().and_then(|name| {
-        first_line(&Command::new(name).arg("--version").output().ok())
-    });
+    let wasm_tools_version = first_line(&Command::new(&wasm_tools).arg("--version").output().ok())
+        .unwrap_or_else(|| "unknown".into());
+    let wasm_opt_version = wasm_opt
+        .as_ref()
+        .and_then(|name| first_line(&Command::new(name).arg("--version").output().ok()));
 
     let pin_status = check_wasm_opt_pin(&repo_root, wasm_opt_version.as_deref());
 
@@ -268,7 +309,10 @@ fn check_wasm_opt_pin(repo_root: &Path, wasm_opt_version_raw: Option<&str>) -> P
     match parse_version_token(raw) {
         Some(installed) if installed == pinned => PinStatus::Match { version: installed },
         Some(installed) => PinStatus::Mismatch { pinned, installed },
-        None => PinStatus::Mismatch { pinned, installed: raw.to_string() },
+        None => PinStatus::Mismatch {
+            pinned,
+            installed: raw.to_string(),
+        },
     }
 }
 
@@ -328,7 +372,9 @@ fn file_size(p: &Path) -> Option<u64> {
 }
 
 fn is_component(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else { return false };
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
     use std::io::Read;
     let mut buf = [0u8; 8];
     if f.read(&mut buf).ok() != Some(8) {
@@ -369,10 +415,7 @@ fn code_section_bytes(env: &BenchEnv, path: &Path) -> Option<u64> {
             continue;
         }
         let third = cols[2].trim();
-        let n_str: String = third
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
+        let n_str: String = third.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(n) = n_str.parse::<u64>() {
             sum = sum.saturating_add(n);
             any = true;
@@ -412,7 +455,9 @@ fn run_loom(env: &BenchEnv, input: &Path, output: &Path) -> bool {
 
 /// Run `wasm-opt -O3 <input> -o <output>`. Returns false if wasm-opt is absent.
 fn run_wasm_opt(env: &BenchEnv, input: &Path, output: &Path) -> bool {
-    let Some(name) = env.wasm_opt.as_ref() else { return false };
+    let Some(name) = env.wasm_opt.as_ref() else {
+        return false;
+    };
     let mut cmd = Command::new(name);
     cmd.arg("-O3").arg(input).arg("-o").arg(output);
     run_with_timeout(&mut cmd, Duration::from_secs(env.per_run_timeout_secs))
@@ -423,7 +468,9 @@ fn run_wasm_opt(env: &BenchEnv, input: &Path, output: &Path) -> bool {
 
 /// Run `meld fuse <component> -o <core> --no-attestation`.
 fn run_meld(env: &BenchEnv, input: &Path, output: &Path) -> bool {
-    let Some(name) = env.meld.as_ref() else { return false };
+    let Some(name) = env.meld.as_ref() else {
+        return false;
+    };
     let mut cmd = Command::new(name);
     cmd.arg("fuse")
         .arg(input)
@@ -446,7 +493,9 @@ fn measure_fixture(env: &BenchEnv, name: &str, rel_path: &str, note: &str) -> Ro
     if !fixture.exists() {
         return Row::missing(name, note);
     }
-    let Some(base_bytes) = file_size(&fixture) else { return Row::missing(name, note) };
+    let Some(base_bytes) = file_size(&fixture) else {
+        return Row::missing(name, note);
+    };
     if base_bytes == 0 {
         return Row::missing(name, note);
     }
@@ -557,9 +606,7 @@ fn render_markdown(env: &BenchEnv, rows: &[Row]) -> String {
     }
     writeln!(s, "- wasm-tools: `{}`", env.wasm_tools_version).unwrap();
     match &env.pin_status {
-        PinStatus::Match { version } => {
-            writeln!(s, "- wasm-opt pin: `{version}` (match)").unwrap()
-        }
+        PinStatus::Match { version } => writeln!(s, "- wasm-opt pin: `{version}` (match)").unwrap(),
         PinStatus::Mismatch { pinned, installed } => writeln!(
             s,
             "- wasm-opt pin: **MISMATCH** (installed `{installed}` vs pinned `{pinned}`)"
@@ -659,11 +706,7 @@ fn render_markdown(env: &BenchEnv, rows: &[Row]) -> String {
 
     writeln!(s, "## Methodology").unwrap();
     writeln!(s).unwrap();
-    writeln!(
-        s,
-        "For each workload (fixture path relative to repo root):"
-    )
-    .unwrap();
+    writeln!(s, "For each workload (fixture path relative to repo root):").unwrap();
     writeln!(
         s,
         "1. Record baseline byte count via `fs::metadata` and code-section size via `wasm-tools objdump`."
@@ -702,11 +745,7 @@ fn render_markdown(env: &BenchEnv, rows: &[Row]) -> String {
     writeln!(s, "```bash").unwrap();
     writeln!(s, "# Build LOOM first (Z3 verification enabled)").unwrap();
     writeln!(s, "Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h \\").unwrap();
-    writeln!(
-        s,
-        "  LIBRARY_PATH=/opt/homebrew/lib cargo build --release"
-    )
-    .unwrap();
+    writeln!(s, "  LIBRARY_PATH=/opt/homebrew/lib cargo build --release").unwrap();
     writeln!(s).unwrap();
     writeln!(s, "# Run the criterion harness").unwrap();
     writeln!(s, "cargo bench -p loom-testing --bench corpus_baseline").unwrap();
