@@ -355,9 +355,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                             "  Encode failed after 'specialize_adapters' (reverting): {}",
                             e
                         );
-                        crate::stats::record_revert(
-                            "component:specialize_adapters/encode-failed",
-                        );
+                        crate::stats::record_revert("component:specialize_adapters/encode-failed");
                         module.functions = saved_functions;
                     }
                 }
@@ -380,27 +378,18 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
         match optimize_async_callback_adapters(&mut module) {
             Ok(folded) if folded > 0 => match crate::encode::encode_wasm(&module) {
                 Ok(bytes) => {
-                    if let Err(e) =
-                        Validator::new_with_features(wasm_features_with_async()).validate_all(&bytes)
+                    if let Err(e) = Validator::new_with_features(wasm_features_with_async())
+                        .validate_all(&bytes)
                     {
-                        eprintln!(
-                            "  Module invalid after 'async-adapter' (reverting): {}",
-                            e
-                        );
+                        eprintln!("  Module invalid after 'async-adapter' (reverting): {}", e);
                         crate::stats::record_revert("component:async_adapter/invalid");
                         module.functions = saved_functions;
                     } else {
-                        eprintln!(
-                            "  Async-callback adapter: {} call site(s) folded",
-                            folded
-                        );
+                        eprintln!("  Async-callback adapter: {} call site(s) folded", folded);
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "  Encode failed after 'async-adapter' (reverting): {}",
-                        e
-                    );
+                    eprintln!("  Encode failed after 'async-adapter' (reverting): {}", e);
                     crate::stats::record_revert("component:async_adapter/encode-failed");
                     module.functions = saved_functions;
                 }
@@ -425,24 +414,15 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
                     if let Err(e) = Validator::new_with_features(wasm_features_with_async())
                         .validate_all(&bytes)
                     {
-                        eprintln!(
-                            "  Module invalid after 'async-chain' (reverting): {}",
-                            e
-                        );
+                        eprintln!("  Module invalid after 'async-chain' (reverting): {}", e);
                         crate::stats::record_revert("component:async_chain/invalid");
                         module.functions = saved_functions;
                     } else {
-                        eprintln!(
-                            "  Async-chain composition: {} instructions removed",
-                            shrunk
-                        );
+                        eprintln!("  Async-chain composition: {} instructions removed", shrunk);
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "  Encode failed after 'async-chain' (reverting): {}",
-                        e
-                    );
+                    eprintln!("  Encode failed after 'async-chain' (reverting): {}", e);
                     crate::stats::record_revert("component:async_chain/encode-failed");
                     module.functions = saved_functions;
                 }
@@ -848,19 +828,17 @@ fn has_unknown_instructions(instructions: &[Instruction]) -> bool {
     for instr in instructions {
         match instr {
             Instruction::Unknown(_) => return true,
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if has_unknown_instructions(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if has_unknown_instructions(body) =>
+            {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if has_unknown_instructions(then_body) || has_unknown_instructions(else_body) {
-                    return true;
-                }
+            } if (has_unknown_instructions(then_body) || has_unknown_instructions(else_body)) => {
+                return true;
             }
             _ => {}
         }
@@ -1345,14 +1323,11 @@ mod async_adapter_tests {
         assert!(!has_eq, "I32Eq must be gone after fold");
         assert!(!has_set, "LocalSet (exit-code capture) must be gone");
         assert!(
-            body.iter()
-                .any(|i| matches!(i, Instruction::I32Const(42))),
+            body.iter().any(|i| matches!(i, Instruction::I32Const(42))),
             "fast-path constant 42 must remain"
         );
         assert!(
-            !body
-                .iter()
-                .any(|i| matches!(i, Instruction::I32Const(-1))),
+            !body.iter().any(|i| matches!(i, Instruction::I32Const(-1))),
             "slow-path constant -1 must be gone"
         );
     }
@@ -1589,19 +1564,17 @@ mod async_adapter_tests {
             for instr in instrs {
                 match instr {
                     Instruction::I32Const(-1) => return true,
-                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                        if has_const_neg_one(body) {
-                            return true;
-                        }
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                        if has_const_neg_one(body) =>
+                    {
+                        return true;
                     }
                     Instruction::If {
                         then_body,
                         else_body,
                         ..
-                    } => {
-                        if has_const_neg_one(then_body) || has_const_neg_one(else_body) {
-                            return true;
-                        }
+                    } if (has_const_neg_one(then_body) || has_const_neg_one(else_body)) => {
+                        return true;
                     }
                     _ => {}
                 }
@@ -1849,7 +1822,10 @@ mod adapter_spec_tests {
         let mut module = mk_module(vec![func.clone()]);
         let folded = specialize_adapters(&mut module).unwrap();
 
-        assert_eq!(folded, 0, "Must not touch modules with Unknown instructions");
+        assert_eq!(
+            folded, 0,
+            "Must not touch modules with Unknown instructions"
+        );
         assert_eq!(module.functions[0].instructions, func.instructions);
     }
 

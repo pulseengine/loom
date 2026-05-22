@@ -1342,10 +1342,7 @@ fn rewrite_calls(
 ///
 /// Returns the number of adapters whose bodies were rewritten or confirmed
 /// already in canonical shape.
-fn inline_scalar_adapters(
-    module: &mut Module,
-    adapters: &[AdapterInfo],
-) -> Result<usize> {
+fn inline_scalar_adapters(module: &mut Module, adapters: &[AdapterInfo]) -> Result<usize> {
     let mut count = 0usize;
 
     for adapter in adapters {
@@ -1404,7 +1401,10 @@ fn inline_scalar_adapters(
 fn is_scalar_value_type(ty: &crate::ValueType) -> bool {
     matches!(
         ty,
-        crate::ValueType::I32 | crate::ValueType::I64 | crate::ValueType::F32 | crate::ValueType::F64
+        crate::ValueType::I32
+            | crate::ValueType::I64
+            | crate::ValueType::F32
+            | crate::ValueType::F64
     )
 }
 
@@ -1500,19 +1500,17 @@ fn contains_memory_op(instrs: &[Instruction]) -> bool {
             | Instruction::MemoryCopy { .. }
             | Instruction::MemoryFill(_)
             | Instruction::MemoryInit { .. } => return true,
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                if contains_memory_op(body) {
-                    return true;
-                }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                if contains_memory_op(body) =>
+            {
+                return true;
             }
             Instruction::If {
                 then_body,
                 else_body,
                 ..
-            } => {
-                if contains_memory_op(then_body) || contains_memory_op(else_body) {
-                    return true;
-                }
+            } if (contains_memory_op(then_body) || contains_memory_op(else_body)) => {
+                return true;
             }
             _ => {}
         }
@@ -1580,8 +1578,9 @@ fn is_cross_memory_scalar_copy(func: &Function, target: u32) -> bool {
     // pass handles it.)
     let unique_pre: HashSet<u32> = pre_loads.iter().copied().collect();
     let unique_post: HashSet<u32> = post_stores.iter().copied().collect();
-    let any_diff =
-        unique_pre.iter().any(|p| unique_post.iter().any(|q| p != q));
+    let any_diff = unique_pre
+        .iter()
+        .any(|p| unique_post.iter().any(|q| p != q));
     if !any_diff {
         return false;
     }
@@ -1741,10 +1740,7 @@ fn dedupe_function_bodies(module: &mut Module) -> Result<usize> {
         let rep_abs = num_imports + rep_local as u32;
 
         for &other_local in &sorted[1..] {
-            if functions_body_equal(
-                &module.functions[rep_local],
-                &module.functions[other_local],
-            ) {
+            if functions_body_equal(&module.functions[rep_local], &module.functions[other_local]) {
                 let other_abs = num_imports + other_local as u32;
                 // Don't redirect a function to itself.
                 if other_abs != rep_abs {
@@ -5548,9 +5544,11 @@ mod tests {
         });
 
         // Function 1: pass-through adapter, target absolute idx 0
-        module
-            .functions
-            .push(make_adapter(&[ValueType::I32, ValueType::I32], &[ValueType::I32], 0));
+        module.functions.push(make_adapter(
+            &[ValueType::I32, ValueType::I32],
+            &[ValueType::I32],
+            0,
+        ));
 
         module.exports.push(Export {
             name: "adapter".to_string(),

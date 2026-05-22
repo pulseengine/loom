@@ -174,12 +174,10 @@ fn count_function_instructions(func: &Function) -> usize {
 
 #[cfg(feature = "verification")]
 impl VerificationSignatureContext {
-
-    /// PR-K3.2 (Track B): recursively count instructions in a function
-    /// body. Used by `verify` to gate Z3 invocation by body size — see
-    /// the comment in `verify` for rationale and the LOOM_Z3_MAX_INSTRUCTIONS
-    /// env var.
-    // (defined out of the impl block — see below)
+    // PR-K3.2 (Track B): recursively count instructions in a function
+    // body. Used by `verify` to gate Z3 invocation by body size — see
+    // the comment in `verify` for rationale and the LOOM_Z3_MAX_INSTRUCTIONS
+    // env var. (defined out of the impl block — see below)
 
     /// PR-K3: check whether a callee is pure + no-trap and therefore
     /// safe to encode as a deterministic uninterpreted function
@@ -2423,8 +2421,8 @@ impl TranslationValidator {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(2000);
-        let n_instr = count_function_instructions(&self.original)
-            .max(count_function_instructions(optimized));
+        let n_instr =
+            count_function_instructions(&self.original).max(count_function_instructions(optimized));
         if n_instr > max_instructions {
             crate::stats::record_revert(&format!("{}/z3-size-skipped", self.pass_name));
             return Ok(());
@@ -4246,7 +4244,10 @@ fn encode_function_to_smt_impl_inner(
             // doesn't cover the slot OR signatures don't match, we fall
             // back to the existing conservative encoding: fresh-symbolic
             // result + havoc of all globals and memory.
-            Instruction::CallIndirect { type_idx, table_idx } => {
+            Instruction::CallIndirect {
+                type_idx,
+                table_idx,
+            } => {
                 // Pop table index first.
                 if stack.is_empty() {
                     return Err(anyhow!(
@@ -4255,17 +4256,15 @@ fn encode_function_to_smt_impl_inner(
                 }
                 // SAFETY: guarded by is_empty check above
                 let slot_bv = stack.pop().unwrap();
-                let concrete_slot: Option<u32> = slot_bv
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok());
+                let concrete_slot: Option<u32> =
+                    slot_bv.as_u64().and_then(|n| u32::try_from(n).ok());
 
                 // Use type signature to properly model stack effects
                 if let Some(ctx_ref) = sig_ctx {
                     if let Some(sig) = ctx_ref.get_type_signature(*type_idx) {
                         // v1.0.4 Track B: try to resolve to a concrete callee.
-                        let resolved_func: Option<u32> = concrete_slot.and_then(|slot| {
-                            ctx_ref.resolve_indirect_call(*table_idx, slot, sig)
-                        });
+                        let resolved_func: Option<u32> = concrete_slot
+                            .and_then(|slot| ctx_ref.resolve_indirect_call(*table_idx, slot, sig));
 
                         if let Some(func_idx) = resolved_func {
                             // Pop arguments into a Vec we own, so we can
@@ -4304,26 +4303,20 @@ fn encode_function_to_smt_impl_inner(
                                     .iter()
                                     .map(|p| {
                                         Sort::bitvector(match p {
-                                            crate::ValueType::I32
-                                            | crate::ValueType::F32 => 32,
-                                            crate::ValueType::I64
-                                            | crate::ValueType::F64 => 64,
+                                            crate::ValueType::I32 | crate::ValueType::F32 => 32,
+                                            crate::ValueType::I64 | crate::ValueType::F64 => 64,
                                         })
                                     })
                                     .collect();
-                                let domain_refs: Vec<&Sort> =
-                                    domain_sorts_owned.iter().collect();
+                                let domain_refs: Vec<&Sort> = domain_sorts_owned.iter().collect();
                                 let range_sort = Sort::bitvector(result_width);
                                 // Use the same decl name PR-K3 uses for
                                 // direct Call — so a direct-call and the
                                 // resolved-indirect-call to the same
                                 // function reduce to the SAME Z3 expression.
                                 let decl_name = format!("pure_call_{}", func_idx);
-                                let decl = FuncDecl::new(
-                                    decl_name.as_str(),
-                                    &domain_refs,
-                                    &range_sort,
-                                );
+                                let decl =
+                                    FuncDecl::new(decl_name.as_str(), &domain_refs, &range_sort);
                                 let arg_refs: Vec<&dyn z3::ast::Ast> =
                                     args.iter().map(|a| a as &dyn z3::ast::Ast).collect();
                                 let result_dyn = decl.apply(&arg_refs);
