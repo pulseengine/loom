@@ -5,6 +5,52 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-05-22
+
+**Housekeeping + an ægraph commutativity bug fix.** A patch release
+clearing the v1.1.0 Track-3 carry-forward and fixing a real
+operand-ordering bug that blocked commutative identity folds.
+
+### Fixed
+
+- **ægraph commutativity normalization.** `EGraph::canonicalize_commutative`
+  ordered operands purely by union-find class id, so when a constant
+  operand happened to be inserted (and numbered) before its variable
+  sibling, `Add(0, x)` stayed constant-left and the `(wild, Const)`
+  identity rules could not match it. The sort key is now
+  `(is_constant, uf-root id)` — constants always move to the right,
+  matching every identity rule's LHS shape. The previously `#[ignore]`'d
+  `test_commutativity_zero_plus_x_folds` is now a passing positive
+  witness; `test_commutativity_idempotent` confirms the new order is
+  still a fixpoint.
+
+### Housekeeping (v1.1.0 Track D)
+
+- `Instruction` and `BlockType` now derive `Eq + Hash` (previously
+  `PartialEq` only). Lets downstream passes key hash sets/maps on
+  instructions structurally instead of via `Debug`-formatted strings.
+- `AdapterInfo` and its fields lifted from module-private to
+  `pub(crate)` for cross-module reuse.
+- `optimize_module` no longer discards `FusedOptimizationStats` or
+  silently swallows fused-optimization outcomes: it now logs a
+  one-line summary of what the fused passes did on success (positive
+  signal they ran) and keeps the non-fatal warning on failure.
+
+### Tests
+
+379 loom-core lib tests pass (was 378 + 1 ignored; the commutativity
+test is now un-ignored and green).
+
+### Deferred
+
+- **Track E** — real meld-fused multi-component fixture. `meld` v0.9.0
+  is now installed and working, but a fixture that exercises the
+  cross-memory adapter passes needs a memory-sharing component pair
+  that does not exist ready-made in either repo.
+- **Rocq CI** — `Rocq Formal Proofs` stays red pending upstream
+  `rules_rocq_rust` PR #34 (`rules_rust` toolchain migration, still
+  draft). When it merges, bump the `MODULE.bazel` pin.
+
 ## [1.1.0] - 2026-05-20
 
 **ægraph substrate goes production + first mechanized roundtrip

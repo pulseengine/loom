@@ -750,20 +750,38 @@ impl EGraph {
         total
     }
 
+    /// Sort key for one operand of a commutative e-node:
+    /// `(is_constant, union-find root id)`. A constant operand sorts
+    /// after a non-constant one (`false < true`), so ordering operands
+    /// by this key ascending pushes any constant to the right —
+    /// matching the `(wild, Const)` LHS shape of every identity rule.
+    fn operand_order_key(&mut self, id: EClassId) -> (bool, u32) {
+        let root = self.uf.find(id);
+        let is_const = matches!(
+            self.nodes[root.0 as usize].op,
+            Op::Const(_) | Op::Const64(_)
+        );
+        (is_const, root.0)
+    }
+
     /// Canonicalize the operand order of every commutative e-node
-    /// (per [`Op::is_commutative`]) so that the smaller union-find root
-    /// id comes first. After this pass:
+    /// (per [`Op::is_commutative`]) so that the operands are ordered by
+    /// the key `(is_constant, union-find root id)` ascending — i.e. a
+    /// constant operand always moves to the right (`children[1]`), and
+    /// ties are broken by the smaller union-find root id. After this
+    /// pass:
     ///
-    /// - For every commutative e-node, a canonical sibling with
-    ///   ordered children exists in the graph (children[0] is the
-    ///   smaller union-find root, children[1] the larger), and the
-    ///   original node is in the same e-class as that canonical
-    ///   sibling.
-    /// - Subsequent positional rule matching (e.g. `Add(?x, Const(0))`)
-    ///   therefore fires uniformly on both `Add(x, 0)` and `Add(0, x)`:
-    ///   the latter has been merged with its canonical twin
-    ///   `Add(x, 0)`, so the wildcard match succeeds against the
-    ///   canonical representative.
+    /// - For every commutative e-node, a canonical sibling with ordered
+    ///   children exists in the graph, and the original node is in the
+    ///   same e-class as that canonical sibling.
+    /// - The identity rules are all stated in the `(wild, Const)`
+    ///   operand order (e.g. `Add(?x, Const(0))`). Because
+    ///   canonicalization forces every constant operand to the right,
+    ///   subsequent positional rule matching fires uniformly on both
+    ///   `Add(x, 0)` and `Add(0, x)`: the latter is merged with its
+    ///   canonical twin `Add(x, 0)`, so the wildcard match succeeds
+    ///   against the canonical representative — regardless of which
+    ///   operand happened to be inserted (and thus numbered) first.
     ///
     /// Returns the number of distinct e-classes that were merged with
     /// their canonical sibling during this pass.
@@ -797,15 +815,22 @@ impl EGraph {
             if node.children.len() != 2 {
                 continue;
             }
-            let r0 = self.uf.find(node.children[0]);
-            let r1 = self.uf.find(node.children[1]);
-            // Already canonical: smaller root id on the left.
-            if r0 <= r1 {
+            let (c0, c1, op) = (node.children[0], node.children[1], node.op);
+            // Sort key per operand: `(is_constant, uf-root id)`. A
+            // constant sorts after a non-constant, so the canonical
+            // form always has any constant operand on the right —
+            // which is the operand order every identity rule's LHS is
+            // written in. Ties (both/neither constant) fall back to the
+            // smaller root id for a deterministic total order.
+            let k0 = self.operand_order_key(c0);
+            let k1 = self.operand_order_key(c1);
+            // Already canonical: left operand's key <= right operand's.
+            if k0 <= k1 {
                 continue;
             }
             // Schedule materialization of the swapped sibling outside
             // the immutable borrow.
-            let swapped = ENode::new(node.op, vec![node.children[1], node.children[0]]);
+            let swapped = ENode::new(op, vec![c1, c0]);
             pending.push((EClassId(idx as u32), swapped));
         }
         let mut total = 0usize;
@@ -1571,7 +1596,6 @@ mod tests {
     /// positive witness for v1.1.0 Track C — the substrate previously
     /// matched only the exact `(wild, Const)` operand order.
     #[test]
-    #[ignore = "v1.1.1 follow-up: commutativity normalization not invoked at insertion time"]
     fn test_commutativity_zero_plus_x_folds() {
         let mut g = EGraph::new();
         let zero = g.add(ENode::new(Op::Const(0), vec![])).unwrap();
