@@ -104,11 +104,11 @@ pub struct FusedOptimizationStats {
 /// with the same signature. Callers of the adapter can safely call the target
 /// directly, eliminating the trampoline overhead.
 #[derive(Debug, Clone)]
-struct AdapterInfo {
+pub(crate) struct AdapterInfo {
     /// Index of the adapter function (in module.functions, not accounting for imports)
-    func_index: usize,
+    pub(crate) func_index: usize,
     /// The target function index that the adapter forwards to (absolute index)
-    target_func_idx: u32,
+    pub(crate) target_func_idx: u32,
 }
 
 /// Run all fused module optimization passes.

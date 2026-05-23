@@ -229,7 +229,7 @@ pub enum ValueType {
 }
 
 /// Block type for control flow structures
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BlockType {
     /// No parameters, no results
     Empty,
@@ -245,7 +245,7 @@ pub enum BlockType {
 }
 
 /// WebAssembly instructions
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Instruction {
     /// i32.const
     I32Const(i32),
@@ -6813,9 +6813,37 @@ pub mod optimize {
 
         // Phase 0: Fused component optimizations (adapter devirtualization, type/import
         // dedup, dead function elimination). These are safe no-ops on non-fused modules.
-        if let Err(e) = super::fused_optimizer::optimize_fused_module(module) {
-            // Non-fatal: fused optimization is best-effort, but log so failures are visible
-            eprintln!("Warning: fused optimization failed (non-fatal): {e}");
+        // Best-effort and non-fatal, but the outcome is always reported — on success
+        // with a one-line summary of what the fused passes did (so there is positive
+        // signal they ran), on failure with a warning. Never silently swallowed.
+        match super::fused_optimizer::optimize_fused_module(module) {
+            Ok(stats) => {
+                let touched = stats.adapters_detected
+                    + stats.calls_devirtualized
+                    + stats.scalar_adapters_inlined
+                    + stats.function_bodies_deduplicated
+                    + stats.dead_functions_eliminated
+                    + stats.types_deduplicated
+                    + stats.imports_deduplicated
+                    + stats.memory_imports_deduplicated
+                    + stats.same_memory_adapters_collapsed
+                    + stats.trivial_calls_eliminated;
+                if touched > 0 {
+                    eprintln!(
+                        "fused optimization: {} adapters detected, {} calls devirtualized, \
+                         {} scalar adapters inlined, {} bodies deduped, {} dead functions removed",
+                        stats.adapters_detected,
+                        stats.calls_devirtualized,
+                        stats.scalar_adapters_inlined,
+                        stats.function_bodies_deduplicated,
+                        stats.dead_functions_eliminated,
+                    );
+                }
+            }
+            Err(e) => {
+                // Non-fatal: fused optimization is best-effort, but log so failures are visible.
+                eprintln!("Warning: fused optimization failed (non-fatal): {e}");
+            }
         }
 
         // Phase 1: Function inlining (unlocks cross-function optimization)
