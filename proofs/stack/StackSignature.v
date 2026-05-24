@@ -211,7 +211,7 @@ Proof.
     (* Result is mkSig ([] ++ rev (y::ys)) r (match Fixed, k ...) *)
     (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps *)
     replace (rev (y :: ys)) with (p0 :: ps)
-      by (rewrite <- Hrev; apply rev_involutive).
+      by (rewrite <- Hrev; symmetry; apply rev_involutive).
     simpl.
     destruct k; reflexivity.
 Qed.
