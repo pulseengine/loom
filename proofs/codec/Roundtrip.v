@@ -119,7 +119,10 @@ Proof.
   assert (Nat.ltb n 128 = true) as Hltb.
   { apply Nat.ltb_lt. exact Hlt. }
   rewrite Hltb.
-  replace (0 + n * 1) with n by lia.
+  (* Rocq 9.0's [simpl] is more aggressive than v1.1.0's pin: it
+     reduces [0 + n * 1] to [n * 1] here, so the old [replace (0 + n * 1)]
+     pattern no longer matches. Match the post-simpl shape directly. *)
+  replace (n * 1) with n by lia.
   reflexivity.
 Qed.
 
