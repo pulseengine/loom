@@ -209,9 +209,14 @@ Proof.
     rewrite Hrev. simpl.
     (* Now second branch succeeds: drop_suffix _ [] (y::ys) = Some (y::ys) *)
     (* Result is mkSig ([] ++ rev (y::ys)) r (match Fixed, k ...) *)
-    (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps *)
-    replace (rev (y :: ys)) with (p0 :: ps)
-      by (rewrite <- Hrev; symmetry; apply rev_involutive).
+    (* Rocq 9.0's [simpl] above unfolds [rev (y :: ys)] definitionally to
+       [rev ys ++ [y]], so we have to match the post-[simpl] shape rather
+       than the pre-[simpl] one the v1.1.0-era pin produced. The proof
+       obligation is still the same equality, just routed via a [change]
+       through the definitional unfolding of [rev]. *)
+    replace (rev ys ++ [y]) with (p0 :: ps)
+      by (change (rev ys ++ [y]) with (rev (y :: ys));
+          rewrite <- Hrev; symmetry; apply rev_involutive).
     simpl.
     destruct k; reflexivity.
 Qed.
