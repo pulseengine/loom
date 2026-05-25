@@ -20,8 +20,8 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import List.
 From Stdlib Require Import ZArith.
 From Stdlib Require Import Lia.
-From proofs Require Import WasmSemantics.
-From proofs Require Import TermSemantics.
+From proofs.semantics Require Import WasmSemantics.
+From proofs.semantics Require Import TermSemantics.
 Import ListNotations.
 
 Open Scope Z_scope.
