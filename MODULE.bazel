@@ -15,11 +15,17 @@ module(
 # Requires nix to be installed: sh <(curl -L https://nixos.org/nix/install)
 bazel_dep(name = "rules_rocq_rust", version = "0.1.0")
 
-# Override to fetch from GitHub (not yet in BCR)
+# Override to fetch from GitHub (not yet in BCR).
+# Pinned at/after rules_rocq_rust PR #25, which makes the rocq-of-rust
+# toolchain download a hermetic Rust nightly sysroot and prepend
+# <sysroot>/lib to LIBRARY_PATH so the rustc_private link step finds
+# libLLVM-*-rust-*. The previous pin (307b65f, Feb 2) predated that fix,
+# so the "Rocq Formal Proofs" CI job failed with:
+#   rust-lld: error: unable to find library -lLLVM-19-rust-1.85.0-nightly
 git_override(
     module_name = "rules_rocq_rust",
     remote = "https://github.com/pulseengine/rules_rocq_rust.git",
-    commit = "307b65f",
+    commit = "424e6a6a5f87746ae178114661d6924bdaf805a3",
 )
 
 # Rocq toolchain extension (creates internal nixpkgs for bzlmod compatibility)
