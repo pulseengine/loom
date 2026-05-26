@@ -234,8 +234,12 @@ Proof.
   - (* results = r0 :: rs *)
     (* drop_suffix _ [] (rev (r0::rs)) = Some (rev (r0::rs)) *)
     simpl.
-    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = [] *)
-    rewrite Nat.sub_0_r.
+    (* Rocq 9.0's [simpl] is more aggressive than the v1.1.0-era pin:
+       it already reduces [length (r0 :: rs) - 0] to its [length]
+       form definitionally, so [rewrite Nat.sub_0_r] finds no subterm
+       to match. [try rewrite] keeps the proof robust against both
+       behaviours. *)
+    try rewrite Nat.sub_0_r.
     rewrite app_nil_r.
     rewrite rev_involutive.
     rewrite app_nil_r.
