@@ -240,9 +240,9 @@ Proof.
        to match. [try rewrite] keeps the proof robust against both
        behaviours. *)
     try rewrite Nat.sub_0_r.
-    rewrite app_nil_r.
-    rewrite rev_involutive.
-    rewrite app_nil_r.
+    try rewrite app_nil_r.
+    try rewrite rev_involutive.
+    try rewrite app_nil_r.
     destruct k; reflexivity.
 Qed.
 
