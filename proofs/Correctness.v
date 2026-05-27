@@ -15,12 +15,12 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import List.
 From Stdlib Require Import ZArith.
 From Stdlib Require Import Lia.
-From proofs.semantics Require Import WasmSemantics.
-From proofs.semantics Require Import TermSemantics.
-From proofs.simplify Require Import ConstantFolding.
-From proofs.simplify Require Import Identity.
-From proofs.simplify Require Import Bitwise.
-From proofs.simplify Require Import StrengthReduction.
+From proofs Require Import semantics.WasmSemantics.
+From proofs Require Import semantics.TermSemantics.
+From proofs Require Import simplify.ConstantFolding.
+From proofs Require Import simplify.Identity.
+From proofs Require Import simplify.Bitwise.
+From proofs Require Import simplify.StrengthReduction.
 Import ListNotations.
 
 Open Scope Z_scope.
