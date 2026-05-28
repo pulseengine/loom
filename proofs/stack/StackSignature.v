@@ -241,8 +241,15 @@ Proof.
        behaviours. *)
     try rewrite Nat.sub_0_r.
     try rewrite app_nil_r.
-    try rewrite rev_involutive.
-    try rewrite app_nil_r.
+    (* Rocq 9.0's [simpl] unfolds the inner [rev (r0 :: rs)] to
+       [rev rs ++ [r0]], leaving the results field as
+       [rev (rev rs ++ [r0])] — a shape [rewrite rev_involutive] cannot
+       match (its pattern is [rev (rev ?M)]). But [rev rs ++ [r0]] is
+       definitionally [rev (r0 :: rs)], so route through [change] and
+       close with involutivity. *)
+    replace (rev (rev rs ++ [r0])) with (r0 :: rs)
+      by (change (rev rs ++ [r0]) with (rev (r0 :: rs));
+          symmetry; apply rev_involutive).
     destruct k; reflexivity.
 Qed.
 
