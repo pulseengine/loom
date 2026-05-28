@@ -4,32 +4,38 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 # Core Semantic Model
 # =============================================================================
 
-# WebAssembly and Term semantics (combined for module resolution)
+# WebAssembly semantics — base layer, no intra-proof dependencies.
 rocq_library(
-    name = "semantics",
-    srcs = [
-        "semantics/WasmSemantics.v",
-        "semantics/TermSemantics.v",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-# Aliases for backwards compatibility
-alias(
     name = "wasm_semantics",
-    actual = ":semantics",
+    srcs = ["semantics/WasmSemantics.v"],
     visibility = ["//visibility:public"],
 )
 
-alias(
+# Term (ISLE) semantics — depends on WasmSemantics.
+#
+# Kept as a SEPARATE rocq_library (rather than a second src in the
+# WasmSemantics library) because the rules_rocq_rust rocq_library rule
+# (pulseengine/rules_rocq_rust@e4660cc1b) only wires a compiled .vo as a
+# coqc input to a *dependent* library through `deps`. Sibling sources
+# inside a single multi-file library do NOT see each other's .vo, so
+# TermSemantics could never `Require Import WasmSemantics` when both
+# lived in one `:semantics` target. Splitting routes the dependency
+# through `deps`, which propagates the include path and the .vo input.
+rocq_library(
     name = "term_semantics",
-    actual = ":semantics",
+    srcs = ["semantics/TermSemantics.v"],
+    deps = [":wasm_semantics"],
     visibility = ["//visibility:public"],
 )
 
 rocq_proof_test(
-    name = "semantics_test",
-    deps = [":semantics"],
+    name = "wasm_semantics_test",
+    deps = [":wasm_semantics"],
+)
+
+rocq_proof_test(
+    name = "term_semantics_test",
+    deps = [":term_semantics"],
 )
 
 # =============================================================================
