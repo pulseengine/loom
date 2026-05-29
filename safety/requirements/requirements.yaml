@@ -304,3 +304,55 @@ artifacts:
     fields:
       priority: should
       category: functional
+
+  # ============================================================================
+  # External-analyzer (scry) invariant consumption — issue #144
+  # ============================================================================
+  - id: REQ-19
+    type: requirement
+    title: Validate external invariant input before trusting it
+    status: approved
+    description: >
+      Any scry invariant document consumed via --consume-invariants MUST be
+      validated against the scry-invariants-v1 JSON schema, and its schema
+      URI and module-sha256 checked against the module under optimization,
+      before any invariant-gated transform fires. A document that fails
+      schema validation, carries the wrong schema id, or whose module-sha256
+      does not match is rejected and no invariant-gated transform runs.
+      Acting on an unvalidated invariant could make a transform unsound.
+    fields:
+      priority: must
+      category: functional
+
+  - id: REQ-20
+    type: requirement
+    title: Invariant-gated transforms remain behind Z3 translation validation
+    status: approved
+    description: >
+      Every transform that acts on a scry invariant (constant folding,
+      bounds-check elision, devirtualization) MUST still pass the existing
+      per-function Z3 translation-validation gate. scry's soundness analysis
+      and loom's translation validation are independent gates: even a wrong
+      invariant cannot produce a miscompile, because the equivalence check
+      rejects the transformed function.
+    fields:
+      priority: must
+      category: non-functional
+
+  - id: REQ-21
+    type: requirement
+    title: Only sound invariants strengthen a transform
+    status: approved
+    description: >
+      A scry invariant may strengthen a transform only when its soundness is
+      established: call-edge devirtualization requires soundness == sound
+      with a singleton resolved-targets set; interval and region transforms
+      require the document to have passed schema + module-sha256 validation
+      (REQ-19). unsound-fallback edges and unknown abstract values never
+      trigger a transform.
+    fields:
+      priority: must
+      category: functional
+    links:
+      - type: depends-on
+        target: REQ-19

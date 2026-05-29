@@ -261,3 +261,32 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-9
+
+  - id: FEAT-18
+    type: feature
+    title: scry invariant consumption (scry-invariants/v1)
+    status: proposed
+    description: >
+      Ingest scry's versioned analyzer contract (scry-invariants/v1 JSON)
+      via a `--consume-invariants <file>` flag on the optimize entry point.
+      The document is validated against the published JSON schema and its
+      schema-id / module-sha256 checked before any transform trusts it.
+      Sound per-(func-index, pc) invariants then strengthen three
+      transforms: singleton-interval local.get constant folding, in-region
+      load bounds-check elision, and singleton sound call-edge
+      devirtualization. Every invariant-gated transform stays behind the
+      Z3 translation-validation backstop (FEAT-2), so a wrong invariant is
+      caught as a rejected transform rather than a miscompile. Implements
+      issue #144 (scry FEAT-008 / REQ-004, the analyzer->optimizer half of
+      the scry<->loom loop).
+    fields:
+      phase: phase-2
+    links:
+      - type: satisfies
+        target: REQ-19
+      - type: satisfies
+        target: REQ-20
+      - type: satisfies
+        target: REQ-21
+      - type: depends-on
+        target: FEAT-2

@@ -422,3 +422,37 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-18
+
+  - id: DD-18
+    type: design-decision
+    title: Consume scry invariants as a validated external contract, gated by Z3
+    status: approved
+    description: >
+      Consume scry's analyzer output through the published, versioned
+      scry-invariants/v1 JSON schema rather than coupling to scry's WIT
+      bindings, mirroring the scry<->meld contract pattern (scry DD-002 /
+      meld#192). The producing repo publishes and validates the schema;
+      loom validates every document against it before any transform trusts
+      it (issue #144).
+    fields:
+      rationale: >
+        Validation-before-trust keeps a malformed or wrong-module invariant
+        from ever reaching a transform (REQ-19). Defense-in-depth: scry's
+        soundness analysis and loom's Z3 translation validation are
+        independent gates, so an invariant-gated transform is sound even if
+        a scry invariant were wrong — the per-function equivalence check
+        rejects the transformed function (REQ-20). Decoupling via the JSON
+        schema lets scry and loom version independently.
+      alternatives: >
+        Alternative 1: link scry's WIT bindings directly (rejected: tight
+        coupling, no stable contract boundary). Alternative 2: trust
+        invariants without the Z3 backstop (rejected: removes the
+        independent gate, so a single analyzer bug would become a
+        miscompile).
+    links:
+      - type: satisfies
+        target: REQ-19
+      - type: satisfies
+        target: REQ-20
+      - type: satisfies
+        target: REQ-21

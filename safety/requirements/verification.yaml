@@ -394,3 +394,36 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-18
+
+  # ============================================================================
+  # REQ-19/20/21 scry invariant consumption (#144)
+  # status: draft until the loom-core scry-invariant module + tests land
+  # (feature-loop step 4); flip to `passing` when green.
+  # ============================================================================
+  - id: TEST-SCRY-INVARIANTS
+    type: feature
+    title: scry invariant consumption tests (#144)
+    description: >
+      Verifies the scry-invariant ingestion path: (1) a well-formed
+      scry-invariants/v1 document validates and is indexed by
+      (func-index, pc); (2) a document failing schema validation, carrying
+      the wrong schema id, or with a mismatched module-sha256 is rejected
+      and no transform fires; (3) singleton-interval local.get folding,
+      in-region bounds-check elision, and singleton sound call-edge
+      devirtualization each fire only on a sound invariant; (4) each
+      invariant-gated transform still passes the Z3 translation-validation
+      backstop.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- scry_invariants::
+    status: draft
+    tags: [v120, scry, invariants]
+    links:
+      - type: satisfies
+        target: REQ-19
+      - type: satisfies
+        target: REQ-20
+      - type: satisfies
+        target: REQ-21
