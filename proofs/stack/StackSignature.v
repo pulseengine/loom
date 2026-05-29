@@ -250,6 +250,9 @@ Proof.
     replace (rev (rev rs ++ [r0])) with (r0 :: rs)
       by (change (rev rs ++ [r0]) with (rev (r0 :: rs));
           symmetry; apply rev_involutive).
+    (* The results field is [(r0 :: rs) ++ results empty_sig] = [_ ++ []];
+       clear the residual append left after the rev reduction. *)
+    try rewrite app_nil_r.
     destruct k; reflexivity.
 Qed.
 
