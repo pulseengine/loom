@@ -5,26 +5,35 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 # =============================================================================
 
 # WebAssembly semantics — base layer, no intra-proof dependencies.
+#
+# The whole inter-dependent proof group (semantics + simplify +
+# correctness) shares the logical prefix `LoomProofs` via include_path,
+# and the .v files import each other as `From LoomProofs Require Import
+# <Module>`. This is the idiom the pulseengine/meld proofs use
+# (proofs/spec/BUILD.bazel: include_path = "MeldSpec" on every library,
+# `From MeldSpec Require Import ...`). It is required because the
+# rules_rocq_rust rocq_library rule (@e4660cc1b) maps a library's .vo
+# under `-Q <output_dir> <include_path>`; a shared explicit include_path
+# gives every library a STABLE logical prefix independent of Bazel's
+# per-target output-dir layout, so a dependent's `From LoomProofs
+# Require Import WasmSemantics` resolves against the dep's .vo wired in
+# through `deps`. The package-derived default prefix did not, because
+# the .v files live in subdirectories of the BUILD package.
 rocq_library(
     name = "wasm_semantics",
     srcs = ["semantics/WasmSemantics.v"],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
-# Term (ISLE) semantics — depends on WasmSemantics.
-#
-# Kept as a SEPARATE rocq_library (rather than a second src in the
-# WasmSemantics library) because the rules_rocq_rust rocq_library rule
-# (pulseengine/rules_rocq_rust@e4660cc1b) only wires a compiled .vo as a
-# coqc input to a *dependent* library through `deps`. Sibling sources
-# inside a single multi-file library do NOT see each other's .vo, so
-# TermSemantics could never `Require Import WasmSemantics` when both
-# lived in one `:semantics` target. Splitting routes the dependency
-# through `deps`, which propagates the include path and the .vo input.
+# Term (ISLE) semantics — depends on WasmSemantics. One library per .v
+# file; the cross-file dependency is wired through `deps` (which makes
+# the dep's .vo a coqc input and adds its -Q loadpath).
 rocq_library(
     name = "term_semantics",
     srcs = ["semantics/TermSemantics.v"],
     deps = [":wasm_semantics"],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -50,6 +59,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -66,6 +76,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -82,6 +93,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -98,6 +110,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -117,6 +130,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -140,6 +154,7 @@ rocq_library(
         ":bitwise",
         ":strength_reduction",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
