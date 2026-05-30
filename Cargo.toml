@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.2"
+version = "1.1.3"
 authors = ["PulseEngine <https://github.com/pulseengine>"]
 edition = "2024"
 license = "Apache-2.0"

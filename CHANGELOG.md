@@ -5,6 +5,34 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-05-30
+
+**Bug-fix release: the gale-ffi i64 inline hang (#147).** Closes the
+`loom optimize --passes inline` hang on i64-heavy modules that the
+v1.1.2 #145 fix exposed.
+
+### Fixed
+
+- **#147: `inline_functions` livelock on i64 modules.** On v1.1.2,
+  `loom optimize --passes inline` hung indefinitely on a small i64
+  module (gale-ffi `z_impl_k_sem_give` u64-unpack + caller) — 0 panics,
+  no completion. The cause was **not** a slow Z3 solve (verify returns
+  in microseconds): the inline pass loops "until no candidate remains",
+  but a candidate whose inline the verifier reverts (an i64 function
+  whose inline-equivalence can't be proven) stays a candidate every
+  iteration — its call site is restored on revert — so the pass
+  live-locked (inline → revert → inline → …). It surfaced only because
+  v1.1.2's #145 fix removed the `SortDiffers` panic that previously
+  aborted the pass. Fix: the fixpoint now terminates when an iteration
+  **keeps no inline** (made no net progress), with a 64-iteration hard
+  cap as a backstop. Legitimate inlining is unchanged. The earlier
+  "i64 Z3 is slow" diagnosis was wrong — it was this livelock; with it
+  fixed, four of the five previously-`#[ignore]`'d i64 inline tests run
+  again (in milliseconds). The one remaining `#[ignore]`
+  (`test_inline_pass_actually_inlines_i64_helper`) asserts the i64
+  helper is *inlined*, which the verifier soundly reverts as unprovable
+  — real verified i64 inlining stays a #147 follow-up.
+
 ## [1.1.2] - 2026-05-30
 
 **Bug-fix release: the gale-ffi i64 `SortDiffers` crash (#145).** Closes
