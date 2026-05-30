@@ -18261,6 +18261,61 @@ mod tests {
         wasmparser::validate(&wasm_bytes).expect("output validates");
     }
 
+    #[test]
+    fn test_inline_i64_loop_kinduction_no_panic() {
+        // loom#145 regression: the prior i64 inline tests are loopless, so
+        // they never exercise the k-induction verifier path
+        // (verify_loops_kinduction / encode_loop_body_for_kinduction),
+        // which hardcoded BV32 for defaults+globals and did UNMATCHED
+        // binops. An i64 loop body therefore tripped Z3's
+        // `SortDiffers { BitVec 64 vs 32 }` panic deep in the bindings,
+        // reverting every function on i64-heavy modules (gale-ffi /
+        // compiler_builtins). This locks in: an i64 helper with a LOOP,
+        // inlined into a caller, completes without panicking and yields
+        // valid wasm.
+        let wat = r#"(module
+            (func $sum_to (param i64) (result i64)
+                (local i64 i64)
+                i64.const 0
+                local.set 1
+                i64.const 0
+                local.set 2
+                block
+                    loop
+                        local.get 2
+                        local.get 0
+                        i64.ge_u
+                        br_if 1
+                        local.get 1
+                        local.get 2
+                        i64.add
+                        local.set 1
+                        local.get 2
+                        i64.const 1
+                        i64.add
+                        local.set 2
+                        br 0
+                    end
+                end
+                local.get 1
+            )
+            (func $caller (export "test") (param i64) (result i64)
+                local.get 0
+                call $sum_to
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        // The whole point: no panic, regardless of whether the loop
+        // function inlines or conservatively reverts. (Conservative
+        // revert is sound; the regression is the panic + 21 MB stderr.)
+        optimize::inline_functions(&mut module).expect("must not panic on i64 loop");
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
     // PR-C (v1.0.2): directize tests. The pass folds
     // `i32.const N; call_indirect (type T) table 0` into `call F` when
     // - the module has no Unknown instructions (i.e., no table mutation),

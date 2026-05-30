@@ -938,11 +938,20 @@ fn local_type_at(func: &Function, idx: usize) -> Option<crate::ValueType> {
 /// downstream comparisons could see, so a false-equivalent verdict is
 /// avoided.
 ///
-/// Currently unused at call sites — the loom#98 fix is at the root cause
-/// (local-extension width bug). Kept available for a follow-up that wires
-/// it into binop encoding as defense-in-depth.
+/// ## Soundness boundary (loom#145)
+///
+/// This is wired into **binop operand** sites (`bvadd`, `bvand`,
+/// `bvult`, …) in the symbolic executors. That is sound: a valid wasm
+/// binop's two operands are the same width by validation, so any
+/// mismatch the executor sees is purely a model artifact (e.g. a
+/// hardcoded-`BV32` global default meeting a real i64 value), and
+/// zero-extending to repair it preserves the modeled value while
+/// preventing the deep-in-z3 `SortDiffers` panic. It is **NOT** applied
+/// at the top-level / k-induction equivalence check (`orig.eq(opt)`):
+/// forcing widths there could make a genuinely inequivalent transform
+/// look equal and approve a miscompile, so that site instead bails to
+/// "cannot prove" (conservative revert) on any width mismatch.
 #[cfg(feature = "verification")]
-#[allow(dead_code)]
 fn match_bv_widths(lhs: BV, rhs: BV) -> (BV, BV) {
     let lw = lhs.get_size();
     let rw = rhs.get_size();
@@ -956,6 +965,63 @@ fn match_bv_widths(lhs: BV, rhs: BV) -> (BV, BV) {
             let extended = rhs.zero_ext(lw - rw);
             (lhs, extended)
         }
+    }
+}
+
+/// Install a process-wide panic hook (once) that swallows panics
+/// originating inside the z3 Rust bindings, forwarding all other panics
+/// to the previously-installed hook.
+///
+/// Why (loom#145): the per-function translation validator wraps each Z3
+/// call in `catch_unwind` and reverts the function on any Z3-internal
+/// panic (e.g. a `SortDiffers` BitVec-64-vs-32 width mismatch, or an
+/// `unwrap()`-on-`None` deep in the bindings). `catch_unwind` recovers
+/// the thread and the revert is correct/conservative — but it does NOT
+/// suppress the default panic hook, which still prints a
+/// `thread '...' panicked at z3/src/ast/...` block for every caught
+/// panic. On an i64-heavy module that reverts thousands of functions
+/// this produced 21 MB+ of stderr. Filtering only z3-origin panics keeps
+/// that noise out while leaving every real (non-z3) panic fully visible.
+///
+/// Suppressing the *print* is sound: these panics are always caught by
+/// the verifier's `catch_unwind` and converted to a clean revert, so the
+/// information content is preserved in the aggregated revert count
+/// (`crate::stats::record_revert`). Installed via `Once` (rather than a
+/// save/restore swap around each call) so it is race-free under the
+/// islands feature's parallel verification.
+#[cfg(feature = "verification")]
+fn install_z3_panic_filter() {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let from_z3 = info
+                .location()
+                .map(|l| l.file().contains("z3"))
+                .unwrap_or(false);
+            if from_z3 {
+                // Caught-and-reverted by the verifier; do not print.
+                return;
+            }
+            prev(info);
+        }));
+    });
+}
+
+/// Per-function revert/counterexample logging, gated behind the
+/// `LOOM_VERBOSE_REVERTS` env var (loom#145).
+///
+/// Default (unset): silent. Every revert is still counted via
+/// `crate::stats::record_revert`, so the `--stats` output shows the
+/// aggregate (e.g. `inline: 824 reverts`) — one summary instead of one
+/// `reverting function: ...` line per reverted function, which on an
+/// i64-heavy module was thousands of lines. Set `LOOM_VERBOSE_REVERTS=1`
+/// to restore the per-function detail for debugging.
+#[cfg(feature = "verification")]
+fn revert_note(args: std::fmt::Arguments) {
+    if std::env::var_os("LOOM_VERBOSE_REVERTS").is_some() {
+        eprintln!("{args}");
     }
 }
 
@@ -1254,9 +1320,27 @@ fn verify_loops_kinduction(
             // This is the inductive step: if equal before, must be equal after
             let mut all_equal = Bool::from_bool(true);
 
-            // Compare locals
+            // Compare locals.
+            //
+            // loom#145 soundness boundary: this is the EQUIVALENCE check
+            // (original loop-state vs optimized), not a binop. We must
+            // NOT width-match here — zero-extending one side to force a
+            // comparison could make a genuinely inequivalent transform
+            // look equal and approve a miscompile. If the two sides carry
+            // different BV widths (a model artifact that should not occur
+            // now that binops are width-matched, but we never want it to
+            // silently panic deep in z3), bail to "cannot prove" so the
+            // caller reverts conservatively.
             let min_locals = inductive_locals_orig.len().min(inductive_locals_opt.len());
             for i in 0..min_locals {
+                if inductive_locals_orig[i].get_size() != inductive_locals_opt[i].get_size() {
+                    return Err(anyhow!(
+                        "k-induction: local {} width mismatch (orig {} vs opt {}) — cannot prove equivalence",
+                        i,
+                        inductive_locals_orig[i].get_size(),
+                        inductive_locals_opt[i].get_size()
+                    ));
+                }
                 let eq = inductive_locals_orig[i].eq(&inductive_locals_opt[i]);
                 all_equal = Bool::and(&[&all_equal, &eq]);
             }
@@ -1265,6 +1349,14 @@ fn verify_loops_kinduction(
             if !orig_stack.is_empty() && !opt_stack.is_empty() {
                 let min_stack = orig_stack.len().min(opt_stack.len());
                 for i in 0..min_stack {
+                    if orig_stack[i].get_size() != opt_stack[i].get_size() {
+                        return Err(anyhow!(
+                            "k-induction: stack slot {} width mismatch (orig {} vs opt {}) — cannot prove equivalence",
+                            i,
+                            orig_stack[i].get_size(),
+                            opt_stack[i].get_size()
+                        ));
+                    }
                     let eq = orig_stack[i].eq(&opt_stack[i]);
                     all_equal = Bool::and(&[&all_equal, &eq]);
                 }
@@ -1368,46 +1460,55 @@ fn encode_loop_body_for_kinduction(
             Instruction::I32Add if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvadd(&b));
             }
             Instruction::I32Sub if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvsub(&b));
             }
             Instruction::I32Mul if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvmul(&b));
             }
             Instruction::I32And if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvand(&b));
             }
             Instruction::I32Or if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvor(&b));
             }
             Instruction::I32Xor if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvxor(&b));
             }
             Instruction::I32Shl if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvshl(&b));
             }
             Instruction::I32ShrU if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvlshr(&b));
             }
             Instruction::I32ShrS if stack.len() >= 2 => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvashr(&b));
             }
 
@@ -1425,6 +1526,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.eq(&b).ite(&one, &zero));
             }
             Instruction::I32Ne if stack.len() >= 2 => {
@@ -1432,6 +1534,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.eq(&b).not().ite(&one, &zero));
             }
             Instruction::I32LtS if stack.len() >= 2 => {
@@ -1439,6 +1542,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvslt(&b).ite(&one, &zero));
             }
             Instruction::I32LtU if stack.len() >= 2 => {
@@ -1446,6 +1550,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvult(&b).ite(&one, &zero));
             }
             Instruction::I32GtS if stack.len() >= 2 => {
@@ -1453,6 +1558,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvsgt(&b).ite(&one, &zero));
             }
             Instruction::I32GtU if stack.len() >= 2 => {
@@ -1460,6 +1566,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvugt(&b).ite(&one, &zero));
             }
             Instruction::I32LeS if stack.len() >= 2 => {
@@ -1467,6 +1574,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvsle(&b).ite(&one, &zero));
             }
             Instruction::I32LeU if stack.len() >= 2 => {
@@ -1474,6 +1582,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvule(&b).ite(&one, &zero));
             }
             Instruction::I32GeS if stack.len() >= 2 => {
@@ -1481,6 +1590,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvsge(&b).ite(&one, &zero));
             }
             Instruction::I32GeU if stack.len() >= 2 => {
@@ -1488,6 +1598,7 @@ fn encode_loop_body_for_kinduction(
                 let a = stack.pop().unwrap();
                 let zero = BV::from_i64(0, 32);
                 let one = BV::from_i64(1, 32);
+                let (a, b) = match_bv_widths(a, b);
                 stack.push(a.bvuge(&b).ite(&one, &zero));
             }
 
@@ -1715,6 +1826,13 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
             // Handle void functions (both should be None) vs returning functions
             match (orig_formula, opt_formula) {
                 (Some(orig), Some(opt)) => {
+                    // loom#145: equivalence check — never width-match (would
+                    // risk approving a non-equivalent transform); a width
+                    // mismatch is unprovable, so revert conservatively.
+                    if orig.get_size() != opt.get_size() {
+                        solver.pop(1);
+                        return Ok(false);
+                    }
                     solver.assert(orig.eq(&opt).not());
                 }
                 (None, None) => {
@@ -1738,8 +1856,8 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
                 SatResult::Sat => {
                     // Found counterexample - not equivalent!
                     let model = solver.get_model().context("Failed to get counterexample")?;
-                    eprintln!("Counterexample found:");
-                    eprintln!("{}", model);
+                    revert_note(format_args!("Counterexample found:"));
+                    revert_note(format_args!("{}", model));
                     return Ok(false);
                 }
                 SatResult::Unknown => {
@@ -1857,6 +1975,14 @@ pub fn verify_function_equivalence(
         // Compute result while BVs are still valid
         match (&orig_result, &opt_result) {
             (Ok(Some(orig)), Ok(Some(opt))) => {
+                // loom#145 soundness boundary: the final output equality is
+                // the EQUIVALENCE check, not a binop. Never width-match here
+                // (forcing widths could approve a non-equivalent transform).
+                // A width mismatch is a model artifact we cannot soundly
+                // resolve — bail to "not proven" so the caller reverts.
+                if orig.get_size() != opt.get_size() {
+                    return Ok(false);
+                }
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
@@ -1864,8 +1990,11 @@ pub fn verify_function_equivalence(
                     SatResult::Unsat => Ok(true), // No counterexample = equivalent
                     SatResult::Sat => {
                         if let Some(model) = solver.get_model() {
-                            eprintln!("{}: Verification failed! Found counterexample:", pass_name);
-                            eprintln!("{}", model);
+                            revert_note(format_args!(
+                                "{}: Verification failed! Found counterexample:",
+                                pass_name
+                            ));
+                            revert_note(format_args!("{}", model));
                         }
                         Ok(false)
                     }
@@ -1979,6 +2108,14 @@ pub fn verify_function_equivalence_with_result(
 
         match (&orig_result, &opt_result) {
             (Ok(Some(orig)), Ok(Some(opt))) => {
+                // loom#145: equivalence check — never width-match; a width
+                // mismatch is unprovable, so report it as an error (the
+                // caller reverts) rather than panic in z3 or force-match.
+                if orig.get_size() != opt.get_size() {
+                    return VerificationResult::Error(
+                        "result width mismatch — cannot prove equivalence".to_string(),
+                    );
+                }
                 solver.assert(orig.eq(opt).not());
 
                 match solver.check() {
@@ -2178,6 +2315,14 @@ pub fn verify_function_equivalence_with_context(
         // Compute result while BVs are still valid
         match (&orig_result, &opt_result) {
             (Ok(Some(orig)), Ok(Some(opt))) => {
+                // loom#145 soundness boundary: the final output equality is
+                // the EQUIVALENCE check, not a binop. Never width-match here
+                // (forcing widths could approve a non-equivalent transform).
+                // A width mismatch is a model artifact we cannot soundly
+                // resolve — bail to "not proven" so the caller reverts.
+                if orig.get_size() != opt.get_size() {
+                    return Ok(false);
+                }
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
@@ -2185,8 +2330,11 @@ pub fn verify_function_equivalence_with_context(
                     SatResult::Unsat => Ok(true), // No counterexample = equivalent
                     SatResult::Sat => {
                         if let Some(model) = solver.get_model() {
-                            eprintln!("{}: Verification failed! Found counterexample:", pass_name);
-                            eprintln!("{}", model);
+                            revert_note(format_args!(
+                                "{}: Verification failed! Found counterexample:",
+                                pass_name
+                            ));
+                            revert_note(format_args!("{}", model));
                         }
                         Ok(false)
                     }
@@ -2404,6 +2552,10 @@ impl TranslationValidator {
     ///
     /// Returns Ok(()) if verified equivalent, Err if different or verification fails
     pub fn verify(&self, optimized: &Function) -> Result<()> {
+        // loom#145: keep z3-internal panic backtraces (always caught +
+        // reverted below) out of stderr. Idempotent, race-free (Once).
+        install_z3_panic_filter();
+
         // PR-K3.2 (Track B): size-threshold fallback. The per-function
         // Z3 translation validator scales poorly on large bodies — the
         // calculator_root meld-fused 2.3 MB core hangs >60 minutes
@@ -2448,10 +2600,10 @@ impl TranslationValidator {
             Ok(Ok(false)) => {
                 // Z3 found a counterexample - the optimization is NOT proven correct.
                 // Per our proof-first philosophy, we MUST reject unproven optimizations.
-                eprintln!(
+                revert_note(format_args!(
                     "{}: Verification failed! Found counterexample:",
                     self.pass_name
-                );
+                ));
                 Err(anyhow!(
                     "{}: Z3 found counterexample - optimization rejected (unproven)",
                     self.pass_name
@@ -2495,7 +2647,10 @@ impl TranslationValidator {
         match self.verify(func) {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("{}: reverting function: {}", self.pass_name, e);
+                revert_note(format_args!(
+                    "{}: reverting function: {}",
+                    self.pass_name, e
+                ));
                 crate::stats::record_revert(&self.pass_name);
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
@@ -2521,20 +2676,20 @@ impl TranslationValidator {
         match result {
             VerificationResult::Verified => true,
             VerificationResult::Failed(reason) => {
-                eprintln!(
+                revert_note(format_args!(
                     "{}: reverting function (counterexample): {}",
                     self.pass_name, reason
-                );
+                ));
                 crate::stats::record_revert(&self.pass_name);
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
                 false
             }
             VerificationResult::Error(reason) => {
-                eprintln!(
+                revert_note(format_args!(
                     "{}: reverting function (verification error): {}",
                     self.pass_name, reason
-                );
+                ));
                 crate::stats::record_revert(&self.pass_name);
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
@@ -2542,10 +2697,10 @@ impl TranslationValidator {
             }
             r if r.is_skip() => {
                 let reason = r.skip_reason().unwrap_or("unknown");
-                eprintln!(
+                revert_note(format_args!(
                     "{}: reverting function (strict mode rejects skip: {})",
                     self.pass_name, reason
-                );
+                ));
                 crate::stats::record_revert(&format!("{}:strict-skip", self.pass_name));
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
@@ -2878,6 +3033,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvadd(&rhs));
             }
             Instruction::I32Sub => {
@@ -2886,6 +3042,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsub(&rhs));
             }
             Instruction::I32Mul => {
@@ -2894,6 +3051,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvmul(&rhs));
             }
 
@@ -2904,6 +3062,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvadd(&rhs));
             }
             Instruction::I64Sub => {
@@ -2912,6 +3071,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsub(&rhs));
             }
             Instruction::I64Mul => {
@@ -2920,6 +3080,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvmul(&rhs));
             }
 
@@ -2930,6 +3091,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvand(&rhs));
             }
             Instruction::I32Or => {
@@ -2938,6 +3100,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvor(&rhs));
             }
             Instruction::I32Xor => {
@@ -2946,6 +3109,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvxor(&rhs));
             }
             Instruction::I32Shl => {
@@ -2954,6 +3118,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvshl(&rhs));
             }
             Instruction::I32ShrU => {
@@ -2962,6 +3127,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvlshr(&rhs));
             }
             Instruction::I32ShrS => {
@@ -2970,6 +3136,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvashr(&rhs));
             }
 
@@ -2980,6 +3147,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvand(&rhs));
             }
             Instruction::I64Or => {
@@ -2988,6 +3156,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvor(&rhs));
             }
             Instruction::I64Xor => {
@@ -2996,6 +3165,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvxor(&rhs));
             }
             Instruction::I64Shl => {
@@ -3004,6 +3174,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvshl(&rhs));
             }
             Instruction::I64ShrU => {
@@ -3012,6 +3183,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvlshr(&rhs));
             }
             Instruction::I64ShrS => {
@@ -3020,6 +3192,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvashr(&rhs));
             }
 
@@ -3031,6 +3204,7 @@ fn encode_function_to_smt_impl_inner(
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
                 // (lhs == rhs) ? 1 : 0
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.eq(&rhs).ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)));
             }
             Instruction::I32Ne => {
@@ -3039,6 +3213,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.eq(&rhs)
                         .not()
@@ -3051,6 +3226,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvslt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3062,6 +3238,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvult(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3073,6 +3250,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsgt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3084,6 +3262,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvugt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3095,6 +3274,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsle(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3106,6 +3286,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvule(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3117,6 +3298,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsge(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3128,6 +3310,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvuge(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3141,6 +3324,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.eq(&rhs).ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)));
             }
             Instruction::I64Ne => {
@@ -3149,6 +3333,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.eq(&rhs)
                         .not()
@@ -3161,6 +3346,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvslt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3172,6 +3358,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvult(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3183,6 +3370,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsgt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3194,6 +3382,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvugt(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3205,6 +3394,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsle(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3216,6 +3406,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvule(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3227,6 +3418,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvsge(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3238,6 +3430,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(
                     lhs.bvuge(&rhs)
                         .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -3251,6 +3444,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsdiv(&rhs));
             }
             Instruction::I32DivU => {
@@ -3259,6 +3453,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvudiv(&rhs));
             }
             Instruction::I32RemS => {
@@ -3267,6 +3462,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsrem(&rhs));
             }
             Instruction::I32RemU => {
@@ -3275,6 +3471,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvurem(&rhs));
             }
 
@@ -3285,6 +3482,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsdiv(&rhs));
             }
             Instruction::I64DivU => {
@@ -3293,6 +3491,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvudiv(&rhs));
             }
             Instruction::I64RemS => {
@@ -3301,6 +3500,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvsrem(&rhs));
             }
             Instruction::I64RemU => {
@@ -3309,6 +3509,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvurem(&rhs));
             }
 
@@ -4656,6 +4857,7 @@ fn encode_function_to_smt_impl_inner(
                 } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
+                    let (lhs, rhs) = match_bv_widths(lhs, rhs);
                     stack.push(lhs.eq(&rhs).ite(&one, &zero));
                 } else {
                     stack.push(BV::new_const("f32_eq_result", 32));
@@ -4677,6 +4879,7 @@ fn encode_function_to_smt_impl_inner(
                 } else if ENABLE_FPA_VERIFICATION {
                     let one = BV::from_i64(1, 32);
                     let zero = BV::from_i64(0, 32);
+                    let (lhs, rhs) = match_bv_widths(lhs, rhs);
                     stack.push(lhs.eq(&rhs).not().ite(&one, &zero));
                 } else {
                     stack.push(BV::new_const("f32_ne_result", 32));
@@ -5497,6 +5700,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvrotl(&rhs));
             }
 
@@ -5506,6 +5710,7 @@ fn encode_function_to_smt_impl_inner(
                 }
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvrotr(&rhs));
             }
 
@@ -5516,6 +5721,7 @@ fn encode_function_to_smt_impl_inner(
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
                 // WebAssembly spec: i64 rotations take i64 for rotation amount
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvrotl(&rhs));
             }
 
@@ -5526,6 +5732,7 @@ fn encode_function_to_smt_impl_inner(
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
                 // WebAssembly spec: i64 rotations take i64 for rotation amount
+                let (lhs, rhs) = match_bv_widths(lhs, rhs);
                 stack.push(lhs.bvrotr(&rhs));
             }
 
@@ -6002,6 +6209,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvadd(&rhs));
         }
         Instruction::I32Sub => {
@@ -6010,6 +6218,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvsub(&rhs));
         }
         Instruction::I32Mul => {
@@ -6018,6 +6227,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvmul(&rhs));
         }
         Instruction::I32And => {
@@ -6026,6 +6236,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvand(&rhs));
         }
         Instruction::I32Or => {
@@ -6034,6 +6245,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvor(&rhs));
         }
         Instruction::I32Xor => {
@@ -6042,6 +6254,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvxor(&rhs));
         }
         Instruction::I32Shl => {
@@ -6050,6 +6263,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvshl(&rhs));
         }
         Instruction::I32ShrS => {
@@ -6058,6 +6272,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvashr(&rhs));
         }
         Instruction::I32ShrU => {
@@ -6066,6 +6281,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvlshr(&rhs));
         }
 
@@ -6076,6 +6292,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.eq(&rhs).ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)));
         }
         Instruction::I32Ne => {
@@ -6084,6 +6301,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.eq(&rhs)
                     .not()
@@ -6096,6 +6314,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvslt(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6107,6 +6326,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvult(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6118,6 +6338,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvsgt(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6129,6 +6350,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvugt(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6140,6 +6362,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvsle(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6151,6 +6374,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvule(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6162,6 +6386,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvsge(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
@@ -6173,6 +6398,7 @@ fn encode_simple_instruction(
             }
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(
                 lhs.bvuge(&rhs)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
