@@ -5,7 +5,28 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.2] - 2026-05-30
+
+**Bug-fix release: the gale-ffi i64 `SortDiffers` crash (#145).** Closes
+the panic + 21 MB-stderr flood that made `loom optimize` unusable on
+i64-heavy modules (gale-ffi / compiler_builtins), and width-corrects the
+Z3 translation validator's i64 modeling.
+
+### Known limitation (tracked: #147)
+
+Verifying i64 inlining *for real* requires a Z3 bitvector solve per
+function, which is **slow in aggregate** on large i64-heavy modules — so
+`loom optimize` on such a module is bounded-but-slow (each query capped
+by `LOOM_Z3_TIMEOUT_MS`, default 5000 ms → conservative revert on
+timeout), and the i64 inline *unit tests* are `#[ignore]`'d (they hang
+in SMT-formula construction, which the per-query timeout doesn't bound).
+**What this release guarantees:** no crash, no stderr flood, sound output
+(width-correct verification; conservative revert when a proof is slow or
+unprovable). **What it does not yet guarantee:** fast, fully-verified i64
+inlining on large modules. That — a cheaper i64 inline-equivalence check
+and re-enabling the ignored tests — is tracked in #147. Tune with
+`LOOM_Z3_TIMEOUT_MS` (lower = faster, more reverts) and
+`LOOM_Z3_MAX_INSTRUCTIONS` for large i64 workloads.
 
 ### Fixed
 
