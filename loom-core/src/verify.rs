@@ -2609,7 +2609,11 @@ impl TranslationValidator {
             return Ok(());
         }
 
-        // Use catch_unwind to handle Z3 internal panics gracefully
+        // Use catch_unwind to handle Z3 internal panics gracefully. (The
+        // i64 inline hang in loom#147 turned out NOT to be a verify hang —
+        // verify returns fast; it was a livelock in the inline-pass
+        // fixpoint, fixed there. The Z3 solve-time bound stays in
+        // z3_config_with_timeout.)
         let sig_ctx = self.sig_ctx.clone();
         let original = self.original.clone();
         let pass_name = self.pass_name.clone();
@@ -2627,8 +2631,6 @@ impl TranslationValidator {
         match result {
             Ok(Ok(true)) => Ok(()),
             Ok(Ok(false)) => {
-                // Z3 found a counterexample - the optimization is NOT proven correct.
-                // Per our proof-first philosophy, we MUST reject unproven optimizations.
                 revert_note(format_args!(
                     "{}: Verification failed! Found counterexample:",
                     self.pass_name
@@ -2638,23 +2640,15 @@ impl TranslationValidator {
                     self.pass_name
                 ))
             }
-            Ok(Err(e)) => {
-                // Verification error - we cannot prove correctness.
-                // Per our philosophy: if we cannot prove it, we must not do it.
-                Err(anyhow!(
-                    "{}: Verification failed ({}) - optimization rejected (unproven)",
-                    self.pass_name,
-                    e
-                ))
-            }
-            Err(_panic) => {
-                // Z3 internal error - we cannot prove correctness.
-                // Per our philosophy: if we cannot prove it, we must not do it.
-                Err(anyhow!(
-                    "{}: Z3 internal error - optimization rejected (unproven)",
-                    self.pass_name
-                ))
-            }
+            Ok(Err(e)) => Err(anyhow!(
+                "{}: Verification failed ({}) - optimization rejected (unproven)",
+                self.pass_name,
+                e
+            )),
+            Err(_panic) => Err(anyhow!(
+                "{}: Z3 internal error - optimization rejected (unproven)",
+                self.pass_name
+            )),
         }
     }
 

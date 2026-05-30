@@ -13215,8 +13215,26 @@ pub mod optimize {
         use std::collections::BTreeMap;
 
         // Run inlining to fixed point to ensure idempotence
-        // Keep inlining until no more candidates are found
+        // Keep inlining until no more candidates are found.
+        //
+        // loom#147 livelock guard: a candidate whose inline the Z3
+        // verifier always REVERTS (e.g. an i64 function whose
+        // inline-equivalence can't be proven) stays a candidate every
+        // iteration — its call site is restored on revert — so the
+        // `inline_candidates.is_empty()` exit never fires and the pass
+        // spins forever (inline → revert → inline → …). It only looked
+        // like a "hang" because pre-v1.1.2 the verifier panicked, which
+        // happened to abort the pass; once the panic was fixed the
+        // underlying livelock was exposed. Terminate when an iteration
+        // keeps NO inline (no net progress), with a hard iteration cap as
+        // a backstop.
+        let mut iteration: u32 = 0;
+        const MAX_INLINE_ITERATIONS: u32 = 64;
         loop {
+            iteration += 1;
+            if iteration > MAX_INLINE_ITERATIONS {
+                break;
+            }
             // Build context at start of each iteration (after possible function changes)
             let ctx = ValidationContext::from_module(module);
             // Phase 1: Build call graph and analyze functions
@@ -13263,11 +13281,18 @@ pub mod optimize {
             // Clone functions to avoid borrow checker issues
             let all_functions = module.functions.clone();
 
+            // Did this iteration KEEP any inline (verified, not reverted)?
+            // Only kept inlines are progress; an iteration that reverts
+            // everything must not loop again (loom#147 livelock guard).
+            let mut kept_any = false;
+
             for func in &mut module.functions {
                 // Skip functions with unsupported instructions (can't verify)
                 if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
                     continue;
                 }
+
+                let before = func.instructions.clone();
 
                 let guard = ValidationGuard::with_context(func, "inline_functions", ctx.clone());
                 let translator = TranslationValidator::new(func, "inline_functions");
@@ -13282,6 +13307,19 @@ pub mod optimize {
 
                 let _ = guard.validate(func);
                 translator.verify_or_revert(func);
+
+                // After verify_or_revert, func.instructions is either the
+                // inlined body (kept) or restored to `before` (reverted).
+                // A difference means a verified inline landed → progress.
+                if func.instructions != before {
+                    kept_any = true;
+                }
+            }
+
+            // No inline survived verification this iteration → the
+            // remaining candidates are unprovable; stop rather than spin.
+            if !kept_any {
+                break;
             }
 
             // Continue to next iteration to check for more inlining opportunities
@@ -18128,12 +18166,6 @@ mod tests {
     // a panic.
 
     #[test]
-    #[ignore = "loom#147: hangs in i64 Z3 verification. The Config-level \
-    `timeout` param does not bound it (re-enabling these took the CI \
-    matrix from ~56min to 4h+), so the hang is likely in SMT-formula \
-    construction, not solver.check(). Tracked in #147 for the correct \
-    timeout mechanism; the #145 fix is exercised by the Z3 Verification \
-    Build CI job + structural soundness."]
     fn test_inline_i64_helper_no_z3_panic() {
         // Smallest reproducer of loom#98: a tiny i64-param helper with a
         // single call site triggers the inline pass to add new i64 locals
@@ -18165,12 +18197,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loom#147: hangs in i64 Z3 verification. The Config-level \
-    `timeout` param does not bound it (re-enabling these took the CI \
-    matrix from ~56min to 4h+), so the hang is likely in SMT-formula \
-    construction, not solver.check(). Tracked in #147 for the correct \
-    timeout mechanism; the #145 fix is exercised by the Z3 Verification \
-    Build CI job + structural soundness."]
     fn test_inline_mixed_i32_i64_widths_no_z3_panic() {
         // Exercises the gale-ffi pattern more directly: i64-packed FFI
         // return that the caller masks down to i32 fields. The bit-mask
@@ -18204,12 +18230,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loom#147: hangs in i64 Z3 verification. The Config-level \
-    `timeout` param does not bound it (re-enabling these took the CI \
-    matrix from ~56min to 4h+), so the hang is likely in SMT-formula \
-    construction, not solver.check(). Tracked in #147 for the correct \
-    timeout mechanism; the #145 fix is exercised by the Z3 Verification \
-    Build CI job + structural soundness."]
     fn test_inline_i64_local_only_no_z3_panic() {
         // No params, just an i64 local — the helper still needs Z3 to
         // handle 64-bit symbolic state when its body is inlined into a
@@ -18237,12 +18257,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loom#147: this test asserts the i64 helper is INLINED, but \
-    the new Z3 per-query timeout (LOOM_Z3_TIMEOUT_MS) may return Unknown on \
-    a slow i64 solve -> conservative revert -> not inlined, which would flake \
-    this assertion. Re-enable once the timeout is tuned to admit this proof \
-    (or the test is reworked to accept a sound revert). The no-panic i64 \
-    tests are un-ignored and cover the #145 fix."]
+    #[ignore = "loom#147 follow-up: asserts the i64 helper is INLINED, but \
+    the Z3 verifier currently REVERTS the i64 inline (cannot prove i64 \
+    inline-equivalence) — a sound, conservative outcome. The #147 livelock \
+    that hung the pass is fixed and the other four i64 inline tests are \
+    re-enabled; this one needs real verified i64 inlining (or a reworked \
+    assertion) before it can pass."]
     fn test_inline_pass_actually_inlines_i64_helper() {
         // Past the panic-prevention bar: confirm the pass does its job
         // on i64 helpers — the call must be replaced by the helper's
@@ -18286,12 +18306,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loom#147: hangs in i64 Z3 verification. The Config-level \
-    `timeout` param does not bound it (re-enabling these took the CI \
-    matrix from ~56min to 4h+), so the hang is likely in SMT-formula \
-    construction, not solver.check(). Tracked in #147 for the correct \
-    timeout mechanism; the #145 fix is exercised by the Z3 Verification \
-    Build CI job + structural soundness."]
     fn test_inline_i64_loop_kinduction_no_panic() {
         // loom#145 regression: the prior i64 inline tests are loopless, so
         // they never exercise the k-induction verifier path
