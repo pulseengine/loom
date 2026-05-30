@@ -67,6 +67,17 @@ pub struct VerificationSignatureContext {
     /// the encoded `call F` BV become structurally equal under
     /// Z3's congruence closure.
     pub table_resolver: std::collections::HashMap<(u32, u32), u32>,
+    /// loom#151: local-function bodies indexed by function index (imports
+    /// are `None`). When a `Call`'s callee is a pure, no-trap, leaf,
+    /// straight-line callee (see `callee_inlinable_by_body`), the verifier
+    /// models `call F(args)` by *symbolically executing F's body on the
+    /// arg BVs* — i.e. by F's definition — instead of the opaque
+    /// `pure_call_F(args)` uninterpreted function. The opaque encoding can
+    /// prove two *identical* calls equal (CSE) but can NEVER prove a call
+    /// equal to its own inlined body, so it made the verified inliner a
+    /// no-op for every callee. Modeling by-body is what makes inlining
+    /// provably sound. `Arc` keeps per-function context clones cheap.
+    pub function_bodies: Vec<Option<std::sync::Arc<Function>>>,
 }
 
 #[cfg(feature = "verification")]
@@ -80,6 +91,8 @@ impl VerificationSignatureContext {
     pub fn from_module(module: &Module) -> Self {
         let mut function_signatures = Vec::new();
         let mut function_summaries: Vec<Option<crate::summary::FunctionSummary>> = Vec::new();
+        // loom#151: callee bodies for by-body call modeling (None for imports).
+        let mut function_bodies: Vec<Option<std::sync::Arc<Function>>> = Vec::new();
 
         // First, add imported function signatures (they come first in indexing)
         // PR-K3: imported functions have no summary — their callee body
@@ -90,6 +103,8 @@ impl VerificationSignatureContext {
                 if let Some(sig) = module.types.get(*type_idx as usize) {
                     function_signatures.push(sig.clone());
                     function_summaries.push(None);
+                    // Imported callee body is opaque — no by-body modeling.
+                    function_bodies.push(None);
                 }
             }
         }
@@ -99,6 +114,7 @@ impl VerificationSignatureContext {
         for (func, summary) in module.functions.iter().zip(local_summaries.iter()) {
             function_signatures.push(func.signature.clone());
             function_summaries.push(Some(*summary));
+            function_bodies.push(Some(std::sync::Arc::new(func.clone())));
         }
 
         // v1.0.4 Track B: build the element-section table resolver. A failure
@@ -111,6 +127,7 @@ impl VerificationSignatureContext {
             type_signatures: module.types.clone(),
             function_summaries,
             table_resolver,
+            function_bodies,
         }
     }
 
@@ -142,6 +159,117 @@ impl VerificationSignatureContext {
     /// Get the signature for a type by its index (for indirect calls)
     pub fn get_type_signature(&self, type_idx: u32) -> Option<&FunctionSignature> {
         self.type_signatures.get(type_idx as usize)
+    }
+
+    /// loom#151: return the callee body if `func_idx` is a pure, no-trap,
+    /// leaf, straight-line, single-result local function whose body the
+    /// verifier can faithfully model by symbolic execution on the arg BVs
+    /// (see `callee_inlinable_by_body`). Returns `None` otherwise — the
+    /// caller then falls back to the conservative opaque `pure_call`
+    /// encoding. This is what lets the verifier *prove* an inline sound:
+    /// it models `call F(args)` by F's own definition, so the original
+    /// (with the call) and the optimized (with F inlined) compute the
+    /// identical expression and Z3 proves them equal.
+    pub fn inlinable_callee_body(&self, func_idx: u32) -> Option<std::sync::Arc<Function>> {
+        match self.function_bodies.get(func_idx as usize) {
+            Some(Some(f)) if callee_inlinable_by_body(f) => Some(f.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// loom#151: is `func` a callee the verifier may model by symbolically
+/// executing its body (rather than as an opaque uninterpreted function)?
+///
+/// SOUNDNESS: this returns `true` ONLY for callees whose body is a
+/// deterministic, total (never-trapping), state-free function of its
+/// arguments — i.e. straight-line integer/bitwise/compare/local/const
+/// instructions with exactly one result. Such a body is encoded the same
+/// way by `encode_block_body` as the inlined copy is encoded by the main
+/// loop, so modeling by-body cannot introduce a *false* equivalence:
+///   - excludes div/rem (may trap) and all loads/stores/globals/calls/
+///     control-flow/float ops, so there is no hidden state, no trap, no
+///     nondeterminism, and no second interpreter disagreement to exploit.
+///   - any callee outside this whitelist returns `false`, and the Call
+///     handler falls back to the existing conservative encoding (which at
+///     worst yields a spurious counterexample → revert, never an unsound
+///     accept).
+/// Conservative by design; the whitelist can be widened later, each
+/// addition gated by its own soundness argument.
+#[cfg(feature = "verification")]
+fn callee_inlinable_by_body(func: &Function) -> bool {
+    // Single result only — multi-value needs tuple plumbing the encoder
+    // does not have, and zero-result calls are never inlined for value.
+    if func.signature.results.len() != 1 {
+        return false;
+    }
+    func.instructions.iter().all(is_pure_total_statefree_instr)
+}
+
+/// loom#151: whitelist of straight-line instructions that are pure, total
+/// (never trap), and reference no state beyond locals/stack. Anything not
+/// listed (control flow, calls, memory, globals, div/rem, floats, …)
+/// disqualifies the callee from by-body modeling.
+#[cfg(feature = "verification")]
+fn is_pure_total_statefree_instr(instr: &Instruction) -> bool {
+    // IMPORTANT: this set must stay a SUBSET of what `encode_simple_instruction`
+    // models faithfully (correct value AND width). An op outside that set
+    // would be encoded as a wrong-width / opaque value, which the width
+    // guard in `encode_inlinable_callee_result` rejects (→ conservative
+    // fallback), but keeping the two in lock-step is the clearer invariant.
+    use Instruction::*;
+    matches!(
+        instr,
+        // constants
+        I32Const(_) | I64Const(_)
+        // locals (params + declared) — no globals
+        | LocalGet(_) | LocalSet(_) | LocalTee(_)
+        // stack shuffles
+        | Drop | Select
+        // i32 arithmetic / bitwise (total: no div/rem)
+        | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
+        | I32Shl | I32ShrS | I32ShrU
+        // i64 arithmetic / bitwise (total: no div/rem)
+        | I64Add | I64Sub | I64Mul | I64And | I64Or | I64Xor
+        | I64Shl | I64ShrS | I64ShrU
+        // i32 comparisons
+        | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU
+        | I32LeS | I32LeU | I32GeS | I32GeU | I32Eqz
+        // i64 comparisons
+        | I64Eq | I64Ne | I64LtS | I64LtU | I64GtS | I64GtU
+        | I64LeS | I64LeU | I64GeS | I64GeU | I64Eqz
+        // width conversions (total)
+        | I64ExtendI32S | I64ExtendI32U | I32WrapI64
+    )
+}
+
+/// loom#151: symbolically execute an inlinable callee body on the given
+/// argument BVs and return its single result BV. Returns `None` if the
+/// result width does not match the callee's declared result type (a
+/// defensive guard against any width mismatch reaching the equality
+/// check). Pre: `callee_inlinable_by_body(func)` held when this was
+/// selected, so the body is straight-line and state-free; `globals` is
+/// unused and `encode_block_body` never touches memory here.
+#[cfg(feature = "verification")]
+fn encode_inlinable_callee_result(func: &Function, args: &[BV]) -> Option<BV> {
+    // Build the callee's local environment: params bound to the actual
+    // arg BVs, then declared locals zero-initialized at their width.
+    let mut locals: Vec<BV> = args.to_vec();
+    for (count, local_type) in func.locals.iter() {
+        let width = bv_width_for_value_type(*local_type);
+        for _ in 0..*count {
+            locals.push(BV::from_u64(0, width));
+        }
+    }
+    let mut stack: Vec<BV> = Vec::new();
+    let mut globals: Vec<BV> = Vec::new();
+    encode_block_body(&func.instructions, &mut stack, &mut locals, &mut globals).ok()?;
+    let result = stack.last().cloned()?;
+    let expected = bv_width_for_value_type(func.signature.results[0]);
+    if result.get_size() == expected {
+        Some(result)
+    } else {
+        None
     }
 }
 
@@ -4351,6 +4479,31 @@ fn encode_function_to_smt_impl_inner(
                         args_rev.reverse();
                         let args: Vec<BV> = args_rev;
 
+                        // loom#151: model the call by F's OWN BODY when F
+                        // is a pure, no-trap, leaf, straight-line,
+                        // single-result callee. This is what makes the
+                        // verified inliner sound: the opaque `pure_call`
+                        // encoding below proves two *identical* calls
+                        // equal (CSE) but can NEVER prove a call equal to
+                        // its own inlined body, so it reverted every
+                        // inline. Encoding the call by F's definition
+                        // makes the original (with the call) and the
+                        // optimized (with F inlined) compute the identical
+                        // expression — Z3 proves them equal. Bodies
+                        // outside the whitelist fall through to the
+                        // conservative encoding (at worst a spurious
+                        // revert, never an unsound accept).
+                        if let Some(callee) = ctx_ref.inlinable_callee_body(*func_idx) {
+                            if let Some(result_bv) =
+                                encode_inlinable_callee_result(&callee, &args)
+                            {
+                                stack.push(result_bv);
+                                // Pure + no-trap + state-free: no
+                                // global/memory havoc required.
+                                continue;
+                            }
+                        }
+
                         // PR-K3: when callee is pure + no-trap AND has
                         // exactly one result, encode the result as
                         // `pure_call_<func_idx>(args)`. Z3 congruence
@@ -4506,6 +4659,24 @@ fn encode_function_to_smt_impl_inner(
                             }
                             args_rev.reverse();
                             let args = args_rev;
+
+                            // loom#151: model the resolved indirect call by
+                            // F's OWN BODY when eligible — keeps this path
+                            // CONSISTENT with the direct `call F` path
+                            // (which also models by-body). Without this, a
+                            // `call_indirect` resolved to F would encode as
+                            // opaque `pure_call_F` while the direct `call F`
+                            // encodes as F's body, so directize's
+                            // `call_indirect` ⇔ `call F` equivalence would
+                            // break.
+                            if let Some(callee) = ctx_ref.inlinable_callee_body(func_idx) {
+                                if let Some(result_bv) =
+                                    encode_inlinable_callee_result(&callee, &args)
+                                {
+                                    stack.push(result_bv);
+                                    continue;
+                                }
+                            }
 
                             // Resolved-call encoding mirrors the PR-K3
                             // direct-Call path: emit `pure_call_<F>(args)`
@@ -6439,6 +6610,253 @@ fn encode_simple_instruction(
                 val.eq(&zero)
                     .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
             );
+        }
+
+        // ============================================================
+        // loom#151: i64 arithmetic / bitwise / comparison / conversion.
+        // Previously these fell through to the BV32 `unsupported_result`
+        // default, so any i64 op inside a Block/Loop/If — and every i64
+        // callee modeled by-body for inline verification — became an
+        // opaque 32-bit symbolic, defeating verification. These mirror
+        // the i32 arms above at width 64. Comparisons yield an i32 (BV32)
+        // boolean, matching WebAssembly. None of these can trap (no
+        // div/rem here), so they are sound to model unconditionally.
+        // ============================================================
+        Instruction::I64Add => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvadd(&rhs));
+        }
+        Instruction::I64Sub => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvsub(&rhs));
+        }
+        Instruction::I64Mul => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvmul(&rhs));
+        }
+        Instruction::I64And => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvand(&rhs));
+        }
+        Instruction::I64Or => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvor(&rhs));
+        }
+        Instruction::I64Xor => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvxor(&rhs));
+        }
+        Instruction::I64Shl => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvshl(&rhs));
+        }
+        Instruction::I64ShrS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvashr(&rhs));
+        }
+        Instruction::I64ShrU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvlshr(&rhs));
+        }
+        // i64 comparisons — operands i64, result i32 (BV32) boolean.
+        Instruction::I64Eq => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.eq(&rhs).ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)));
+        }
+        Instruction::I64Ne => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.eq(&rhs)
+                    .not()
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64LtS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvslt(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64LtU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvult(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64GtS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvsgt(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64GtU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvugt(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64LeS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvsle(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64LeU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvule(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64GeS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvsge(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64GeU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(
+                lhs.bvuge(&rhs)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        Instruction::I64Eqz => {
+            if stack.is_empty() {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let val = stack.pop().unwrap();
+            let zero = BV::from_i64(0, 64);
+            stack.push(
+                val.eq(&zero)
+                    .ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32)),
+            );
+        }
+        // Width conversions (total — never trap).
+        Instruction::I64ExtendI32U => {
+            if stack.is_empty() {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let val = stack.pop().unwrap();
+            // zero-extend 32 → 64 (extend by 32 bits)
+            stack.push(val.zero_ext(32));
+        }
+        Instruction::I64ExtendI32S => {
+            if stack.is_empty() {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let val = stack.pop().unwrap();
+            // sign-extend 32 → 64 (extend by 32 bits)
+            stack.push(val.sign_ext(32));
+        }
+        Instruction::I32WrapI64 => {
+            if stack.is_empty() {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let val = stack.pop().unwrap();
+            // take the low 32 bits
+            stack.push(val.extract(31, 0));
         }
 
         // Local operations

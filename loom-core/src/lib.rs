@@ -13281,6 +13281,15 @@ pub mod optimize {
             // Clone functions to avoid borrow checker issues
             let all_functions = module.functions.clone();
 
+            // loom#151: build the verification signature context (with
+            // callee bodies) ONCE per iteration, before the mutable loop.
+            // This lets the translation validator model `call F(args)` by
+            // F's own body and thereby PROVE the inline sound — without it
+            // the validator falls back to an opaque uninterpreted call and
+            // reverts every inline (no-op for i64 and every other type).
+            let verify_sig_ctx =
+                crate::verify::VerificationSignatureContext::from_module(module);
+
             // Did this iteration KEEP any inline (verified, not reverted)?
             // Only kept inlines are progress; an iteration that reverts
             // everything must not loop again (loom#147 livelock guard).
@@ -13295,7 +13304,11 @@ pub mod optimize {
                 let before = func.instructions.clone();
 
                 let guard = ValidationGuard::with_context(func, "inline_functions", ctx.clone());
-                let translator = TranslationValidator::new(func, "inline_functions");
+                let translator = TranslationValidator::new_with_context(
+                    func,
+                    "inline_functions",
+                    verify_sig_ctx.clone(),
+                );
 
                 func.instructions = inline_calls_in_block(
                     &func.instructions,
@@ -18257,17 +18270,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loom#147 follow-up: asserts the i64 helper is INLINED, but \
-    the Z3 verifier currently REVERTS the i64 inline (cannot prove i64 \
-    inline-equivalence) — a sound, conservative outcome. The #147 livelock \
-    that hung the pass is fixed and the other four i64 inline tests are \
-    re-enabled; this one needs real verified i64 inlining (or a reworked \
-    assertion) before it can pass."]
     fn test_inline_pass_actually_inlines_i64_helper() {
-        // Past the panic-prevention bar: confirm the pass does its job
-        // on i64 helpers — the call must be replaced by the helper's
-        // body. Pre-fix this test would also fail because every function
-        // reverted under the panic-catch.
+        // loom#151: the verifier now models a pure, no-trap, leaf,
+        // straight-line callee by its OWN BODY (not an opaque
+        // uninterpreted call), so it can PROVE the i64 inline sound and
+        // KEEP it. Before #151 every i64 inline (even `x + x`) reverted
+        // because the opaque call model could never equal the inlined
+        // body. Confirm the pass does its job on i64 helpers — the call
+        // must be replaced by the helper's body.
         let wat = r#"(module
             (func $double (param i64) (result i64)
                 local.get 0
@@ -18303,6 +18313,66 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_inline_verifier_proves_correct_and_rejects_wrong_i64_inline() {
+        // loom#151 SOUNDNESS GUARD. The by-body call model must do BOTH:
+        //   (a) PROVE a correct i64 inline equivalent (so inlining works), and
+        //   (b) REJECT a semantically WRONG inline (so it stays sound).
+        // add1(x) = x + 1. Modeled by its body, `call add1(x)` becomes the
+        // expression `x + 1`, so:
+        //   - a caller inlined to `x + 1` MUST verify (Ok(true));
+        //   - a caller "inlined" to `x + 2` MUST NOT verify (Ok(false)).
+        // If (b) ever returns Ok(true), by-body modeling has become unsound
+        // and this test fails loudly — exactly the gate we want.
+        use crate::verify::{
+            VerificationSignatureContext, verify_function_equivalence_with_context,
+        };
+        let wat = r#"(module
+            (func $add1 (param i64) (result i64)
+                local.get 0
+                i64.const 1
+                i64.add
+            )
+            (func $caller (param i64) (result i64)
+                local.get 0
+                call 0
+            )
+        )"#;
+        let module = parse::parse_wat(wat).expect("parse");
+        let ctx = VerificationSignatureContext::from_module(&module);
+        // Original: `local.get 0; call $add1`.
+        let orig = module.functions[1].clone();
+
+        // (a) Correct inline of add1: x + 1 — must be PROVEN equivalent.
+        let mut correct = orig.clone();
+        correct.instructions = vec![
+            Instruction::LocalGet(0),
+            Instruction::I64Const(1),
+            Instruction::I64Add,
+        ];
+        assert_eq!(
+            verify_function_equivalence_with_context(&orig, &correct, "test", &ctx)
+                .expect("verify ok"),
+            true,
+            "correct i64 inline (x+1) must be proven equivalent to call add1",
+        );
+
+        // (b) WRONG inline: x + 2 — must be REJECTED (counterexample).
+        let mut wrong = orig.clone();
+        wrong.instructions = vec![
+            Instruction::LocalGet(0),
+            Instruction::I64Const(2),
+            Instruction::I64Add,
+        ];
+        assert_eq!(
+            verify_function_equivalence_with_context(&orig, &wrong, "test", &ctx)
+                .expect("verify ok"),
+            false,
+            "SOUNDNESS: wrong i64 inline (x+2) must NOT verify against call add1",
+        );
     }
 
     #[test]
