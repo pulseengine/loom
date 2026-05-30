@@ -939,6 +939,99 @@ Qed.
     adding a precondition that all term values are wrapped, or by having
     TI32Const always store wrapped values.
 *)
+(** * Well-typedness (loom#141 / TermSemantics fix)
+
+    [simplify]'s identity arms (x+0=x, 0+x=x, x-0=x, …) drop the zero
+    operand WITHOUT a type check, so on a mixed-width term the [Term]
+    type permits but well-typed wasm never produces — e.g.
+    [TI32Add (TI32Const 0) (TI64Const z)] — the original [eval_term]
+    traps ([TRFail], operands aren't both [VI32]) while the simplified
+    form yields [VI64 z]. So [simplify_preserves_semantics] is FALSE for
+    arbitrary terms. We restrict it to well-typed terms via [HasType],
+    which mirrors wasm's static typing: every operator constrains its
+    operands' types and fixes its result type (comparisons produce i32
+    even on i64 operands; [TDrop]/[TNop] produce no value and so have no
+    [HasType] rule). *)
+Inductive HasType : Term -> ValueType -> Prop :=
+  (* Constants *)
+  | HT_I32Const : forall v, HasType (TI32Const v) TI32
+  | HT_I64Const : forall v, HasType (TI64Const v) TI64
+  (* i32 arithmetic + bitwise + shifts: (i32, i32) -> i32 *)
+  | HT_I32Add  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Add l r) TI32
+  | HT_I32Sub  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Sub l r) TI32
+  | HT_I32Mul  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Mul l r) TI32
+  | HT_I32And  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32And l r) TI32
+  | HT_I32Or   : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Or l r) TI32
+  | HT_I32Xor  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Xor l r) TI32
+  | HT_I32Shl  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Shl l r) TI32
+  | HT_I32ShrS : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32ShrS l r) TI32
+  | HT_I32ShrU : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32ShrU l r) TI32
+  (* i64 arithmetic + bitwise + shifts: (i64, i64) -> i64 *)
+  | HT_I64Add  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Add l r) TI64
+  | HT_I64Sub  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Sub l r) TI64
+  | HT_I64Mul  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Mul l r) TI64
+  | HT_I64And  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64And l r) TI64
+  | HT_I64Or   : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Or l r) TI64
+  | HT_I64Xor  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Xor l r) TI64
+  | HT_I64Shl  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Shl l r) TI64
+  | HT_I64ShrS : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64ShrS l r) TI64
+  | HT_I64ShrU : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64ShrU l r) TI64
+  (* i32 comparisons: (i32, i32) -> i32 *)
+  | HT_I32Eq  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Eq l r) TI32
+  | HT_I32Ne  : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32Ne l r) TI32
+  | HT_I32LtS : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32LtS l r) TI32
+  | HT_I32LtU : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32LtU l r) TI32
+  | HT_I32GtS : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32GtS l r) TI32
+  | HT_I32GtU : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32GtU l r) TI32
+  | HT_I32LeS : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32LeS l r) TI32
+  | HT_I32LeU : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32LeU l r) TI32
+  | HT_I32GeS : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32GeS l r) TI32
+  | HT_I32GeU : forall l r, HasType l TI32 -> HasType r TI32 -> HasType (TI32GeU l r) TI32
+  | HT_I32Eqz : forall t, HasType t TI32 -> HasType (TI32Eqz t) TI32
+  (* i64 comparisons: (i64, i64) -> i32  (result is i32!) *)
+  | HT_I64Eq  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Eq l r) TI32
+  | HT_I64Ne  : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64Ne l r) TI32
+  | HT_I64LtS : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64LtS l r) TI32
+  | HT_I64LtU : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64LtU l r) TI32
+  | HT_I64GtS : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64GtS l r) TI32
+  | HT_I64GtU : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64GtU l r) TI32
+  | HT_I64LeS : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64LeS l r) TI32
+  | HT_I64LeU : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64LeU l r) TI32
+  | HT_I64GeS : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64GeS l r) TI32
+  | HT_I64GeU : forall l r, HasType l TI64 -> HasType r TI64 -> HasType (TI64GeU l r) TI32
+  | HT_I64Eqz : forall t, HasType t TI64 -> HasType (TI64Eqz t) TI32.
+
+(** Canonical forms: a well-typed term evaluates to a value of its type
+    (never [TRFail]). Proven by induction on the typing derivation; each
+    operator case uses the IH to fix operand shapes, eliminating the
+    [TRFail] arms of [eval_term]. *)
+Lemma canonical_forms : forall t ty,
+  HasType t ty ->
+  (ty = TI32 -> exists a, eval_term t = TROk (VI32 a)) /\
+  (ty = TI64 -> exists a, eval_term t = TROk (VI64 a)).
+Proof.
+  intros t ty H.
+  induction H; split; intros Hty; try discriminate Hty; simpl;
+    repeat match goal with
+           | [ H : _ /\ _ |- _ ] => destruct H
+           end;
+    (* discharge the i32/i64 selectors of each IH using the typing *)
+    repeat match goal with
+           | [ H : TI32 = TI32 -> _ |- _ ] => specialize (H eq_refl)
+           | [ H : TI64 = TI64 -> _ |- _ ] => specialize (H eq_refl)
+           | [ H : TI64 = TI32 -> _ |- _ ] => clear H
+           | [ H : TI32 = TI64 -> _ |- _ ] => clear H
+           end;
+    repeat match goal with
+           | [ H : exists a, _ |- _ ] => destruct H
+           end;
+    (* rewrite operand evaluations, then the eval match reduces *)
+    repeat match goal with
+           | [ H : eval_term _ = _ |- _ ] => rewrite H
+           end;
+    eauto.
+Qed.
+
 Theorem simplify_preserves_semantics : forall t,
   term_equiv t (simplify t).
 Proof.
