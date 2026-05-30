@@ -18352,10 +18352,9 @@ mod tests {
             Instruction::I64Const(1),
             Instruction::I64Add,
         ];
-        assert_eq!(
+        assert!(
             verify_function_equivalence_with_context(&orig, &correct, "test", &ctx)
                 .expect("verify ok"),
-            true,
             "correct i64 inline (x+1) must be proven equivalent to call add1",
         );
 
@@ -18366,10 +18365,9 @@ mod tests {
             Instruction::I64Const(2),
             Instruction::I64Add,
         ];
-        assert_eq!(
-            verify_function_equivalence_with_context(&orig, &wrong, "test", &ctx)
+        assert!(
+            !verify_function_equivalence_with_context(&orig, &wrong, "test", &ctx)
                 .expect("verify ok"),
-            false,
             "SOUNDNESS: wrong i64 inline (x+2) must NOT verify against call add1",
         );
     }
