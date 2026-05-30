@@ -119,7 +119,10 @@ Proof.
   assert (Nat.ltb n 128 = true) as Hltb.
   { apply Nat.ltb_lt. exact Hlt. }
   rewrite Hltb.
-  replace (0 + n * 1) with n by lia.
+  (* Rocq 9.0's [simpl] is more aggressive than v1.1.0's pin: it
+     reduces [0 + n * 1] to [n * 1] here, so the old [replace (0 + n * 1)]
+     pattern no longer matches. Match the post-simpl shape directly. *)
+  replace (n * 1) with n by lia.
   reflexivity.
 Qed.
 
@@ -544,7 +547,13 @@ Theorem functypes_roundtrip_n : forall fts rest,
 Proof.
   induction fts as [|ft fts IH]; intros rest.
   - simpl. reflexivity.
-  - simpl. rewrite <- app_assoc.
+  - (* Rocq 9.0's [simpl] unfolds the [decode_functype] Definition itself,
+       leaving no [decode_functype (...)] subterm for [functype_roundtrip]
+       to rewrite. Use [cbn] restricted to the structural fixpoints
+       ([length], [encode_functypes], [decode_functypes_n]) so the
+       [decode_functype] CALL is exposed but stays folded. *)
+    cbn [length encode_functypes decode_functypes_n].
+    rewrite <- app_assoc.
     rewrite functype_roundtrip.
     rewrite IH. reflexivity.
 Qed.
@@ -634,7 +643,11 @@ Theorem roundtrip_identity : forall m : ScopedModule,
 Proof.
   intros [ts fs pt].
   unfold encode_scoped, decode_scoped. simpl.
-  rewrite <- !app_assoc.
+  (* Rocq 9.0's [simpl] already right-associates the section appends, so
+     [<- !app_assoc] (one-or-more) finds nothing and errors. [?] makes
+     the reassociation zero-or-more — a no-op when [simpl] already did it,
+     still correct on a pin where it didn't. *)
+  rewrite <- ?app_assoc.
   rewrite leb128_roundtrip. simpl.
   rewrite functypes_roundtrip_n. simpl.
   rewrite leb128_roundtrip. simpl.
