@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **#147: Z3 per-query timeout in the translation validator.** The #145
+  width fix made the verifier run a real SMT solve on i64 functions
+  (previously it panicked during eq-construction and fast-reverted);
+  Z3 can hit a slow-solve cliff on i64 bitvector formulas, which made
+  the verifier grind. A per-`check()` timeout (`LOOM_Z3_TIMEOUT_MS`,
+  default 5000 ms; `0` disables) now bounds every query: a timed-out
+  solve returns `Unknown`, which the verifier already treats as
+  "cannot prove" → conservative revert (sound — the original function
+  is kept). This keeps both the test suite and real i64-heavy modules
+  (gale-ffi) fast. The four no-panic `test_inline_i64_*` regression
+  tests are bounded by this and run again; the one test asserting
+  *inlining* stays `#[ignore]` pending timeout tuning (a revert would
+  flake the inlining assertion).
+
 - **#145: i64 `SortDiffers` in `inline_functions` verifier (gale-ffi /
   compiler_builtins).** On i64-heavy modules the Z3 translation
   validator panicked with `SortDiffers { BitVec 64 vs 32 }` (and

@@ -1009,6 +1009,35 @@ fn install_z3_panic_filter() {
     });
 }
 
+/// Build a Z3 [`Config`] with a per-query wall-clock timeout (loom#147).
+///
+/// The translation validator runs a real SMT solve per function. On i64
+/// bitvector formulas Z3 can hit a slow-solve cliff and grind for many
+/// minutes — which, after the loom#145 width fix made the verifier
+/// actually reach `solver.check()` (instead of fast-panicking), showed
+/// up as a near-hung CI test matrix and would make a large i64-heavy
+/// module (gale-ffi) verify very slowly.
+///
+/// Setting Z3's `timeout` param bounds each `check()`: a query that
+/// exceeds it returns [`SatResult::Unknown`], which every call site
+/// already treats as "cannot prove" → conservative revert (sound — we
+/// keep the original function). So a slow solve becomes a fast,
+/// safe revert instead of a hang. Default 5000 ms; override with
+/// `LOOM_Z3_TIMEOUT_MS` (e.g. higher in CI to admit more real proofs,
+/// `0` to disable).
+#[cfg(feature = "verification")]
+fn z3_config_with_timeout() -> Config {
+    let mut cfg = Config::new();
+    let ms = std::env::var("LOOM_Z3_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5000);
+    if ms > 0 {
+        cfg.set_param_value("timeout", &ms.to_string());
+    }
+    cfg
+}
+
 /// Per-function revert/counterexample logging, gated behind the
 /// `LOOM_VERBOSE_REVERTS` env var (loom#145).
 ///
@@ -1248,7 +1277,7 @@ fn verify_loops_kinduction(
     }
 
     // Use thread-local Z3 context
-    let cfg = Config::new();
+    let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
@@ -1803,7 +1832,7 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
     }
 
     // Create Z3 context and solver using thread-local context
-    let cfg = Config::new();
+    let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
@@ -1964,7 +1993,7 @@ pub fn verify_function_equivalence(
     }
 
     // Create Z3 context and solver using thread-local context
-    let cfg = Config::new();
+    let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
@@ -2099,7 +2128,7 @@ pub fn verify_function_equivalence_with_result(
     }
 
     // Create Z3 context and solver
-    let cfg = Config::new();
+    let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
@@ -2297,7 +2326,7 @@ pub fn verify_function_equivalence_with_context(
     }
 
     // Create Z3 context and solver using thread-local context
-    let cfg = Config::new();
+    let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
 
