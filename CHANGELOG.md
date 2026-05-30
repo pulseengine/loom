@@ -5,6 +5,55 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-05-30
+
+**Bug-fix release: verified i64 (and all-type) inlining (#151).** Closes
+the v1.1.3 follow-up where `inline_functions` *reverted every i64 inline*
+— even a trivial `i64.add` callee — because the translation validator
+could not prove i64 inline-equivalence. This unblocks the gale C↔Rust
+seam (`z_impl_k_sem_give` inlining `gale_k_sem_give_decide -> i64`).
+
+### Fixed
+
+- **#151: the verified inliner was a no-op for i64 — and, it turned out,
+  for *every* type.** Ground-truthing the report exposed a deeper cause
+  than "i64-specific": the Z3 translation validator modeled a `call F`
+  as an **opaque uninterpreted function** `pure_call_F(args)`. That
+  encoding can prove two *identical* calls equal (which is what CSE /
+  directize rely on) but can **never** prove a call equal to its own
+  inlined body — so the original (with the call) and the optimized (with
+  `F` inlined) never matched, and *every* inline was reverted as
+  "unproven". i32 inlines happened to be no-ops for the same reason; the
+  report only noticed i64 because that was the gale use case.
+
+  Fix: when `F` is a **pure, no-trap, leaf, straight-line, single-result**
+  callee, the validator now models `call F(args)` by **symbolically
+  executing F's own body** on the argument bit-vectors — i.e. by F's
+  definition — instead of an opaque symbol. The original and optimized
+  then compute the identical expression and Z3 proves them equal, so the
+  inline is *kept with a real proof*. Callees outside that whitelist fall
+  back to the conservative opaque encoding (at worst a spurious revert,
+  never an unsound accept). Both the direct `call F` and the
+  resolved-`call_indirect` paths use the by-body model, keeping
+  directize's `call_indirect ⇔ call F` equivalence intact.
+
+  A **soundness guard** test
+  (`test_inline_verifier_proves_correct_and_rejects_wrong_i64_inline`)
+  locks in *both* directions: a correct `x+1` inline of `add1` is proven
+  equivalent, and a deliberately wrong `x+2` "inline" is rejected
+  (counterexample). The previously-`#[ignore]`'d
+  `test_inline_pass_actually_inlines_i64_helper` (#147 follow-up) is now
+  re-enabled and passing.
+
+- **i64 arithmetic inside nested blocks is now modeled correctly.** The
+  nested-block SMT interpreter (`encode_simple_instruction`) previously
+  handled only i32 arithmetic — every i64 op inside a `block`/`loop`/`if`
+  fell through to an opaque 32-bit symbolic, a latent verification gap
+  beyond inlining. v1.1.4 adds the full i64 arithmetic / bitwise /
+  comparison / `eqz` set plus the total width conversions
+  (`i64.extend_i32_{s,u}`, `i32.wrap_i64`), mirroring the existing i32
+  arms at width 64.
+
 ## [1.1.3] - 2026-05-30
 
 **Bug-fix release: the gale-ffi i64 inline hang (#147).** Closes the
