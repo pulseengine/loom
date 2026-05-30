@@ -13287,8 +13287,7 @@ pub mod optimize {
             // F's own body and thereby PROVE the inline sound — without it
             // the validator falls back to an opaque uninterpreted call and
             // reverts every inline (no-op for i64 and every other type).
-            let verify_sig_ctx =
-                crate::verify::VerificationSignatureContext::from_module(module);
+            let verify_sig_ctx = crate::verify::VerificationSignatureContext::from_module(module);
 
             // Did this iteration KEEP any inline (verified, not reverted)?
             // Only kept inlines are progress; an iteration that reverts

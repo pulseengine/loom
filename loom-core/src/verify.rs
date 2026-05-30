@@ -4494,8 +4494,7 @@ fn encode_function_to_smt_impl_inner(
                         // conservative encoding (at worst a spurious
                         // revert, never an unsound accept).
                         if let Some(callee) = ctx_ref.inlinable_callee_body(*func_idx) {
-                            if let Some(result_bv) =
-                                encode_inlinable_callee_result(&callee, &args)
+                            if let Some(result_bv) = encode_inlinable_callee_result(&callee, &args)
                             {
                                 stack.push(result_bv);
                                 // Pure + no-trap + state-free: no
