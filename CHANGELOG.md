@@ -5,6 +5,56 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **#147: Z3 per-query timeout in the translation validator.** The #145
+  width fix made the verifier run a real SMT solve on i64 functions
+  (previously it panicked during eq-construction and fast-reverted);
+  Z3 can hit a slow-solve cliff on i64 bitvector formulas, which made
+  the verifier grind. A per-`check()` timeout (`LOOM_Z3_TIMEOUT_MS`,
+  default 5000 ms; `0` disables) now bounds every query: a timed-out
+  solve returns `Unknown`, which the verifier already treats as
+  "cannot prove" → conservative revert (sound — the original function
+  is kept). This keeps both the test suite and real i64-heavy modules
+  (gale-ffi) fast. The four no-panic `test_inline_i64_*` regression
+  tests are bounded by this and run again; the one test asserting
+  *inlining* stays `#[ignore]` pending timeout tuning (a revert would
+  flake the inlining assertion).
+
+- **#145: i64 `SortDiffers` in `inline_functions` verifier (gale-ffi /
+  compiler_builtins).** On i64-heavy modules the Z3 translation
+  validator panicked with `SortDiffers { BitVec 64 vs 32 }` (and
+  `unwrap()`-on-`None` through other z3 binding sites), reverting
+  essentially every function so the inliner was a no-op, and emitting
+  21 MB+ of stderr from per-function caught-panic backtraces. Root
+  cause: the k-induction symbolic executor
+  (`encode_loop_body_for_kinduction`, the loop path these modules hit)
+  hardcoded `BitVec32` for uninitialized locals/stack/globals and applied
+  **unmatched** binops, so a real i64 value meeting a 32-bit-modeled slot
+  tripped a width mismatch deep in z3. Fixes:
+  - The dormant `match_bv_widths` helper (added but never wired in by the
+    #98/#99 fix) is now applied at **every binop and comparison operand
+    site** in both symbolic executors. Sound because a valid wasm binop's
+    operands are equal-width by construction — matching only repairs a
+    model artifact and never changes a modeled value.
+  - The **equivalence checks** (`orig.eq(opt)`, k-induction state
+    compares) are *not* width-matched — that could approve a
+    non-equivalent transform. Instead they bail to "cannot prove" (a
+    conservative revert) on any width mismatch. This soundness boundary —
+    match at binops, never at the equivalence — is documented at each
+    site.
+  - z3-internal panics (always caught and reverted) no longer print: a
+    `Once`-installed, islands-race-safe panic filter suppresses
+    z3-origin backtraces, and per-function revert logging moves behind
+    `LOOM_VERBOSE_REVERTS` (the count still surfaces in `--stats`). This
+    removes the 21 MB stderr flood; a reverted run now reports one
+    aggregate count.
+  - New `test_inline_i64_loop_kinduction_no_panic` regression test
+    covering the i64 **loop** path (the prior #98 tests are loopless and
+    never exercised k-induction).
+
 ## [1.1.1] - 2026-05-22
 
 **Housekeeping + an ægraph commutativity bug fix.** A patch release
