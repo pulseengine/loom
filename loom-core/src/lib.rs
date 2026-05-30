@@ -13215,8 +13215,26 @@ pub mod optimize {
         use std::collections::BTreeMap;
 
         // Run inlining to fixed point to ensure idempotence
-        // Keep inlining until no more candidates are found
+        // Keep inlining until no more candidates are found.
+        //
+        // loom#147 livelock guard: a candidate whose inline the Z3
+        // verifier always REVERTS (e.g. an i64 function whose
+        // inline-equivalence can't be proven) stays a candidate every
+        // iteration — its call site is restored on revert — so the
+        // `inline_candidates.is_empty()` exit never fires and the pass
+        // spins forever (inline → revert → inline → …). It only looked
+        // like a "hang" because pre-v1.1.2 the verifier panicked, which
+        // happened to abort the pass; once the panic was fixed the
+        // underlying livelock was exposed. Terminate when an iteration
+        // keeps NO inline (no net progress), with a hard iteration cap as
+        // a backstop.
+        let mut iteration: u32 = 0;
+        const MAX_INLINE_ITERATIONS: u32 = 64;
         loop {
+            iteration += 1;
+            if iteration > MAX_INLINE_ITERATIONS {
+                break;
+            }
             // Build context at start of each iteration (after possible function changes)
             let ctx = ValidationContext::from_module(module);
             // Phase 1: Build call graph and analyze functions
@@ -13263,11 +13281,18 @@ pub mod optimize {
             // Clone functions to avoid borrow checker issues
             let all_functions = module.functions.clone();
 
+            // Did this iteration KEEP any inline (verified, not reverted)?
+            // Only kept inlines are progress; an iteration that reverts
+            // everything must not loop again (loom#147 livelock guard).
+            let mut kept_any = false;
+
             for func in &mut module.functions {
                 // Skip functions with unsupported instructions (can't verify)
                 if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
                     continue;
                 }
+
+                let before = func.instructions.clone();
 
                 let guard = ValidationGuard::with_context(func, "inline_functions", ctx.clone());
                 let translator = TranslationValidator::new(func, "inline_functions");
@@ -13282,6 +13307,19 @@ pub mod optimize {
 
                 let _ = guard.validate(func);
                 translator.verify_or_revert(func);
+
+                // After verify_or_revert, func.instructions is either the
+                // inlined body (kept) or restored to `before` (reverted).
+                // A difference means a verified inline landed → progress.
+                if func.instructions != before {
+                    kept_any = true;
+                }
+            }
+
+            // No inline survived verification this iteration → the
+            // remaining candidates are unprovable; stop rather than spin.
+            if !kept_any {
+                break;
             }
 
             // Continue to next iteration to check for more inlining opportunities
