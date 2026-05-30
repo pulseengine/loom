@@ -13237,14 +13237,35 @@ pub mod optimize {
             }
             // Build context at start of each iteration (after possible function changes)
             let ctx = ValidationContext::from_module(module);
+
+            // loom#153: `Call(func_idx)` uses the FULL WebAssembly function
+            // index space — imported functions occupy indices
+            // 0..num_imported_funcs, local functions follow. But
+            // `module.functions` (and `all_functions`) holds ONLY local
+            // functions, indexed from 0. Without accounting for the import
+            // offset, an imported call's index collides with a local
+            // function's slot: the inliner would treat a void imported call
+            // as a call to local function 0, emit a `local.set` for its
+            // params with no argument on the stack, and produce a malformed
+            // body the verifier rejects (Stack underflow) → the whole inline
+            // reverts. Key all index-space maps by the FULL index and map
+            // back to local only when indexing `all_functions`.
+            let num_imported_funcs = module
+                .imports
+                .iter()
+                .filter(|imp| matches!(imp.kind, crate::ImportKind::Func(_)))
+                .count() as u32;
+
             // Phase 1: Build call graph and analyze functions
             let mut call_counts: BTreeMap<u32, usize> = BTreeMap::new();
             let mut function_sizes: BTreeMap<u32, usize> = BTreeMap::new();
 
-            // Calculate function sizes (instruction count)
+            // Calculate function sizes (instruction count). Keyed by FULL
+            // index (local idx + import offset) to match `call_counts`,
+            // which `count_calls_recursive` records in the full index space.
             for (idx, func) in module.functions.iter().enumerate() {
                 let size = count_instructions_recursive(&func.instructions);
-                function_sizes.insert(idx as u32, size);
+                function_sizes.insert(idx as u32 + num_imported_funcs, size);
             }
 
             // Count call sites for each function
@@ -13255,6 +13276,13 @@ pub mod optimize {
             // Phase 2: Identify inlining candidates
             let mut inline_candidates = Vec::new();
             for (func_idx, &call_count) in &call_counts {
+                // loom#153: imported functions (full index < import count)
+                // have no body to inline — never candidates. Without this
+                // they'd pass the `size < 10` gate (size defaults to 0) and
+                // the inliner would try to inline the import.
+                if *func_idx < num_imported_funcs {
+                    continue;
+                }
                 let size = function_sizes.get(func_idx).copied().unwrap_or(0);
 
                 // Heuristic: inline if:
@@ -13313,6 +13341,7 @@ pub mod optimize {
                     &func.instructions,
                     &inline_set,
                     &all_functions,
+                    num_imported_funcs,
                     func.signature.params.len() as u32,
                     &mut func.locals,
                 );
@@ -13345,6 +13374,7 @@ pub mod optimize {
         instructions: &[Instruction],
         inline_set: &std::collections::HashSet<u32>,
         all_functions: &[super::Function],
+        num_imported_funcs: u32,
         base_local_count: u32,
         caller_locals: &mut Vec<(u32, super::ValueType)>,
     ) -> Vec<Instruction> {
@@ -13353,8 +13383,13 @@ pub mod optimize {
         for instr in instructions {
             match instr {
                 Instruction::Call(func_idx) if inline_set.contains(func_idx) => {
-                    // Inline this function call
-                    if let Some(callee) = all_functions.get(*func_idx as usize) {
+                    // Inline this function call. loom#153: `func_idx` is in
+                    // the FULL index space (imports first); map it to the
+                    // local-function slot. An imported index (< import count)
+                    // has no body — `checked_sub` yields None and we keep the
+                    // original call rather than inline a nonexistent body.
+                    let local_idx = func_idx.checked_sub(num_imported_funcs);
+                    if let Some(callee) = local_idx.and_then(|li| all_functions.get(li as usize)) {
                         // Calculate local index offset to avoid conflicts
                         let current_local_count = base_local_count
                             + caller_locals.iter().map(|(count, _)| count).sum::<u32>();
@@ -13406,6 +13441,7 @@ pub mod optimize {
                             body,
                             inline_set,
                             all_functions,
+                            num_imported_funcs,
                             base_local_count,
                             caller_locals,
                         ),
@@ -13419,6 +13455,7 @@ pub mod optimize {
                             body,
                             inline_set,
                             all_functions,
+                            num_imported_funcs,
                             base_local_count,
                             caller_locals,
                         ),
@@ -13436,6 +13473,7 @@ pub mod optimize {
                             then_body,
                             inline_set,
                             all_functions,
+                            num_imported_funcs,
                             base_local_count,
                             caller_locals,
                         ),
@@ -13443,6 +13481,7 @@ pub mod optimize {
                             else_body,
                             inline_set,
                             all_functions,
+                            num_imported_funcs,
                             base_local_count,
                             caller_locals,
                         ),
@@ -18370,6 +18409,69 @@ mod tests {
                 .expect("verify ok"),
             "SOUNDNESS: wrong i64 inline (x+2) must NOT verify against call add1",
         );
+    }
+
+    #[test]
+    fn test_inline_caller_with_imported_call() {
+        // loom#153: when the caller also calls an IMPORTED function, the
+        // inline of a *local* callee was reverted. `Call(func_idx)` uses the
+        // full index space (imports first), but the inliner indexed the
+        // local-only `all_functions` with it — so the import's index (0)
+        // collided with local function 0, and the inliner tried to inline
+        // the void import call, emitting a `local.set` with no stack
+        // argument → malformed body → verifier "Stack underflow" → revert.
+        // After the fix: the import call ($ext) is preserved and the local
+        // callee ($dec) is inlined (call to it removed) and verified.
+        let wat = r#"(module
+            (import "env" "ext" (func $ext))
+            (func $dec (param i32) (result i64)
+                (i64.extend_i32_u (local.get 0)))
+            (func $z (export "z") (param i32) (result i64)
+                (call $ext)
+                (call $dec (local.get 0)))
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+
+        // Full index space: $ext = 0 (import), $dec = 1, $z = 2.
+        // module.functions holds locals only: [0]=$dec, [1]=$z.
+        let z = &module.functions[1];
+        let ext_calls_before = z
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(0)))
+            .count();
+        let dec_calls_before = z
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        assert_eq!(ext_calls_before, 1, "caller starts with one import call");
+        assert_eq!(dec_calls_before, 1, "caller starts with one local call");
+
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        let z = &module.functions[1];
+        let ext_calls_after = z
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(0)))
+            .count();
+        let dec_calls_after = z
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        assert_eq!(
+            ext_calls_after, 1,
+            "imported call must be preserved (never inlined — it has no body)"
+        );
+        assert_eq!(
+            dec_calls_after, 0,
+            "local callee must be inlined even though the caller also calls an import"
+        );
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
     }
 
     #[test]

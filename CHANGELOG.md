@@ -5,6 +5,37 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-05-30
+
+**Bug-fix release: inline a local callee even when the caller also calls
+an imported function (#153).** Closes the v1.1.4 follow-up that blocked
+the gale C↔Rust seam — `z_impl_k_sem_give` inlines `gale_k_sem_give_decide`
+but also calls 5 `env::` kernel imports, and the inline was reverted.
+
+### Fixed
+
+- **#153: `inline_functions` reverted the inline whenever the *caller*
+  also called an imported function.** Root cause was a
+  **function-index-space confusion**, not a verifier gap. `Call(func_idx)`
+  uses the *full* WebAssembly index space — imported functions occupy
+  indices `0..num_imported_funcs`, local functions follow — but the
+  inliner indexed `module.functions` (local functions only, from 0) and
+  built its candidate set from `call_counts` (full space) against
+  `function_sizes` (local space). With an import present the spaces
+  diverge: the import's index collides with a local function's slot, so
+  the inliner treated a *void imported call* as a call to local function
+  0, emitted a `local.set` to bind its parameters with **no argument on
+  the stack**, and produced a malformed body. The verifier correctly
+  rejected the bad encoding (`Stack underflow in LocalSet`) — so the
+  *whole* inline reverted. Fix: account for the import offset
+  everywhere — key `function_sizes` and the candidate gate by the full
+  index, exclude imported indices from candidates (they have no body to
+  inline), and map full→local (`func_idx - num_imported_funcs`) when
+  indexing the local-function table, keeping imported calls untouched.
+  Modules with no imported functions are unaffected (offset 0). Regression
+  test `test_inline_caller_with_imported_call` asserts the import call is
+  preserved while the local callee is inlined and verified.
+
 ## [1.1.4] - 2026-05-30
 
 **Bug-fix release: verified i64 (and all-type) inlining (#151).** Closes
