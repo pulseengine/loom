@@ -194,6 +194,7 @@ impl VerificationSignatureContext {
 ///     handler falls back to the existing conservative encoding (which at
 ///     worst yields a spurious counterexample → revert, never an unsound
 ///     accept).
+///
 /// Conservative by design; the whitelist can be widened later, each
 /// addition gated by its own soundness argument.
 #[cfg(feature = "verification")]
