@@ -13283,6 +13283,27 @@ pub mod optimize {
                 if *func_idx < num_imported_funcs {
                     continue;
                 }
+                // loom#155: do NOT inline a callee that WRITES memory/globals.
+                // The translation validator models a *remaining* call's effects
+                // as a havoc (fresh symbolic state), but an *inlined* writer
+                // performs concrete stores — so if any later code (e.g. an
+                // inlined reader, the gale filter_step→controller_step seam)
+                // observes that state, the original (havoc) and optimized
+                // (concrete) encodings diverge and the verifier reverts with a
+                // FALSE counterexample. By-body inline modeling is read-only
+                // (loom#155), so writers can't be proven yet: keep them as
+                // opaque calls (the deterministic havoc makes a following
+                // reader's inline provable against the SAME havoc'd state).
+                // This is exactly the gale ask: "filter_step can stay an opaque
+                // call; I only need controller_step inlined."
+                if let Some(callee) = module
+                    .functions
+                    .get((*func_idx - num_imported_funcs) as usize)
+                {
+                    if function_writes_state(callee) {
+                        continue;
+                    }
+                }
                 let size = function_sizes.get(func_idx).copied().unwrap_or(0);
 
                 // Heuristic: inline if:
@@ -13381,6 +13402,42 @@ pub mod optimize {
         }
 
         Ok(())
+    }
+
+    /// loom#155: does this function write observable state (linear memory or
+    /// globals)? Such callees are excluded from inlining because the
+    /// translation validator models a remaining call's effects as a havoc,
+    /// which an inlined writer's concrete stores would not match once observed
+    /// (see the candidate-loop comment). Recurses into control flow.
+    fn function_writes_state(func: &super::Function) -> bool {
+        fn body_writes(instrs: &[Instruction]) -> bool {
+            instrs.iter().any(|i| match i {
+                Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::F32Store { .. }
+                | Instruction::F64Store { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. }
+                | Instruction::GlobalSet(_)
+                | Instruction::MemoryGrow(_)
+                | Instruction::MemoryFill(_)
+                | Instruction::MemoryCopy { .. }
+                | Instruction::MemoryInit { .. } => true,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    body_writes(body)
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => body_writes(then_body) || body_writes(else_body),
+                _ => false,
+            })
+        }
+        body_writes(&func.instructions)
     }
 
     /// Inline function calls in a block of instructions
@@ -18485,6 +18542,79 @@ mod tests {
                 .expect("verify ok"),
             "SOUNDNESS: wrong memory-load inline (offset=4) must NOT verify against call getx",
         );
+    }
+
+    #[test]
+    fn test_inline_memory_seam_reader_inlined_writer_kept() {
+        // loom#155: the gale flight_control seam — `seam(s,v){ wr(s,v); return
+        // rd(s); }` where `wr` WRITES *s and `rd` READS it. loom must inline
+        // the reader `rd` (proven against the havoc'd memory left by the
+        // opaque `wr` call) while keeping `wr` as a call — inlining the writer
+        // would diverge (concrete stores vs the original's havoc) and falsely
+        // revert. Mirrors gale's min_seam; the verifier proves the kept inline.
+        let wat = r#"(module
+            (memory 1)
+            (func $seam (export "seam") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                call $wr
+                local.get 0
+                call $rd)
+            (func $rd (param i32) (result i32)
+                local.get 0
+                i32.load offset=4
+                local.get 0
+                i32.load
+                i32.add)
+            (func $wr (param i32 i32)
+                local.get 0
+                local.get 1
+                i32.store
+                local.get 0
+                local.get 1
+                i32.store offset=4)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        // full idx: seam=0, rd=1, wr=2 (no imports).
+        let rd_before = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        let wr_before = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(2)))
+            .count();
+        assert_eq!(
+            (rd_before, wr_before),
+            (1, 1),
+            "seam starts with one rd + one wr call"
+        );
+
+        optimize::inline_functions(&mut module).expect("must not panic");
+
+        let seam = &module.functions[0];
+        let rd_after = seam
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        let wr_after = seam
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(2)))
+            .count();
+        assert_eq!(
+            rd_after, 0,
+            "memory-reading callee rd must be inlined (proven via memory-through modeling)"
+        );
+        assert_eq!(
+            wr_after, 1,
+            "memory-writing callee wr must NOT be inlined (kept as opaque havoc call)"
+        );
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
     }
 
     #[test]

@@ -5,6 +5,51 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - 2026-06-02
+
+**Optimization release: verified inlining of memory-reading callees (#155).**
+Delivers the gale `flight_control` seam — inlining `controller_step` (which
+reads the `flight_state` a preceding `filter_step` call left in memory) into
+its caller, *proven* by the Z3 translation validator. General, not
+gale-specific; verified bit-for-bit against gale's native oracle.
+
+### Added / Changed
+
+- **Memory-through inline verification.** The by-body inline modeler now
+  threads the caller's shared memory `Array` and encodes full-width
+  `i32`/`i64` loads via helpers (`encode_i32_load_from` / `encode_i64_load_from`)
+  **factored from and shared with the main encoder** — so the original's
+  modeled `call F` and the optimized's inlined body produce bit-identical Z3
+  expressions. Aliasing/read-sees-write is sound by construction in loom's
+  single linear-memory `Array` model. The inline whitelist
+  (`is_inline_modelable_instr`) gains full-width loads; stores, globals,
+  partial-width loads, control flow and calls stay out (conservative).
+- **Deterministic havoc naming.** Impure-call havoc now uses a per-encode
+  counter instead of a global static, so the Nth impure call gets the same
+  symbolic memory/global name in the original and optimized encodings (they
+  unify in Z3). Required whenever a result depends on post-impure-call state —
+  e.g. a reader inlined after an opaque (havoc'd) writer call.
+- **Writer callees are not inlined.** A callee that writes memory/globals is
+  excluded from inlining: the validator models a *remaining* call's effects as
+  a havoc, which an *inlined* writer's concrete stores would not match once
+  observed downstream — producing a false counterexample. Keeping writers as
+  opaque calls (with deterministic havoc) lets a following reader's inline be
+  proven against the same havoc'd state. By-body store modeling is future work.
+- **Single-call-site inline budget** raised (200 vs 50 instructions): a
+  single-call-site callee is not duplicated, so a larger budget is profitable;
+  it stays well under the Z3 verify cap so inlines remain verified.
+
+### Validation
+
+- New soundness guard `test_inline_verifier_proves_and_rejects_memory_load_inline`
+  (proves a correct `i32.load` inline, rejects a wrong-offset one) and
+  `test_inline_memory_seam_reader_inlined_writer_kept` (reader inlined, writer
+  kept). 389 lib tests pass.
+- gale's minimal `min_seam` oracle matches the native reference bit-for-bit
+  (`seam(_,v) = clamp(v + (v>>1), -127, 127)`); the drive-free `flight_seam`
+  module inlines `controller_step` proven (no revert), valid output.
+- The 7 pre-existing LICM/DCE integration failures (#155→#150) are unchanged.
+
 ## [1.1.5] - 2026-05-30
 
 **Bug-fix release: inline a local callee even when the caller also calls
