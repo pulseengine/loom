@@ -5,6 +5,40 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] - 2026-06-02
+
+**Optimization release: verified inlining of memory-*writing* callees (#157).**
+The writer half of the #155 seam — full-width stores are now modeled by-body,
+so a memory-writing callee inlines+verifies (no longer forced to stay opaque).
+On the gale `min_seam` repro the seam now **fully dissolves** (both writer and
+reader inlined, 0 calls) and reproduces the native oracle bit-for-bit.
+
+### Added / Changed
+
+- **By-body store modeling.** `encode_inlinable_callee_result` applies a
+  callee's full-width `i32`/`i64` **stores** to the shared memory `Array` (via
+  new `encode_i32_store_into` / `encode_i64_store_into` helpers **shared with
+  the main encoder**) and **threads the updated Array back** to the caller. So
+  the original's modeled `call F` and the optimized's inlined body produce
+  bit-identical loads *and* memory updates — the writer's call is modeled
+  concretely on both sides, removing the havoc-vs-concrete divergence that
+  previously forced writers to stay opaque (#155).
+- **Void callees inline.** A zero-result callee (a pure writer `void wr(*s,v)`)
+  now inlines: no value, but a possibly-updated memory Array.
+- The by-body whitelist gains full-width `i32.store` / `i64.store`. **Unmodeled
+  writes stay opaque:** partial-width stores, float stores, `global.set`, and
+  `memory.*` bulk ops still disqualify a callee (conservative — they'd diverge
+  from the original's havoc). Partial-width load/store modeling is future work.
+
+### Validation
+
+- New soundness guard `test_inline_verifier_proves_and_rejects_memory_store_inline`
+  (proves a correct `*s=v; read *s` inline, rejects a wrong `*(s+4)=v` one) and
+  `test_inline_memory_seam_fully_dissolves`. 389 lib tests pass.
+- gale's `min_seam` inlines **both** `wr` and `rd` (0 calls), wasmtime oracle
+  matches native bit-for-bit (`clamp(v + (v>>1), -127, 127)`).
+- Integration suite unchanged: only the 7 pre-existing #150 failures.
+
 ## [1.1.6] - 2026-06-02
 
 **Optimization release: verified inlining of memory-reading callees (#155).**

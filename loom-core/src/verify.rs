@@ -199,9 +199,11 @@ impl VerificationSignatureContext {
 /// addition gated by its own soundness argument.
 #[cfg(feature = "verification")]
 fn callee_inlinable_by_body(func: &Function) -> bool {
-    // Single result only — multi-value needs tuple plumbing the encoder
-    // does not have, and zero-result calls are never inlined for value.
-    if func.signature.results.len() != 1 {
+    // At most one result: multi-value needs tuple plumbing the encoder does
+    // not have. loom#157: zero-result (void) callees ARE allowed now — a pure
+    // writer (`void wr(*s, v)`) returns no value but updates memory, which the
+    // by-body modeler threads back to the caller.
+    if func.signature.results.len() > 1 {
         return false;
     }
     func.instructions.iter().all(is_inline_modelable_instr)
@@ -238,8 +240,10 @@ fn is_inline_modelable_instr(instr: &Instruction) -> bool {
         | LocalGet(_) | LocalSet(_) | LocalTee(_)
         // stack shuffles
         | Drop | Select
-        // full-width loads (loom#155) — read-only, shared-Array encoding
+        // full-width loads (loom#155) + stores (loom#157) — shared-Array
+        // encoding; stores thread the updated memory back to the caller
         | I32Load { .. } | I64Load { .. }
+        | I32Store { .. } | I64Store { .. }
         // i32 arithmetic / bitwise (total: no div/rem)
         | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
         | I32Shl | I32ShrS | I32ShrU
@@ -265,7 +269,11 @@ fn is_inline_modelable_instr(instr: &Instruction) -> bool {
 /// selected, so the body is straight-line and state-free; `globals` is
 /// unused and `encode_block_body` never touches memory here.
 #[cfg(feature = "verification")]
-fn encode_inlinable_callee_result(func: &Function, args: &[BV], memory: &Array) -> Option<BV> {
+fn encode_inlinable_callee_result(
+    func: &Function,
+    args: &[BV],
+    memory: &Array,
+) -> Option<(Option<BV>, Array)> {
     // Build the callee's local environment: params bound to the actual
     // arg BVs, then declared locals zero-initialized at their width.
     let mut locals: Vec<BV> = args.to_vec();
@@ -278,32 +286,52 @@ fn encode_inlinable_callee_result(func: &Function, args: &[BV], memory: &Array) 
     let mut stack: Vec<BV> = Vec::new();
     let mut globals: Vec<BV> = Vec::new();
     // Pre: `callee_inlinable_by_body(func)` held when this was selected, so the
-    // body is straight-line (no Block/Loop/If), leaf (no calls), and uses only
-    // whitelisted ops + full-width loads — no stores/globals. We can therefore
-    // execute it as a flat sequence. loom#155: full-width loads are encoded
-    // against the CALLER's shared memory `Array` via the SAME helpers the main
-    // encoder uses, so the original's modeled `call F` and the optimized's
-    // inlined body produce bit-identical expressions (aliasing/read-sees-write
-    // is sound by construction in the single-Array model).
+    // body is straight-line (no Block/Loop/If), leaf (no calls), single-or-zero
+    // result, and uses only whitelisted ops + full-width loads/stores — no
+    // globals/partial-width. We execute it as a flat sequence.
+    //   loom#155: full-width LOADS are encoded against the CALLER's shared
+    //   memory `Array` via the SAME helpers the main encoder uses.
+    //   loom#157: full-width STORES are applied to that Array and the updated
+    //   Array is RETURNED to the caller — so the original's modeled `call F`
+    //   and the optimized's inlined body produce bit-identical loads AND
+    //   memory updates. Modeling the writer's call by-body (concrete stores)
+    //   is what removes the old havoc-vs-concrete divergence: both sides now
+    //   carry the same stores, so a following read matches → provable.
+    let mut mem = memory.clone();
     for instr in &func.instructions {
         match instr {
             Instruction::I32Load { offset, .. } => {
                 let addr = stack.pop()?;
-                stack.push(encode_i32_load_from(memory, &addr, *offset).ok()?);
+                stack.push(encode_i32_load_from(&mem, &addr, *offset).ok()?);
             }
             Instruction::I64Load { offset, .. } => {
                 let addr = stack.pop()?;
-                stack.push(encode_i64_load_from(memory, &addr, *offset).ok()?);
+                stack.push(encode_i64_load_from(&mem, &addr, *offset).ok()?);
+            }
+            Instruction::I32Store { offset, .. } => {
+                let value = stack.pop()?;
+                let addr = stack.pop()?;
+                mem = encode_i32_store_into(&mem, &addr, &value, *offset);
+            }
+            Instruction::I64Store { offset, .. } => {
+                let value = stack.pop()?;
+                let addr = stack.pop()?;
+                mem = encode_i64_store_into(&mem, &addr, &value, *offset);
             }
             other => {
                 encode_simple_instruction(other, &mut stack, &mut locals, &mut globals).ok()?;
             }
         }
     }
+    // Zero-result (void) callees — e.g. a pure writer — return no value but a
+    // possibly-updated memory. Single-result callees width-check the result.
+    if func.signature.results.is_empty() {
+        return Some((None, mem));
+    }
     let result = stack.last().cloned()?;
     let expected = bv_width_for_value_type(func.signature.results[0]);
     if result.get_size() == expected {
-        Some(result)
+        Some((Some(result), mem))
     } else {
         None
     }
@@ -1095,6 +1123,33 @@ fn encode_i64_load_from(memory: &Array, addr: &BV, offset: u32) -> Result<BV> {
         combined = combined.bvor(byte_val.zero_ext(56).bvshl(BV::from_i64(i * 8, 64)));
     }
     Ok(combined)
+}
+
+/// loom#157: shared little-endian full-width store encoders — the write
+/// counterparts of the load helpers, reused by the main encoder and the
+/// by-body inline modeler so an inlined writer's stores and the original
+/// modeled-`call F`'s stores produce bit-identical memory `Array` updates.
+/// Returns the new memory Array (Z3 arrays are functional/immutable).
+#[cfg(feature = "verification")]
+fn encode_i32_store_into(memory: &Array, addr: &BV, value: &BV, offset: u32) -> Array {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let mut m = memory.clone();
+    for i in 0..4i64 {
+        let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+        m = m.store(&effective_addr.bvadd(BV::from_i64(i, 32)), &byte);
+    }
+    m
+}
+
+#[cfg(feature = "verification")]
+fn encode_i64_store_into(memory: &Array, addr: &BV, value: &BV, offset: u32) -> Array {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let mut m = memory.clone();
+    for i in 0..8i64 {
+        let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+        m = m.store(&effective_addr.bvadd(BV::from_i64(i, 32)), &byte);
+    }
+    m
 }
 
 /// Resolve the wasm-declared `ValueType` of local index `idx` in `func`.
@@ -3992,19 +4047,8 @@ fn encode_function_to_smt_impl_inner(
                 // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-
-                // Extract 4 bytes from 32-bit value (little-endian)
-                let byte0 = value.extract(7, 0);
-                let byte1 = value.extract(15, 8);
-                let byte2 = value.extract(23, 16);
-                let byte3 = value.extract(31, 24);
-
-                // Store each byte
-                memory = memory.store(&effective_addr, &byte0);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(2, 32)), &byte2);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(3, 32)), &byte3);
+                // loom#157: shared encoder (also used by by-body inline modeling).
+                memory = encode_i32_store_into(&memory, &addr, &value, *offset);
             }
             Instruction::I64Load { offset, .. } => {
                 if stack.is_empty() {
@@ -4022,14 +4066,8 @@ fn encode_function_to_smt_impl_inner(
                 // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-
-                // Store 8 bytes (little-endian)
-                for i in 0..8i64 {
-                    let byte_val = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
-                    let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
-                    memory = memory.store(&byte_addr, &byte_val);
-                }
+                // loom#157: shared encoder (also used by by-body inline modeling).
+                memory = encode_i64_store_into(&memory, &addr, &value, *offset);
             }
 
             // Partial-width loads (8-bit and 16-bit with sign/zero extension)
@@ -4532,14 +4570,20 @@ fn encode_function_to_smt_impl_inner(
                         // conservative encoding (at worst a spurious
                         // revert, never an unsound accept).
                         if let Some(callee) = ctx_ref.inlinable_callee_body(*func_idx) {
-                            if let Some(result_bv) =
+                            if let Some((result_bv, new_mem)) =
                                 encode_inlinable_callee_result(&callee, &args, &memory)
                             {
-                                stack.push(result_bv);
-                                // loom#155: the callee may READ memory; its
-                                // loads were encoded against the current shared
-                                // `memory` Array. It performs no stores/globals
-                                // (whitelist), so no havoc is required.
+                                // loom#155/#157: the callee may READ and/or WRITE
+                                // memory; its loads/stores were encoded against
+                                // the current shared `memory` Array via the same
+                                // helpers the main encoder uses. Apply its memory
+                                // effects (no havoc — the writes are concrete and
+                                // modeled identically on both sides). Push the
+                                // result only for non-void callees.
+                                memory = new_mem;
+                                if let Some(bv) = result_bv {
+                                    stack.push(bv);
+                                }
                                 continue;
                             }
                         }
@@ -4711,10 +4755,13 @@ fn encode_function_to_smt_impl_inner(
                             // `call_indirect` ⇔ `call F` equivalence would
                             // break.
                             if let Some(callee) = ctx_ref.inlinable_callee_body(func_idx) {
-                                if let Some(result_bv) =
+                                if let Some((result_bv, new_mem)) =
                                     encode_inlinable_callee_result(&callee, &args, &memory)
                                 {
-                                    stack.push(result_bv);
+                                    memory = new_mem;
+                                    if let Some(bv) = result_bv {
+                                        stack.push(bv);
+                                    }
                                     continue;
                                 }
                             }
