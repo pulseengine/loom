@@ -13285,19 +13285,18 @@ pub mod optimize {
                 }
                 // loom#155: do NOT inline a callee that WRITES memory/globals.
                 // The translation validator models a *remaining* call's effects
-                // as a havoc, but an *inlined* writer performs concrete stores
-                // — so if later code observes that state, the original (havoc)
-                // and optimized (concrete) encodings diverge → false revert.
-                // loom#157: full-width i32/i64 stores are now by-body modeled
-                // (concrete on BOTH sides → no divergence), so a full-width
-                // writer like `wr` CAN inline+verify. Only callees with
-                // UNMODELED writes (partial-width/float stores, globals,
-                // memory.* bulk ops) must still stay opaque calls.
+                // as a havoc, but an *inlined* callee with effects the verifier
+                // can't model (partial-width access, floats, globals, memory.*
+                // bulk ops, calls, control flow) makes the original (havoc) and
+                // optimized (concrete) encodings diverge → FALSE counterexample
+                // → the whole caller reverts, taking down any OTHER inline in it
+                // (the v1.1.7 #159 regression). Only inline callees the verifier
+                // can fully prove by-body; everything else stays an opaque call.
                 if let Some(callee) = module
                     .functions
                     .get((*func_idx - num_imported_funcs) as usize)
                 {
-                    if function_has_unmodelable_writes(callee) {
+                    if !function_inline_modelable(callee) {
                         continue;
                     }
                 }
@@ -13401,44 +13400,84 @@ pub mod optimize {
         Ok(())
     }
 
-    /// loom#155: does this function write observable state (linear memory or
-    /// globals)? Such callees are excluded from inlining because the
-    /// translation validator models a remaining call's effects as a havoc,
-    /// which an inlined writer's concrete stores would not match once observed
-    /// (see the candidate-loop comment). Recurses into control flow.
-    fn function_has_unmodelable_writes(func: &super::Function) -> bool {
-        fn body_writes(instrs: &[Instruction]) -> bool {
-            instrs.iter().any(|i| match i {
-                // loom#157: full-width i32/i64 stores ARE now by-body modeled
-                // (the verifier applies them to the shared memory Array and
-                // threads it back), so they no longer disqualify a callee. The
-                // remaining writes below are NOT modeled, so such a callee must
-                // stay an opaque (havoc) call — inlining it would diverge from
-                // the original's havoc once the writes are observed downstream:
-                Instruction::F32Store { .. }
-                | Instruction::F64Store { .. }
-                | Instruction::I32Store8 { .. }
-                | Instruction::I32Store16 { .. }
-                | Instruction::I64Store8 { .. }
-                | Instruction::I64Store16 { .. }
-                | Instruction::I64Store32 { .. }
-                | Instruction::GlobalSet(_)
-                | Instruction::MemoryGrow(_)
-                | Instruction::MemoryFill(_)
-                | Instruction::MemoryCopy { .. }
-                | Instruction::MemoryInit { .. } => true,
-                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                    body_writes(body)
-                }
-                Instruction::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => body_writes(then_body) || body_writes(else_body),
-                _ => false,
-            })
-        }
-        body_writes(&func.instructions)
+    /// loom#159: is this callee FULLY by-body-inline-modelable — i.e. will the
+    /// translation validator be able to PROVE its inline?
+    ///
+    /// A callee is only a sound inline candidate if the verifier can model its
+    /// body by-body (loom#151/#155/#157). If it contains ANY op the verifier
+    /// can't model — partial-width loads/stores (`*.load8/16`, `*.store8/16/32`,
+    /// e.g. `filter_step`'s `i32.load16_s`), floats, globals, `memory.*` bulk
+    /// ops, calls (non-leaf), or control flow — then inlining it is unprovable:
+    /// the original models the call as a havoc while the optimized has concrete
+    /// effects, so a downstream read diverges → FALSE counterexample → the whole
+    /// caller reverts, dragging down any *other* inline in it too (the v1.1.7
+    /// regression: a partial-width `filter_step` killed the `controller_step`
+    /// reader-inline). Excluding such callees keeps them opaque (havoc) calls,
+    /// which is exactly what a following modelable reader's inline needs.
+    ///
+    /// This MUST stay in lock-step with `verify::is_inline_modelable_instr`
+    /// (the verifier's by-body whitelist). Straight-line only: any control flow
+    /// or call disqualifies the callee.
+    fn function_inline_modelable(func: &super::Function) -> bool {
+        func.instructions.iter().all(|i| {
+            matches!(
+                i,
+                Instruction::I32Const(_)
+                    | Instruction::I64Const(_)
+                    | Instruction::LocalGet(_)
+                    | Instruction::LocalSet(_)
+                    | Instruction::LocalTee(_)
+                    | Instruction::Drop
+                    | Instruction::Select
+                    | Instruction::I32Load { .. }
+                    | Instruction::I64Load { .. }
+                    | Instruction::I32Store { .. }
+                    | Instruction::I64Store { .. }
+                    | Instruction::I32Add
+                    | Instruction::I32Sub
+                    | Instruction::I32Mul
+                    | Instruction::I32And
+                    | Instruction::I32Or
+                    | Instruction::I32Xor
+                    | Instruction::I32Shl
+                    | Instruction::I32ShrS
+                    | Instruction::I32ShrU
+                    | Instruction::I64Add
+                    | Instruction::I64Sub
+                    | Instruction::I64Mul
+                    | Instruction::I64And
+                    | Instruction::I64Or
+                    | Instruction::I64Xor
+                    | Instruction::I64Shl
+                    | Instruction::I64ShrS
+                    | Instruction::I64ShrU
+                    | Instruction::I32Eq
+                    | Instruction::I32Ne
+                    | Instruction::I32LtS
+                    | Instruction::I32LtU
+                    | Instruction::I32GtS
+                    | Instruction::I32GtU
+                    | Instruction::I32LeS
+                    | Instruction::I32LeU
+                    | Instruction::I32GeS
+                    | Instruction::I32GeU
+                    | Instruction::I32Eqz
+                    | Instruction::I64Eq
+                    | Instruction::I64Ne
+                    | Instruction::I64LtS
+                    | Instruction::I64LtU
+                    | Instruction::I64GtS
+                    | Instruction::I64GtU
+                    | Instruction::I64LeS
+                    | Instruction::I64LeU
+                    | Instruction::I64GeS
+                    | Instruction::I64GeU
+                    | Instruction::I64Eqz
+                    | Instruction::I64ExtendI32S
+                    | Instruction::I64ExtendI32U
+                    | Instruction::I32WrapI64
+            )
+        })
     }
 
     /// Inline function calls in a block of instructions
@@ -18693,6 +18732,58 @@ mod tests {
         assert_eq!(
             wr_after, 0,
             "memory-writing callee wr must now be inlined too (by-body store modeling, #157)"
+        );
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_reader_after_partial_width_writer() {
+        // loom#159 REGRESSION GUARD. A full-width READER (`rd`) following a
+        // PARTIAL-WIDTH WRITER (`pw`, `i32.store16` — not by-body-modelable,
+        // like the real `filter_step`'s `i32.load16_s`). The reader must still
+        // inline (proven against the writer's havoc'd memory) while the
+        // un-modelable writer stays an opaque call. v1.1.7 regressed this: `pw`
+        // became a candidate (its check looked only at writes), got inlined,
+        // diverged from the original's havoc → false revert that ALSO killed
+        // `rd`'s inline. The fix gates candidates on full inline-modelability.
+        let wat = r#"(module
+            (memory 1)
+            (func $seam (export "seam") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                call $pw
+                local.get 0
+                call $rd)
+            (func $rd (param i32) (result i32)
+                local.get 0
+                i32.load)
+            (func $pw (param i32 i32)
+                local.get 0
+                local.get 1
+                i32.store16)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::inline_functions(&mut module).expect("must not panic");
+        let seam = &module.functions[0];
+        // full idx: seam=0, rd=1, pw=2.
+        let rd_calls = seam
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(1)))
+            .count();
+        let pw_calls = seam
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(2)))
+            .count();
+        assert_eq!(
+            rd_calls, 0,
+            "full-width reader must inline even after a partial-width writer (#159)"
+        );
+        assert_eq!(
+            pw_calls, 1,
+            "partial-width writer (i32.store16) must stay an opaque call (not modelable)"
         );
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
