@@ -204,20 +204,31 @@ fn callee_inlinable_by_body(func: &Function) -> bool {
     if func.signature.results.len() != 1 {
         return false;
     }
-    func.instructions.iter().all(is_pure_total_statefree_instr)
+    func.instructions.iter().all(is_inline_modelable_instr)
 }
 
-/// loom#151: whitelist of straight-line instructions that are pure, total
-/// (never trap), and reference no state beyond locals/stack. Anything not
-/// listed (control flow, calls, memory, globals, div/rem, floats, …)
-/// disqualifies the callee from by-body modeling.
+/// loom#151/#155: whitelist of instructions the by-body inline modeler can
+/// encode faithfully and **identically to the main encoder**. The callee must
+/// be straight-line (no Block/Loop/If), leaf (no calls), single-result, and
+/// use only: constants, locals (no globals), stack shuffles, total integer
+/// arithmetic/bitwise/compare/convert (no div/rem, no floats), and — added in
+/// loom#155 — **full-width i32/i64 loads** (no stores, no partial-width).
+///
+/// SOUNDNESS of allowing loads: a load is neither "total" (it can trap OOB)
+/// nor state-free, but it is still sound for the *inline-equivalence* check.
+/// Both the original's modeled `call F` and the optimized's inlined body run
+/// the SAME load at the SAME address against the SAME shared memory `Array`
+/// via the SAME helper (`encode_i32_load_from`/`encode_i64_load_from`), so
+/// they produce bit-identical expressions — and any real OOB trap occurs
+/// identically on both sides, so the transformation preserves trap behavior
+/// regardless of loom's (non-trapping) Array model. Stores/globals/partial-
+/// width loads stay OUT (writes would need memory write-back; partial-width
+/// loads aren't full-width-modeled) → such callees fall back conservatively.
 #[cfg(feature = "verification")]
-fn is_pure_total_statefree_instr(instr: &Instruction) -> bool {
-    // IMPORTANT: this set must stay a SUBSET of what `encode_simple_instruction`
-    // models faithfully (correct value AND width). An op outside that set
-    // would be encoded as a wrong-width / opaque value, which the width
-    // guard in `encode_inlinable_callee_result` rejects (→ conservative
-    // fallback), but keeping the two in lock-step is the clearer invariant.
+fn is_inline_modelable_instr(instr: &Instruction) -> bool {
+    // Non-load ops here must stay a SUBSET of what `encode_simple_instruction`
+    // models faithfully; the full-width loads are intercepted directly in
+    // `encode_inlinable_callee_result` (shared helper), not delegated.
     use Instruction::*;
     matches!(
         instr,
@@ -227,6 +238,8 @@ fn is_pure_total_statefree_instr(instr: &Instruction) -> bool {
         | LocalGet(_) | LocalSet(_) | LocalTee(_)
         // stack shuffles
         | Drop | Select
+        // full-width loads (loom#155) — read-only, shared-Array encoding
+        | I32Load { .. } | I64Load { .. }
         // i32 arithmetic / bitwise (total: no div/rem)
         | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
         | I32Shl | I32ShrS | I32ShrU
@@ -252,7 +265,7 @@ fn is_pure_total_statefree_instr(instr: &Instruction) -> bool {
 /// selected, so the body is straight-line and state-free; `globals` is
 /// unused and `encode_block_body` never touches memory here.
 #[cfg(feature = "verification")]
-fn encode_inlinable_callee_result(func: &Function, args: &[BV]) -> Option<BV> {
+fn encode_inlinable_callee_result(func: &Function, args: &[BV], memory: &Array) -> Option<BV> {
     // Build the callee's local environment: params bound to the actual
     // arg BVs, then declared locals zero-initialized at their width.
     let mut locals: Vec<BV> = args.to_vec();
@@ -264,7 +277,29 @@ fn encode_inlinable_callee_result(func: &Function, args: &[BV]) -> Option<BV> {
     }
     let mut stack: Vec<BV> = Vec::new();
     let mut globals: Vec<BV> = Vec::new();
-    encode_block_body(&func.instructions, &mut stack, &mut locals, &mut globals).ok()?;
+    // Pre: `callee_inlinable_by_body(func)` held when this was selected, so the
+    // body is straight-line (no Block/Loop/If), leaf (no calls), and uses only
+    // whitelisted ops + full-width loads — no stores/globals. We can therefore
+    // execute it as a flat sequence. loom#155: full-width loads are encoded
+    // against the CALLER's shared memory `Array` via the SAME helpers the main
+    // encoder uses, so the original's modeled `call F` and the optimized's
+    // inlined body produce bit-identical expressions (aliasing/read-sees-write
+    // is sound by construction in the single-Array model).
+    for instr in &func.instructions {
+        match instr {
+            Instruction::I32Load { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_i32_load_from(memory, &addr, *offset).ok()?);
+            }
+            Instruction::I64Load { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_i64_load_from(memory, &addr, *offset).ok()?);
+            }
+            other => {
+                encode_simple_instruction(other, &mut stack, &mut locals, &mut globals).ok()?;
+            }
+        }
+    }
     let result = stack.last().cloned()?;
     let expected = bv_width_for_value_type(func.signature.results[0]);
     if result.get_size() == expected {
@@ -1021,6 +1056,45 @@ fn bv_width_for_value_type(t: crate::ValueType) -> u32 {
         crate::ValueType::I32 | crate::ValueType::F32 => 32,
         crate::ValueType::I64 | crate::ValueType::F64 => 64,
     }
+}
+
+/// loom#155: shared little-endian full-width load encoders.
+///
+/// SOUNDNESS: the main encoder (`encode_function_to_smt_impl_inner`) and the
+/// by-body inline modeler (`encode_inlinable_callee_result`) MUST encode the
+/// same load to the *same* Z3 expression — otherwise a memory-reading inline
+/// could be falsely accepted (if they coincidentally agree wrong) or, more
+/// usually, spuriously reverted. Factoring the byte-combine here and calling
+/// it from both sites guarantees bit-identical encoding against the shared
+/// memory `Array` (`Array[BitVec32 → BitVec8]`, little-endian).
+#[cfg(feature = "verification")]
+fn encode_i32_load_from(memory: &Array, addr: &BV, offset: u32) -> Result<BV> {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let mut combined = BV::from_i64(0, 32);
+    for i in 0..4i64 {
+        let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
+        let byte_val: BV = memory
+            .select(&byte_addr)
+            .as_bv()
+            .ok_or_else(|| anyhow!("Z3 memory select did not return BV in i32 load byte {}", i))?;
+        combined = combined.bvor(byte_val.zero_ext(24).bvshl(BV::from_i64(i * 8, 32)));
+    }
+    Ok(combined)
+}
+
+#[cfg(feature = "verification")]
+fn encode_i64_load_from(memory: &Array, addr: &BV, offset: u32) -> Result<BV> {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let mut combined = BV::from_i64(0, 64);
+    for i in 0..8i64 {
+        let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
+        let byte_val: BV = memory
+            .select(&byte_addr)
+            .as_bv()
+            .ok_or_else(|| anyhow!("Z3 memory select did not return BV in i64 load byte {}", i))?;
+        combined = combined.bvor(byte_val.zero_ext(56).bvshl(BV::from_i64(i * 8, 64)));
+    }
+    Ok(combined)
 }
 
 /// Resolve the wasm-declared `ValueType` of local index `idx` in `func`.
@@ -3082,6 +3156,17 @@ fn encode_function_to_smt_impl_inner(
     // use the same symbolic names for corresponding operations
     let mut memory_grow_count: u64 = 0;
 
+    // loom#155: per-encode counter for impure-call havoc names. MUST be local
+    // (not a global static): the original and optimized functions are encoded
+    // by separate calls into the SAME Z3 context, so a local counter that
+    // resets to 0 each encode gives the Nth impure call the SAME havoc'd
+    // global/memory name in both encodings — which makes those havoc'd arrays
+    // UNIFY in Z3. Without this, a result that depends on post-impure-call
+    // memory/globals (e.g. inlining a callee that reads what a preceding
+    // havoc'd call left behind) would compare two differently-named arrays and
+    // revert spuriously. A global counter never unified them.
+    let mut havoc_counter: u64 = 0;
+
     if let Some(shared) = shared_inputs {
         // Use shared inputs - CRITICAL for correct verification
         locals = shared.initial_locals.clone();
@@ -3897,45 +3982,8 @@ fn encode_function_to_smt_impl_inner(
                 }
                 // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-
-                // Read 4 bytes in little-endian order and combine into 32-bit
-                // memory.select returns Dynamic, cast to BV via as_bv()
-                let byte0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I32Load byte 0")
-                })?;
-                let byte1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I32Load byte 1")
-                    })?;
-                let byte2: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I32Load byte 2")
-                    })?;
-                let byte3: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I32Load byte 3")
-                    })?;
-
-                // Zero-extend each byte to 32 bits
-                let b0 = byte0.zero_ext(24);
-                let b1 = byte1.zero_ext(24);
-                let b2 = byte2.zero_ext(24);
-                let b3 = byte3.zero_ext(24);
-
-                // Combine: result = b3 << 24 | b2 << 16 | b1 << 8 | b0
-                let result = b0
-                    .bvor(b1.bvshl(BV::from_i64(8, 32)))
-                    .bvor(b2.bvshl(BV::from_i64(16, 32)))
-                    .bvor(b3.bvshl(BV::from_i64(24, 32)));
-
-                stack.push(result);
+                // loom#155: shared encoder (also used by by-body inline modeling).
+                stack.push(encode_i32_load_from(&memory, &addr, *offset)?);
             }
             Instruction::I32Store { offset, .. } => {
                 if stack.len() < 2 {
@@ -3964,19 +4012,8 @@ fn encode_function_to_smt_impl_inner(
                 }
                 // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-
-                // Read 8 bytes in little-endian order
-                let mut result = BV::from_i64(0, 64);
-                for i in 0..8i64 {
-                    let byte_addr = effective_addr.bvadd(BV::from_i64(i, 32));
-                    let byte_val: BV = memory.select(&byte_addr).as_bv().ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load byte {}", i)
-                    })?;
-                    let extended = byte_val.zero_ext(56);
-                    result = result.bvor(extended.bvshl(BV::from_i64(i * 8, 64)));
-                }
-                stack.push(result);
+                // loom#155: shared encoder (also used by by-body inline modeling).
+                stack.push(encode_i64_load_from(&memory, &addr, *offset)?);
             }
             Instruction::I64Store { offset, .. } => {
                 if stack.len() < 2 {
@@ -4495,11 +4532,14 @@ fn encode_function_to_smt_impl_inner(
                         // conservative encoding (at worst a spurious
                         // revert, never an unsound accept).
                         if let Some(callee) = ctx_ref.inlinable_callee_body(*func_idx) {
-                            if let Some(result_bv) = encode_inlinable_callee_result(&callee, &args)
+                            if let Some(result_bv) =
+                                encode_inlinable_callee_result(&callee, &args, &memory)
                             {
                                 stack.push(result_bv);
-                                // Pure + no-trap + state-free: no
-                                // global/memory havoc required.
+                                // loom#155: the callee may READ memory; its
+                                // loads were encoded against the current shared
+                                // `memory` Array. It performs no stores/globals
+                                // (whitelist), so no havoc is required.
                                 continue;
                             }
                         }
@@ -4579,10 +4619,11 @@ fn encode_function_to_smt_impl_inner(
                             // Havoc all globals that this function might modify.
                             // Conservative but sound - we assume the call could
                             // modify any global it has write access to.
-                            static CALL_COUNTER: std::sync::atomic::AtomicU64 =
-                                std::sync::atomic::AtomicU64::new(0);
-                            let call_id =
-                                CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // loom#155: deterministic per-encode id (see
+                            // `havoc_counter` decl) so corresponding calls in
+                            // the original/optimized encodings unify in Z3.
+                            let call_id = havoc_counter;
+                            havoc_counter += 1;
                             for (idx, global) in globals.iter_mut().enumerate() {
                                 *global = BV::new_const(
                                     format!("global_{}_after_call_{}_{}", idx, func_idx, call_id),
@@ -4671,7 +4712,7 @@ fn encode_function_to_smt_impl_inner(
                             // break.
                             if let Some(callee) = ctx_ref.inlinable_callee_body(func_idx) {
                                 if let Some(result_bv) =
-                                    encode_inlinable_callee_result(&callee, &args)
+                                    encode_inlinable_callee_result(&callee, &args, &memory)
                                 {
                                     stack.push(result_bv);
                                     continue;
