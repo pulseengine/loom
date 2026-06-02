@@ -250,12 +250,16 @@ fn is_inline_modelable_instr(instr: &Instruction) -> bool {
         | I32Load8S { .. } | I32Load8U { .. }
         | I32Load16S { .. } | I32Load16U { .. }
         | I32Store8 { .. } | I32Store16 { .. }
-        // i32 arithmetic / bitwise (total: no div/rem)
+        // i32 arithmetic / bitwise
         | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
         | I32Shl | I32ShrS | I32ShrU
-        // i64 arithmetic / bitwise (total: no div/rem)
+        // i64 arithmetic / bitwise
         | I64Add | I64Sub | I64Mul | I64And | I64Or | I64Xor
         | I64Shl | I64ShrS | I64ShrU
+        // integer division/remainder (loom#163) — bvsdiv/bvudiv/bvsrem/bvurem;
+        // trap-on-zero preserved (same op both sides), sound for inlining
+        | I32DivS | I32DivU | I32RemS | I32RemU
+        | I64DivS | I64DivU | I64RemS | I64RemU
         // i32 comparisons
         | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU
         | I32LeS | I32LeU | I32GeS | I32GeU | I32Eqz
@@ -6658,6 +6662,50 @@ fn encode_simple_instruction(
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
             stack.push(lhs.bvlshr(&rhs));
+        }
+        // loom#163: integer division/remainder. Modeled via Z3 bvsdiv/bvudiv/
+        // bvsrem/bvurem — bvsdiv truncates toward zero, matching WASM div_s.
+        // SOUNDNESS for inlining: the same division appears in BOTH the original
+        // modeled call and the optimized inlined body, so they encode to the
+        // identical (total) expression → equal; and any real div-by-zero /
+        // INT_MIN÷-1 trap occurs identically on both sides, so the inline
+        // transformation preserves trap behavior regardless of the model. These
+        // mirror the main encoder's arms exactly.
+        Instruction::I32DivS | Instruction::I64DivS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvsdiv(&rhs));
+        }
+        Instruction::I32DivU | Instruction::I64DivU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvudiv(&rhs));
+        }
+        Instruction::I32RemS | Instruction::I64RemS => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvsrem(&rhs));
+        }
+        Instruction::I32RemU | Instruction::I64RemU => {
+            if stack.len() < 2 {
+                return Err(anyhow!("Stack underflow"));
+            }
+            let rhs = stack.pop().unwrap();
+            let lhs = stack.pop().unwrap();
+            let (lhs, rhs) = match_bv_widths(lhs, rhs);
+            stack.push(lhs.bvurem(&rhs));
         }
 
         // i32 comparisons

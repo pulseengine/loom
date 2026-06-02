@@ -5,6 +5,53 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10] - 2026-06-02
+
+**Optimization release: inline callees with integer division (#163) — full
+flight_algo dissolution.** By-body inline modeling now handles integer
+division/remainder (`i32`/`i64` `div_s`/`div_u`/`rem_s`/`rem_u`), so a callee
+that divides (e.g. `filter_step`'s EWMA `/1000`) inlines and verifies. With
+this, gale's real `flight_algo` seam collapses to a single function: every
+co-inlined callee (reads, writes, partial-width, division) now dissolves.
+
+### Added
+
+- **Integer division/remainder modeling** in by-body inlining. `div_s`→`bvsdiv`,
+  `div_u`→`bvudiv`, `rem_s`→`bvsrem`, `rem_u`→`bvurem` — the same encoding the
+  main encoder already used, added to `encode_simple_instruction` so the by-body
+  modeler and the inlined body produce identical expressions. Added to the
+  by-body whitelist (`is_inline_modelable_instr`) and the inline candidate
+  filter (`function_inline_modelable`).
+- **Soundness for inlining:** `bvsdiv` truncates toward zero, matching WASM
+  `div_s`. Z3's div is *total* (defined at divide-by-zero), whereas WASM traps
+  on `b==0` and on `INT_MIN / -1`; this is sound for the inline transformation
+  because the *same* division appears in both the original modeled call and the
+  inlined body, so any real trap occurs identically on both sides — the
+  transformation preserves trap behavior regardless of the model. (The whitelist
+  governs inlining only.)
+
+### Validation
+
+- New `test_inline_division_seam_fully_dissolves` (a `/1000` reader seam → 0
+  calls). 392 lib tests pass; integration unchanged (only the 7 #150 failures).
+- gale's `divseam` fully dissolves (0 calls); wasmtime oracle matches native
+  bit-for-bit incl. the sign/truncate-toward-zero vectors **-1500 → -3**,
+  **499 → 0**, **-499 → 0**, **1000000 → 2000** (a floor-division or wrong-sign
+  model would diverge there).
+- **`flight_seam` now fully dissolves: 0 calls** — both `filter_step` and
+  `controller_step` inline; gale's real `flight_algo` collapses to one function.
+- The #159 regression guard's "un-modelable writer" moved to `f32.store`
+  (float memory ops stay outside the integer model; `store16`/`div_s` are now
+  modelable).
+
+### Note
+
+This completes through-memory inline verification for this class
+(reads → writes → partial-width → division). The on-silicon composed-algo
+measurement additionally needs the fp/linear-memory-vs-native-pointer ABI
+trampoline on hardware (gale's side) and remains gated on synth#210; the
+loom-level full dissolution and the wasmtime/unicorn proof stand on their own.
+
 ## [1.1.9] - 2026-06-02
 
 **Optimization release: inline callees with partial-width loads/stores (#161).**

@@ -13457,6 +13457,14 @@ pub mod optimize {
                     | Instruction::I64Shl
                     | Instruction::I64ShrS
                     | Instruction::I64ShrU
+                    | Instruction::I32DivS
+                    | Instruction::I32DivU
+                    | Instruction::I32RemS
+                    | Instruction::I32RemU
+                    | Instruction::I64DivS
+                    | Instruction::I64DivU
+                    | Instruction::I64RemS
+                    | Instruction::I64RemU
                     | Instruction::I32Eq
                     | Instruction::I32Ne
                     | Instruction::I32LtS
@@ -18746,18 +18754,20 @@ mod tests {
     #[test]
     fn test_inline_reader_after_unmodelable_writer() {
         // loom#159 REGRESSION GUARD. A full-width READER (`rd`) following an
-        // UN-MODELABLE WRITER (`nm`, uses `i32.div_s` which the verifier can't
-        // model — div may trap). The reader must still inline (proven against
-        // the writer's havoc'd memory) while the un-modelable writer stays an
-        // opaque call. v1.1.7 regressed this: a non-modelable callee became a
-        // candidate (the filter looked only at writes), got inlined, diverged
-        // from the original's havoc → false revert that ALSO killed `rd`'s
-        // inline. The fix gates candidates on FULL inline-modelability.
-        // (NB: as of loom#161, partial-width `i32.store16` IS modelable and
-        // would inline — so this guard uses `i32.div_s` to stay un-modelable.)
+        // UN-MODELABLE WRITER (`nm`, uses `f32.store` — float memory ops have no
+        // Z3 model). The reader must still inline (proven against the writer's
+        // havoc'd memory) while the un-modelable writer stays an opaque call.
+        // v1.1.7 regressed this: a non-modelable callee became a candidate (the
+        // filter looked only at writes), got inlined, diverged from the
+        // original's havoc → false revert that ALSO killed `rd`'s inline. The
+        // fix gates candidates on FULL inline-modelability.
+        // (NB: this guard's "un-modelable" op has had to move as the capability
+        // series advanced — store16 became modelable in #161, div_s in #163.
+        // Float memory ops are anchored outside the integer model, so `f32.store`
+        // is a durable choice.)
         let wat = r#"(module
             (memory 1)
-            (func $seam (export "seam") (param i32 i32) (result i32)
+            (func $seam (export "seam") (param i32 f32) (result i32)
                 local.get 0
                 local.get 1
                 call $nm
@@ -18766,12 +18776,10 @@ mod tests {
             (func $rd (param i32) (result i32)
                 local.get 0
                 i32.load)
-            (func $nm (param i32 i32)
+            (func $nm (param i32 f32)
                 local.get 0
                 local.get 1
-                local.get 1
-                i32.div_s
-                i32.store)
+                f32.store)
         )"#;
         let mut module = parse::parse_wat(wat).expect("parse");
         optimize::inline_functions(&mut module).expect("must not panic");
@@ -18793,7 +18801,55 @@ mod tests {
         );
         assert_eq!(
             pw_calls, 1,
-            "un-modelable writer (i32.div_s) must stay an opaque call"
+            "un-modelable writer (f32.store) must stay an opaque call"
+        );
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_division_seam_fully_dissolves() {
+        // loom#163: a seam whose reader divides (`rdd`: (a+b)/1000, i32.div_s,
+        // truncate toward zero). Integer div/rem are now by-body modelable via
+        // Z3 bvsdiv/bvudiv/bvsrem/bvurem, so writer `wrd` AND reader `rdd` both
+        // inline → the seam fully dissolves (0 calls), proven. This is the final
+        // through-memory inlining capability (reads → writes → partial-width →
+        // division) — it collapses gale's real flight_algo to one function.
+        // Mirrors gale's divseam.
+        let wat = r#"(module
+            (memory 1)
+            (func $seam (export "seam") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                call $wrd
+                local.get 0
+                call $rdd)
+            (func $rdd (param i32) (result i32)
+                local.get 0
+                i32.load offset=4
+                local.get 0
+                i32.load
+                i32.add
+                i32.const 1000
+                i32.div_s)
+            (func $wrd (param i32 i32)
+                local.get 0
+                local.get 1
+                i32.store offset=4
+                local.get 0
+                local.get 1
+                i32.store)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::inline_functions(&mut module).expect("must not panic");
+        let calls = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls, 0,
+            "division seam must fully dissolve: both i32.store writer and i32.div_s reader inline (#163)"
         );
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
