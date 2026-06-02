@@ -5,6 +5,39 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.8] - 2026-06-02
+
+**Bug-fix release: restore the v1.1.6 reader-inline regressed by v1.1.7 (#159).**
+On `flight_seam` (a full-width reader after a *partial-width* writer), v1.1.7
+stopped inlining `controller_step` — a lost optimization (not a miscompile;
+the oracle held). Restored, with the seam back to its v1.1.6 shape.
+
+### Fixed
+
+- **#159: `controller_step` reader-inline lost in v1.1.7.** v1.1.7's inline
+  candidate filter checked only a callee's *writes* (`function_has_unmodelable_writes`).
+  `filter_step` writes full-width `i32.store` (now modelable) but READS
+  partial-width `i32.load16_s` (not modelable), so it was no longer excluded —
+  it became a candidate, got inlined, and (being un-modelable) diverged from
+  the original's havoc → false counterexample that reverted the *whole*
+  `flight_algo`, taking the legitimate `controller_step` reader-inline down
+  with it. Fix: gate inline candidates on **full** by-body modelability
+  (`function_inline_modelable`, mirroring `verify::is_inline_modelable_instr`)
+  — a callee is inlined only if the verifier can prove it; anything with
+  partial-width access, floats, globals, `memory.*` bulk ops, calls, or
+  control flow stays an opaque (havoc) call. This restores `controller_step`'s
+  inline (full-width reader) while keeping `filter_step` opaque, and keeps
+  every inline *proven*.
+
+### Validation
+
+- New regression guard `test_inline_reader_after_partial_width_writer`
+  (full-width reader after an `i32.store16` writer: reader inlines, writer
+  stays). 391 lib tests pass.
+- `flight_seam`: `controller_step` re-inlined (142→228), `filter_step` opaque
+  — back to the v1.1.6 result. `min_seam` still fully dissolves (0 calls),
+  oracle bit-for-bit. Integration suite unchanged (only the 7 #150 failures).
+
 ## [1.1.7] - 2026-06-02
 
 **Optimization release: verified inlining of memory-*writing* callees (#157).**
