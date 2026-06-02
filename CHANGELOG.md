@@ -5,6 +5,45 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.9] - 2026-06-02
+
+**Optimization release: inline callees with partial-width loads/stores (#161).**
+By-body inline modeling now handles partial-width i32 memory access
+(`i32.load8_s/u`, `i32.load16_s/u`, `i32.store8/16` — `int8_t`/`int16_t`
+fields), so a callee reading/writing those fields inlines+verifies. gale's
+`seam16` (int16 seam) now fully dissolves and reproduces the native oracle
+bit-for-bit, including the int16-wrap vector.
+
+### Added
+
+- **Partial-width load/store modeling** in by-body inlining, via shared
+  helpers `encode_partial_load_from` (reads `bytes` LE then sign-/zero-extends
+  to the result width) and `encode_partial_store_into` (stores the low bytes).
+  They produce the same encoding the main encoder already used for these ops,
+  so an inlined partial-width access and the original modeled call are
+  bit-identical. The by-body whitelist (`is_inline_modelable_instr`) and the
+  inline candidate filter gain `i32.load8_s/u`, `i32.load16_s/u`,
+  `i32.store8/16`. (The skip gate already treated integer partial-width ops as
+  verifiable; only the inline whitelist needed them.)
+
+### Validation
+
+- New `test_inline_partial_width_seam_fully_dissolves` (int16 writer+reader
+  seam → 0 calls). The #159 guard now uses `i32.div_s` for its "un-modelable
+  writer" (partial-width is modelable as of this release). 391 lib tests pass.
+- gale's `seam16` fully dissolves (0 calls); wasmtime oracle matches native
+  bit-for-bit incl. **v=70000 → -127** (exercises int16 truncation/sign-ext —
+  a wrong width would diverge here). `flight_seam`'s `controller_step` still
+  inlines; `filter_step` stays opaque — now because of `i32.div_s` (integer
+  division, a separate limitation), not partial-width. Integration suite
+  unchanged (only the 7 #150 failures).
+
+### Note
+
+Full `flight_algo` dissolution additionally needs integer-division (`div_s`)
+modeling for `filter_step`; partial-width is no longer the blocker. (On-silicon
+payoff remains separately gated on synth#210.)
+
 ## [1.1.8] - 2026-06-02
 
 **Bug-fix release: restore the v1.1.6 reader-inline regressed by v1.1.7 (#159).**

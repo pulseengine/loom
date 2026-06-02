@@ -244,6 +244,12 @@ fn is_inline_modelable_instr(instr: &Instruction) -> bool {
         // encoding; stores thread the updated memory back to the caller
         | I32Load { .. } | I64Load { .. }
         | I32Store { .. } | I64Store { .. }
+        // partial-width i32 loads/stores (loom#161) — int8_t/int16_t fields,
+        // e.g. filter_step's i32.load16_s. Encoded via the shared partial-width
+        // helpers (correct sign/zero-ext + masking).
+        | I32Load8S { .. } | I32Load8U { .. }
+        | I32Load16S { .. } | I32Load16U { .. }
+        | I32Store8 { .. } | I32Store16 { .. }
         // i32 arithmetic / bitwise (total: no div/rem)
         | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
         | I32Shl | I32ShrS | I32ShrU
@@ -317,6 +323,33 @@ fn encode_inlinable_callee_result(
                 let value = stack.pop()?;
                 let addr = stack.pop()?;
                 mem = encode_i64_store_into(&mem, &addr, &value, *offset);
+            }
+            // loom#161: partial-width i32 loads/stores (int8_t/int16_t fields).
+            Instruction::I32Load8S { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_partial_load_from(&mem, &addr, *offset, 1, true, 32).ok()?);
+            }
+            Instruction::I32Load8U { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_partial_load_from(&mem, &addr, *offset, 1, false, 32).ok()?);
+            }
+            Instruction::I32Load16S { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_partial_load_from(&mem, &addr, *offset, 2, true, 32).ok()?);
+            }
+            Instruction::I32Load16U { offset, .. } => {
+                let addr = stack.pop()?;
+                stack.push(encode_partial_load_from(&mem, &addr, *offset, 2, false, 32).ok()?);
+            }
+            Instruction::I32Store8 { offset, .. } => {
+                let value = stack.pop()?;
+                let addr = stack.pop()?;
+                mem = encode_partial_store_into(&mem, &addr, &value, *offset, 1);
+            }
+            Instruction::I32Store16 { offset, .. } => {
+                let value = stack.pop()?;
+                let addr = stack.pop()?;
+                mem = encode_partial_store_into(&mem, &addr, &value, *offset, 2);
             }
             other => {
                 encode_simple_instruction(other, &mut stack, &mut locals, &mut globals).ok()?;
@@ -1146,6 +1179,66 @@ fn encode_i64_store_into(memory: &Array, addr: &BV, value: &BV, offset: u32) -> 
     let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
     let mut m = memory.clone();
     for i in 0..8i64 {
+        let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+        m = m.store(&effective_addr.bvadd(BV::from_i64(i, 32)), &byte);
+    }
+    m
+}
+
+/// loom#161: shared partial-width (8/16-bit) load encoder. Reads `bytes` bytes
+/// little-endian into a `bytes*8`-bit value, then sign- or zero-extends to
+/// `result_width` (32 or 64). Used by the main encoder AND the by-body inline
+/// modeler so a callee accessing `int8_t`/`int16_t` fields (e.g. filter_step's
+/// `i32.load16_s`) inlines with a bit-identical encoding. The v=70000 int16
+/// wrap vector in gale#161 validates the masked/sign-extended widths.
+#[cfg(feature = "verification")]
+fn encode_partial_load_from(
+    memory: &Array,
+    addr: &BV,
+    offset: u32,
+    bytes: u32,
+    signed: bool,
+    result_width: u32,
+) -> Result<BV> {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let raw_width = bytes * 8;
+    let mut combined = BV::from_u64(0, raw_width);
+    for i in 0..bytes as i64 {
+        let byte: BV = memory
+            .select(&effective_addr.bvadd(BV::from_i64(i, 32)))
+            .as_bv()
+            .ok_or_else(|| anyhow!("Z3 memory select did not return BV in partial load"))?;
+        // byte is 8-bit; widen to raw_width and shift into place.
+        let widened = if raw_width > 8 {
+            byte.zero_ext(raw_width - 8)
+        } else {
+            byte
+        };
+        combined = combined.bvor(widened.bvshl(BV::from_u64((i * 8) as u64, raw_width)));
+    }
+    let ext = result_width - raw_width;
+    Ok(if ext == 0 {
+        combined
+    } else if signed {
+        combined.sign_ext(ext)
+    } else {
+        combined.zero_ext(ext)
+    })
+}
+
+/// loom#161: shared partial-width (8/16-bit) store encoder — stores the low
+/// `bytes` bytes of `value` little-endian. Counterpart of the partial load.
+#[cfg(feature = "verification")]
+fn encode_partial_store_into(
+    memory: &Array,
+    addr: &BV,
+    value: &BV,
+    offset: u32,
+    bytes: u32,
+) -> Array {
+    let effective_addr = addr.bvadd(BV::from_i64(offset as i64, 32));
+    let mut m = memory.clone();
+    for i in 0..bytes as i64 {
         let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
         m = m.store(&effective_addr.bvadd(BV::from_i64(i, 32)), &byte);
     }

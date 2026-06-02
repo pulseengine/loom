@@ -13433,6 +13433,12 @@ pub mod optimize {
                     | Instruction::I64Load { .. }
                     | Instruction::I32Store { .. }
                     | Instruction::I64Store { .. }
+                    | Instruction::I32Load8S { .. }
+                    | Instruction::I32Load8U { .. }
+                    | Instruction::I32Load16S { .. }
+                    | Instruction::I32Load16U { .. }
+                    | Instruction::I32Store8 { .. }
+                    | Instruction::I32Store16 { .. }
                     | Instruction::I32Add
                     | Instruction::I32Sub
                     | Instruction::I32Mul
@@ -18738,35 +18744,39 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_reader_after_partial_width_writer() {
-        // loom#159 REGRESSION GUARD. A full-width READER (`rd`) following a
-        // PARTIAL-WIDTH WRITER (`pw`, `i32.store16` — not by-body-modelable,
-        // like the real `filter_step`'s `i32.load16_s`). The reader must still
-        // inline (proven against the writer's havoc'd memory) while the
-        // un-modelable writer stays an opaque call. v1.1.7 regressed this: `pw`
-        // became a candidate (its check looked only at writes), got inlined,
-        // diverged from the original's havoc → false revert that ALSO killed
-        // `rd`'s inline. The fix gates candidates on full inline-modelability.
+    fn test_inline_reader_after_unmodelable_writer() {
+        // loom#159 REGRESSION GUARD. A full-width READER (`rd`) following an
+        // UN-MODELABLE WRITER (`nm`, uses `i32.div_s` which the verifier can't
+        // model — div may trap). The reader must still inline (proven against
+        // the writer's havoc'd memory) while the un-modelable writer stays an
+        // opaque call. v1.1.7 regressed this: a non-modelable callee became a
+        // candidate (the filter looked only at writes), got inlined, diverged
+        // from the original's havoc → false revert that ALSO killed `rd`'s
+        // inline. The fix gates candidates on FULL inline-modelability.
+        // (NB: as of loom#161, partial-width `i32.store16` IS modelable and
+        // would inline — so this guard uses `i32.div_s` to stay un-modelable.)
         let wat = r#"(module
             (memory 1)
             (func $seam (export "seam") (param i32 i32) (result i32)
                 local.get 0
                 local.get 1
-                call $pw
+                call $nm
                 local.get 0
                 call $rd)
             (func $rd (param i32) (result i32)
                 local.get 0
                 i32.load)
-            (func $pw (param i32 i32)
+            (func $nm (param i32 i32)
                 local.get 0
                 local.get 1
-                i32.store16)
+                local.get 1
+                i32.div_s
+                i32.store)
         )"#;
         let mut module = parse::parse_wat(wat).expect("parse");
         optimize::inline_functions(&mut module).expect("must not panic");
         let seam = &module.functions[0];
-        // full idx: seam=0, rd=1, pw=2.
+        // full idx: seam=0, rd=1, nm=2.
         let rd_calls = seam
             .instructions
             .iter()
@@ -18779,11 +18789,54 @@ mod tests {
             .count();
         assert_eq!(
             rd_calls, 0,
-            "full-width reader must inline even after a partial-width writer (#159)"
+            "full-width reader must inline even after an un-modelable writer (#159)"
         );
         assert_eq!(
             pw_calls, 1,
-            "partial-width writer (i32.store16) must stay an opaque call (not modelable)"
+            "un-modelable writer (i32.div_s) must stay an opaque call"
+        );
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    #[test]
+    fn test_inline_partial_width_seam_fully_dissolves() {
+        // loom#161: a seam over int16_t fields — writer `wr16` uses i32.store16,
+        // reader `rd16` uses i32.load16_s (sign-extended). Both are now by-body
+        // modelable (partial-width helpers), so the seam fully dissolves
+        // (0 calls), proven. Mirrors gale's seam16.
+        let wat = r#"(module
+            (memory 1)
+            (func $seam (export "seam") (param i32 i32) (result i32)
+                local.get 0
+                local.get 1
+                call $wr16
+                local.get 0
+                call $rd16)
+            (func $rd16 (param i32) (result i32)
+                local.get 0
+                i32.load16_s offset=2
+                local.get 0
+                i32.load16_s
+                i32.add)
+            (func $wr16 (param i32 i32)
+                local.get 0
+                local.get 1
+                i32.store16
+                local.get 0
+                local.get 1
+                i32.store16 offset=2)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::inline_functions(&mut module).expect("must not panic");
+        let calls = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            calls, 0,
+            "partial-width seam must fully dissolve: both i32.store16 writer and i32.load16_s reader inline (#161)"
         );
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
