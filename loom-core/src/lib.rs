@@ -13286,13 +13286,27 @@ pub mod optimize {
                 let size = function_sizes.get(func_idx).copied().unwrap_or(0);
 
                 // Heuristic: inline if:
-                // 1. Single call site, OR
-                // 2. Small function (< 10 instructions)
-                if call_count == 1 || size < 10 {
-                    // Don't inline large functions even if single call site
-                    if size < 50 {
-                        inline_candidates.push(*func_idx);
-                    }
+                // 1. Single call site — profitable: inlining removes the call
+                //    overhead and opens cross-function optimization (the gale
+                //    flight_control seam, #155). A single-call-site callee is
+                //    not duplicated, so a generous size budget is justified.
+                // 2. Small function (< 10 instructions) — cheap even when
+                //    called from multiple sites.
+                //
+                // SIZE_LIMIT stays well under the Z3 verify cap
+                // (LOOM_Z3_MAX_INSTRUCTIONS, default 2000) so the inlined
+                // function is still VERIFIED, never silently skipped — the
+                // translation validator remains the correctness gate, and the
+                // #147 fixpoint guard bounds total expansion.
+                const SINGLE_CALL_SITE_LIMIT: usize = 200;
+                const MULTI_CALL_SITE_LIMIT: usize = 50;
+                let limit = if call_count == 1 {
+                    SINGLE_CALL_SITE_LIMIT
+                } else {
+                    MULTI_CALL_SITE_LIMIT
+                };
+                if (call_count == 1 || size < 10) && size < limit {
+                    inline_candidates.push(*func_idx);
                 }
             }
 
@@ -18408,6 +18422,68 @@ mod tests {
             !verify_function_equivalence_with_context(&orig, &wrong, "test", &ctx)
                 .expect("verify ok"),
             "SOUNDNESS: wrong i64 inline (x+2) must NOT verify against call add1",
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_inline_verifier_proves_and_rejects_memory_load_inline() {
+        // loom#155 SOUNDNESS GUARD for memory-through inline modeling.
+        // `getx(p) = i32.load(p)` reads linear memory. The by-body modeler
+        // must encode that load against the caller's shared memory Array, so:
+        //   (a) inlining `i32.load(p)` (offset 0) MUST verify (Ok(true)); and
+        //   (b) inlining a DIFFERENT load `i32.load(p) offset=4` (reads another
+        //       address) MUST be rejected (Ok(false)).
+        // (a) failing would mean memory-reading inlines can't be proven (the
+        // pre-#155 no-op); (b) passing would mean the modeler ignores the load
+        // address — unsound. Both are locked here.
+        use crate::verify::{
+            VerificationSignatureContext, verify_function_equivalence_with_context,
+        };
+        let wat = r#"(module
+            (memory 1)
+            (func $getx (param i32) (result i32)
+                local.get 0
+                i32.load)
+            (func $caller (param i32) (result i32)
+                local.get 0
+                call 0)
+        )"#;
+        let module = parse::parse_wat(wat).expect("parse");
+        let ctx = VerificationSignatureContext::from_module(&module);
+        // Original: `local.get 0; call $getx` (getx reads memory at p).
+        let orig = module.functions[1].clone();
+
+        // (a) Correct inline: load at the same address — must be PROVEN.
+        let mut correct = orig.clone();
+        correct.instructions = vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Load {
+                offset: 0,
+                align: 2,
+                mem: 0,
+            },
+        ];
+        assert!(
+            verify_function_equivalence_with_context(&orig, &correct, "test", &ctx)
+                .expect("verify ok"),
+            "correct memory-load inline (i32.load p) must be proven equivalent to call getx",
+        );
+
+        // (b) WRONG inline: load 4 bytes higher — must be REJECTED.
+        let mut wrong = orig.clone();
+        wrong.instructions = vec![
+            Instruction::LocalGet(0),
+            Instruction::I32Load {
+                offset: 4,
+                align: 2,
+                mem: 0,
+            },
+        ];
+        assert!(
+            !verify_function_equivalence_with_context(&orig, &wrong, "test", &ctx)
+                .expect("verify ok"),
+            "SOUNDNESS: wrong memory-load inline (offset=4) must NOT verify against call getx",
         );
     }
 
