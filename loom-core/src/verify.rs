@@ -4168,309 +4168,144 @@ fn encode_function_to_smt_impl_inner(
             }
 
             // Partial-width loads (8-bit and 16-bit with sign/zero extension)
+            // Partial-width loads (8/16/32-bit) — encoded via the shared
+            // encode_partial_load_from helper so this path and the by-body
+            // inline modeler (encode_inlinable_callee_result) cannot drift apart
+            // (loom#150 dedup; the helper reads N bytes little-endian then sign-
+            // or zero-extends to the result width).
             Instruction::I32Load8S { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load8S"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory
-                    .select(&effective_addr)
-                    .as_bv()
-                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I32Load8S"))?;
-                // Sign-extend 8-bit to 32-bit
-                let result = byte_val.sign_ext(24);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 1, true, 32,
+                )?);
             }
             Instruction::I32Load8U { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load8U"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory
-                    .select(&effective_addr)
-                    .as_bv()
-                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I32Load8U"))?;
-                // Zero-extend 8-bit to 32-bit
-                let result = byte_val.zero_ext(24);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 1, false, 32,
+                )?);
             }
             Instruction::I32Load16S { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load16S"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I32Load16S byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I32Load16S byte 1")
-                    })?;
-                let val16 = b0
-                    .zero_ext(8)
-                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
-                // Sign-extend 16-bit to 32-bit
-                let result = val16.sign_ext(16);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 2, true, 32,
+                )?);
             }
             Instruction::I32Load16U { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I32Load16U"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I32Load16U byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I32Load16U byte 1")
-                    })?;
-                let val16 = b0
-                    .zero_ext(8)
-                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
-                // Zero-extend 16-bit to 32-bit
-                let result = val16.zero_ext(16);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 2, false, 32,
+                )?);
             }
             Instruction::I64Load8S { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load8S"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory
-                    .select(&effective_addr)
-                    .as_bv()
-                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I64Load8S"))?;
-                // Sign-extend 8-bit to 64-bit
-                let result = byte_val.sign_ext(56);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 1, true, 64,
+                )?);
             }
             Instruction::I64Load8U { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load8U"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                let byte_val: BV = memory
-                    .select(&effective_addr)
-                    .as_bv()
-                    .ok_or_else(|| anyhow!("Z3 memory select did not return BV in I64Load8U"))?;
-                // Zero-extend 8-bit to 64-bit
-                let result = byte_val.zero_ext(56);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 1, false, 64,
+                )?);
             }
             Instruction::I64Load16S { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load16S"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I64Load16S byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load16S byte 1")
-                    })?;
-                let val16 = b0
-                    .zero_ext(8)
-                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
-                // Sign-extend 16-bit to 64-bit
-                let result = val16.sign_ext(48);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 2, true, 64,
+                )?);
             }
             Instruction::I64Load16U { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load16U"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 2 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I64Load16U byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load16U byte 1")
-                    })?;
-                let val16 = b0
-                    .zero_ext(8)
-                    .bvor(b1.zero_ext(8).bvshl(BV::from_i64(8, 16)));
-                // Zero-extend 16-bit to 64-bit
-                let result = val16.zero_ext(48);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 2, false, 64,
+                )?);
             }
             Instruction::I64Load32S { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load32S"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 4 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I64Load32S byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 1")
-                    })?;
-                let b2: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 2")
-                    })?;
-                let b3: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32S byte 3")
-                    })?;
-                let val32 = b0
-                    .zero_ext(24)
-                    .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
-                    .bvor(b2.zero_ext(24).bvshl(BV::from_i64(16, 32)))
-                    .bvor(b3.zero_ext(24).bvshl(BV::from_i64(24, 32)));
-                // Sign-extend 32-bit to 64-bit
-                let result = val32.sign_ext(32);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 4, true, 64,
+                )?);
             }
             Instruction::I64Load32U { offset, .. } => {
                 if stack.is_empty() {
                     return Err(anyhow!("Stack underflow in I64Load32U"));
                 }
-                // SAFETY: guarded by is_empty check above
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Read 4 bytes in little-endian order
-                let b0: BV = memory.select(&effective_addr).as_bv().ok_or_else(|| {
-                    anyhow!("Z3 memory select did not return BV in I64Load32U byte 0")
-                })?;
-                let b1: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(1, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 1")
-                    })?;
-                let b2: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(2, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 2")
-                    })?;
-                let b3: BV = memory
-                    .select(&effective_addr.bvadd(BV::from_i64(3, 32)))
-                    .as_bv()
-                    .ok_or_else(|| {
-                        anyhow!("Z3 memory select did not return BV in I64Load32U byte 3")
-                    })?;
-                let val32 = b0
-                    .zero_ext(24)
-                    .bvor(b1.zero_ext(24).bvshl(BV::from_i64(8, 32)))
-                    .bvor(b2.zero_ext(24).bvshl(BV::from_i64(16, 32)))
-                    .bvor(b3.zero_ext(24).bvshl(BV::from_i64(24, 32)));
-                // Zero-extend 32-bit to 64-bit
-                let result = val32.zero_ext(32);
-                stack.push(result);
+                stack.push(encode_partial_load_from(
+                    &memory, &addr, *offset, 4, false, 64,
+                )?);
             }
 
-            // Partial-width stores (8-bit, 16-bit, 32-bit)
+            // Partial-width stores (8/16/32-bit) — via the shared
+            // encode_partial_store_into helper (loom#150 dedup; stores the low
+            // N bytes little-endian).
             Instruction::I32Store8 { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store8"));
                 }
-                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Store low 8 bits
-                let byte_val = value.extract(7, 0);
-                memory = memory.store(&effective_addr, &byte_val);
+                memory = encode_partial_store_into(&memory, &addr, &value, *offset, 1);
             }
             Instruction::I32Store16 { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I32Store16"));
                 }
-                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Store low 16 bits in little-endian order
-                let byte0 = value.extract(7, 0);
-                let byte1 = value.extract(15, 8);
-                memory = memory.store(&effective_addr, &byte0);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+                memory = encode_partial_store_into(&memory, &addr, &value, *offset, 2);
             }
             Instruction::I64Store8 { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store8"));
                 }
-                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Store low 8 bits
-                let byte_val = value.extract(7, 0);
-                memory = memory.store(&effective_addr, &byte_val);
+                memory = encode_partial_store_into(&memory, &addr, &value, *offset, 1);
             }
             Instruction::I64Store16 { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store16"));
                 }
-                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Store low 16 bits in little-endian order
-                let byte0 = value.extract(7, 0);
-                let byte1 = value.extract(15, 8);
-                memory = memory.store(&effective_addr, &byte0);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
+                memory = encode_partial_store_into(&memory, &addr, &value, *offset, 2);
             }
             Instruction::I64Store32 { offset, .. } => {
                 if stack.len() < 2 {
                     return Err(anyhow!("Stack underflow in I64Store32"));
                 }
-                // SAFETY: guarded by len check above
                 let value = stack.pop().unwrap();
                 let addr = stack.pop().unwrap();
-                let effective_addr = addr.bvadd(BV::from_i64(*offset as i64, 32));
-                // Store low 32 bits in little-endian order
-                let byte0 = value.extract(7, 0);
-                let byte1 = value.extract(15, 8);
-                let byte2 = value.extract(23, 16);
-                let byte3 = value.extract(31, 24);
-                memory = memory.store(&effective_addr, &byte0);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(1, 32)), &byte1);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(2, 32)), &byte2);
-                memory = memory.store(&effective_addr.bvadd(BV::from_i64(3, 32)), &byte3);
+                memory = encode_partial_store_into(&memory, &addr, &value, *offset, 4);
             }
 
             // Control flow instructions
