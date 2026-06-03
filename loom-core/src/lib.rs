@@ -6805,6 +6805,43 @@ pub mod optimize {
         false
     }
 
+    /// loom#150 — DCE-specific control-flow guard, narrower than
+    /// [`has_dataflow_unsafe_control_flow`]. Dead-code elimination here only
+    /// ever *deletes instructions that follow an unconditional terminator*
+    /// (`Return`/`Unreachable`) within a block — that code is unreachable, so
+    /// removing it is sound regardless of where the terminator sits (the blunt
+    /// shared guard wrongly skips a function merely because a `return` is not in
+    /// tail position). We still bail on *conditional* branches (`BrIf`/
+    /// `BrTable`): there, code after the branch is reachable and the
+    /// path-insensitive translation validator can't be trusted to model it, so
+    /// we stay conservative-over-fast (REQ-5).
+    fn dce_unverifiable_control_flow(func: &Function) -> bool {
+        fn scan(instrs: &[Instruction]) -> bool {
+            for instr in instrs {
+                match instr {
+                    Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        if scan(body) {
+                            return true;
+                        }
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        if scan(then_body) || scan(else_body) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        scan(&func.instructions)
+    }
+
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
@@ -10628,9 +10665,11 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip early-exit functions — branch-removal can restructure
-            // control flow across guard boundaries (REQ-5).
-            if has_dataflow_unsafe_control_flow(func) {
+            // loom#150: DCE only deletes code after an unconditional terminator
+            // (sound regardless of where the terminator sits), so the narrower
+            // DCE guard permits non-tail Return/Br while still bailing on
+            // conditional branches the validator can't model (REQ-5).
+            if dce_unverifiable_control_flow(func) {
                 continue;
             }
 
