@@ -32,6 +32,11 @@ leb128 = "0.2"
 # Parallel island-model optimization (v1.0.4 PR-islands, issue #71).
 # Scoped to loom-core only — the dependency boundary stays tight; CLI does
 # not depend on rayon, it just dispatches into the per-island entry point.
+# Excluded on wasm32: rayon's thread pool needs pthread, which the
+# single-threaded wasm32-wasip2 target can't link (#142 — the missing
+# release binaries traced to this link failure). islands.rs falls back to a
+# sequential run there; the deterministic tie-break makes it bit-identical.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1"
 
 [dev-dependencies]
