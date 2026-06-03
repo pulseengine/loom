@@ -1815,6 +1815,59 @@ fn test_licm_global_not_hoisted_when_modified() {
     );
 }
 
+#[test]
+fn test_licm_no_hoist_past_midbody_branch() {
+    // loom#150 PRECISION GUARD. LICM was re-enabled for loops whose only branch
+    // is a tail-position back-edge `br_if` (sound: every instruction before it
+    // runs each iteration). This test pins the boundary: a `br_if` in the
+    // MIDDLE of the loop body (an early-exit, not the back-edge) must still
+    // disable hoisting, because on the exit path the invariant's original
+    // location may never be reached. The function must be skipped entirely —
+    // nothing hoisted.
+    let input = r#"
+        (module
+            (func (param $x i32) (param $y i32) (result i32)
+                (local $sum i32)
+                (local $inv i32)
+                (block $exit
+                    (loop $loop
+                        ;; invariant computation
+                        (local.set $inv (i32.add (local.get $x) (local.get $y)))
+                        ;; MID-BODY early-exit (breaks out of $exit) — NOT a back-edge
+                        (br_if $exit (local.get $x))
+                        (local.set $sum (i32.add (local.get $sum) (local.get $inv)))
+                        (br_if $loop (i32.const 0))
+                    )
+                )
+                (local.get $sum)
+            )
+        )
+    "#;
+
+    fn count_loop_body_instrs(instrs: &[loom_core::Instruction]) -> usize {
+        use loom_core::Instruction;
+        for instr in instrs {
+            match instr {
+                Instruction::Loop { body, .. } => return body.len(),
+                Instruction::Block { body, .. } => return count_loop_body_instrs(body),
+                _ => {}
+            }
+        }
+        0
+    }
+
+    let before =
+        count_loop_body_instrs(&parse::parse_wat(input).unwrap().functions[0].instructions);
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::loop_invariant_code_motion(&mut module).unwrap();
+    let after = count_loop_body_instrs(&module.functions[0].instructions);
+
+    assert_eq!(
+        after, before,
+        "LICM must NOT hoist out of a loop with a mid-body early-exit branch (#150 soundness boundary)"
+    );
+}
+
 // Remove Unused Branches Tests
 
 #[test]
