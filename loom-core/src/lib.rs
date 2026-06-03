@@ -6805,6 +6805,82 @@ pub mod optimize {
         false
     }
 
+    /// loom#150 — DCE-specific control-flow guard, narrower than
+    /// [`has_dataflow_unsafe_control_flow`]. Dead-code elimination here only
+    /// ever *deletes instructions that follow an unconditional terminator*
+    /// (`Return`/`Unreachable`) within a block — that code is unreachable, so
+    /// removing it is sound regardless of where the terminator sits (the blunt
+    /// shared guard wrongly skips a function merely because a `return` is not in
+    /// tail position). We still bail on *conditional* branches (`BrIf`/
+    /// `BrTable`): there, code after the branch is reachable and the
+    /// path-insensitive translation validator can't be trusted to model it, so
+    /// we stay conservative-over-fast (REQ-5).
+    fn dce_unverifiable_control_flow(func: &Function) -> bool {
+        fn scan(instrs: &[Instruction]) -> bool {
+            for instr in instrs {
+                match instr {
+                    Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. }
+                        if scan(body) =>
+                    {
+                        return true;
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } if scan(then_body) || scan(else_body) => return true,
+                    _ => {}
+                }
+            }
+            false
+        }
+        scan(&func.instructions)
+    }
+
+    /// loom#150 — LICM-specific control-flow guard, narrower than
+    /// [`has_dataflow_unsafe_control_flow`]. The blunt shared guard treats *any*
+    /// `BrIf` as unsafe — but every loop's back-edge is a `br_if`, so it
+    /// disabled LICM for essentially all real loops. This guard permits exactly
+    /// one extra shape: a back-edge branch (`Br(0)`/`BrIf(0)`) that is the LAST
+    /// instruction **directly** in a loop body. Such a branch only decides
+    /// whether to re-iterate; every instruction before it runs unconditionally
+    /// on each iteration, and (in a function whose only branch is this
+    /// back-edge) the loop is reached unconditionally — so hoisting a
+    /// loop-invariant value to the pre-header is sound (same reachability as
+    /// iteration 1, identical value every iteration). Any other branch —
+    /// mid-body `BrIf`, `BrTable`, a branch to an outer label, or a non-tail
+    /// `Br`/`Return` — could skip the hoisted op on some path, so it stays
+    /// unsafe (REQ-5). `verify_or_revert` remains as defense-in-depth.
+    fn licm_unverifiable_control_flow(func: &Function) -> bool {
+        fn scan(instrs: &[Instruction], in_loop_body: bool) -> bool {
+            let n = instrs.len();
+            for (i, instr) in instrs.iter().enumerate() {
+                let is_last = i + 1 == n;
+                match instr {
+                    // Back-edge as the loop-body terminator: safe (see above).
+                    Instruction::BrIf(0) | Instruction::Br(0) if in_loop_body && is_last => {}
+                    // Any other conditional / multi-way branch: unsafe.
+                    Instruction::BrIf { .. } | Instruction::BrTable { .. } => return true,
+                    // Non-tail unconditional branch / return creates an
+                    // early-exit path: unsafe (tail position is just the
+                    // function/loop ending).
+                    Instruction::Br(_) | Instruction::Return if !is_last => return true,
+                    Instruction::Loop { body, .. } if scan(body, true) => return true,
+                    Instruction::Block { body, .. } if scan(body, false) => return true,
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } if scan(then_body, false) || scan(else_body, false) => return true,
+                    _ => {}
+                }
+            }
+            false
+        }
+        scan(&func.instructions, false)
+    }
+
     /// Optimize a module by applying constant folding and other optimizations
     /// Phase 12: Uses ISLE with dataflow-aware environment tracking
     pub fn optimize_module(module: &mut Module) -> Result<()> {
@@ -9877,12 +9953,14 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip functions with BrIf/BrTable: the Z3 verifier is path-insensitive
-            // across these branches (top-of-stack-only equivalence model), so
-            // hoisting code across them can pass verification while being unsound
-            // on paths that branch out before the hoisted op's original location.
-            // Conservative-over-fast (REQ-5).
-            if has_dataflow_unsafe_control_flow(func) {
+            // loom#150: the blunt guard skips any function with a BrIf — but a
+            // loop's back-edge IS a br_if, so that disabled LICM for every real
+            // loop. The LICM-specific guard permits a tail-position back-edge
+            // (Br(0)/BrIf(0) as the last instruction directly in a loop body),
+            // where hoisting an invariant value to the pre-header is sound, while
+            // still bailing on any branch that could skip the hoisted op on some
+            // path. verify_or_revert below is defense-in-depth (REQ-5).
+            if licm_unverifiable_control_flow(func) {
                 continue;
             }
 
@@ -10628,9 +10706,11 @@ pub mod optimize {
                 continue;
             }
 
-            // Skip early-exit functions — branch-removal can restructure
-            // control flow across guard boundaries (REQ-5).
-            if has_dataflow_unsafe_control_flow(func) {
+            // loom#150: DCE only deletes code after an unconditional terminator
+            // (sound regardless of where the terminator sits), so the narrower
+            // DCE guard permits non-tail Return/Br while still bailing on
+            // conditional branches the validator can't model (REQ-5).
+            if dce_unverifiable_control_flow(func) {
                 continue;
             }
 
