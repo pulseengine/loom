@@ -46,6 +46,9 @@ pub mod egraph;
 /// is not traded for speed.
 pub mod islands;
 
+/// Ingest scry's published invariant contract (loom#144).
+pub mod scry_invariants;
+
 /// Internal representation of a WebAssembly module
 #[derive(Debug, Clone)]
 pub struct Module {
