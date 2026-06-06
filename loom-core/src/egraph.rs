@@ -9,8 +9,7 @@
 //! substrate — which is exactly what LOOM's "provably correct" mission
 //! requires.
 //!
-//! ## Scope (v1.0.3 substrate + v1.0.4 Track C rewrite engine
-//!     + v1.1.0 Track C widening)
+//! ## Scope (v1.0.3 substrate + v1.0.4 Track C rewrite engine + v1.1.0 Track C widening)
 //!
 //! This module ships:
 //!
