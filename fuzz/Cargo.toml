@@ -16,7 +16,7 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 # Disable verification feature to avoid Z3 compilation (not needed for fuzzing)
 loom-core = { path = "../loom-core", default-features = false }
-wasmparser = { version = "0.241" }
+wasmparser = { version = "0.251" }
 
 [[bin]]
 name = "fuzz_optimize"
