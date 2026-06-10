@@ -37,7 +37,7 @@ rayon = "1"
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = "0.8"
-wasmtime = "17.0"
+wasmtime = "45.0"
 
 [features]
 # Default features - verification enabled for safety
