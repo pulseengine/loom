@@ -5,6 +5,36 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.11] - 2026-06-10
+
+**Bug fix: fused pass no longer invalidates core modules with element segments (#172).**
+The fused component-optimization pass produced an invalid core module after
+removing a dead function, so loom fail-safe-fell-back to the original bytes —
+leaving the largest module of a real Component Model artifact (falcon-flight)
+at ~0% optimization. Fixed; that component now goes 0.2% → 3.9% (its hot core
+module 0: 96.5 KB → 92.6 KB), output validates.
+
+### Fixed
+
+- **Element-section segment-count prefix stripped during function-index remap**
+  (`fused_optimizer::remap_element_section_refs`). After dead-function removal,
+  the pass rebuilds the element section with `wasm_encoder` and extracts the
+  raw payload to store in `element_section_bytes`. `wasm_encoder`'s
+  `Encode::encode` writes a **length-prefixed body** (`<LEB128 len><payload>`),
+  with no section-id byte — but the extraction assumed `id + len + payload` and
+  skipped a phantom id byte, stripping the leading `<segment-count>` off the
+  payload. The count-less segment then re-validated as `section size mismatch:
+  unexpected data at the end of the section`. Fix: strip only the leading
+  LEB128 length, from offset 0.
+
+### Validation
+
+- New `test_remap_element_section_preserves_segment_count` (asserts the
+  rebuilt payload still parses as exactly one segment with the original func
+  indices, consuming every byte). 393 lib + 85 integration tests pass.
+- gale's exact artifact (`falcon-flight-v1.34.wasm`, sha256 `3213a135…`) now
+  optimizes all 4 core modules (was 3/4); `wasm-tools validate` passes.
+
 ## [1.1.10] - 2026-06-02
 
 **Optimization release: inline callees with integer division (#163) — full

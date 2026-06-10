@@ -2455,21 +2455,28 @@ fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) ->
         }
     }
 
-    // Encode the new section and extract just the section data
-    // (skip section ID and LEB128 length prefix)
+    // Extract the section *payload* (`<segment-count><segments>`) to store in
+    // `element_section_bytes`; encode_wasm prepends the id and a freshly-derived
+    // length when emitting.
+    //
+    // #172: `wasm_encoder`'s `Encode::encode` for a section builder writes the
+    // length-prefixed BODY (`<LEB128 len><payload>`) — it does NOT emit a
+    // section-id byte (the id is supplied separately via the `Section` trait).
+    // The previous code assumed `id + len + payload` and skipped a phantom id
+    // byte first, which stripped the `<segment-count>` prefix off the payload —
+    // leaving a count-less segment that re-validates as "section size mismatch:
+    // unexpected data at the end of the section". Strip ONLY the leading LEB128
+    // length, from offset 0.
     use wasm_encoder::Encode;
     let mut encoded = Vec::new();
     new_section.encode(&mut encoded);
-    // ElementSection::encode writes: section_id (1 byte) + LEB128 length + data
-    if encoded.len() > 1 {
-        let mut pos = 1; // Skip section ID byte
-        while pos < encoded.len() && encoded[pos] & 0x80 != 0 {
-            pos += 1; // Skip LEB128 length bytes
-        }
-        pos += 1; // Skip last byte of LEB128
-        if pos < encoded.len() {
-            module.element_section_bytes = Some(encoded[pos..].to_vec());
-        }
+    let mut pos = 0;
+    while pos < encoded.len() && encoded[pos] & 0x80 != 0 {
+        pos += 1; // LEB128 length continuation bytes
+    }
+    pos += 1; // final LEB128 length byte
+    if pos <= encoded.len() {
+        module.element_section_bytes = Some(encoded[pos..].to_vec());
     }
 
     Ok(())
@@ -5909,5 +5916,63 @@ mod tests {
             "function_bodies_deduplicated should fire (got {})",
             stats.function_bodies_deduplicated
         );
+    }
+
+    /// #172 regression: rebuilding the element section after a function-index
+    /// remap must preserve the leading `<segment-count>` prefix of the section
+    /// payload. The bug stripped it (the extraction skipped a phantom section-id
+    /// byte that `wasm_encoder`'s length-prefixed body never emits), leaving a
+    /// count-less segment that re-validates as "section size mismatch:
+    /// unexpected data at the end of the section" — which made loom fall back to
+    /// the original bytes on falcon-flight's core module 0 (~0% optimization).
+    #[test]
+    fn test_remap_element_section_preserves_segment_count() {
+        use std::collections::HashMap;
+        let mut module = empty_module();
+
+        // One active element segment (table 0, offset i32.const 0) listing func
+        // indices [0, 1, 2]. Payload = <segment-count=1><flags=0><offset:
+        // i32.const 0, end><n-funcs=3><0,1,2>.
+        let payload: Vec<u8> = vec![
+            0x01, // segment count = 1
+            0x00, // flags: active, table 0, func-index list
+            0x41, 0x00, 0x0b, // offset const expr: i32.const 0, end
+            0x03, // number of functions
+            0x00, 0x01, 0x02, // function indices
+        ];
+        module.element_section_bytes = Some(payload);
+
+        // Identity remap — the bug is in payload reconstruction, not in the
+        // index values, so identity is enough to exercise it.
+        let remap: HashMap<u32, u32> = (0u32..3).map(|i| (i, i)).collect();
+        remap_element_section_refs(&mut module, &remap).expect("remap must succeed");
+
+        let rebuilt = module
+            .element_section_bytes
+            .as_ref()
+            .expect("element section must remain present");
+
+        // The payload must still parse as exactly ONE segment with the original
+        // func indices — and consume every byte (no trailing data, which is the
+        // exact symptom of a stripped count prefix).
+        let reader =
+            wasmparser::ElementSectionReader::new(wasmparser::BinaryReader::new(rebuilt, 0))
+                .expect("rebuilt element section payload must parse");
+        assert_eq!(
+            reader.count(),
+            1,
+            "#172: segment-count prefix must survive the remap (got {} segments)",
+            reader.count()
+        );
+        for elem in reader {
+            let elem = elem.expect("element segment must parse");
+            match elem.items {
+                wasmparser::ElementItems::Functions(funcs) => {
+                    let idxs: Vec<u32> = funcs.into_iter().map(|f| f.unwrap()).collect();
+                    assert_eq!(idxs, vec![0, 1, 2], "func indices must be preserved");
+                }
+                _ => panic!("expected a function-index element list"),
+            }
+        }
     }
 }
