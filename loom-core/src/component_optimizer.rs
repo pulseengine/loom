@@ -211,6 +211,27 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
     // Parse the module
     let mut module = crate::parse::parse_wasm(module_bytes)?;
 
+    // #196 (CRITICAL — flight-control silent miscompile). A core module with a
+    // function-referencing element segment (a populated `call_indirect` table)
+    // is one loom cannot currently optimize with *behavioral* certainty: the
+    // fused pass's multi-sub-pass function-index changes are not remapped into
+    // the table consistently, and the parse→re-encode round-trip has further
+    // latent corruption on such modules — all of which pass `wasm-tools
+    // validate` AND loom `--verify` (both structural) while flying wrong
+    // (v1.1.11 on falcon: SIL gate 0.13 m → 593.8 m). v1.1.10 was accidentally
+    // safe here (it fell back to the original bytes); we now do so DELIBERATELY:
+    // keep the original module untouched rather than ship a valid-but-wrong
+    // optimization. Correctness over optimization (LOOM's prime directive).
+    // Re-enabling optimization for these modules is gated on a behavioral
+    // differential (run exports before/after and compare) — see #196.
+    if crate::fused_optimizer::element_section_references_functions(&module) {
+        eprintln!(
+            "  Skipped optimization: module has a function-referencing element table \
+             (indirect-call dispatch); keeping original bytes pending a behavioral gate (#196)"
+        );
+        return Ok(module_bytes.to_vec());
+    }
+
     // Phase 0: Fused component optimizations (runs before standard pipeline)
     // These passes target artifacts from component fusion (meld):
     // - Adapter trampolines that just forward calls

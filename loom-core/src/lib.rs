@@ -6887,6 +6887,17 @@ pub mod optimize {
         // For backwards compatibility, this function applies the core optimizations
         // The full optimization pipeline is in loom-cli/src/main.rs lines 237-246
 
+        // #196 (CRITICAL): a module with a function-referencing element segment
+        // (indirect-call table) cannot currently be optimized with behavioral
+        // certainty — loom's structural verification can't detect a scrambled or
+        // stale function-pointer table (v1.1.11 silent-miscompiled falcon's
+        // flight controller). Skip optimization entirely and leave the module
+        // unchanged, mirroring the component path's fail-safe. Correctness over
+        // optimization; re-enable behind a behavioral-differential gate (#196).
+        if super::fused_optimizer::element_section_references_functions(module) {
+            return Ok(());
+        }
+
         // Phase 0: Fused component optimizations (adapter devirtualization, type/import
         // dedup, dead function elimination). These are safe no-ops on non-fused modules.
         // Best-effort and non-fatal, but the outcome is always reported — on success

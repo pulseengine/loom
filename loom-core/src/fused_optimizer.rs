@@ -2370,6 +2370,42 @@ fn remove_trivial_calls_from_block(
 /// Uses `wasm_encoder` to rebuild the element section with updated function indices.
 /// Only handles segments with direct function indices (not expression-based segments).
 /// Falls back to keeping original bytes if expression-based segments are present.
+/// True if the module has an element segment that references any function — a
+/// populated indirect-call table. #196: loom currently cannot guarantee a core
+/// module with such a table is optimized *behaviorally* correctly (its
+/// structural verification can't see a scrambled / stale function-pointer
+/// table or other round-trip corruption), so callers skip optimization for
+/// these modules and keep the original bytes. Anything that can't be parsed as
+/// a plain empty section is treated conservatively as "yes, references
+/// functions" so we err toward not optimizing.
+pub(crate) fn element_section_references_functions(module: &Module) -> bool {
+    use wasmparser::{BinaryReader, ElementItems, FromReader};
+    let bytes = match &module.element_section_bytes {
+        Some(b) => b,
+        None => return false,
+    };
+    let mut reader = BinaryReader::new(bytes, 0);
+    let count = match reader.read_var_u32() {
+        Ok(c) => c,
+        Err(_) => return true, // unparseable → don't risk touching the module
+    };
+    for _ in 0..count {
+        match wasmparser::Element::from_reader(&mut reader) {
+            Ok(elem) => match elem.items {
+                ElementItems::Functions(funcs) => {
+                    if funcs.count() > 0 {
+                        return true;
+                    }
+                }
+                // Expression lists may hold `ref.func`; treat as referencing.
+                ElementItems::Expressions(_, _) => return true,
+            },
+            Err(_) => return true, // unparseable → conservative
+        }
+    }
+    false
+}
+
 fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) -> Result<()> {
     use wasmparser::{BinaryReader, ElementItems, ElementKind, FromReader};
 
@@ -5974,5 +6010,75 @@ mod tests {
                 _ => panic!("expected a function-index element list"),
             }
         }
+    }
+
+    /// #196 regression (CRITICAL): the remapped table must hold the SAME
+    /// functions in the SAME slot order — each slot's funcref mapped through
+    /// old→new, in place. v1.1.11 produced a valid-but-wrong (scrambled) table
+    /// that `validate`/`--verify` could not detect; only behavior caught it.
+    /// This asserts per-slot func identity under a NON-identity remap.
+    #[test]
+    fn test_remap_element_section_preserves_per_slot_function() {
+        use std::collections::HashMap;
+        let mut module = empty_module();
+
+        // One active segment listing func indices [4, 2, 7, 9] (deliberately
+        // unsorted, to catch any reordering).
+        let payload: Vec<u8> = vec![
+            0x01, // segment count = 1
+            0x00, // flags: active, table 0
+            0x41, 0x00, 0x0b, // offset: i32.const 0, end
+            0x04, // 4 functions
+            0x04, 0x02, 0x07, 0x09, // func indices
+        ];
+        module.element_section_bytes = Some(payload);
+
+        // Non-identity remap, as produced by dead-function removal.
+        let remap: HashMap<u32, u32> = [(4, 3), (2, 2), (7, 6), (9, 8)].into_iter().collect();
+        remap_element_section_refs(&mut module, &remap).expect("remap must succeed");
+
+        let rebuilt = module.element_section_bytes.as_ref().unwrap();
+        let reader =
+            wasmparser::ElementSectionReader::new(wasmparser::BinaryReader::new(rebuilt, 0))
+                .expect("rebuilt payload must parse");
+        assert_eq!(reader.count(), 1);
+        let mut got = Vec::new();
+        for elem in reader {
+            if let wasmparser::ElementItems::Functions(funcs) = elem.unwrap().items {
+                got.extend(funcs.into_iter().map(|f| f.unwrap()));
+            }
+        }
+        // Each original slot's func index mapped through old→new, IN ORDER.
+        assert_eq!(
+            got,
+            vec![3, 2, 6, 8],
+            "#196: element table slots must map each funcref in place, preserving order"
+        );
+    }
+
+    /// #196: the fail-safe guard must detect a function-referencing element
+    /// table (so callers skip optimization), and must NOT trip on a module
+    /// with no element section or an empty one.
+    #[test]
+    fn test_element_section_references_functions_detection() {
+        // Function-referencing active segment → guard trips.
+        let mut m = empty_module();
+        m.element_section_bytes = Some(vec![
+            0x01, 0x00, 0x41, 0x00, 0x0b, 0x02, 0x00, 0x01, // 1 seg, 2 funcs [0,1]
+        ]);
+        assert!(
+            element_section_references_functions(&m),
+            "must detect a function-referencing element table"
+        );
+
+        // No element section → safe to optimize.
+        let mut m2 = empty_module();
+        m2.element_section_bytes = None;
+        assert!(!element_section_references_functions(&m2));
+
+        // Empty element section (zero segments) → no table, safe to optimize.
+        let mut m3 = empty_module();
+        m3.element_section_bytes = Some(vec![0x00]); // segment count = 0
+        assert!(!element_section_references_functions(&m3));
     }
 }
