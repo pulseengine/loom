@@ -27,7 +27,7 @@ which = { version = "8.0", optional = true }
 glob = { version = "0.3", optional = true }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [[bin]]
 name = "differential"
