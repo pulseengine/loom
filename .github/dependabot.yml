@@ -1,0 +1,50 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /loom-cli
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /loom-core
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: /loom-isle
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+  - package-ecosystem: docker
+    directory: /fuzz/oss-fuzz/projects/loom
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
