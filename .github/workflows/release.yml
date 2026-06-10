@@ -43,7 +43,7 @@ jobs:
             artifact: loom-windows-x64
             binary: loom.exe
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -79,7 +79,7 @@ jobs:
     # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
@@ -121,7 +121,7 @@ jobs:
       id-token: write  # For Cosign keyless signing
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
