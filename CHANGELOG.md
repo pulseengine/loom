@@ -5,6 +5,44 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.12] - 2026-06-10
+
+**CRITICAL bug fix: stop silently miscompiling modules with indirect-call
+tables (#196).** v1.1.11's #172 encoding fix made falcon's core module 0
+*encode* validly — which unmasked a worse, pre-existing defect: loom's
+optimization of a module with a function-referencing element segment produces
+**valid-but-wrong** code (a scrambled / stale `call_indirect` table, and
+further parse→re-encode corruption). It passes `wasm-tools validate` AND loom
+`--verify` (both structural) but flies wrong — falcon's SIL gate went
+`run-position-hold` 0.13 m → **593.8 m**. v1.1.10 was *accidentally* safe (it
+fell back to original bytes); v1.1.11 removed that accident.
+
+### Fixed (correctness — flight-critical)
+
+- **Skip optimization of any core module with a function-referencing element
+  segment**, keeping the original bytes, in both the component path
+  (`optimize_core_module`) and the standalone path (`optimize_module`). loom
+  cannot currently verify such a module is optimized *behaviorally* correctly —
+  the fused pass does not remap the indirect-call table consistently across its
+  sub-passes, and structural verification cannot detect a wrong-but-valid table.
+  This restores v1.1.10's safe behavior *deliberately*. (#172's element
+  segment-count fix is retained; it was real, just insufficient.)
+
+### Validation (behavioral, not just structural)
+
+- gale's exact artifact (`falcon-flight-v1.34.wasm`): optimized output now
+  matches the original bit-for-bit on `run-stabilization` (0.023399856) and
+  `run-position-hold` (0.1317415) under wasmtime, and validates. Was 0.329 /
+  593.79 on v1.1.11.
+- New regression tests: `element_section_references_functions` detection +
+  per-slot element-remap identity (#196). 395 lib + 85 integration pass.
+
+### Known limitation / next step
+
+- Modules with indirect-call tables are now *unoptimized* (safe). Re-enabling
+  them is gated on a **behavioral differential** in loom (run exports before/
+  after and compare) — structural `--verify` is insufficient, as #196 proved.
+
 ## [1.1.11] - 2026-06-10
 
 **Bug fix: fused pass no longer invalidates core modules with element segments (#172).**
