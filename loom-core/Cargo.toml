@@ -36,7 +36,7 @@ rayon = "1"
 
 [dev-dependencies]
 proptest = { workspace = true }
-criterion = "0.5"
+criterion = "0.8"
 wasmtime = "17.0"
 
 [features]
