@@ -143,5 +143,6 @@
 ;; This allows recursive structures without infinite size
 (type Value (primitive Value))
 
-;; Primitive types for local variable indices
-(type u32 (primitive u32))
+;; `u32` is provided by the cranelift-isle prelude (since 0.132.1). We must NOT
+;; redefine it here or ISLE errors with "Type with name 'u32' defined more than
+;; once" (#198). Uses of `u32` below resolve to the prelude type.

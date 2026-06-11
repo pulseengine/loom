@@ -5,6 +5,38 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.13] - 2026-06-11
+
+**Build fix: the tag builds from a clean checkout again (#198).** v1.1.12's
+committed dependency set (`cranelift-isle 0.132.1`, `wasmparser 0.251`, pulled
+by the wasmtime-45 bump) had landed without the corresponding source migration,
+so `cargo install` from the tag failed. Migrated the code to the new APIs.
+
+### Fixed
+
+- **cranelift-isle 0.132.1:** `loom-shared/build.rs` `CodegenOptions` literal now
+  uses `..Default::default()` (it grew fields); removed the duplicate `(type u32
+  …)` from `types.isle` (the prelude now provides it); added `extern crate
+  alloc` so the generated code's `alloc::` paths resolve.
+- **wasmparser 0.251:** migrated import parsing to the new `Imports` enum
+  (`Single(usize, Import)`; the compact-import encodings `Compact1`/`Compact2`
+  are *not* modeled — loom refuses to parse such a module rather than mis-record
+  its import table, falling back to original bytes); `ComponentExternName` is now
+  a struct (`.name`, was tuple `.0`); dropped the removed `cm_async_builtins`
+  feature flag.
+
+### Validation
+
+- Builds clean against the committed deps (isle codegen + workspace). 395 lib +
+  85 integration tests pass. Behavioral falcon gate unchanged from v1.1.12 —
+  `run-stabilization` 0.023399856, `run-position-hold` 0.1317415 (matches the
+  original; the #196 fail-safe and the import-parse migration are both correct).
+
+### Note
+
+A committed `Cargo.lock` (or pinned deps) would prevent the from-tag
+non-reproducibility this exposed; tracked separately.
+
 ## [1.1.12] - 2026-06-10
 
 **CRITICAL bug fix: stop silently miscompiling modules with indirect-call

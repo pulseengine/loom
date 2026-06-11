@@ -7,6 +7,10 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+// cranelift-isle 0.132.1's generated code emits `alloc::` paths; bring the
+// alloc crate into scope so the included ISLE output resolves them (#198).
+extern crate alloc;
+
 /// WebAssembly value types
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
