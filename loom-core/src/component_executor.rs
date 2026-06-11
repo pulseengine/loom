@@ -135,7 +135,9 @@ impl ComponentExecutor {
                     for export in reader {
                         let export = export.context("Failed to read component export")?;
                         canonical_functions.push(CanonicalFunctionInfo {
-                            name: export.name.0.to_string(),
+                            // wasmparser 0.251: ComponentExternName is a struct
+                            // with a `name` field (was a tuple `.0`) (#198).
+                            name: export.name.name.to_string(),
                             param_count: 0,
                             return_count: 1,
                             preserved: true,
@@ -144,9 +146,15 @@ impl ComponentExecutor {
                 }
                 Payload::ImportSection(reader) => {
                     for import in reader {
-                        let import = import.context("Failed to read import")?;
+                        // wasmparser 0.251 `Imports` enum (#198): only the
+                        // classic `Single` import carries a name here; the
+                        // compact encodings are skipped in this diagnostic view.
+                        let name = match import.context("Failed to read import")? {
+                            wasmparser::Imports::Single(_, import) => import.name,
+                            _ => continue,
+                        };
                         canonical_functions.push(CanonicalFunctionInfo {
-                            name: format!("import_{}", import.name),
+                            name: format!("import_{name}"),
                             param_count: 0,
                             return_count: 0,
                             preserved: true,

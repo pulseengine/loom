@@ -872,7 +872,8 @@ pub mod parse {
         let mut inflated = WasmFeatures::default().inflate();
         inflated.cm_async = true;
         inflated.cm_async_stackful = true;
-        inflated.cm_async_builtins = true;
+        // `cm_async_builtins` was removed in wasmparser 0.251 (folded into the
+        // cm_async feature set); the two flags above cover it (#198).
         WasmFeatures::from_inflated(inflated)
     }
 
@@ -922,7 +923,21 @@ pub mod parse {
                 Payload::ImportSection(reader) => {
                     // Capture imports (functions, globals, memories, tables)
                     for import in reader.clone() {
-                        let import = import?;
+                        // wasmparser 0.251 yields `Imports` (an enum) per entry:
+                        // `Single` is the classic (module, name, ty) import;
+                        // `Compact1`/`Compact2` are the new compact-imports
+                        // encoding. loom does not model compact imports, so it
+                        // refuses to parse such a module rather than mis-record
+                        // its import table — the caller then keeps the original
+                        // bytes (fail-safe, #198).
+                        let import = match import? {
+                            wasmparser::Imports::Single(_, import) => import,
+                            _ => {
+                                return Err(anyhow!(
+                                    "compact import encoding (wasmparser 0.251) not supported"
+                                ));
+                            }
+                        };
                         let kind = match import.ty {
                             wasmparser::TypeRef::Func(type_idx) => ImportKind::Func(type_idx),
                             wasmparser::TypeRef::Memory(mem_type) => ImportKind::Memory(Memory {

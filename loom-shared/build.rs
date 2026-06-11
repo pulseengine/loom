@@ -44,9 +44,14 @@ fn main() {
         }
     }
 
-    // Configure code generation options
+    // Configure code generation options.
+    // `..Default::default()` keeps this forward-compatible as cranelift-isle's
+    // CodegenOptions grows fields across versions (#198: 0.132.1 added
+    // emit_logging / match_arm_split_threshold / prefixes / … — an exhaustive
+    // literal broke the build from-tag).
     let options = isle::codegen::CodegenOptions {
         exclude_global_allow_pragmas: true,
+        ..Default::default()
     };
 
     // Compile ISLE files to Rust code
