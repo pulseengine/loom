@@ -363,6 +363,15 @@ jobs:
     # Stays on ubuntu-latest: requires Nix + Bazel; both are out-of-scope for
     # smithy phase 1 (see migration playbook "What's currently out of scope").
     runs-on: ubuntu-latest
+    # continue-on-error is TEMPORARY, not the intended end state (loom#169).
+    # The job is currently red on the upstream rules_rocq_rust toolchain
+    # breakage (fix in flight: #141). Making it gating while red would block
+    # every merge. Plan to close loom#169:
+    #   1. land the rules_rocq_rust bump (#141) so this job goes green;
+    #   2. then REMOVE continue-on-error so a proof regression blocks merge;
+    #   3. separately discharge the proofs' remaining Admitted/Axiom (criterion
+    #      3 "complete") — gating catches regressions in the proven parts but
+    #      does not by itself close those gaps.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
