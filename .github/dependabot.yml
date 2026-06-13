@@ -36,12 +36,6 @@ updates:
       interval: weekly
     labels:
       - dependencies
-  - package-ecosystem: pip
-    directory: /docs
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
   - package-ecosystem: docker
     directory: /fuzz/oss-fuzz/projects/loom
     schedule:

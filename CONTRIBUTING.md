@@ -137,7 +137,7 @@ loom/
 ├── loom-isle/          # ISLE term definitions and rules
 ├── loom-cli/           # Command-line interface
 ├── tests/fixtures/     # Test WebAssembly files
-└── docs/               # Sphinx documentation
+└── docs/               # Markdown documentation (renders on GitHub)
 ```
 
 ## Adding New Optimizations
@@ -192,14 +192,11 @@ wasm-tools validate /tmp/test.wasm
 
 - **Code comments**: Document non-obvious logic
 - **Rustdoc**: Use `///` for public APIs
-- **Sphinx docs**: Update `docs/source/requirements/` for major features
-
-Build documentation:
-```bash
-cd docs
-pip install -r requirements.txt
-make html
-```
+- **Traceability**: Update the rivet artifacts under `safety/` for major
+  features (requirements, verification, safety-case). Validate with
+  `rivet validate`.
+- **Markdown docs**: The `docs/` tree is plain Markdown that renders directly
+  on GitHub — no build step.
 
 ## Getting Help
 
