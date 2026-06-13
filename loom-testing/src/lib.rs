@@ -229,10 +229,10 @@ impl TestResult {
         linker.func_wrap("wasi_snapshot_preview1", "proc_exit", |_: i32| {})?;
 
         // Try to load modules
-        let original_module =
-            Module::new(&engine, original).context("Failed to load original module")?;
-        let optimized_module =
-            Module::new(&engine, optimized).context("Failed to load optimized module")?;
+        let original_module = Module::new(&engine, original)
+            .map_err(|e| anyhow::anyhow!("Failed to load original module: {e}"))?;
+        let optimized_module = Module::new(&engine, optimized)
+            .map_err(|e| anyhow::anyhow!("Failed to load optimized module: {e}"))?;
 
         // Try to instantiate (may fail due to missing imports)
         let original_instance = match linker.instantiate(&mut store, &original_module) {
@@ -360,7 +360,7 @@ impl TestResult {
                     ValType::F64 => Val::F64(0),
                     _ => return FunctionCompareResult::Skipped,
                 };
-                opt_results[i] = orig_results[i].clone();
+                opt_results[i] = orig_results[i];
             }
 
             // Call original
@@ -491,10 +491,10 @@ impl TestResult {
         let engine = Engine::default();
 
         // Load both modules
-        let loom_module =
-            Module::new(&engine, loom_wasm).context("Failed to load LOOM optimized module")?;
+        let loom_module = Module::new(&engine, loom_wasm)
+            .map_err(|e| anyhow::anyhow!("Failed to load LOOM optimized module: {e}"))?;
         let wasm_opt_module = Module::new(&engine, wasm_opt_wasm)
-            .context("Failed to load wasm-opt optimized module")?;
+            .map_err(|e| anyhow::anyhow!("Failed to load wasm-opt optimized module: {e}"))?;
 
         // Try to instantiate and compare exports
         let loom_results = Self::extract_function_results(&engine, &loom_module);

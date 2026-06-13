@@ -325,9 +325,9 @@ impl DifferentialExecutor {
 
         // Load modules
         let original_module = Module::new(&self.engine, original_bytes)
-            .context("Failed to compile original module")?;
+            .map_err(|e| anyhow::anyhow!("Failed to compile original module: {e}"))?;
         let optimized_module = Module::new(&self.engine, optimized_bytes)
-            .context("Failed to compile optimized module")?;
+            .map_err(|e| anyhow::anyhow!("Failed to compile optimized module: {e}"))?;
 
         // Try to instantiate
         let (original_instance, optimized_instance) = match (

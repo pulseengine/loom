@@ -373,9 +373,11 @@ fn collect_function_outputs(
     engine: &Engine,
     wasm_bytes: &[u8],
 ) -> Result<std::collections::HashMap<String, Vec<Val>>> {
-    let module = Module::new(engine, wasm_bytes).context("Failed to compile module")?;
+    let module = Module::new(engine, wasm_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to compile module: {e}"))?;
     let mut store = Store::new(engine, ());
-    let instance = Instance::new(&mut store, &module, &[]).context("Failed to instantiate")?;
+    let instance = Instance::new(&mut store, &module, &[])
+        .map_err(|e| anyhow::anyhow!("Failed to instantiate: {e}"))?;
 
     let mut outputs = std::collections::HashMap::new();
 
