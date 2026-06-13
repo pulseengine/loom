@@ -38,6 +38,9 @@
 
 use crate::Module;
 use anyhow::{Result, anyhow};
+// rayon is excluded on wasm32 (no pthread); islands run sequentially there.
+// The deterministic tie-break (see below) makes the result identical. (#142)
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 /// Configuration for a single optimization island.
@@ -284,8 +287,16 @@ pub fn optimize_module_islands(module: &Module, configs: &[IslandConfig]) -> Res
     // `par_iter()` here yields `Result<IslandResult>`; we keep both Ok and
     // Err so we can preserve per-island failure messages for the no-winner
     // case below.
+    #[cfg(not(target_arch = "wasm32"))]
     let results: Vec<Result<IslandResult>> = configs
         .par_iter()
+        .map(|cfg| run_one_island(module, cfg))
+        .collect();
+    // wasm32 has no thread pool — run the same islands sequentially. The
+    // deterministic tie-break below makes the winner identical. (#142)
+    #[cfg(target_arch = "wasm32")]
+    let results: Vec<Result<IslandResult>> = configs
+        .iter()
         .map(|cfg| run_one_island(module, cfg))
         .collect();
 
@@ -356,14 +367,25 @@ pub fn measure_island_sizes(
     module: &Module,
     configs: &[IslandConfig],
 ) -> Vec<(String, Result<usize>)> {
-    configs
+    #[cfg(not(target_arch = "wasm32"))]
+    let out = configs
         .par_iter()
         .map(|cfg| {
             let name = cfg.name.to_string();
             let result = run_one_island(module, cfg).map(|r| r.encoded.len());
             (name, result)
         })
-        .collect()
+        .collect();
+    #[cfg(target_arch = "wasm32")]
+    let out = configs
+        .iter()
+        .map(|cfg| {
+            let name = cfg.name.to_string();
+            let result = run_one_island(module, cfg).map(|r| r.encoded.len());
+            (name, result)
+        })
+        .collect();
+    out
 }
 
 #[cfg(test)]
