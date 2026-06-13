@@ -2,8 +2,9 @@
 //!
 //! Run with: cargo bench
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use loom_core::{optimize, parse};
+use std::hint::black_box;
 
 /// Benchmark constant folding performance
 fn bench_constant_folding(c: &mut Criterion) {

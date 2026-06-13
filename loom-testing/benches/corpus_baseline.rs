@@ -888,7 +888,7 @@ fn corpus_baseline(c: &mut Criterion) {
                     let row = measure_fixture(env, name, path, note);
                     guard[idx] = Some(row);
                 }
-                criterion::black_box(idx)
+                std::hint::black_box(idx)
             });
         });
     }
