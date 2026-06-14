@@ -28,6 +28,10 @@ two build breaks that floated in via unpinned dependencies.
   (`E0599`); `criterion` deprecated `black_box`. Migrated the `loom-testing`
   wasmtime call sites to `.map_err(|e| anyhow!(...))` and the benches to
   `std::hint::black_box`.
+- **WASM Build CI job pinned to a real toolchain.** `dtolnay/rust-toolchain@1.93.1`
+  pins the *action* git tag, not Rust; that old action revision derives "stable"
+  from the calendar, which had drifted to a not-yet-released `1.100.0` and broke
+  the job on `main`. Switched to `@stable` + explicit `toolchain: "1.93.1"`.
 
 ### Changed
 
