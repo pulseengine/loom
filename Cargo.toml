@@ -22,7 +22,7 @@ wasmparser = { version = "0.251", features = ["component-model"] }
 wasm-encoder = { version = "0.252", features = ["component-model"] }
 wasmprinter = "0.251"
 wat = "1.241"
-wit-component = "0.251"
+wit-component = "0.252"
 
 # ISLE compiler and runtime
 cranelift-isle = "0.132"
