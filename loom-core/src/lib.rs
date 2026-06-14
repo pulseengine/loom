@@ -11342,6 +11342,22 @@ pub mod optimize {
                 continue;
             }
 
+            // #220: the Z3 translation-validation net (step 4 below) SILENTLY
+            // SKIPS functions containing float load/store — verify_function_
+            // equivalence returns Ok(true) ("assume equivalent") without a
+            // proof. Dead-store elimination REMOVES code, and its backward
+            // liveness analysis has proven unsound on such a module: the
+            // meld-fused falcon core regressed run-stabilization 0.023399856 ->
+            // 0.32916 (a live float store dropped) while still passing
+            // wasm-tools validate. The silent skip is only sound for passes
+            // that don't remove/move code (see verify.rs); dead-store
+            // elimination is not one of them. Mirror the #196 stance — never
+            // eliminate under uncertainty: skip any function whose result the
+            // verifier cannot actually prove.
+            if contains_unverifiable_float_memory(&func.instructions) {
+                continue;
+            }
+
             // Step 1: count writes (LocalSet + LocalTee) for ID tracking.
             let total_writes = count_local_writes(&func.instructions);
             if total_writes == 0 {
@@ -11374,6 +11390,35 @@ pub mod optimize {
         }
 
         Ok(())
+    }
+
+    /// True if the instruction tree contains a float load/store. These are
+    /// the instructions the Z3 translation validator cannot model
+    /// (`verify::contains_unverifiable_instructions`), so it silently treats
+    /// such functions as "equivalent" without a proof. Dead-store elimination
+    /// must not rely on that absent safety net (#220), so it skips these
+    /// functions entirely. Compiled in every feature configuration — the
+    /// conservative skip is unconditional, not gated on the Z3 feature.
+    fn contains_unverifiable_float_memory(instructions: &[crate::Instruction]) -> bool {
+        use crate::Instruction;
+        instructions.iter().any(|instr| match instr {
+            Instruction::F32Load { .. }
+            | Instruction::F64Load { .. }
+            | Instruction::F32Store { .. }
+            | Instruction::F64Store { .. } => true,
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                contains_unverifiable_float_memory(body)
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                contains_unverifiable_float_memory(then_body)
+                    || contains_unverifiable_float_memory(else_body)
+            }
+            _ => false,
+        })
     }
 
     /// Count LocalSet + LocalTee occurrences in a structured instruction
@@ -18152,6 +18197,41 @@ mod tests {
         assert_eq!(
             module.functions[0].instructions, original,
             "Live writes must not be changed"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_stores_skips_unverifiable_float_memory() {
+        // #220: when a function contains float load/store, the Z3 translation
+        // validator silently skips it (no proof), so dead-store elimination has
+        // no safety net and its liveness analysis can be unsound (the meld-fused
+        // falcon core dropped a live float store: run-stabilization 0.023->0.329).
+        // The conservative fix: skip the whole function. The dead local write
+        // below would normally be removed, but the f32.store/f32.load make the
+        // function unverifiable, so it must be left byte-for-byte unchanged.
+        let wat = r#"(module
+            (memory 1)
+            (func $test (result f32)
+                (local i32)
+                i32.const 42
+                local.set 0       ;; dead local write — normally eliminated
+                i32.const 0
+                f32.const 1.5
+                f32.store         ;; unverifiable: forces the conservative skip
+                i32.const 0
+                f32.load
+            )
+        )"#;
+
+        let mut module = parse::parse_wat(wat).expect("parse");
+        let original = module.functions[0].instructions.clone();
+
+        optimize::eliminate_dead_stores(&mut module).expect("pass");
+
+        assert_eq!(
+            module.functions[0].instructions, original,
+            "#220: functions with unverifiable float load/store must be skipped \
+             entirely — never eliminate a store the verifier cannot prove dead"
         );
     }
 
