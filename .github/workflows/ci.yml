@@ -283,8 +283,14 @@ jobs:
       # wasip2 component model cannot resolve with wasi-sdk-25.
       # Last known working: 1.93.1 (2026-02-11), confirmed in CI run 22541892477.
       # TODO: Unpin when Rust stable + wasi-sdk resolves the wasip2 thread init issue.
-      - uses: dtolnay/rust-toolchain@1.100.0
+      # NB: pin the *toolchain* via the input, not the action ref. `@<X.Y.Z>`
+      # pins the action's git tag, not Rust; that revision derives "stable" from
+      # the calendar. Dependabot #206 bumped this to `@1.100.0`, a Rust that does
+      # not exist yet, breaking the job on main. `@stable` + explicit toolchain
+      # installs exactly 1.93.1. Do NOT let dependabot bump the ref again.
+      - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.93.1"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:

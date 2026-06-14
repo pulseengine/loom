@@ -5,6 +5,48 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.14] - 2026-06-15
+
+Correctness + release-engineering release. One optimizer correctness fix (#220);
+the rest is release/build-health. The falcon behavioral gate is restored to its
+reference value by #220.
+
+### Fixed
+
+- **Dead-store elimination no longer miscompiles float-memory functions (#220,
+  #221).** The `dead-stores` pass dropped a LIVE float store in the meld-fused
+  falcon core — valid-but-wrong, `run-stabilization` 0.023399856 → 0.32916. The
+  Z3 translation validator silently skips functions with float load/store
+  (`Ok(true)` without a proof), so the pass's liveness analysis shipped an
+  unsound elimination with no safety net. Fix: a `contains_unverifiable_float_
+  memory` guard makes the pass skip any function the verifier cannot prove —
+  never eliminate under uncertainty (the #196 stance). Restores 0.023399856.
+- **Release binaries ship again (#142, #216).** The release job was gated on the
+  fragile `wasm32-wasip2` build; any wasm link failure skipped all binary
+  uploads. Decoupled: `create-release` now `needs: [build-binaries]` only (4
+  native targets, `fail-fast: false`). Verified by retroactively shipping
+  v1.1.13's full asset set.
+- **`main` un-redded after floated-dependency breaks (#202).** `wasmtime` 45.0.1
+  dropped anyhow's `.context()` bound (`E0599`); `criterion` deprecated
+  `black_box`. Migrated the call sites.
+- **WASM Build CI pinned to a real toolchain.** Dependabot (#206) bumped
+  `dtolnay/rust-toolchain` to `@1.100.0` — which pins the *action* tag, not Rust,
+  and that revision derives a not-yet-released Rust 1.100.0, breaking the job.
+  Switched to `@stable` + explicit `toolchain: "1.93.1"`.
+
+### Changed
+
+- **Unified release-artifact standard (#216).** Per release: per-OS archives, a
+  CycloneDX SBOM, `SHA256SUMS.txt` with a keyless cosign signature, a SLSA
+  build-provenance attestation, and `build-env.txt` (matches pulseengine/synth).
+- **Removed the vestigial Sphinx scaffold (#201).** It never built; rivet owns
+  requirements traceability and the `docs/` Markdown renders on GitHub.
+
+### Note
+
+A committed `Cargo.lock` (CI `--locked`) would prevent the floated-dep breaks
+(#202, #206); still tracked separately.
+
 ## [1.1.13] - 2026-06-11
 
 **Build fix: the tag builds from a clean checkout again (#198).** v1.1.12's
