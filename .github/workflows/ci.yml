@@ -91,7 +91,7 @@ jobs:
       - name: Build release
         run: cargo build --release --verbose
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: loom-${{ matrix.os }}
           path: |
@@ -306,7 +306,7 @@ jobs:
           cargo +1.93.1 build --release --target wasm32-wasip2 --package loom-cli
 
       - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: loom-wasm
           path: target/wasm32-wasip2/release/loom.wasm
