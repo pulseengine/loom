@@ -5,6 +5,46 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.14] - 2026-06-14
+
+**Release-engineering + build-health release.** No optimizer behavior change —
+the falcon behavioral gate is unchanged from v1.1.13. This release restores
+release-binary uploads (the headline fix for downstream consumers) and repairs
+two build breaks that floated in via unpinned dependencies.
+
+### Fixed
+
+- **Release binaries ship again (#142, #216).** The old `release.yml` `release`
+  job had `needs: [build-native, build-wasm]`; the `wasm32-wasip2` build failed
+  to link (`pthread`/`__wasi_init_tp`, from the unconditional `rayon` dep),
+  which **skipped the entire release job** — so every release v0.6.0..v1.1.13
+  uploaded only the compliance tarball, never the `loom` binary. The release job
+  now `needs: [build-binaries]` only (a 4-target native matrix with
+  `fail-fast: false`), decoupling the binaries from the fragile wasm/OCI publish.
+  Verified by re-running the new workflow against the v1.1.13 tag, which
+  retroactively shipped the full asset set.
+- **`main` un-redded after floated-dependency breaks (#202).** `wasmtime` floated
+  to 45.0.1, whose `Error` no longer satisfies anyhow's `.context()` bound
+  (`E0599`); `criterion` deprecated `black_box`. Migrated the `loom-testing`
+  wasmtime call sites to `.map_err(|e| anyhow!(...))` and the benches to
+  `std::hint::black_box`.
+
+### Changed
+
+- **Unified release-artifact standard (#216).** Each release now publishes per-OS
+  archives `loom-vX.Y.Z-<triple>.{tar.gz,zip}`, a CycloneDX SBOM
+  `loom-X.Y.Z.cdx.json`, `SHA256SUMS.txt` with a keyless cosign signature
+  (`.sig`/`.pem`/`.cosign.bundle`), a SLSA build-provenance attestation, and
+  `build-env.txt` — matching the pulseengine/synth reference.
+- **Removed the vestigial Sphinx scaffold (#201).** It never built (no
+  `conf.py`/`source/`) and its requirements-traceability role is owned by rivet;
+  the `docs/` Markdown renders directly on GitHub.
+
+### Note
+
+A committed `Cargo.lock` (build `--locked` in CI) would prevent the floated-dep
+breaks that #202 fixed; still tracked separately.
+
 ## [1.1.13] - 2026-06-11
 
 **Build fix: the tag builds from a clean checkout again (#198).** v1.1.12's
