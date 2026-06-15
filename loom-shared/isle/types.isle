@@ -115,6 +115,12 @@
     (I64Ctz (val Value))
     (I64Popcnt (val Value))
 
+    ;; Integer width conversions (#219 seam-SROA — needed so the pack/unpack
+    ;; forwarding rules can match on these terms). Field name `val` mirrors the
+    ;; Rust ValueData variants in loom-shared/src/lib.rs.
+    (I32WrapI64 (val Value))
+    (I64ExtendI32U (val Value))
+
     ;; Select instruction
     (Select (cond Value) (true_val Value) (false_val Value))
 

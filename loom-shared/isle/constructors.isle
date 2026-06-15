@@ -138,6 +138,22 @@
 (extern constructor ipopcnt64 ipopcnt64)
 
 ;; ============================================================================
+;; Integer width conversions (#219 seam-SROA)
+;; ============================================================================
+;; Both constructor and extractor are declared so the pack/unpack forwarding
+;; rules can match these terms on a rule LHS and rebuild them on the RHS.
+;; NOTE: the *_extract fns must also be listed in build.rs `fix_extractor_
+;; ownership` so the generated trait takes &Value (cranelift-isle emits owned).
+
+(decl i32_wrap_i64 (Value) Value)
+(extern constructor i32_wrap_i64 i32_wrap_i64)
+(extern extractor i32_wrap_i64 i32_wrap_i64_extract)
+
+(decl i64_extend_i32_u (Value) Value)
+(extern constructor i64_extend_i32_u i64_extend_i32_u)
+(extern extractor i64_extend_i32_u i64_extend_i32_u_extract)
+
+;; ============================================================================
 ;; Other Constructors
 ;; ============================================================================
 
