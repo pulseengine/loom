@@ -209,9 +209,14 @@ Proof.
     rewrite Hrev. simpl.
     (* Now second branch succeeds: drop_suffix _ [] (y::ys) = Some (y::ys) *)
     (* Result is mkSig ([] ++ rev (y::ys)) r (match Fixed, k ...) *)
-    (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps *)
-    replace (rev (y :: ys)) with (p0 :: ps)
-      by (rewrite <- Hrev; apply rev_involutive).
+    (* Rocq 9.0's [simpl] above unfolds [rev (y :: ys)] definitionally to
+       [rev ys ++ [y]], so we have to match the post-[simpl] shape rather
+       than the pre-[simpl] one the v1.1.0-era pin produced. The proof
+       obligation is still the same equality, just routed via a [change]
+       through the definitional unfolding of [rev]. *)
+    replace (rev ys ++ [y]) with (p0 :: ps)
+      by (change (rev ys ++ [y]) with (rev (y :: ys));
+          rewrite <- Hrev; symmetry; apply rev_involutive).
     simpl.
     destruct k; reflexivity.
 Qed.
@@ -229,11 +234,25 @@ Proof.
   - (* results = r0 :: rs *)
     (* drop_suffix _ [] (rev (r0::rs)) = Some (rev (r0::rs)) *)
     simpl.
-    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = [] *)
-    rewrite Nat.sub_0_r.
-    rewrite app_nil_r.
-    rewrite rev_involutive.
-    rewrite app_nil_r.
+    (* Rocq 9.0's [simpl] is more aggressive than the v1.1.0-era pin:
+       it already reduces [length (r0 :: rs) - 0] to its [length]
+       form definitionally, so [rewrite Nat.sub_0_r] finds no subterm
+       to match. [try rewrite] keeps the proof robust against both
+       behaviours. *)
+    try rewrite Nat.sub_0_r.
+    try rewrite app_nil_r.
+    (* Rocq 9.0's [simpl] unfolds the inner [rev (r0 :: rs)] to
+       [rev rs ++ [r0]], leaving the results field as
+       [rev (rev rs ++ [r0])] — a shape [rewrite rev_involutive] cannot
+       match (its pattern is [rev (rev ?M)]). But [rev rs ++ [r0]] is
+       definitionally [rev (r0 :: rs)], so route through [change] and
+       close with involutivity. *)
+    replace (rev (rev rs ++ [r0])) with (r0 :: rs)
+      by (change (rev rs ++ [r0]) with (rev (r0 :: rs));
+          symmetry; apply rev_involutive).
+    (* The results field is [(r0 :: rs) ++ results empty_sig] = [_ ++ []];
+       clear the residual append left after the rev reduction. *)
+    try rewrite app_nil_r.
     destruct k; reflexivity.
 Qed.
 

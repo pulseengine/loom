@@ -15,25 +15,53 @@ module(
 # Requires nix to be installed: sh <(curl -L https://nixos.org/nix/install)
 bazel_dep(name = "rules_rocq_rust", version = "0.1.0")
 
-# Override to fetch from GitHub (not yet in BCR)
+# Override to fetch from GitHub (not yet in BCR).
+# Pinned to e4660cc1b — pulseengine/rules_rocq_rust#34, which migrates
+# rocq-of-rust to a hermetic rules_rust toolchain. Replaces the ad-hoc
+# cargo build in coq_of_rust/private/repository.bzl that was failing on
+# the CI runner with
+#   `rust-lld: error: unable to find library -lLLVM-19-rust-1.85.0-nightly`
+# and kept the Rocq Formal Proofs check red on LOOM main since v1.0.5.
 git_override(
     module_name = "rules_rocq_rust",
     remote = "https://github.com/pulseengine/rules_rocq_rust.git",
-    commit = "307b65f",
+    commit = "e4660cc1b",
 )
 
-# Rocq toolchain extension (creates internal nixpkgs for bzlmod compatibility)
+# Nix integration. rules_rocq_rust declares rules_nixpkgs_core internally
+# but its nix_repo is dev_dependency=True there, so the root module must
+# configure nixpkgs explicitly. rules_rust, crate_universe, and the
+# hermetic Rust nightly+rustc-dev toolchain that the rocq-of-rust build
+# needs are already registered (non-dev) by rules_rocq_rust's own
+# MODULE.bazel and are inherited automatically.
+bazel_dep(name = "rules_nixpkgs_core", version = "0.13.0")
+
+nix_repo = use_extension(
+    "@rules_nixpkgs_core//extensions:repository.bzl",
+    "nix_repo",
+)
+nix_repo.github(
+    name = "nixpkgs",
+    org = "NixOS",
+    repo = "nixpkgs",
+    # nixos-unstable with Rocq 9.0.1 (2026-04-01).
+    commit = "6201e203d09599479a3b3450ed24fa81537ebc4e",
+    sha256 = "",
+)
+use_repo(nix_repo, "nixpkgs")
+
+# Rocq toolchain extension (uses nixpkgs for a hermetic Rocq/Coq install).
 rocq = use_extension("@rules_rocq_rust//rocq:extensions.bzl", "rocq")
 rocq.toolchain(
-    version = "9.0",    # Rocq 9.0 for rocq-of-rust compatibility
-    strategy = "nix",   # Hermetic nix-based installation
+    version = "9.0",  # Rocq 9.0.1 (required for the real RocqOfRust library).
+    strategy = "nix",  # Hermetic nix-based installation.
+    with_rocq_of_rust_deps = True,  # Include coqutil, hammer, smpl.
 )
 use_repo(
     rocq,
     "rocq_coqutil",
     "rocq_hammer",
     "rocq_hammer_tactics",
-    "rocq_nixpkgs",
     "rocq_smpl",
     "rocq_stdlib",
     "rocq_toolchains",
@@ -41,12 +69,14 @@ use_repo(
 
 register_toolchains("@rocq_toolchains//:all")
 
-# rocq-of-rust toolchain for translating Rust to Rocq
+# rocq-of-rust toolchain — translates Rust subset to Rocq. Built
+# hermetically through rules_rust + crate_universe in the upstream
+# ruleset (see rules_rocq_rust@e4660cc1b's MODULE.bazel and
+# docs/rules_rust-migration.md).
 rocq_of_rust = use_extension("@rules_rocq_rust//coq_of_rust:extensions.bzl", "rocq_of_rust")
 rocq_of_rust.toolchain(
-    commit = "858907dbee116c51d7c6e87511bf5f92d6432ba4",  # Pinned for reproducibility
-    use_real_library = True,  # Full library with coqutil/hammer/smpl
+    use_real_library = True,  # Full library with coqutil + hammer + smpl.
 )
-use_repo(rocq_of_rust, "rocq_of_rust_toolchains", "rocq_of_rust_source")
+use_repo(rocq_of_rust, "rocq_of_rust_toolchains", "rocq_of_rust_build")
 
 register_toolchains("@rocq_of_rust_toolchains//:toolchain")

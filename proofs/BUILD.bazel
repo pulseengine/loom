@@ -4,32 +4,47 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 # Core Semantic Model
 # =============================================================================
 
-# WebAssembly and Term semantics (combined for module resolution)
+# WebAssembly semantics — base layer, no intra-proof dependencies.
+#
+# The whole inter-dependent proof group (semantics + simplify +
+# correctness) shares the logical prefix `LoomProofs` via include_path,
+# and the .v files import each other as `From LoomProofs Require Import
+# <Module>`. This is the idiom the pulseengine/meld proofs use
+# (proofs/spec/BUILD.bazel: include_path = "MeldSpec" on every library,
+# `From MeldSpec Require Import ...`). It is required because the
+# rules_rocq_rust rocq_library rule (@e4660cc1b) maps a library's .vo
+# under `-Q <output_dir> <include_path>`; a shared explicit include_path
+# gives every library a STABLE logical prefix independent of Bazel's
+# per-target output-dir layout, so a dependent's `From LoomProofs
+# Require Import WasmSemantics` resolves against the dep's .vo wired in
+# through `deps`. The package-derived default prefix did not, because
+# the .v files live in subdirectories of the BUILD package.
 rocq_library(
-    name = "semantics",
-    srcs = [
-        "semantics/WasmSemantics.v",
-        "semantics/TermSemantics.v",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-# Aliases for backwards compatibility
-alias(
     name = "wasm_semantics",
-    actual = ":semantics",
+    srcs = ["semantics/WasmSemantics.v"],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
-alias(
+# Term (ISLE) semantics — depends on WasmSemantics. One library per .v
+# file; the cross-file dependency is wired through `deps` (which makes
+# the dep's .vo a coqc input and adds its -Q loadpath).
+rocq_library(
     name = "term_semantics",
-    actual = ":semantics",
+    srcs = ["semantics/TermSemantics.v"],
+    deps = [":wasm_semantics"],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
 rocq_proof_test(
-    name = "semantics_test",
-    deps = [":semantics"],
+    name = "wasm_semantics_test",
+    deps = [":wasm_semantics"],
+)
+
+rocq_proof_test(
+    name = "term_semantics_test",
+    deps = [":term_semantics"],
 )
 
 # =============================================================================
@@ -44,6 +59,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -60,6 +76,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -76,6 +93,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -92,6 +110,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -111,6 +130,7 @@ rocq_library(
         ":wasm_semantics",
         ":term_semantics",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 
@@ -134,6 +154,7 @@ rocq_library(
         ":bitwise",
         ":strength_reduction",
     ],
+    include_path = "LoomProofs",
     visibility = ["//visibility:public"],
 )
 

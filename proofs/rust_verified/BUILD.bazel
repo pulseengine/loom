@@ -9,7 +9,7 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library")
 # RocqOfRust library - provides the core types needed by translated code
 alias(
     name = "rocq_of_rust_lib",
-    actual = "@rocq_of_rust_source//:rocq_of_rust_main",
+    actual = "@rocq_of_rust_build//:rocq_of_rust_main",
 )
 
 # =============================================================================
