@@ -17747,6 +17747,25 @@ mod tests {
     }
 
     #[test]
+    fn test_seam_sroa_wrap_extend_identity() {
+        // #219 seam-SROA: wrap_i64(extend_i32_u(x)) → x. Zero-extending an i32 to
+        // i64 then wrapping back to i32 is the identity — the u64-ABI round-trip
+        // a packed scalar pays at the dissolved decide seam. Must dissolve to the
+        // bare operand (no wrap/extend left).
+        use loom_isle::{i32_wrap_i64, i64_extend_i32_u, local_get, rewrite_pure};
+        let x = local_get(0); // an i32 value
+        let round_trip = i32_wrap_i64(i64_extend_i32_u(x));
+        let simplified = rewrite_pure(round_trip);
+
+        let instrs = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(
+            instrs,
+            vec![Instruction::LocalGet(0)],
+            "#219: wrap_i64(extend_i32_u(x)) must dissolve to x"
+        );
+    }
+
+    #[test]
     fn test_conversion_trunc_sat_folds_nan_to_zero() {
         // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
         use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, rewrite_pure};

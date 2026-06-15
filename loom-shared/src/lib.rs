@@ -4362,6 +4362,32 @@ fn rewrite_pure_impl(val: Value) -> Value {
             }
         }
 
+        // Integer width conversions (#219 seam-SROA). The live rewrite for the
+        // decide seam's u64 pack/unpack round-trip. Z3-validated per pass.
+        ValueData::I32WrapI64 { val } => {
+            let val_simplified = rewrite_pure(val.clone());
+            match val_simplified.data() {
+                // #219 seam-SROA: wrap_i64(extend_i32_u(x)) = x. zero-extending an
+                // i32 to i64 then taking the low 32 bits is the identity on i32 —
+                // unconditionally sound (Z3: extract(31,0, zero_ext(32,x)) = x).
+                ValueData::I64ExtendI32U { val: inner } => inner.clone(),
+                // Constant folding: wrap_i64(i64.const N) → i32.const (low 32 bits).
+                ValueData::I64Const { val: v } => iconst32(Imm32(v.value() as i32)),
+                _ => i32_wrap_i64(val_simplified),
+            }
+        }
+
+        ValueData::I64ExtendI32U { val } => {
+            let val_simplified = rewrite_pure(val.clone());
+            match val_simplified.data() {
+                // Constant folding: extend_i32_u(i32.const N) → i64.const (zero-extended).
+                ValueData::I32Const { val: v } => {
+                    iconst64(Imm64((v.value() as u32 as u64) as i64))
+                }
+                _ => i64_extend_i32_u(val_simplified),
+            }
+        }
+
         // Select instruction optimization
         ValueData::Select {
             cond,
