@@ -192,7 +192,7 @@ jobs:
         # and Z3 compilation + LLVM instrumentation together exhaust disk space
         run: cargo llvm-cov --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: ./lcov.info
           fail_ci_if_error: false
