@@ -2132,6 +2132,23 @@ pub fn i64_extend_i32_u(val: Value) -> Value {
     Value(Box::new(ValueData::I64ExtendI32U { val }))
 }
 
+/// Extractor for i32.wrap_i64 — used by ISLE rules to pattern-match the term
+/// on a rule LHS (#219 seam-SROA). Returns the inner operand.
+pub fn i32_wrap_i64_extract(val: &Value) -> Option<Value> {
+    match val.0.as_ref() {
+        ValueData::I32WrapI64 { val } => Some(val.clone()),
+        _ => None,
+    }
+}
+
+/// Extractor for i64.extend_i32_u — ISLE rule LHS matching (#219 seam-SROA).
+pub fn i64_extend_i32_u_extract(val: &Value) -> Option<Value> {
+    match val.0.as_ref() {
+        ValueData::I64ExtendI32U { val } => Some(val.clone()),
+        _ => None,
+    }
+}
+
 // ============================================================================
 // Float-to-Integer Truncation Constructors (trapping)
 // ============================================================================

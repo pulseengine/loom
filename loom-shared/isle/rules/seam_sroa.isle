@@ -1,0 +1,18 @@
+;; LOOM - #219 seam-SROA rewrite rules (proof-carrying)
+;;
+;; Dissolves the C<->Rust decide seam's u64 pack/unpack residue. Each rule
+;; carries a Z3 soundness obligation discharged before it ships (the pass
+;; output is also translation-validated). The bit-precise masked-forward rules
+;; (`(extend_u(a) | (extend_u(b)<<k)) & mask -> a`, `>>k -> b`) land in a later
+;; step once the carrier mem2reg brings the pack expression to the unpack site;
+;; this file starts with the unconditional identity that needs no side
+;; conditions.
+
+;; wrap_i64(extend_i32_u(x)) = x
+;;
+;; Soundness: extend_i32_u zero-extends an i32 to i64 (Z3: zero_ext(32, x));
+;; wrap_i64 takes the low 32 bits (Z3: extract(31, 0, .)). For all i32 x,
+;; extract(31,0, zero_ext(32, x)) = x. Unconditionally sound — no escape or
+;; mask side conditions. Removes the round-trip a packed scalar pays when its
+;; carrier is widened to the u64 ABI and immediately narrowed back.
+(rule 100 (simplify (i32_wrap_i64 (i64_extend_i32_u x))) x)
