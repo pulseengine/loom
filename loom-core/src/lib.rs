@@ -17766,6 +17766,62 @@ mod tests {
     }
 
     #[test]
+    fn test_seam_sroa_mask_clears_shifted_pack() {
+        // #219 seam-SROA: (or (shl (extend_u x) 32) Y) & 0xff → Y & 0xff.
+        // The high-shifted field of a u64 pack cannot survive a low-byte unpack
+        // mask, so the whole high half drops out. This is the `& mask` half of
+        // dissolving the sem decide's pack/unpack round-trip.
+        use loom_isle::{
+            Imm64, i64_extend_i32_u, iand64, iconst64, ior64, ishl64, local_get, rewrite_pure,
+        };
+        let high = ishl64(i64_extend_i32_u(local_get(0)), iconst64(Imm64(32)));
+        let low = i64_extend_i32_u(local_get(1)); // the surviving low field
+        let pack = ior64(high, low);
+        let masked = iand64(pack, iconst64(Imm64(0xff)));
+        let simplified = rewrite_pure(masked);
+
+        // Expect (extend_u(local.get 1)) & 0xff — the shifted high half is gone.
+        let want = terms::terms_to_instructions(&[iand64(
+            i64_extend_i32_u(local_get(1)),
+            iconst64(Imm64(0xff)),
+        )])
+        .unwrap();
+        let got = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(
+            got, want,
+            "#219: (or (shl _ 32) Y) & 0xff must dissolve to Y & 0xff"
+        );
+    }
+
+    #[test]
+    fn test_seam_sroa_shr_extracts_high_field() {
+        // #219 seam-SROA: (shr_u (or (shl (extend_u x) 32) const) 32) extracts the
+        // HIGH field of a u64 pack → (extend_u x) & 0xffffffff. The low (const)
+        // field shifts out (logical shift distributes over OR; shl-then-shr-same
+        // masks to the low 64-k bits). Mirrors the sem decide whose low field is
+        // a constant 0/1.
+        use loom_isle::{
+            Imm64, i64_extend_i32_u, iand64, iconst64, ior64, ishl64, ishru64, local_get,
+            rewrite_pure,
+        };
+        let high = ishl64(i64_extend_i32_u(local_get(0)), iconst64(Imm64(32)));
+        let pack = ior64(high, iconst64(Imm64(1))); // low field = const (like local 3 = 0/1)
+        let unpacked = ishru64(pack, iconst64(Imm64(32)));
+        let simplified = rewrite_pure(unpacked);
+
+        let want = terms::terms_to_instructions(&[iand64(
+            i64_extend_i32_u(local_get(0)),
+            iconst64(Imm64(0xffff_ffff)),
+        )])
+        .unwrap();
+        let got = terms::terms_to_instructions(&[simplified]).unwrap();
+        assert_eq!(
+            got, want,
+            "#219: (shr_u (or (shl (extend_u x) 32) const) 32) must extract (extend_u x) & 0xffffffff"
+        );
+    }
+
+    #[test]
     fn test_conversion_trunc_sat_folds_nan_to_zero() {
         // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
         use loom_isle::{ImmF32, fconst32, i32_trunc_sat_f32_s, rewrite_pure};
