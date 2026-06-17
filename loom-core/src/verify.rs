@@ -7274,6 +7274,12 @@ struct AcyclicState {
     stack: Vec<BV>,
     locals: Vec<BV>,
     globals: Vec<BV>,
+    /// Linear memory as a Z3 `Array[BV32 → BV8]` (PR-C Phase 2). Loads/stores use
+    /// the SAME shared helpers (`encode_i32_load_from` etc.) the main encoder
+    /// uses, so a `call F` modeled by-body and the inlined body produce
+    /// bit-identical memory expressions. Memory is MUTABLE branch state, so it is
+    /// ITE-merged at every join exactly like locals/globals.
+    memory: Array,
     /// Path condition guarding the current straight-line path.
     path: Bool,
     /// False once this path has branched / returned (subsequent straight-line
@@ -7281,19 +7287,15 @@ struct AcyclicState {
     reachable: bool,
 }
 
-/// One control label. Every branch targeting it accumulates an entry; at the
-/// label's join point the entries ITE-merge into a single successor state.
-/// `entries`: `(guard, result_values, locals_snapshot, globals_snapshot)`.
-///
-/// One incoming branch to a label: its path guard plus the result/locals/globals
-/// snapshot at the branch point.
+/// One incoming branch to a label: its path guard plus the result/locals/globals/
+/// memory snapshot at the branch point.
 #[cfg(feature = "verification")]
-type BranchEntry = (Bool, Vec<BV>, Vec<BV>, Vec<BV>);
+type BranchEntry = (Bool, Vec<BV>, Vec<BV>, Vec<BV>, Array);
 
-/// The ITE-merged successor of a join: result values, locals, globals, and the
-/// merged path condition.
+/// The ITE-merged successor of a join: result values, locals, globals, memory,
+/// and the merged path condition.
 #[cfg(feature = "verification")]
-type MergedState = (Vec<BV>, Vec<BV>, Vec<BV>, Bool);
+type MergedState = (Vec<BV>, Vec<BV>, Vec<BV>, Array, Bool);
 
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
@@ -7397,6 +7399,28 @@ fn is_acyclic_simple_modelable(instr: &Instruction) -> bool {
     )
 }
 
+/// PR-C Phase 2: memory loads/stores `exec_acyclic` models explicitly (via the
+/// shared `encode_*_load_from`/`*_store_into` helpers). Kept SEPARATE from
+/// `is_acyclic_simple_modelable` because memory ops must NOT be delegated to
+/// `encode_simple_instruction` (it havocs them, desyncing the stack).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn is_acyclic_memory_op(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::I32Load { .. }
+            | Instruction::I64Load { .. }
+            | Instruction::I32Store { .. }
+            | Instruction::I64Store { .. }
+            | Instruction::I32Load8S { .. }
+            | Instruction::I32Load8U { .. }
+            | Instruction::I32Load16S { .. }
+            | Instruction::I32Load16U { .. }
+            | Instruction::I32Store8 { .. }
+            | Instruction::I32Store16 { .. }
+    )
+}
+
 /// Max by-body call-recursion depth the acyclic executor will model. The seam
 /// decides call only `panic*` (no-return → diverge, no further recursion), so
 /// depth 2 suffices; 8 gives headroom and bounds any cyclic/recursive call
@@ -7463,7 +7487,7 @@ fn is_acyclic_modelable_body(
         | Instruction::Return
         // Unreachable is a trap (⊥): the executor diverges the path, never havoc.
         | Instruction::Unreachable => true,
-        other => is_acyclic_simple_modelable(other),
+        other => is_acyclic_simple_modelable(other) || is_acyclic_memory_op(other),
     })
 }
 
@@ -7497,9 +7521,13 @@ fn acyclic_push_branch(
         return Err(anyhow!("acyclic executor: stack underflow at branch"));
     }
     let results: Vec<BV> = state.stack[state.stack.len() - arity..].to_vec();
-    labels[target]
-        .entries
-        .push((guard, results, state.locals.clone(), state.globals.clone()));
+    labels[target].entries.push((
+        guard,
+        results,
+        state.locals.clone(),
+        state.globals.clone(),
+        state.memory.clone(),
+    ));
     Ok(())
 }
 
@@ -7511,13 +7539,14 @@ fn acyclic_push_branch(
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
 fn acyclic_merge_entries(entries: &[BranchEntry]) -> Option<MergedState> {
-    let (_, last_res, last_loc, last_glob) = entries.last()?;
+    let (_, last_res, last_loc, last_glob, last_mem) = entries.last()?;
     let mut res = last_res.clone();
     let mut loc = last_loc.clone();
     let mut glob = last_glob.clone();
+    let mut mem = last_mem.clone();
     let mut guards: Vec<Bool> = vec![entries.last().unwrap().0.clone()];
     // Fold earlier entries outward: each takes precedence under its own guard.
-    for (g, r, l, gl) in entries[..entries.len() - 1].iter().rev() {
+    for (g, r, l, gl, m) in entries[..entries.len() - 1].iter().rev() {
         res = r
             .iter()
             .zip(res.iter())
@@ -7533,10 +7562,12 @@ fn acyclic_merge_entries(entries: &[BranchEntry]) -> Option<MergedState> {
             .zip(glob.iter())
             .map(|(t, f)| merge_bv(g, t, f))
             .collect();
+        // ITE-merge the memory Array (Bool::ite is generic over the Z3 sort).
+        mem = g.ite(m, &mem);
         guards.push(g.clone());
     }
     let path = Bool::or(&guards);
-    Some((res, loc, glob, path))
+    Some((res, loc, glob, mem, path))
 }
 
 /// Apply a popped label's join to the state: the post-block state is the
@@ -7555,12 +7586,13 @@ fn acyclic_apply_join(
             state.reachable = false;
             Ok(())
         }
-        Some((results, locals, globals, path)) => {
+        Some((results, locals, globals, memory, path)) => {
             let mut stack = base_stack;
             stack.extend(results);
             state.stack = stack;
             state.locals = locals;
             state.globals = globals;
+            state.memory = memory;
             state.path = path;
             state.reachable = true;
             Ok(())
@@ -7616,6 +7648,7 @@ fn exec_acyclic(
                 let base_stack = state.stack.clone();
                 let saved_locals = state.locals.clone();
                 let saved_globals = state.globals.clone();
+                let saved_memory = state.memory.clone();
                 let saved_path = state.path.clone();
                 labels.push(LabelJoin {
                     arity,
@@ -7633,6 +7666,7 @@ fn exec_acyclic(
                 state.stack = base_stack.clone();
                 state.locals = saved_locals;
                 state.globals = saved_globals;
+                state.memory = saved_memory;
                 state.path = Bool::and(&[saved_path, cond_nz.not()]);
                 state.reachable = true;
                 exec_acyclic(else_body, state, labels, ctx, depth)?;
@@ -7709,6 +7743,91 @@ fn exec_acyclic(
                     encode_acyclic_call(callee, state, ctx, depth)?;
                 }
             }
+            // PR-C Phase 2: memory loads/stores via the SAME shared helpers the
+            // main encoder uses (so a by-body call and its inlined body produce
+            // bit-identical memory expressions). Handled explicitly — NEVER
+            // delegated to encode_simple_instruction, which havocs memory ops.
+            Instruction::I32Load { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Load underflow"))?;
+                state
+                    .stack
+                    .push(encode_i32_load_from(&state.memory, &addr, *offset)?);
+            }
+            Instruction::I64Load { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Load underflow"))?;
+                state
+                    .stack
+                    .push(encode_i64_load_from(&state.memory, &addr, *offset)?);
+            }
+            Instruction::I32Store { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Store addr underflow"))?;
+                state.memory = encode_i32_store_into(&state.memory, &addr, &value, *offset);
+            }
+            Instruction::I64Store { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Store addr underflow"))?;
+                state.memory = encode_i64_store_into(&state.memory, &addr, &value, *offset);
+            }
+            // Partial-width (8/16-bit) loads/stores (loom#161 helpers).
+            Instruction::I32Load8S { offset, .. }
+            | Instruction::I32Load8U { offset, .. }
+            | Instruction::I32Load16S { offset, .. }
+            | Instruction::I32Load16U { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial load underflow"))?;
+                let (bytes, signed) = match instr {
+                    Instruction::I32Load8S { .. } => (1, true),
+                    Instruction::I32Load8U { .. } => (1, false),
+                    Instruction::I32Load16S { .. } => (2, true),
+                    _ => (2, false),
+                };
+                state.stack.push(encode_partial_load_from(
+                    &state.memory,
+                    &addr,
+                    *offset,
+                    bytes,
+                    signed,
+                    32,
+                )?);
+            }
+            Instruction::I32Store8 { offset, .. } | Instruction::I32Store16 { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial store addr underflow"))?;
+                let bytes = if matches!(instr, Instruction::I32Store8 { .. }) {
+                    1
+                } else {
+                    2
+                };
+                state.memory =
+                    encode_partial_store_into(&state.memory, &addr, &value, *offset, bytes);
+            }
             other => {
                 // Defense in depth: never delegate an unmodeled op (the
                 // delegate's catch-all havocs and would desync the stack).
@@ -7767,9 +7886,11 @@ fn encode_acyclic_call(
     let mut sub = AcyclicState {
         stack: Vec::new(),
         locals: callee_locals,
-        // SHARED globals — the callee may read/write module globals; the merged
-        // result threads the updated globals back to the caller.
+        // SHARED globals + memory — the callee may read/write module globals and
+        // linear memory; the merged result threads the updated state back to the
+        // caller.
         globals: state.globals.clone(),
+        memory: state.memory.clone(),
         // Inherit the caller's path so callee branch guards conjoin it.
         path: state.path.clone(),
         reachable: true,
@@ -7790,10 +7911,11 @@ fn encode_acyclic_call(
     }
     let join = sub_labels.pop().unwrap();
     match acyclic_merge_entries(&join.entries) {
-        Some((results, _locals, globals, path)) => {
-            // Propagate callee global writes; narrow the caller path to the
-            // callee's returning paths.
+        Some((results, _locals, globals, memory, path)) => {
+            // Propagate callee global + memory writes; narrow the caller path to
+            // the callee's returning paths.
             state.globals = globals;
+            state.memory = memory;
             state.path = path;
             if arity == 1 {
                 state.stack.push(results[0].clone());
@@ -7842,11 +7964,15 @@ fn encode_acyclic_function(
     for i in 0..16 {
         globals.push(BV::new_const(format!("global{}", i), 32));
     }
+    // Symbolic initial memory — same name as the main encoder so two
+    // encode_acyclic_function calls (original + optimized) unify in Z3.
+    let memory = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
 
     let mut state = AcyclicState {
         stack: Vec::new(),
         locals,
         globals,
+        memory,
         path: Bool::from_bool(true),
         reachable: true,
     };
@@ -7865,7 +7991,7 @@ fn encode_acyclic_function(
         return Ok(None);
     }
     match acyclic_merge_entries(&func_join.entries) {
-        Some((results, _, _, _)) => Ok(Some(results[0].clone())),
+        Some((results, _, _, _, _)) => Ok(Some(results[0].clone())),
         None => Err(anyhow!("acyclic executor: function has no reachable exit")),
     }
 }
@@ -8302,7 +8428,7 @@ mod tests {
     #[test]
     #[cfg(feature = "verification")]
     fn test_acyclic_modelable_gate() {
-        // The whole-function gate must reject loops and memory ops.
+        // The whole-function gate must reject loops (back-edges).
         let with_loop =
             parse::parse_wat("(module (func (param i32) (result i32) (loop local.get 0)))")
                 .unwrap();
@@ -8312,14 +8438,16 @@ mod tests {
             "loops (back-edges) must be rejected"
         );
 
+        // PR-C Phase 2: memory ops are now ADMITTED (the executor threads a
+        // memory Array). (Phase 1 rejected them.)
         let with_memory = parse::parse_wat(
             "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))",
         )
         .unwrap();
         let ctx_mem = VerificationSignatureContext::from_module(&with_memory);
         assert!(
-            !is_acyclic_modelable_body(&with_memory.functions[0].instructions, &ctx_mem, 0),
-            "memory ops must be rejected in Phase 1"
+            is_acyclic_modelable_body(&with_memory.functions[0].instructions, &ctx_mem, 0),
+            "memory ops are modelable in Phase 2"
         );
 
         // A pure-integer br_table switch must be admitted.
@@ -8406,6 +8534,42 @@ mod tests {
         assert!(
             acyclic_equiv(with_trap, always7).unwrap(),
             "the unreachable (trap) path must diverge, leaving only the return-7 path"
+        );
+    }
+
+    /// PR-C Phase 2: a store on each branch followed by a load must MERGE memory
+    /// correctly (the load sees ite(cond, mem_then, mem_else)). Equivalent to the
+    /// direct if/else — proves the per-join memory ITE-merge is wired right.
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_memory_merge() {
+        let with_mem = r#"
+            (module (memory 1)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if
+                        i32.const 100
+                        i32.const 5
+                        i32.store
+                    else
+                        i32.const 100
+                        i32.const 6
+                        i32.store
+                    end
+                    i32.const 100
+                    i32.load))"#;
+        let direct = r#"
+            (module (memory 1)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if (result i32)
+                        i32.const 5
+                    else
+                        i32.const 6
+                    end))"#;
+        assert!(
+            acyclic_equiv(with_mem, direct).unwrap(),
+            "store-on-each-branch then load must merge memory (ite) → loaded value matches"
         );
     }
 

@@ -13701,6 +13701,25 @@ pub mod optimize {
         )
     }
 
+    /// PR-C Phase 2: memory loads/stores the precise acyclic executor models
+    /// (mirrors `verify::is_acyclic_memory_op`). Admitted by the regime-B inline
+    /// gate so memory-bearing acyclic callees are inline candidates.
+    fn is_acyclic_memory_modelable_instr(i: &Instruction) -> bool {
+        matches!(
+            i,
+            Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::I32Load8S { .. }
+                | Instruction::I32Load8U { .. }
+                | Instruction::I32Load16S { .. }
+                | Instruction::I32Load16U { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+        )
+    }
+
     /// loom-side mirror of `verify::is_noreturn_callee` (that one is
     /// `#[cfg(feature = "verification")]`-gated, unavailable here). True if every
     /// path traps: no `Return`/`Br*` anywhere (recursing into nested CF) and the
@@ -13784,7 +13803,9 @@ pub mod optimize {
                     None => false,
                 }
             }
-            other => is_acyclic_int_modelable_instr(other),
+            other => {
+                is_acyclic_int_modelable_instr(other) || is_acyclic_memory_modelable_instr(other)
+            }
         })
     }
 
