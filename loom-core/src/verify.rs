@@ -209,6 +209,51 @@ fn callee_inlinable_by_body(func: &Function) -> bool {
     func.instructions.iter().all(is_inline_modelable_instr)
 }
 
+/// PR-C (#219): true if `func` provably never returns to its caller — every
+/// path traps. Conservative-sound definition: the body contains NO `Return`
+/// and NO branch (`Br`/`BrIf`/`BrTable`) anywhere (recursing into nested
+/// control flow), and its final top-level instruction is `Unreachable`. With
+/// no `return` and no branch, the only way to leave the function is to fall off
+/// the end — which `Unreachable` makes a trap. This admits exactly the
+/// `core::panicking` helpers here (`panic_fmt → unreachable`,
+/// `panic_const_add_overflow → call panic_fmt; unreachable`) and rejects any
+/// normal-returning or branching function.
+///
+/// Used by the by-body inline modeler to encode a `call` to such a callee as
+/// "diverge if reached" (⊥) rather than havoc: control never returns, so the
+/// call constrains only the reachability of the trapping branch, never the
+/// post-state (Alive2's `ub` discipline). Modeling it as a fresh symbolic
+/// (havoc) would reopen the #155/#159 havoc-vs-concrete false-positive surface.
+#[cfg(feature = "verification")]
+#[allow(dead_code)] // wired into the by-body inline gate in PR-C M3 (#219)
+pub(crate) fn is_noreturn_callee(func: &Function) -> bool {
+    !body_has_branch_or_return(&func.instructions)
+        && matches!(func.instructions.last(), Some(Instruction::Unreachable))
+}
+
+/// Recursively detect any `Return` or branch (`Br`/`BrIf`/`BrTable`) in a body,
+/// descending into Block/Loop/If. Used by `is_noreturn_callee` — a branch could
+/// transfer control to the function-level label (a return-via-br), so any
+/// branch conservatively disqualifies the "every path traps" classification.
+#[cfg(feature = "verification")]
+fn body_has_branch_or_return(instrs: &[Instruction]) -> bool {
+    instrs.iter().any(|i| match i {
+        Instruction::Return
+        | Instruction::Br(_)
+        | Instruction::BrIf(_)
+        | Instruction::BrTable { .. } => true,
+        Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+            body_has_branch_or_return(body)
+        }
+        Instruction::If {
+            then_body,
+            else_body,
+            ..
+        } => body_has_branch_or_return(then_body) || body_has_branch_or_return(else_body),
+        _ => false,
+    })
+}
+
 /// loom#151/#155: whitelist of instructions the by-body inline modeler can
 /// encode faithfully and **identically to the main encoder**. The callee must
 /// be straight-line (no Block/Loop/If), leaf (no calls), single-result, and

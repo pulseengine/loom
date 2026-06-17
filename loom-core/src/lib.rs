@@ -17821,6 +17821,40 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_is_noreturn_callee() {
+        // PR-C (#219): the divergent-call classifier. No-return = no Return, no
+        // branch anywhere, body ends in Unreachable (the core::panicking shape).
+        let cases: &[(&str, bool)] = &[
+            // bare trap
+            ("(module (func (export \"f\") unreachable))", true),
+            // call (to an import) then trap — the panic_const_add_overflow shape
+            (
+                "(module (import \"env\" \"p\" (func)) (func (export \"f\") call 0 unreachable))",
+                true,
+            ),
+            // normal return — must NOT be no-return
+            ("(module (func (export \"f\") (result i32) i32.const 0))", false),
+            // ends in a value, not unreachable
+            ("(module (func (export \"f\") nop))", false),
+            // contains a branch (could escape to the fn label) — conservatively false
+            (
+                "(module (func (export \"f\") (block br 0) unreachable))",
+                false,
+            ),
+        ];
+        for (wat, expected) in cases {
+            let module = parse::parse_wat(wat).expect("parse");
+            let f = &module.functions[0];
+            assert_eq!(
+                crate::verify::is_noreturn_callee(f),
+                *expected,
+                "#219 is_noreturn_callee mismatch for: {wat}"
+            );
+        }
+    }
+
     #[test]
     fn test_conversion_trunc_sat_folds_nan_to_zero() {
         // i32.trunc_sat_f32_s of NaN → i32.const 0 (saturating: NaN→0)
