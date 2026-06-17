@@ -7837,6 +7837,70 @@ fn encode_acyclic_function(
     }
 }
 
+/// PR-C (#219) M3: precise FAST PATH for proving `original ≡ optimized` when
+/// BOTH functions are acyclic-CF-modelable (integer, block/if/br/br_if/br_table,
+/// by-body calls, no loops/memory). Encodes both via the precise acyclic
+/// executor (deterministic input names → they unify in Z3) and checks semantic
+/// equivalence (`a == b` has no counterexample). This is what lets the verified
+/// inliner prove a `call F` (with a `br_table` callee) equal to its inlined
+/// body — the case the straight-line by-body modeler (`callee_inlinable_by_body`)
+/// cannot reach.
+///
+/// Returns `Err` if either function is not acyclic-modelable, if a result width
+/// mismatches, or if the encoding fails — the caller then FALLS BACK to the
+/// existing encoder-based `verify_function_equivalence` (no behavior change for
+/// non-acyclic functions; this only ADDS proving power, never removes a check).
+#[cfg(feature = "verification")]
+#[allow(dead_code)] // wired into inline_functions' verify-or-revert in M3 step 2
+pub(crate) fn verify_acyclic_equivalence(
+    original: &Function,
+    optimized: &Function,
+    ctx: &VerificationSignatureContext,
+) -> Result<bool> {
+    if original.signature.params != optimized.signature.params
+        || original.signature.results != optimized.signature.results
+    {
+        return Err(anyhow!("acyclic verify: signature changed"));
+    }
+    // Only handle the precise acyclic case; anything else → caller falls back.
+    if !is_acyclic_modelable_body(&original.instructions, ctx, 0)
+        || !is_acyclic_modelable_body(&optimized.instructions, ctx, 0)
+    {
+        return Err(anyhow!("acyclic verify: not acyclic-modelable"));
+    }
+
+    let cfg = z3_config_with_timeout();
+    with_z3_config(&cfg, || {
+        let solver = Solver::new();
+        let orig_result = encode_acyclic_function(original, ctx);
+        let opt_result = encode_acyclic_function(optimized, ctx);
+        match (&orig_result, &opt_result) {
+            (Ok(Some(orig)), Ok(Some(opt))) => {
+                // loom#145 soundness boundary: never width-match the final
+                // equality — a width mismatch is a model artifact we cannot
+                // soundly resolve, so bail to "not proven" and let the caller
+                // fall back / revert.
+                if orig.get_size() != opt.get_size() {
+                    return Err(anyhow!("acyclic verify: result width mismatch"));
+                }
+                solver.assert(orig.eq(opt).not());
+                match solver.check() {
+                    SatResult::Unsat => Ok(true),
+                    SatResult::Sat => Ok(false),
+                    SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
+                }
+            }
+            // Both void: no return value to compare. The acyclic executor does
+            // not yet model side-effect (global/memory) equivalence for void
+            // functions, so defer to the existing verifier — signal fall-back.
+            (Ok(None), Ok(None)) => Err(anyhow!("acyclic verify: void — defer to fallback")),
+            (Err(e), _) => Err(anyhow!("acyclic verify: encode original: {}", e)),
+            (_, Err(e)) => Err(anyhow!("acyclic verify: encode optimized: {}", e)),
+            _ => Err(anyhow!("acyclic verify: return-type mismatch")),
+        }
+    })
+}
+
 /// Verify that block stack properties are preserved across optimization
 ///
 /// Uses Z3 to formally verify that a block transformation preserves:
@@ -8288,6 +8352,61 @@ mod tests {
         assert!(
             acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
             "no-return call path must diverge (drop out), leaving only the return-7 path"
+        );
+    }
+
+    /// M3: the public verify_acyclic_equivalence fast-path proves a caller that
+    /// `call`s a br_table decide equivalent to the inlined switch, and rejects a
+    /// non-equivalent optimized body — the exact inline verify-or-revert pattern.
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_verify_acyclic_equivalence_inline() {
+        let module_wat = r#"
+            (module
+                (func (param i32) (result i32)
+                    (block (block (block
+                        local.get 0
+                        br_table 0 1 2)
+                      i32.const 10
+                      return)
+                      i32.const 20
+                      return)
+                    i32.const 30
+                    return)
+                (func (param i32) (result i32)
+                    local.get 0
+                    call 0))"#;
+        let m = parse::parse_wat(module_wat).unwrap();
+        let ctx = VerificationSignatureContext::from_module(&m);
+        let z = &m.functions[1]; // caller: local.get 0; call decide
+
+        // Equivalent: the inlined switch.
+        let inlined = parse::parse_wat(SWITCH_10_20_30).unwrap();
+        assert!(
+            verify_acyclic_equivalence(z, &inlined.functions[0], &ctx).unwrap(),
+            "z (calls decide) must verify ≡ the inlined switch"
+        );
+
+        // Non-equivalent: a switch with a wrong default (99) must NOT verify.
+        let wrong = parse::parse_wat(
+            r#"(module (func (param i32) (result i32)
+                (block (block (block local.get 0 br_table 0 1 2)
+                  i32.const 10 return) i32.const 20 return) i32.const 99 return))"#,
+        )
+        .unwrap();
+        assert!(
+            !verify_acyclic_equivalence(z, &wrong.functions[0], &ctx).unwrap(),
+            "a wrong-default body must NOT verify equivalent"
+        );
+
+        // A function with a loop is not acyclic-modelable → Err (caller falls back).
+        let loopy = parse::parse_wat(
+            "(module (func (param i32) (result i32) (loop (result i32) local.get 0)))",
+        )
+        .unwrap();
+        assert!(
+            verify_acyclic_equivalence(&loopy.functions[0], &loopy.functions[0], &ctx).is_err(),
+            "non-acyclic functions must Err so the caller falls back"
         );
     }
 
