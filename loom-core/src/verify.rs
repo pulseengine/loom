@@ -7372,18 +7372,56 @@ fn is_acyclic_simple_modelable(instr: &Instruction) -> bool {
     )
 }
 
+/// Max by-body call-recursion depth the acyclic executor will model. The seam
+/// decides call only `panic*` (no-return → diverge, no further recursion), so
+/// depth 2 suffices; 8 gives headroom and bounds any cyclic/recursive call
+/// graph (which is rejected, not unrolled).
+#[cfg(feature = "verification")]
+const MAX_ACYCLIC_CALL_DEPTH: usize = 8;
+
 /// Whole-function gate: true iff every instruction (recursing into block/if
-/// bodies) is a modeled control op or an allowlisted simple op. Loops, calls,
-/// memory, unknown opcodes, and unmodeled block shapes fail. The executor runs
-/// ONLY on functions that pass this gate.
+/// bodies AND into by-body call targets) is a modeled control op, an allowlisted
+/// simple op, or an admissible `Call`. Back-edges (Loop), call_indirect, memory,
+/// unknown opcodes, unmodeled block shapes, imports, and over-deep/cyclic call
+/// graphs all fail. A `Call(g)` is admissible iff `g` is a local function that
+/// is itself no-return (diverges → modeled as ⊥) or recursively acyclic-modelable.
+///
+/// This is a fast pre-check for the M3 routing decision; `exec_acyclic` is the
+/// actual soundness enforcer (it returns `Err` on anything it cannot model
+/// precisely, never havoc).
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
-fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
+fn is_acyclic_modelable_body(
+    body: &[Instruction],
+    ctx: &VerificationSignatureContext,
+    depth: usize,
+) -> bool {
     body.iter().all(|instr| match instr {
-        // Back-edges and calls are out of Phase 1 scope.
-        Instruction::Loop { .. } | Instruction::Call(_) | Instruction::CallIndirect { .. } => false,
+        // Back-edges and indirect calls are out of Phase 1 scope.
+        Instruction::Loop { .. } | Instruction::CallIndirect { .. } => false,
+        Instruction::Call(g) => {
+            if depth >= MAX_ACYCLIC_CALL_DEPTH {
+                return false;
+            }
+            match ctx
+                .function_bodies
+                .get(*g as usize)
+                .and_then(|o| o.as_deref())
+            {
+                // No-return callee (panic→unreachable): modeled as ⊥ diverge.
+                Some(callee) if is_noreturn_callee(callee) => true,
+                // Otherwise the callee must itself be acyclic-modelable, and
+                // single-result (the executor pushes at most one result value).
+                Some(callee) => {
+                    callee.signature.results.len() <= 1
+                        && is_acyclic_modelable_body(&callee.instructions, ctx, depth + 1)
+                }
+                // Import (None) or out-of-range: opaque, not modelable.
+                None => false,
+            }
+        }
         Instruction::Block { block_type, body } => {
-            acyclic_block_arity(block_type).is_ok() && is_acyclic_modelable_body(body)
+            acyclic_block_arity(block_type).is_ok() && is_acyclic_modelable_body(body, ctx, depth)
         }
         Instruction::If {
             block_type,
@@ -7391,8 +7429,8 @@ fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
             else_body,
         } => {
             acyclic_block_arity(block_type).is_ok()
-                && is_acyclic_modelable_body(then_body)
-                && is_acyclic_modelable_body(else_body)
+                && is_acyclic_modelable_body(then_body, ctx, depth)
+                && is_acyclic_modelable_body(else_body, ctx, depth)
         }
         Instruction::Br(_)
         | Instruction::BrIf(_)
@@ -7512,6 +7550,8 @@ fn exec_acyclic(
     body: &[Instruction],
     state: &mut AcyclicState,
     labels: &mut Vec<LabelJoin>,
+    ctx: &VerificationSignatureContext,
+    depth: usize,
 ) -> Result<()> {
     for instr in body {
         if !state.reachable {
@@ -7526,7 +7566,7 @@ fn exec_acyclic(
                     arity,
                     entries: Vec::new(),
                 });
-                exec_acyclic(body, state, labels)?;
+                exec_acyclic(body, state, labels, ctx, depth)?;
                 // Fall-through off the end == implicit `br 0` to this block.
                 if state.reachable {
                     let target = labels.len() - 1;
@@ -7558,7 +7598,7 @@ fn exec_acyclic(
                 // then-branch under path ∧ cond≠0
                 state.path = Bool::and(&[saved_path.clone(), cond_nz.clone()]);
                 state.reachable = true;
-                exec_acyclic(then_body, state, labels)?;
+                exec_acyclic(then_body, state, labels, ctx, depth)?;
                 if state.reachable {
                     acyclic_push_branch(labels, target, state.path.clone(), state)?;
                 }
@@ -7568,7 +7608,7 @@ fn exec_acyclic(
                 state.globals = saved_globals;
                 state.path = Bool::and(&[saved_path, cond_nz.not()]);
                 state.reachable = true;
-                exec_acyclic(else_body, state, labels)?;
+                exec_acyclic(else_body, state, labels, ctx, depth)?;
                 if state.reachable {
                     acyclic_push_branch(labels, target, state.path.clone(), state)?;
                 }
@@ -7619,6 +7659,23 @@ fn exec_acyclic(
                 acyclic_push_branch(labels, 0, state.path.clone(), state)?;
                 state.reachable = false;
             }
+            Instruction::Call(g) => {
+                let callee = ctx
+                    .function_bodies
+                    .get(*g as usize)
+                    .and_then(|o| o.as_deref())
+                    .ok_or_else(|| {
+                        anyhow!("acyclic executor: call to import/unknown func {}", g)
+                    })?;
+                if is_noreturn_callee(callee) {
+                    // ⊥-diverge: control never returns (panic→unreachable). The
+                    // path traps and drops out of the result ITE — NEVER havoc
+                    // (Alive2 `ub` discipline; havoc reopens #155/#159).
+                    state.reachable = false;
+                } else {
+                    encode_acyclic_call(callee, state, ctx, depth)?;
+                }
+            }
             other => {
                 // Defense in depth: never delegate an unmodeled op (the
                 // delegate's catch-all havocs and would desync the stack).
@@ -7640,14 +7697,94 @@ fn exec_acyclic(
     Ok(())
 }
 
+/// Model a `call` to `callee` BY BODY: pop the args, recursively encode the
+/// callee through `exec_acyclic` (params bound to the args, declared locals
+/// zero-init, globals SHARED with the caller so the callee's global writes
+/// propagate back), and push the merged single result. Sets `reachable=false`
+/// if every callee path traps (no normal exit). The SAME executor models both
+/// the original `call F` (here) and the inlined body, so they yield the same
+/// expression → the inline is provable.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn encode_acyclic_call(
+    callee: &Function,
+    state: &mut AcyclicState,
+    ctx: &VerificationSignatureContext,
+    depth: usize,
+) -> Result<()> {
+    if depth + 1 >= MAX_ACYCLIC_CALL_DEPTH {
+        return Err(anyhow!("acyclic executor: call recursion too deep"));
+    }
+    let arity = callee.signature.results.len();
+    if arity > 1 {
+        return Err(anyhow!("acyclic executor: multi-result callee"));
+    }
+    let nparams = callee.signature.params.len();
+    if state.stack.len() < nparams {
+        return Err(anyhow!("acyclic executor: call arg underflow"));
+    }
+    // Pop args (last param on top of stack); bind to the callee's param locals.
+    let mut callee_locals: Vec<BV> = state.stack.split_off(state.stack.len() - nparams);
+    for (count, lt) in callee.locals.iter() {
+        let width = bv_width_for_value_type(*lt);
+        for _ in 0..*count {
+            callee_locals.push(BV::from_u64(0, width));
+        }
+    }
+    let mut sub = AcyclicState {
+        stack: Vec::new(),
+        locals: callee_locals,
+        // SHARED globals — the callee may read/write module globals; the merged
+        // result threads the updated globals back to the caller.
+        globals: state.globals.clone(),
+        // Inherit the caller's path so callee branch guards conjoin it.
+        path: state.path.clone(),
+        reachable: true,
+    };
+    let mut sub_labels = vec![LabelJoin {
+        arity,
+        entries: Vec::new(),
+    }];
+    exec_acyclic(
+        &callee.instructions,
+        &mut sub,
+        &mut sub_labels,
+        ctx,
+        depth + 1,
+    )?;
+    if sub.reachable {
+        acyclic_push_branch(&mut sub_labels, 0, sub.path.clone(), &sub)?;
+    }
+    let join = sub_labels.pop().unwrap();
+    match acyclic_merge_entries(&join.entries) {
+        Some((results, _locals, globals, path)) => {
+            // Propagate callee global writes; narrow the caller path to the
+            // callee's returning paths.
+            state.globals = globals;
+            state.path = path;
+            if arity == 1 {
+                state.stack.push(results[0].clone());
+            }
+        }
+        None => {
+            // Callee never returns normally (all paths trap) → caller diverges.
+            state.reachable = false;
+        }
+    }
+    Ok(())
+}
+
 /// Encode a function via the precise acyclic CF executor. Mirrors
 /// `encode_function_to_smt`'s deterministic input naming (`param{i}`,
 /// `global{i}`) so two encodings UNIFY in Z3 and can be compared directly.
 /// Returns `Err` if the function is not acyclic-modelable (caller falls back).
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
-fn encode_acyclic_function(func: &Function) -> Result<Option<BV>> {
-    if !is_acyclic_modelable_body(&func.instructions) {
+fn encode_acyclic_function(
+    func: &Function,
+    ctx: &VerificationSignatureContext,
+) -> Result<Option<BV>> {
+    if !is_acyclic_modelable_body(&func.instructions, ctx, 0) {
         return Err(anyhow!("function not acyclic-modelable"));
     }
     let arity = func.signature.results.len();
@@ -7684,7 +7821,7 @@ fn encode_acyclic_function(func: &Function) -> Result<Option<BV>> {
         arity,
         entries: Vec::new(),
     }];
-    exec_acyclic(&func.instructions, &mut state, &mut labels)?;
+    exec_acyclic(&func.instructions, &mut state, &mut labels, ctx, 0)?;
     // Fall-through off the function body == implicit return.
     if state.reachable {
         acyclic_push_branch(&mut labels, 0, state.path.clone(), &state)?;
@@ -7935,15 +8072,24 @@ mod tests {
     /// `Ok(true)` = proven equivalent, `Ok(false)` = counterexample found.
     #[cfg(feature = "verification")]
     fn acyclic_equiv(wat_a: &str, wat_b: &str) -> Result<bool> {
+        acyclic_equiv_at(wat_a, 0, wat_b, 0)
+    }
+
+    /// As `acyclic_equiv` but comparing a chosen function index in each module
+    /// (so a caller that `call`s a sibling can be compared to its inlined form).
+    #[cfg(feature = "verification")]
+    fn acyclic_equiv_at(wat_a: &str, ia: usize, wat_b: &str, ib: usize) -> Result<bool> {
         let ma = parse::parse_wat(wat_a).unwrap();
         let mb = parse::parse_wat(wat_b).unwrap();
-        let fa = &ma.functions[0];
-        let fb = &mb.functions[0];
+        let ctx_a = VerificationSignatureContext::from_module(&ma);
+        let ctx_b = VerificationSignatureContext::from_module(&mb);
+        let fa = &ma.functions[ia];
+        let fb = &mb.functions[ib];
         let cfg = z3_config_with_timeout();
         with_z3_config(&cfg, || {
             let solver = Solver::new();
-            let ra = encode_acyclic_function(fa)?;
-            let rb = encode_acyclic_function(fb)?;
+            let ra = encode_acyclic_function(fa, &ctx_a)?;
+            let rb = encode_acyclic_function(fb, &ctx_b)?;
             match (ra, rb) {
                 (Some(a), Some(b)) => {
                     if a.get_size() != b.get_size() {
@@ -8059,12 +8205,13 @@ mod tests {
     #[test]
     #[cfg(feature = "verification")]
     fn test_acyclic_modelable_gate() {
-        // The whole-function gate must reject loops, calls, and memory ops.
+        // The whole-function gate must reject loops and memory ops.
         let with_loop =
             parse::parse_wat("(module (func (param i32) (result i32) (loop local.get 0)))")
                 .unwrap();
+        let ctx_loop = VerificationSignatureContext::from_module(&with_loop);
         assert!(
-            !is_acyclic_modelable_body(&with_loop.functions[0].instructions),
+            !is_acyclic_modelable_body(&with_loop.functions[0].instructions, &ctx_loop, 0),
             "loops (back-edges) must be rejected"
         );
 
@@ -8072,16 +8219,75 @@ mod tests {
             "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))",
         )
         .unwrap();
+        let ctx_mem = VerificationSignatureContext::from_module(&with_memory);
         assert!(
-            !is_acyclic_modelable_body(&with_memory.functions[0].instructions),
+            !is_acyclic_modelable_body(&with_memory.functions[0].instructions, &ctx_mem, 0),
             "memory ops must be rejected in Phase 1"
         );
 
         // A pure-integer br_table switch must be admitted.
         let switch = parse::parse_wat(SWITCH_10_20_30).unwrap();
+        let ctx_sw = VerificationSignatureContext::from_module(&switch);
         assert!(
-            is_acyclic_modelable_body(&switch.functions[0].instructions),
+            is_acyclic_modelable_body(&switch.functions[0].instructions, &ctx_sw, 0),
             "pure-integer acyclic br_table function must be admitted"
+        );
+    }
+
+    /// M1b: a caller that `call`s a br_table callee must prove equivalent to the
+    /// same logic with the callee inlined — i.e. the executor models `call F`
+    /// by-body identically to the inlined body (the inline-soundness principle
+    /// extended to control flow). func 0 = decide (switch), func 1 = z (calls it).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_call_by_body_equiv_inlined() {
+        let caller_with_call = r#"
+            (module
+                (func (param i32) (result i32)
+                    (block (block (block
+                        local.get 0
+                        br_table 0 1 2)
+                      i32.const 10
+                      return)
+                      i32.const 20
+                      return)
+                    i32.const 30
+                    return)
+                (func (param i32) (result i32)
+                    local.get 0
+                    call 0))"#;
+        // z (func 1) calls decide (func 0); compare to the inlined switch.
+        assert!(
+            acyclic_equiv_at(caller_with_call, 1, SWITCH_10_20_30, 0).unwrap(),
+            "call-by-body must prove equivalent to the inlined callee body"
+        );
+    }
+
+    /// M1b: a call to a no-return callee (panic→unreachable) must be modeled as
+    /// ⊥ (diverge), never havoc. A function that returns 7 on one path and traps
+    /// on the other proves equivalent to one that simply returns 7 (the trapping
+    /// path drops out of the result; both sides agree on the returning path).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_noreturn_call_diverges() {
+        // func 0 = panic (no params, unreachable); func 1 = g: if arg!=0 return 7
+        // else call panic (diverge). func 1 should equal "always return 7".
+        let with_trap = r#"
+            (module
+                (func unreachable)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if (result i32)
+                        i32.const 7
+                    else
+                        call 0
+                        i32.const 7
+                    end))"#;
+        let always7 = r#"
+            (module (func (param i32) (result i32) i32.const 7))"#;
+        assert!(
+            acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
+            "no-return call path must diverge (drop out), leaving only the return-7 path"
         );
     }
 
