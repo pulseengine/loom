@@ -7460,7 +7460,9 @@ fn is_acyclic_modelable_body(
         Instruction::Br(_)
         | Instruction::BrIf(_)
         | Instruction::BrTable { .. }
-        | Instruction::Return => true,
+        | Instruction::Return
+        // Unreachable is a trap (⊥): the executor diverges the path, never havoc.
+        | Instruction::Unreachable => true,
         other => is_acyclic_simple_modelable(other),
     })
 }
@@ -7682,6 +7684,12 @@ fn exec_acyclic(
             Instruction::Return => {
                 // Branch to the implicit function label.
                 acyclic_push_branch(labels, 0, state.path.clone(), state)?;
+                state.reachable = false;
+            }
+            Instruction::Unreachable => {
+                // Trap: this path diverges (⊥) — it drops out of the result
+                // ITE and contributes to no join, exactly like a no-return
+                // call. NEVER havoc (Alive2 ub discipline).
                 state.reachable = false;
             }
             Instruction::Call(g) => {
@@ -8377,6 +8385,27 @@ mod tests {
         assert!(
             acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
             "no-return call path must diverge (drop out), leaving only the return-7 path"
+        );
+    }
+
+    /// A direct `unreachable` (trap) on one path must diverge — same ⊥ discipline
+    /// as a no-return call. The seam decides end their overflow arms in
+    /// `unreachable`, so the executor must model it (not reject the function).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_unreachable_diverges() {
+        let with_trap = r#"
+            (module (func (param i32) (result i32)
+                local.get 0
+                if (result i32)
+                    i32.const 7
+                else
+                    unreachable
+                end))"#;
+        let always7 = r#"(module (func (param i32) (result i32) i32.const 7))"#;
+        assert!(
+            acyclic_equiv(with_trap, always7).unwrap(),
+            "the unreachable (trap) path must diverge, leaving only the return-7 path"
         );
     }
 
