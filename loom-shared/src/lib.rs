@@ -4482,9 +4482,7 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let val_simplified = rewrite_pure(val.clone());
             match val_simplified.data() {
                 // Constant folding: extend_i32_u(i32.const N) → i64.const (zero-extended).
-                ValueData::I32Const { val: v } => {
-                    iconst64(Imm64((v.value() as u32 as u64) as i64))
-                }
+                ValueData::I32Const { val: v } => iconst64(Imm64((v.value() as u32 as u64) as i64)),
                 _ => i64_extend_i32_u(val_simplified),
             }
         }

@@ -17835,7 +17835,10 @@ mod tests {
                 true,
             ),
             // normal return — must NOT be no-return
-            ("(module (func (export \"f\") (result i32) i32.const 0))", false),
+            (
+                "(module (func (export \"f\") (result i32) i32.const 0))",
+                false,
+            ),
             // ends in a value, not unreachable
             ("(module (func (export \"f\") nop))", false),
             // contains a branch (could escape to the fn label) — conservatively false
