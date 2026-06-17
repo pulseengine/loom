@@ -13447,7 +13447,7 @@ pub mod optimize {
                     .functions
                     .get((*func_idx - num_imported_funcs) as usize)
                 {
-                    if !function_inline_modelable(callee) {
+                    if !function_inline_modelable(callee, &module.functions, num_imported_funcs) {
                         continue;
                     }
                 }
@@ -13551,98 +13551,266 @@ pub mod optimize {
         Ok(())
     }
 
-    /// loom#159: is this callee FULLY by-body-inline-modelable — i.e. will the
-    /// translation validator be able to PROVE its inline?
-    ///
-    /// A callee is only a sound inline candidate if the verifier can model its
-    /// body by-body (loom#151/#155/#157). If it contains ANY op the verifier
-    /// can't model — partial-width loads/stores (`*.load8/16`, `*.store8/16/32`,
-    /// e.g. `filter_step`'s `i32.load16_s`), floats, globals, `memory.*` bulk
-    /// ops, calls (non-leaf), or control flow — then inlining it is unprovable:
-    /// the original models the call as a havoc while the optimized has concrete
-    /// effects, so a downstream read diverges → FALSE counterexample → the whole
-    /// caller reverts, dragging down any *other* inline in it too (the v1.1.7
-    /// regression: a partial-width `filter_step` killed the `controller_step`
-    /// reader-inline). Excluding such callees keeps them opaque (havoc) calls,
-    /// which is exactly what a following modelable reader's inline needs.
-    ///
-    /// This MUST stay in lock-step with `verify::is_inline_modelable_instr`
-    /// (the verifier's by-body whitelist). Straight-line only: any control flow
-    /// or call disqualifies the callee.
-    fn function_inline_modelable(func: &super::Function) -> bool {
-        func.instructions.iter().all(|i| {
-            matches!(
-                i,
-                Instruction::I32Const(_)
-                    | Instruction::I64Const(_)
-                    | Instruction::LocalGet(_)
-                    | Instruction::LocalSet(_)
-                    | Instruction::LocalTee(_)
-                    | Instruction::Drop
-                    | Instruction::Select
-                    | Instruction::I32Load { .. }
-                    | Instruction::I64Load { .. }
-                    | Instruction::I32Store { .. }
-                    | Instruction::I64Store { .. }
-                    | Instruction::I32Load8S { .. }
-                    | Instruction::I32Load8U { .. }
-                    | Instruction::I32Load16S { .. }
-                    | Instruction::I32Load16U { .. }
-                    | Instruction::I32Store8 { .. }
-                    | Instruction::I32Store16 { .. }
-                    | Instruction::I32Add
-                    | Instruction::I32Sub
-                    | Instruction::I32Mul
-                    | Instruction::I32And
-                    | Instruction::I32Or
-                    | Instruction::I32Xor
-                    | Instruction::I32Shl
-                    | Instruction::I32ShrS
-                    | Instruction::I32ShrU
-                    | Instruction::I64Add
-                    | Instruction::I64Sub
-                    | Instruction::I64Mul
-                    | Instruction::I64And
-                    | Instruction::I64Or
-                    | Instruction::I64Xor
-                    | Instruction::I64Shl
-                    | Instruction::I64ShrS
-                    | Instruction::I64ShrU
-                    | Instruction::I32DivS
-                    | Instruction::I32DivU
-                    | Instruction::I32RemS
-                    | Instruction::I32RemU
-                    | Instruction::I64DivS
-                    | Instruction::I64DivU
-                    | Instruction::I64RemS
-                    | Instruction::I64RemU
-                    | Instruction::I32Eq
-                    | Instruction::I32Ne
-                    | Instruction::I32LtS
-                    | Instruction::I32LtU
-                    | Instruction::I32GtS
-                    | Instruction::I32GtU
-                    | Instruction::I32LeS
-                    | Instruction::I32LeU
-                    | Instruction::I32GeS
-                    | Instruction::I32GeU
-                    | Instruction::I32Eqz
-                    | Instruction::I64Eq
-                    | Instruction::I64Ne
-                    | Instruction::I64LtS
-                    | Instruction::I64LtU
-                    | Instruction::I64GtS
-                    | Instruction::I64GtU
-                    | Instruction::I64LeS
-                    | Instruction::I64LeU
-                    | Instruction::I64GeS
-                    | Instruction::I64GeU
-                    | Instruction::I64Eqz
-                    | Instruction::I64ExtendI32S
-                    | Instruction::I64ExtendI32U
-                    | Instruction::I32WrapI64
-            )
+    /// REGIME A whitelist: per-instruction straight-line ops the by-body
+    /// modeler (`verify::encode_inlinable_callee_result`) proves faithfully,
+    /// INCLUDING full/partial-width memory loads/stores (loom#151/#155/#157/#161).
+    /// No control flow, no calls. MUST stay in lock-step with
+    /// `verify::is_inline_modelable_instr`. Used by `function_inline_modelable`.
+    fn is_straightline_modelable_instr(i: &Instruction) -> bool {
+        matches!(
+            i,
+            Instruction::I32Const(_)
+                | Instruction::I64Const(_)
+                | Instruction::LocalGet(_)
+                | Instruction::LocalSet(_)
+                | Instruction::LocalTee(_)
+                | Instruction::Drop
+                | Instruction::Select
+                | Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::I32Load8S { .. }
+                | Instruction::I32Load8U { .. }
+                | Instruction::I32Load16S { .. }
+                | Instruction::I32Load16U { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I32Add
+                | Instruction::I32Sub
+                | Instruction::I32Mul
+                | Instruction::I32And
+                | Instruction::I32Or
+                | Instruction::I32Xor
+                | Instruction::I32Shl
+                | Instruction::I32ShrS
+                | Instruction::I32ShrU
+                | Instruction::I64Add
+                | Instruction::I64Sub
+                | Instruction::I64Mul
+                | Instruction::I64And
+                | Instruction::I64Or
+                | Instruction::I64Xor
+                | Instruction::I64Shl
+                | Instruction::I64ShrS
+                | Instruction::I64ShrU
+                | Instruction::I32DivS
+                | Instruction::I32DivU
+                | Instruction::I32RemS
+                | Instruction::I32RemU
+                | Instruction::I64DivS
+                | Instruction::I64DivU
+                | Instruction::I64RemS
+                | Instruction::I64RemU
+                | Instruction::I32Eq
+                | Instruction::I32Ne
+                | Instruction::I32LtS
+                | Instruction::I32LtU
+                | Instruction::I32GtS
+                | Instruction::I32GtU
+                | Instruction::I32LeS
+                | Instruction::I32LeU
+                | Instruction::I32GeS
+                | Instruction::I32GeU
+                | Instruction::I32Eqz
+                | Instruction::I64Eq
+                | Instruction::I64Ne
+                | Instruction::I64LtS
+                | Instruction::I64LtU
+                | Instruction::I64GtS
+                | Instruction::I64GtU
+                | Instruction::I64LeS
+                | Instruction::I64LeU
+                | Instruction::I64GeS
+                | Instruction::I64GeU
+                | Instruction::I64Eqz
+                | Instruction::I64ExtendI32S
+                | Instruction::I64ExtendI32U
+                | Instruction::I32WrapI64
+        )
+    }
+
+    /// REGIME B per-instruction whitelist: pure-integer ops the precise acyclic
+    /// executor (`verify::exec_acyclic`) models — NO memory (Phase 1), NO
+    /// floats/unknown. MUST stay in lock-step with
+    /// `verify::is_acyclic_simple_modelable`.
+    fn is_acyclic_int_modelable_instr(i: &Instruction) -> bool {
+        matches!(
+            i,
+            Instruction::I32Const(_)
+                | Instruction::I64Const(_)
+                | Instruction::LocalGet(_)
+                | Instruction::LocalSet(_)
+                | Instruction::LocalTee(_)
+                | Instruction::GlobalGet(_)
+                | Instruction::GlobalSet(_)
+                | Instruction::Drop
+                | Instruction::Nop
+                | Instruction::Select
+                | Instruction::I32Add
+                | Instruction::I32Sub
+                | Instruction::I32Mul
+                | Instruction::I32And
+                | Instruction::I32Or
+                | Instruction::I32Xor
+                | Instruction::I32Shl
+                | Instruction::I32ShrS
+                | Instruction::I32ShrU
+                | Instruction::I32DivS
+                | Instruction::I32DivU
+                | Instruction::I32RemS
+                | Instruction::I32RemU
+                | Instruction::I64Add
+                | Instruction::I64Sub
+                | Instruction::I64Mul
+                | Instruction::I64And
+                | Instruction::I64Or
+                | Instruction::I64Xor
+                | Instruction::I64Shl
+                | Instruction::I64ShrS
+                | Instruction::I64ShrU
+                | Instruction::I64DivS
+                | Instruction::I64DivU
+                | Instruction::I64RemS
+                | Instruction::I64RemU
+                | Instruction::I32Eq
+                | Instruction::I32Ne
+                | Instruction::I32LtS
+                | Instruction::I32LtU
+                | Instruction::I32GtS
+                | Instruction::I32GtU
+                | Instruction::I32LeS
+                | Instruction::I32LeU
+                | Instruction::I32GeS
+                | Instruction::I32GeU
+                | Instruction::I32Eqz
+                | Instruction::I64Eq
+                | Instruction::I64Ne
+                | Instruction::I64LtS
+                | Instruction::I64LtU
+                | Instruction::I64GtS
+                | Instruction::I64GtU
+                | Instruction::I64LeS
+                | Instruction::I64LeU
+                | Instruction::I64GeS
+                | Instruction::I64GeU
+                | Instruction::I64Eqz
+                | Instruction::I64ExtendI32S
+                | Instruction::I64ExtendI32U
+                | Instruction::I32WrapI64
+        )
+    }
+
+    /// loom-side mirror of `verify::is_noreturn_callee` (that one is
+    /// `#[cfg(feature = "verification")]`-gated, unavailable here). True if every
+    /// path traps: no `Return`/`Br*` anywhere (recursing into nested CF) and the
+    /// body ends in `Unreachable`. Admits exactly the `panic*` helpers.
+    fn inline_callee_is_noreturn(func: &super::Function) -> bool {
+        fn has_branch_or_return(instrs: &[Instruction]) -> bool {
+            instrs.iter().any(|i| match i {
+                Instruction::Return
+                | Instruction::Br(_)
+                | Instruction::BrIf(_)
+                | Instruction::BrTable { .. } => true,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    has_branch_or_return(body)
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => has_branch_or_return(then_body) || has_branch_or_return(else_body),
+                _ => false,
+            })
+        }
+        !has_branch_or_return(&func.instructions)
+            && matches!(func.instructions.last(), Some(Instruction::Unreachable))
+    }
+
+    /// Max by-body call-recursion depth for the regime-B check (mirrors
+    /// `verify::MAX_ACYCLIC_CALL_DEPTH`); bounds cyclic call graphs.
+    const INLINE_ACYCLIC_MAX_DEPTH: usize = 8;
+
+    /// REGIME B: acyclic control flow (block/if/br/br_if/br_table) + pure-integer
+    /// ops + by-body calls (to no-return or recursively-modelable LOCAL callees).
+    /// NO memory (Phase 1). Mirrors `verify::is_acyclic_modelable_body` so the
+    /// inline candidate gate admits exactly what the acyclic verifier can prove.
+    fn inline_modelable_acyclic_body(
+        body: &[Instruction],
+        all_functions: &[super::Function],
+        num_imported_funcs: u32,
+        depth: usize,
+    ) -> bool {
+        body.iter().all(|i| match i {
+            Instruction::Block { body, .. } => {
+                inline_modelable_acyclic_body(body, all_functions, num_imported_funcs, depth)
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                inline_modelable_acyclic_body(then_body, all_functions, num_imported_funcs, depth)
+                    && inline_modelable_acyclic_body(
+                        else_body,
+                        all_functions,
+                        num_imported_funcs,
+                        depth,
+                    )
+            }
+            Instruction::Br(_)
+            | Instruction::BrIf(_)
+            | Instruction::BrTable { .. }
+            | Instruction::Return
+            // Unreachable is a trap (⊥): the acyclic executor diverges the path.
+            | Instruction::Unreachable => true,
+            // Back-edges and indirect calls are out of Phase 1 scope.
+            Instruction::Loop { .. } | Instruction::CallIndirect { .. } => false,
+            Instruction::Call(g) => {
+                if depth >= INLINE_ACYCLIC_MAX_DEPTH || *g < num_imported_funcs {
+                    return false; // too deep, or an import (opaque)
+                }
+                match all_functions.get((*g - num_imported_funcs) as usize) {
+                    Some(callee) => {
+                        inline_callee_is_noreturn(callee)
+                            || (callee.signature.results.len() <= 1
+                                && inline_modelable_acyclic_body(
+                                    &callee.instructions,
+                                    all_functions,
+                                    num_imported_funcs,
+                                    depth + 1,
+                                ))
+                    }
+                    None => false,
+                }
+            }
+            other => is_acyclic_int_modelable_instr(other),
         })
+    }
+
+    /// loom#159: is this callee FULLY inline-modelable — i.e. will the
+    /// translation validator be able to PROVE its inline? Admits EITHER regime A
+    /// (straight-line incl. memory — by-body modeler) OR regime B (acyclic CF +
+    /// pure-int + by-body calls — the precise acyclic executor, PR-C #219). A
+    /// callee outside both stays an opaque call: admitting an unprovable one
+    /// makes the original (havoc) and optimized (concrete) encodings diverge →
+    /// FALSE counterexample → the whole caller reverts, dragging down any OTHER
+    /// inline in it (the v1.1.7 #159 regression). A br_table+memory callee
+    /// (mutex_unlock, pipe) passes NEITHER regime → stays opaque until Phase 2.
+    fn function_inline_modelable(
+        func: &super::Function,
+        all_functions: &[super::Function],
+        num_imported_funcs: u32,
+    ) -> bool {
+        func.instructions
+            .iter()
+            .all(is_straightline_modelable_instr)
+            || inline_modelable_acyclic_body(
+                &func.instructions,
+                all_functions,
+                num_imported_funcs,
+                0,
+            )
     }
 
     /// Inline function calls in a block of instructions
