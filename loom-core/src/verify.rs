@@ -3009,6 +3009,31 @@ impl TranslationValidator {
             return Ok(());
         }
 
+        // PR-C (#219) M3.2: precise acyclic-CF fast-path for the inliner. The
+        // main encoder models br_table approximately and a br_table callee is
+        // not straight-line-by-body-modelable, so it cannot prove `call F`
+        // (br_table callee) equal to its inlined body → the inline reverts. The
+        // acyclic executor is EXACT for acyclic CF + by-body calls. Try it here.
+        //
+        // PURELY ADDITIVE + scoped to the inliner: ONLY a precise Ok(true) (a
+        // real proof) short-circuits to accept; Ok(false)/Err/panic FALL THROUGH
+        // to the existing encoder unchanged. So this can only ADD accepts (the
+        // br_table-callee inlines), never weaken an existing check, and every
+        // non-inline pass is byte-identical. (catch_unwind: the acyclic encoder
+        // builds Z3 exprs and could panic on a malformed input.)
+        if self.pass_name == "inline_functions" {
+            let original = self.original.clone();
+            let sig_ctx = self.sig_ctx.clone();
+            let optimized_clone = optimized.clone();
+            let acyclic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                verify_acyclic_equivalence(&original, &optimized_clone, &sig_ctx)
+            }));
+            if let Ok(Ok(true)) = acyclic {
+                return Ok(());
+            }
+            // else: fall through to the existing encoder (no behavior change).
+        }
+
         // Use catch_unwind to handle Z3 internal panics gracefully. (The
         // i64 inline hang in loom#147 turned out NOT to be a verify hang —
         // verify returns fast; it was a livelock in the inline-pass
