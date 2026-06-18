@@ -8945,6 +8945,123 @@ pub mod optimize {
         Ok(())
     }
 
+    /// #219: trap-aware structured dominance for carrier scalar-forwarding.
+    /// Returns true iff `local`'s SINGLE def dominates ALL its uses, so its
+    /// defining expression can be forwarded to every use. Conservative
+    /// structured-CFG argument (rejects on any uncertainty — soundness over
+    /// completeness; a wrong `true` here is a silent miscompile):
+    ///   - exactly one write of `local`, and it is NOT inside any `If`/`Loop`
+    ///     (all its enclosing blocks are plain `Block`/function root, hence
+    ///     unconditionally entered);
+    ///   - every use is textually AFTER the def;
+    ///   - no `Br`/`BrIf`/`BrTable` textually BEFORE the def targets a block that
+    ///     ENCLOSES the def (an "ancestor"): such a branch could deliver control
+    ///     to the def's enclosing-block continuation — possibly a use — without
+    ///     passing the def. Branches to inner blocks that close before the def
+    ///     (or to the function frame = return, which terminates) are safe, as is
+    ///     any `unreachable`/`return` before the def (they never reach a use).
+    ///
+    /// Together these make the def reached on every non-trapping path from entry,
+    /// so it dominates all (textually-later) uses.
+    pub(crate) fn carrier_def_dominates_uses(instrs: &[Instruction], local: u32) -> bool {
+        #[derive(Default)]
+        struct Scan {
+            seq: usize,
+            next_block_id: usize,
+            def_seq: Option<usize>,
+            def_ancestors: std::collections::HashSet<usize>,
+            def_disqualified: bool,
+            uses: Vec<usize>,
+            // (branch seq, resolved target block ids). usize::MAX = function frame
+            // (return-equivalent) — never reaches a use.
+            branches: Vec<(usize, Vec<usize>)>,
+        }
+        // Resolve a relative branch depth to the open block's id (innermost =
+        // depth 0); usize::MAX if it targets the function frame.
+        fn resolve(open: &[(usize, bool)], depth: u32) -> usize {
+            let d = depth as usize;
+            if d < open.len() {
+                open[open.len() - 1 - d].0
+            } else {
+                usize::MAX
+            }
+        }
+        fn walk(instrs: &[Instruction], s: &mut Scan, open: &mut Vec<(usize, bool)>, local: u32) {
+            for instr in instrs {
+                s.seq += 1;
+                match instr {
+                    Instruction::LocalSet(i) | Instruction::LocalTee(i) if *i == local => {
+                        if s.def_seq.is_some() {
+                            s.def_disqualified = true; // more than one write
+                        } else {
+                            s.def_seq = Some(s.seq);
+                            s.def_ancestors = open.iter().map(|(id, _)| *id).collect();
+                            if open.iter().any(|(_, conditional)| *conditional) {
+                                s.def_disqualified = true; // def under an If/Loop
+                            }
+                        }
+                    }
+                    Instruction::LocalGet(i) if *i == local => s.uses.push(s.seq),
+                    Instruction::Br(d) | Instruction::BrIf(d) => {
+                        s.branches.push((s.seq, vec![resolve(open, *d)]));
+                    }
+                    Instruction::BrTable { targets, default } => {
+                        let mut ids: Vec<usize> =
+                            targets.iter().map(|d| resolve(open, *d)).collect();
+                        ids.push(resolve(open, *default));
+                        s.branches.push((s.seq, ids));
+                    }
+                    Instruction::Block { body, .. } => {
+                        let id = s.next_block_id;
+                        s.next_block_id += 1;
+                        open.push((id, false));
+                        walk(body, s, open, local);
+                        open.pop();
+                    }
+                    Instruction::Loop { body, .. } => {
+                        let id = s.next_block_id;
+                        s.next_block_id += 1;
+                        open.push((id, true)); // back-edge → conservative
+                        walk(body, s, open, local);
+                        open.pop();
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        let id = s.next_block_id;
+                        s.next_block_id += 1;
+                        open.push((id, true));
+                        walk(then_body, s, open, local);
+                        walk(else_body, s, open, local);
+                        open.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut s = Scan::default();
+        let mut open: Vec<(usize, bool)> = Vec::new();
+        walk(instrs, &mut s, &mut open, local);
+
+        let def_seq = match s.def_seq {
+            Some(seq) if !s.def_disqualified => seq,
+            _ => return false,
+        };
+        // Every use must be after the def.
+        if s.uses.iter().any(|&u| u <= def_seq) {
+            return false;
+        }
+        // No pre-def branch may escape to a def-ancestor block.
+        for (bseq, tgts) in &s.branches {
+            if *bseq < def_seq && tgts.iter().any(|t| s.def_ancestors.contains(t)) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// #219 carrier scalar-forwarding (the perf milestone): forward a TOP-LEVEL
     /// single-assignment local's pure defining expression to its use sites, then
     /// let the committed SROA rules dissolve the now-exposed pack/unpack. This
@@ -8955,11 +9072,11 @@ pub mod optimize {
     /// SOUNDNESS (this transform is NOT Z3-backstoppable for the void seam fn —
     /// the value flows only into a havoc'd impure-call arg → vacuous pass; gale's
     /// G474RE silicon is the behavioral gate, #219):
-    ///   - We forward ONLY locals with exactly one write in the whole function
-    ///     (`analyze_locals` `sets.len()==1`) whose single write is at the
-    ///     FUNCTION TOP LEVEL (not nested in any Block/If/Loop). Top-level
-    ///     single-assignment ⇒ the def dominates every use (you can't reach a
-    ///     later top-level statement without executing the earlier one).
+    ///   - We forward ONLY locals with exactly one write whose def DOMINATES all
+    ///     uses, by `carrier_def_dominates_uses` (trap-aware structured
+    ///     dominance: def not under If/Loop, all uses after it, no pre-def branch
+    ///     escapes the def's enclosing blocks). The def is then reached on every
+    ///     non-trapping path from entry ⇒ dominates every use.
     ///   - The forwarding mechanism (`rewrite_with_dataflow` + `OptimizationEnv`)
     ///     additionally invalidates a forwarding when any input local is
     ///     reassigned (reaching-defs), so a forwarded expression always carries
@@ -8972,7 +9089,7 @@ pub mod optimize {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
         use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
-        use std::collections::{BTreeMap, HashSet};
+        use std::collections::HashSet;
 
         let ctx = ValidationContext::from_module(module);
         let verify_sig_ctx = VerificationSignatureContext::from_module(module);
@@ -8982,18 +9099,15 @@ pub mod optimize {
                 continue;
             }
 
-            // Precompute TOP-LEVEL single-assignment locals.
+            // Precompute the forwardable carriers: single-assignment locals whose
+            // (one) def DOMINATES all uses by trap-aware structured dominance —
+            // see carrier_def_dominates_uses. (analyze_locals' `sets.len()==1` is
+            // the fast pre-filter; the dominance check is the soundness gate.)
             let (usage, _equiv) = analyze_locals(&func.instructions);
-            let mut top_level_writes: BTreeMap<u32, usize> = BTreeMap::new();
-            for instr in &func.instructions {
-                if let Instruction::LocalSet(i) | Instruction::LocalTee(i) = instr {
-                    *top_level_writes.entry(*i).or_insert(0) += 1;
-                }
-            }
             let single_assign: HashSet<u32> = usage
                 .iter()
                 .filter(|(idx, u)| {
-                    u.sets.len() == 1 && top_level_writes.get(*idx).copied().unwrap_or(0) == 1
+                    u.sets.len() == 1 && carrier_def_dominates_uses(&func.instructions, **idx)
                 })
                 .map(|(idx, _)| *idx)
                 .collect();
@@ -14709,6 +14823,91 @@ mod tests {
         use loom_isle::{Imm32, iconst32};
         let _val = iconst32(Imm32::from(42));
         // Just test that ISLE types are accessible
+    }
+
+    // #219: trap-aware structured dominance for carrier forwarding.
+    #[test]
+    fn test_carrier_dominance() {
+        use crate::optimize::carrier_def_dominates_uses;
+        let dom = |wat: &str, local: u32| -> bool {
+            let m = parse::parse_wat(wat).unwrap();
+            carrier_def_dominates_uses(&m.functions[0].instructions, local)
+        };
+
+        // Straight-line: def (local 1) then use → dominates.
+        assert!(
+            dom(
+                "(module (func (param i32) (result i32) (local i32)
+                    local.get 0 local.set 1 local.get 1))",
+                1
+            ),
+            "straight-line def-before-use must dominate"
+        );
+
+        // Use before def → not dominated.
+        assert!(
+            !dom(
+                "(module (func (param i32) (result i32) (local i32)
+                    local.get 1 drop local.get 0 local.set 1 local.get 1))",
+                1
+            ),
+            "a use before the def must NOT be dominated"
+        );
+
+        // Def inside an If branch → not dominated (conditional).
+        assert!(
+            !dom(
+                "(module (func (param i32) (result i32) (local i32)
+                    local.get 0
+                    if (result i32) local.get 0 local.set 1 i32.const 1 else i32.const 0 end
+                    local.get 1 i32.add))",
+                1
+            ),
+            "a def inside an If branch must NOT be dominated"
+        );
+
+        // Seam shape: def nested in a block, reached after an inner dispatch
+        // block whose branch targets that INNER block (does not escape), use
+        // after the outer block via a br_if positioned AFTER the def → dominates.
+        assert!(
+            dom(
+                "(module (func (param i32) (result i32) (local i32)
+                    block (result i32)
+                      block
+                        local.get 0
+                        br_if 0
+                      end
+                      local.get 0
+                      local.set 1
+                      local.get 0
+                      br_if 1
+                      i32.const 7
+                    end
+                    local.get 1
+                    i32.add))",
+                1
+            ),
+            "nested def reached past an inner-only branch, used after, must dominate"
+        );
+
+        // Escape shape: a branch BEFORE the def targets the def's ENCLOSING block
+        // (exits past where the def lives) → not dominated.
+        assert!(
+            !dom(
+                "(module (func (param i32) (result i32) (local i32)
+                    block (result i32)
+                      local.get 0
+                      br_if 0
+                      local.get 0
+                      local.set 1
+                      i32.const 7
+                    end
+                    local.get 1
+                    i32.add))",
+                1
+            ),
+            "a pre-def branch escaping the def's enclosing block must NOT dominate"
+        );
     }
 
     #[test]
