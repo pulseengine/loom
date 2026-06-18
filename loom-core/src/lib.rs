@@ -6953,6 +6953,11 @@ pub mod optimize {
         // are inlined, enabling subsequent passes to optimize across boundaries.
         inline_functions(module)?;
 
+        // Phase 1b (#219): dissolve the u64 ABI carrier the inline leaves behind —
+        // scalar-forward the single-assignment carrier to its unpack sites so the
+        // SROA rules can collapse the pack/unpack round-trip.
+        forward_carrier_locals(module)?;
+
         // Phase 2: Constant folding (ISLE pattern rewrites)
         constant_folding(module)?;
 
@@ -8934,6 +8939,102 @@ pub mod optimize {
             if guard.validate(func).is_err() || translator.verify(func).is_err() {
                 eprintln!("simplify_locals: reverting function (verification rejected)");
                 crate::stats::record_revert("simplify_locals");
+                func.instructions = original_instructions;
+            }
+        }
+        Ok(())
+    }
+
+    /// #219 carrier scalar-forwarding (the perf milestone): forward a TOP-LEVEL
+    /// single-assignment local's pure defining expression to its use sites, then
+    /// let the committed SROA rules dissolve the now-exposed pack/unpack. This
+    /// removes the u64 ABI carrier the proven `br_table` seam inline leaves inside
+    /// `z_impl` (decide builds `extend_i32_u<<32 | status`, z_impl tears it back
+    /// with `&0xff` / `>>32` through a dead i64 carrier).
+    ///
+    /// SOUNDNESS (this transform is NOT Z3-backstoppable for the void seam fn —
+    /// the value flows only into a havoc'd impure-call arg → vacuous pass; gale's
+    /// G474RE silicon is the behavioral gate, #219):
+    ///   - We forward ONLY locals with exactly one write in the whole function
+    ///     (`analyze_locals` `sets.len()==1`) whose single write is at the
+    ///     FUNCTION TOP LEVEL (not nested in any Block/If/Loop). Top-level
+    ///     single-assignment ⇒ the def dominates every use (you can't reach a
+    ///     later top-level statement without executing the earlier one).
+    ///   - The forwarding mechanism (`rewrite_with_dataflow` + `OptimizationEnv`)
+    ///     additionally invalidates a forwarding when any input local is
+    ///     reassigned (reaching-defs), so a forwarded expression always carries
+    ///     its def-time inputs.
+    ///   - `is_forwardable_expr` admits only pure ops (no calls/loads/stores/
+    ///     div-rem/floats), so re-evaluating the expression at a use is safe.
+    ///
+    /// `verify_or_revert` still guards non-void functions and stack correctness.
+    pub fn forward_carrier_locals(module: &mut Module) -> Result<()> {
+        use crate::stack::validation::{ValidationContext, ValidationGuard};
+        use crate::verify::{TranslationValidator, VerificationSignatureContext};
+        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
+        use std::collections::{BTreeMap, HashSet};
+
+        let ctx = ValidationContext::from_module(module);
+        let verify_sig_ctx = VerificationSignatureContext::from_module(module);
+
+        for func in &mut module.functions {
+            if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
+                continue;
+            }
+
+            // Precompute TOP-LEVEL single-assignment locals.
+            let (usage, _equiv) = analyze_locals(&func.instructions);
+            let mut top_level_writes: BTreeMap<u32, usize> = BTreeMap::new();
+            for instr in &func.instructions {
+                if let Instruction::LocalSet(i) | Instruction::LocalTee(i) = instr {
+                    *top_level_writes.entry(*i).or_insert(0) += 1;
+                }
+            }
+            let single_assign: HashSet<u32> = usage
+                .iter()
+                .filter(|(idx, u)| {
+                    u.sets.len() == 1 && top_level_writes.get(*idx).copied().unwrap_or(0) == 1
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            if single_assign.is_empty() {
+                continue;
+            }
+
+            let guard = ValidationGuard::with_context(func, "forward_carrier_locals", ctx.clone());
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "forward_carrier_locals",
+                verify_sig_ctx.clone(),
+            );
+            let original_instructions = func.instructions.clone();
+
+            let had_end = func.instructions.last() == Some(&Instruction::End);
+            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
+                if !terms.is_empty() {
+                    let mut env = LocalEnv::new();
+                    env.single_assign = single_assign;
+                    // Forward the carrier (dataflow), then apply the structural
+                    // SROA rules (rewrite_pure) to dissolve the exposed pack/unpack.
+                    let forwarded: Vec<_> = terms
+                        .into_iter()
+                        .map(|t| rewrite_with_dataflow(t, &mut env))
+                        .map(rewrite_pure)
+                        .collect();
+                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&forwarded) {
+                        if !new_instrs.is_empty() {
+                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
+                                new_instrs.pop();
+                            }
+                            func.instructions = new_instrs;
+                        }
+                    }
+                }
+            }
+
+            if guard.validate(func).is_err() || translator.verify(func).is_err() {
+                eprintln!("forward_carrier_locals: reverting function (verification rejected)");
+                crate::stats::record_revert("forward_carrier_locals");
                 func.instructions = original_instructions;
             }
         }
