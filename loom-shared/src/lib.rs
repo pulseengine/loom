@@ -3992,6 +3992,21 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 {
                     iconst64(Imm64(0))
                 }
+                // #219 seam-SROA: extend_i32_u(x) & M → extend_i32_u(x) when
+                // M's low 32 bits are all set. Zero-extending an i32 yields a
+                // value in [0, 2^32), so a mask covering bits [0,32) preserves
+                // it (bits [32,64) of the extend are already 0). Z3: (zext32 x)
+                // & M == (zext32 x) when (M & 0xffffffff) == 0xffffffff.
+                (ValueData::I64ExtendI32U { .. }, ValueData::I64Const { val: m })
+                    if (m.value() as u64) & 0xffff_ffff == 0xffff_ffff =>
+                {
+                    lhs_simplified
+                }
+                (ValueData::I64Const { val: m }, ValueData::I64ExtendI32U { .. })
+                    if (m.value() as u64) & 0xffff_ffff == 0xffff_ffff =>
+                {
+                    rhs_simplified
+                }
                 // #219 seam-SROA: (or A B) & M → (survivor & M) when one OR
                 // operand is a left shift the mask clears. Recurse so the
                 // survivor (and a both-shifted case) simplifies further.

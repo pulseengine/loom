@@ -9062,6 +9062,262 @@ pub mod optimize {
         true
     }
 
+    /// #219 STEP 1 — is this instruction a pure, side-effect-free, integer-domain
+    /// value computation whose term round-trip is faithful?
+    ///
+    /// The term IR is a value-expression stack model: control-flow ops (`br_if`/
+    /// `br_table`) are pushed as value terms, so a mid-block branch followed by
+    /// trailing stack computation does NOT round-trip (`instructions_to_terms` →
+    /// `terms_to_instructions` is lossy — see #219). But a maximal contiguous run
+    /// of these *pure* ops round-trips faithfully, so we can safely apply the
+    /// structural rewriter (`rewrite_pure`) to such a "window". We restrict to the
+    /// integer domain (no floats — avoids NaN-bit canonicalization questions) and
+    /// exclude memory access, calls, control flow, and local/global writes.
+    fn is_simple_pure_instr(instr: &Instruction) -> bool {
+        use Instruction::*;
+        matches!(
+            instr,
+            // Constants (integer only)
+            I32Const(_) | I64Const(_)
+            // Reads (no side effects, no writes)
+            | LocalGet(_) | GlobalGet(_)
+            // Integer binary ops (consume 2, produce 1)
+            | I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU
+            | I32And | I32Or | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr
+            | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU
+            | I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU
+            | I64And | I64Or | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr
+            | I64Eq | I64Ne | I64LtS | I64LtU | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU
+            // Integer unary ops (consume 1, produce 1)
+            | I32Eqz | I32Clz | I32Ctz | I32Popcnt
+            | I64Eqz | I64Clz | I64Ctz | I64Popcnt
+            | I32WrapI64 | I64ExtendI32S | I64ExtendI32U
+            | I32Extend8S | I32Extend16S | I64Extend8S | I64Extend16S | I64Extend32S
+            // Select (consume 3, produce 1) — pure
+            | Select
+        )
+    }
+
+    /// Net stack effect (produced − consumed) of an instruction sequence.
+    fn net_stack_effect(instrs: &[Instruction]) -> i32 {
+        instrs
+            .iter()
+            .map(|i| {
+                let (c, p) = instruction_stack_io(i);
+                p - c
+            })
+            .sum()
+    }
+
+    /// Total instruction count, recursing into nested bodies. Used as a
+    /// never-pessimize guard: forwarding that does not shrink the function is
+    /// reverted (a single-use carrier whose RHS does not dissolve would
+    /// otherwise grow the code).
+    fn count_instrs(instrs: &[Instruction]) -> usize {
+        let mut n = 0;
+        for i in instrs {
+            n += 1;
+            match i {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    n += count_instrs(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    n += count_instrs(then_body) + count_instrs(else_body);
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+
+    /// #219 STEP 1 — rewrite a single pure window through the term IR.
+    ///
+    /// Returns `Some(new_instrs)` only when the window is stack-closed
+    /// (`instructions_to_terms` succeeds — no underflow, i.e. it does not consume
+    /// values produced before the window) AND the rewrite preserves the net stack
+    /// effect. Otherwise `None` (leave the window untouched — conservative).
+    fn rewrite_pure_window(window: &[Instruction]) -> Option<Vec<Instruction>> {
+        use loom_isle::rewrite_pure;
+        let terms = super::terms::instructions_to_terms(window).ok()?;
+        if terms.is_empty() {
+            return None;
+        }
+        let rewritten: Vec<_> = terms.into_iter().map(rewrite_pure).collect();
+        let new_instrs = super::terms::terms_to_instructions(&rewritten).ok()?;
+        if net_stack_effect(window) != net_stack_effect(&new_instrs) {
+            return None;
+        }
+        Some(new_instrs)
+    }
+
+    /// #219 STEP 1 — WINDOWED SROA. Apply the structural rewriter (`rewrite_pure`)
+    /// to every maximal pure straight-line window in `instrs`, recursing into
+    /// nested bodies first. This is the SROA path that survives `br_table`
+    /// functions like `z_impl`: it NEVER round-trips a control-flow instruction
+    /// through the (lossy) term IR — only self-contained pure runs, which are
+    /// faithful. `rewrite_pure` is the proven structural rule set, so each window
+    /// rewrite is semantics-preserving; the net-stack-effect guard in
+    /// `rewrite_pure_window` keeps the surrounding stack shape intact.
+    pub(crate) fn simplify_pure_windows(instrs: &mut Vec<Instruction>) {
+        // Recurse into nested bodies first.
+        for instr in instrs.iter_mut() {
+            match instr {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    simplify_pure_windows(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    simplify_pure_windows(then_body);
+                    simplify_pure_windows(else_body);
+                }
+                _ => {}
+            }
+        }
+
+        // Rewrite maximal pure windows in THIS body.
+        let mut out: Vec<Instruction> = Vec::with_capacity(instrs.len());
+        let mut i = 0;
+        while i < instrs.len() {
+            if is_simple_pure_instr(&instrs[i]) {
+                let start = i;
+                while i < instrs.len() && is_simple_pure_instr(&instrs[i]) {
+                    i += 1;
+                }
+                let window = &instrs[start..i];
+                match rewrite_pure_window(window) {
+                    Some(rewritten) => out.extend(rewritten),
+                    None => out.extend_from_slice(window),
+                }
+            } else {
+                out.push(instrs[i].clone());
+                i += 1;
+            }
+        }
+        *instrs = out;
+    }
+
+    /// #219 STEP 2 — locate the single def of `carrier` and extract its pure
+    /// defining expression (the RHS), recursing into nested bodies.
+    ///
+    /// Returns `(rhs_instrs, is_tee)` where `rhs_instrs` is the maximal pure,
+    /// stack-closed, single-value (`net == +1`) instruction run immediately
+    /// preceding the def — i.e. exactly the expression the `local.set`/`local.tee`
+    /// stores. Returns `None` if the def isn't found or its RHS isn't a pure,
+    /// self-contained single value. The caller has already established (via
+    /// `carrier_def_dominates_uses`) that `carrier` is single-assignment and its
+    /// def is not under an `If`/`Loop`, so there is exactly one def to find.
+    fn extract_carrier_rhs(
+        instrs: &[Instruction],
+        carrier: u32,
+    ) -> Option<(Vec<Instruction>, bool)> {
+        for (d, instr) in instrs.iter().enumerate() {
+            match instr {
+                Instruction::LocalSet(i) | Instruction::LocalTee(i) if *i == carrier => {
+                    let is_tee = matches!(instr, Instruction::LocalTee(_));
+                    // Maximal pure run ending at the def.
+                    let mut run_start = d;
+                    while run_start > 0 && is_simple_pure_instr(&instrs[run_start - 1]) {
+                        run_start -= 1;
+                    }
+                    // Longest suffix [s..d] that is a single self-contained value
+                    // (round-trips through the term IR as exactly one term).
+                    for s in run_start..d {
+                        let cand = &instrs[s..d];
+                        if let Ok(terms) = super::terms::instructions_to_terms(cand) {
+                            if terms.len() == 1 && net_stack_effect(cand) == 1 {
+                                return Some((cand.to_vec(), is_tee));
+                            }
+                        }
+                    }
+                    return None;
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    if let Some(r) = extract_carrier_rhs(body, carrier) {
+                        return Some(r);
+                    }
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    if let Some(r) = extract_carrier_rhs(then_body, carrier)
+                        .or_else(|| extract_carrier_rhs(else_body, carrier))
+                    {
+                        return Some(r);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// #219 STEP 2 — forward `carrier`'s pure RHS to every use and drop the def,
+    /// recursing into nested bodies.
+    ///
+    /// - Each `local.get carrier` is replaced by a clone of `rhs` (pure ⇒
+    ///   re-evaluating at the use is sound).
+    /// - The def is removed: a `local.tee` is dropped but its RHS run is LEFT in
+    ///   place (its value stays on the stack for the original consumer); a
+    ///   `local.set` is dropped together with its preceding RHS run (now-dead pure
+    ///   computation — sound to delete).
+    ///
+    /// The carrier local becomes dead afterwards; later DCE/dead-local passes
+    /// remove its declaration. The exposed pack/unpack is dissolved by a
+    /// subsequent `simplify_pure_windows`.
+    fn forward_carrier_in_body(
+        body: &mut Vec<Instruction>,
+        carrier: u32,
+        rhs: &[Instruction],
+        is_tee: bool,
+    ) {
+        // Recurse into nested bodies first so uses there are substituted.
+        for instr in body.iter_mut() {
+            match instr {
+                Instruction::Block { body: b, .. } | Instruction::Loop { body: b, .. } => {
+                    forward_carrier_in_body(b, carrier, rhs, is_tee);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    forward_carrier_in_body(then_body, carrier, rhs, is_tee);
+                    forward_carrier_in_body(else_body, carrier, rhs, is_tee);
+                }
+                _ => {}
+            }
+        }
+
+        let mut out: Vec<Instruction> = Vec::with_capacity(body.len());
+        for instr in body.drain(..) {
+            match &instr {
+                Instruction::LocalGet(i) if *i == carrier => {
+                    out.extend_from_slice(rhs);
+                }
+                Instruction::LocalSet(i) if *i == carrier && !is_tee => {
+                    // Drop the dead set and its preceding RHS run.
+                    let drop_n = rhs.len().min(out.len());
+                    out.truncate(out.len() - drop_n);
+                }
+                Instruction::LocalTee(i) if *i == carrier && is_tee => {
+                    // Drop the tee; its RHS value stays on the stack for the
+                    // original consumer.
+                }
+                _ => out.push(instr),
+            }
+        }
+        *body = out;
+    }
+
     /// #219 carrier scalar-forwarding (the perf milestone): forward a TOP-LEVEL
     /// single-assignment local's pure defining expression to its use sites, then
     /// let the committed SROA rules dissolve the now-exposed pack/unpack. This
@@ -9077,18 +9333,21 @@ pub mod optimize {
     ///     dominance: def not under If/Loop, all uses after it, no pre-def branch
     ///     escapes the def's enclosing blocks). The def is then reached on every
     ///     non-trapping path from entry ⇒ dominates every use.
-    ///   - The forwarding mechanism (`rewrite_with_dataflow` + `OptimizationEnv`)
-    ///     additionally invalidates a forwarding when any input local is
-    ///     reassigned (reaching-defs), so a forwarded expression always carries
-    ///     its def-time inputs.
-    ///   - `is_forwardable_expr` admits only pure ops (no calls/loads/stores/
-    ///     div-rem/floats), so re-evaluating the expression at a use is safe.
+    ///   - The forwarding is done at the INSTRUCTION level
+    ///     (`extract_carrier_rhs` + `forward_carrier_in_body`), NOT through the
+    ///     term IR: the term round-trip is lossy for control flow (it pushes
+    ///     `br_if`/`br_table` as value terms), so any term-based forwarding turns
+    ///     a `br_table` function like `z_impl` stack-invalid (#219). Only the
+    ///     carrier's pure RHS — itself a self-contained straight-line run — is
+    ///     ever taken through terms, and only via `simplify_pure_windows` for the
+    ///     final SROA dissolution, which never round-trips control flow.
+    ///   - `extract_carrier_rhs` admits only a pure (`is_simple_pure_instr`)
+    ///     single-value run, so re-evaluating the expression at a use is safe.
     ///
     /// `verify_or_revert` still guards non-void functions and stack correctness.
     pub fn forward_carrier_locals(module: &mut Module) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::{TranslationValidator, VerificationSignatureContext};
-        use loom_isle::{LocalEnv, rewrite_pure, rewrite_with_dataflow};
         use std::collections::HashSet;
 
         let ctx = ValidationContext::from_module(module);
@@ -9123,32 +9382,30 @@ pub mod optimize {
             );
             let original_instructions = func.instructions.clone();
 
-            let had_end = func.instructions.last() == Some(&Instruction::End);
-            if let Ok(terms) = super::terms::instructions_to_terms(&func.instructions) {
-                if !terms.is_empty() {
-                    let mut env = LocalEnv::new();
-                    env.single_assign = single_assign;
-                    // Forward the carrier (dataflow), then apply the structural
-                    // SROA rules (rewrite_pure) to dissolve the exposed pack/unpack.
-                    let forwarded: Vec<_> = terms
-                        .into_iter()
-                        .map(|t| rewrite_with_dataflow(t, &mut env))
-                        .map(rewrite_pure)
-                        .collect();
-                    if let Ok(mut new_instrs) = super::terms::terms_to_instructions(&forwarded) {
-                        if !new_instrs.is_empty() {
-                            if !had_end && new_instrs.last() == Some(&Instruction::End) {
-                                new_instrs.pop();
-                            }
-                            func.instructions = new_instrs;
-                        }
-                    }
+            // Instruction-level forwarding (br_table-safe): for each forwardable
+            // carrier, extract its pure single-value RHS, substitute it into every
+            // use, and drop the dead def. Process carriers deterministically.
+            let mut carriers: Vec<u32> = single_assign.into_iter().collect();
+            carriers.sort_unstable();
+            for carrier in carriers {
+                if let Some((rhs, is_tee)) = extract_carrier_rhs(&func.instructions, carrier) {
+                    forward_carrier_in_body(&mut func.instructions, carrier, &rhs, is_tee);
                 }
             }
+            // Dissolve the exposed pack/unpack with windowed SROA (pure windows
+            // only — never round-trips control flow).
+            simplify_pure_windows(&mut func.instructions);
 
-            if guard.validate(func).is_err() || translator.verify(func).is_err() {
-                eprintln!("forward_carrier_locals: reverting function (verification rejected)");
-                crate::stats::record_revert("forward_carrier_locals");
+            // Revert unless: stack/verify pass AND the function did not grow
+            // (never pessimize — forwarding that fails to dissolve is dropped).
+            let grew = count_instrs(&func.instructions) > count_instrs(&original_instructions);
+            if grew || guard.validate(func).is_err() || translator.verify(func).is_err() {
+                if grew {
+                    crate::stats::record_revert("forward_carrier_locals_no_shrink");
+                } else {
+                    eprintln!("forward_carrier_locals: reverting function (verification rejected)");
+                    crate::stats::record_revert("forward_carrier_locals");
+                }
                 func.instructions = original_instructions;
             }
         }
@@ -14910,6 +15167,58 @@ mod tests {
         );
     }
 
+    // #219 STEP 1: windowed SROA — rewrite_pure applied to maximal pure
+    // straight-line windows, br_table-safe (never round-trips control flow).
+    #[test]
+    fn test_windowed_sroa() {
+        use crate::optimize::simplify_pure_windows;
+
+        // A pure window dissolves: wrap_i64(extend_i32_u(x)) = x (Z3-validated
+        // seam-SROA rule). The 3-instruction window collapses to a single get.
+        let mut w = vec![
+            Instruction::LocalGet(0),
+            Instruction::I64ExtendI32U,
+            Instruction::I32WrapI64,
+        ];
+        simplify_pure_windows(&mut w);
+        assert_eq!(
+            w,
+            vec![Instruction::LocalGet(0)],
+            "pure window wrap(extend_u(x)) must dissolve to x"
+        );
+
+        // A window ADJACENT to a br_table is rewritten on its pure parts only;
+        // the br_table itself (and block structure) is preserved untouched —
+        // the lossy term round-trip is never invoked on control flow.
+        let inner = vec![
+            // pure prefix: 2 + 3 → 5 (const-fold), then the index for br_table
+            Instruction::LocalGet(0),
+            Instruction::I64ExtendI32U,
+            Instruction::I32WrapI64, // dissolves to local.get 0
+            Instruction::BrTable {
+                targets: vec![0, 0],
+                default: 0,
+            },
+        ];
+        let mut body = vec![Instruction::Block {
+            block_type: BlockType::Empty,
+            body: inner,
+        }];
+        simplify_pure_windows(&mut body);
+        // The Block + BrTable survive; the pure prefix inside is simplified.
+        match &body[0] {
+            Instruction::Block { body: b, .. } => {
+                assert_eq!(b[0], Instruction::LocalGet(0), "pure prefix simplified");
+                assert!(
+                    matches!(b.last(), Some(Instruction::BrTable { .. })),
+                    "br_table preserved untouched, not round-tripped"
+                );
+                assert_eq!(b.len(), 2, "window collapsed to [local.get 0, br_table]");
+            }
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_parse_wat_simple() {
         let wat = r#"
@@ -18285,28 +18594,24 @@ mod tests {
     #[test]
     fn test_seam_sroa_shr_extracts_high_field() {
         // #219 seam-SROA: (shr_u (or (shl (extend_u x) 32) const) 32) extracts the
-        // HIGH field of a u64 pack → (extend_u x) & 0xffffffff. The low (const)
-        // field shifts out (logical shift distributes over OR; shl-then-shr-same
-        // masks to the low 64-k bits). Mirrors the sem decide whose low field is
-        // a constant 0/1.
+        // HIGH field of a u64 pack → (extend_u x). The low (const) field shifts
+        // out (logical shift distributes over OR; shl-then-shr-same masks to the
+        // low 64-k bits, leaving (extend_u x) & 0xffffffff, which the extend-mask
+        // rule collapses to (extend_u x) since a zero-extend already fits in 32
+        // bits). Mirrors the sem decide whose low field is a constant 0/1.
         use loom_isle::{
-            Imm64, i64_extend_i32_u, iand64, iconst64, ior64, ishl64, ishru64, local_get,
-            rewrite_pure,
+            Imm64, i64_extend_i32_u, iconst64, ior64, ishl64, ishru64, local_get, rewrite_pure,
         };
         let high = ishl64(i64_extend_i32_u(local_get(0)), iconst64(Imm64(32)));
         let pack = ior64(high, iconst64(Imm64(1))); // low field = const (like local 3 = 0/1)
         let unpacked = ishru64(pack, iconst64(Imm64(32)));
         let simplified = rewrite_pure(unpacked);
 
-        let want = terms::terms_to_instructions(&[iand64(
-            i64_extend_i32_u(local_get(0)),
-            iconst64(Imm64(0xffff_ffff)),
-        )])
-        .unwrap();
+        let want = terms::terms_to_instructions(&[i64_extend_i32_u(local_get(0))]).unwrap();
         let got = terms::terms_to_instructions(&[simplified]).unwrap();
         assert_eq!(
             got, want,
-            "#219: (shr_u (or (shl (extend_u x) 32) const) 32) must extract (extend_u x) & 0xffffffff"
+            "#219: (shr_u (or (shl (extend_u x) 32) const) 32) must extract (extend_u x)"
         );
     }
 
