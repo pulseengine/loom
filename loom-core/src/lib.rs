@@ -9203,6 +9203,119 @@ pub mod optimize {
         *instrs = out;
     }
 
+    /// #219 STEP 3 — is the value stored by the def at `instrs[def_idx]`
+    /// provably `< 2^32` (high 32 bits always zero)?
+    ///
+    /// Conservative, purely local: looks only at the instruction(s) immediately
+    /// preceding the `local.set`/`local.tee`. A stored value is narrow when it is
+    /// `i64.extend_i32_u(_)` (a zero-extend always fits in 32 bits), an
+    /// `i64.const c` with the high 32 bits clear, or `(_ & i64.const c)` with `c`
+    /// fitting in 32 bits (the mask clears bits ≥ 32). Anything else → not narrow.
+    fn def_value_is_narrow(instrs: &[Instruction], def_idx: usize) -> bool {
+        if def_idx == 0 {
+            return false;
+        }
+        match &instrs[def_idx - 1] {
+            Instruction::I64ExtendI32U => true,
+            Instruction::I64Const(c) => (*c as u64) >> 32 == 0,
+            // `<expr>; i64.const c; i64.and` — the AND's RHS const (pushed last)
+            // sits two before the set. A mask < 2^32 bounds the result.
+            Instruction::I64And => {
+                def_idx >= 2
+                    && matches!(
+                        &instrs[def_idx - 2],
+                        Instruction::I64Const(c) if (*c as u64) >> 32 == 0
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    /// #219 STEP 3 — the set of locals provably `< 2^32` (high 32 bits always
+    /// zero): every write of the local stores a narrow value
+    /// (`def_value_is_narrow`), recursing into nested bodies. A local with no
+    /// write, or any non-narrow write, is excluded (conservative).
+    pub(crate) fn narrow_locals(instrs: &[Instruction]) -> std::collections::HashSet<u32> {
+        use std::collections::HashSet;
+        fn scan(instrs: &[Instruction], written: &mut HashSet<u32>, not_narrow: &mut HashSet<u32>) {
+            for (i, instr) in instrs.iter().enumerate() {
+                match instr {
+                    Instruction::LocalSet(n) | Instruction::LocalTee(n) => {
+                        written.insert(*n);
+                        if !def_value_is_narrow(instrs, i) {
+                            not_narrow.insert(*n);
+                        }
+                    }
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        scan(body, written, not_narrow);
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        scan(then_body, written, not_narrow);
+                        scan(else_body, written, not_narrow);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut written = HashSet::new();
+        let mut not_narrow = HashSet::new();
+        scan(instrs, &mut written, &mut not_narrow);
+        written.difference(&not_narrow).copied().collect()
+    }
+
+    /// #219 STEP 3 — fold `(i64.shr_u (local.get N) k)` → `i64.const 0` when `N`
+    /// is narrow (`< 2^32`) and the effective shift `k mod 64 ≥ 32`, recursing
+    /// into nested bodies.
+    ///
+    /// Shifting a value whose high 32 bits are zero right by ≥ 32 yields 0. This
+    /// is the value-range fact pure structural SROA can't see; supplying it here
+    /// lets the subsequent `simplify_pure_windows` collapse `(or P 0) → P`,
+    /// completing the seam unpack `(extend(a)<<32 | status) >> 32 → extend(a)`.
+    pub(crate) fn fold_narrow_high_shr(
+        instrs: &mut Vec<Instruction>,
+        narrow: &std::collections::HashSet<u32>,
+    ) {
+        for instr in instrs.iter_mut() {
+            match instr {
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    fold_narrow_high_shr(body, narrow);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    fold_narrow_high_shr(then_body, narrow);
+                    fold_narrow_high_shr(else_body, narrow);
+                }
+                _ => {}
+            }
+        }
+
+        let mut out: Vec<Instruction> = Vec::with_capacity(instrs.len());
+        let mut i = 0;
+        while i < instrs.len() {
+            if i + 2 < instrs.len() {
+                if let (Instruction::LocalGet(n), Instruction::I64Const(k), Instruction::I64ShrU) =
+                    (&instrs[i], &instrs[i + 1], &instrs[i + 2])
+                {
+                    if narrow.contains(n) && (*k as u64 & 63) >= 32 {
+                        out.push(Instruction::I64Const(0));
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            out.push(instrs[i].clone());
+            i += 1;
+        }
+        *instrs = out;
+    }
+
     /// #219 STEP 2 — locate the single def of `carrier` and extract its pure
     /// defining expression (the RHS), recursing into nested bodies.
     ///
@@ -9392,9 +9505,24 @@ pub mod optimize {
                     forward_carrier_in_body(&mut func.instructions, carrier, &rhs, is_tee);
                 }
             }
-            // Dissolve the exposed pack/unpack with windowed SROA (pure windows
-            // only — never round-trips control flow).
-            simplify_pure_windows(&mut func.instructions);
+            // Dissolve the exposed pack/unpack. Iterate two passes to a fixpoint:
+            //   - simplify_pure_windows runs rewrite_pure on pure windows, which
+            //     DISTRIBUTES the unpack: (or P Q)>>32 → (P>>32) | (Q>>32),
+            //     EXPOSING a bare `status>>32`;
+            //   - fold_narrow_high_shr then supplies the value-range fact pure
+            //     SROA can't see — (shr_u (local.get N) k≥32) → 0 for narrow
+            //     (< 2^32) locals — letting the next window collapse (or P 0)→P.
+            // The bare shr_u only appears AFTER the first window pass distributes,
+            // so neither order alone suffices; iterate until stable (capped).
+            for _ in 0..4 {
+                let before = func.instructions.clone();
+                let narrow = narrow_locals(&func.instructions);
+                fold_narrow_high_shr(&mut func.instructions, &narrow);
+                simplify_pure_windows(&mut func.instructions);
+                if func.instructions == before {
+                    break;
+                }
+            }
 
             // Revert unless: stack/verify pass AND the function did not grow
             // (never pessimize — forwarding that fails to dissolve is dropped).
@@ -15217,6 +15345,58 @@ mod tests {
             }
             other => panic!("expected Block, got {other:?}"),
         }
+    }
+
+    // #219 STEP 3: narrow-local analysis + high-shift fold.
+    #[test]
+    fn test_narrow_locals_and_high_shr_fold() {
+        use crate::optimize::{fold_narrow_high_shr, narrow_locals};
+
+        // local 0: every def narrow (extend_u, then small const) → narrow.
+        // local 1: a def with the high 32 bits set (0x1_0000_0000) → NOT narrow.
+        // local 2: def via (_ & 0xff) const mask → narrow.
+        let instrs = vec![
+            Instruction::LocalGet(9),
+            Instruction::I64ExtendI32U,
+            Instruction::LocalSet(0),
+            Instruction::I64Const(1),
+            Instruction::LocalSet(0), // local 0: both defs narrow
+            Instruction::I64Const(0x1_0000_0000),
+            Instruction::LocalSet(1), // local 1: wide const → not narrow
+            Instruction::LocalGet(9),
+            Instruction::I64ExtendI32U,
+            Instruction::I64Const(0xff),
+            Instruction::I64And,
+            Instruction::LocalSet(2), // local 2: masked by 0xff → narrow
+        ];
+        let narrow = narrow_locals(&instrs);
+        assert!(
+            narrow.contains(&0),
+            "local 0 (extend + small const) is narrow"
+        );
+        assert!(!narrow.contains(&1), "local 1 (wide const) is NOT narrow");
+        assert!(narrow.contains(&2), "local 2 (& 0xff) is narrow");
+
+        // Fold: narrow local's >>32 → 0; non-narrow local's >>32 untouched.
+        let mut body = vec![
+            Instruction::LocalGet(0),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU, // narrow → folds to const 0
+            Instruction::LocalGet(1),
+            Instruction::I64Const(32),
+            Instruction::I64ShrU, // not narrow → preserved
+        ];
+        fold_narrow_high_shr(&mut body, &narrow);
+        assert_eq!(
+            body,
+            vec![
+                Instruction::I64Const(0),
+                Instruction::LocalGet(1),
+                Instruction::I64Const(32),
+                Instruction::I64ShrU,
+            ],
+            "narrow >>32 folds to 0; non-narrow >>32 preserved"
+        );
     }
 
     #[test]
