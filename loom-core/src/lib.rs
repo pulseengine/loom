@@ -13864,20 +13864,51 @@ pub mod optimize {
                         let current_local_count = base_local_count
                             + caller_locals.iter().map(|(count, _)| count).sum::<u32>();
 
-                        // Step 1: Allocate temporary locals for the callee's parameters
-                        // We need to pop arguments from the stack and store them in locals
+                        // Step 1: Allocate temporary locals for the callee's parameters.
+                        // Always reserve `param_count` slots so the callee-local
+                        // remap offset is stable; a forwarded param leaves its
+                        // slot unused (dead-locals removes it).
                         let param_start_idx = current_local_count;
                         let param_count = callee.signature.params.len() as u32;
-
-                        // Add parameter locals to caller (one local per parameter)
                         for param_type in &callee.signature.params {
                             caller_locals.push((1, *param_type));
                         }
 
-                        // Step 2: Generate instructions to store arguments from stack to locals
-                        // Arguments are on the stack in order: arg0, arg1, ..., argN (top)
-                        // We need to store them in reverse order (argN first, then argN-1, etc.)
-                        for i in (0..param_count).rev() {
+                        // loom#228 ARG-FORWARDING: if a trailing argument is a bare
+                        // `local.get K` and the callee never WRITES that parameter,
+                        // forward K into the inlined body instead of spilling it to
+                        // a temp and immediately reloading. Sound: K is not rewritten
+                        // between the get and the (now-inlined) body, and the body
+                        // never writes K — it doesn't write the param (checked), and
+                        // callee locals remap to a disjoint range above param_start_idx
+                        // (K is a pre-existing caller local, so K < param_start_idx).
+                        // Forwardable args form a top-suffix: we can only pop bare
+                        // `local.get`s contiguously from the value-stack top. This is
+                        // what removes the redundant copy in control-flow callers,
+                        // where simplify_locals' equivalence cleanup bails (#228).
+                        let callee_writes = callee_param_writes(callee, param_count);
+                        let mut param_targets: Vec<u32> =
+                            (0..param_count).map(|i| param_start_idx + i).collect();
+                        // Walk args from the top (param_count-1) downward.
+                        let mut spill_count = param_count;
+                        while spill_count > 0 {
+                            let p = (spill_count - 1) as usize;
+                            if callee_writes[p] {
+                                break; // callee writes this param → must spill
+                            }
+                            match result.last() {
+                                Some(Instruction::LocalGet(k)) => {
+                                    param_targets[p] = *k; // forward the caller local
+                                    result.pop();
+                                    spill_count -= 1;
+                                }
+                                _ => break, // non-bare arg → lower args stay on stack
+                            }
+                        }
+
+                        // Step 2: Spill the remaining (non-forwarded) args — params
+                        // 0..spill_count, still on the stack (arg spill_count-1 on top).
+                        for i in (0..spill_count).rev() {
                             result.push(Instruction::LocalSet(param_start_idx + i));
                         }
 
@@ -13887,13 +13918,12 @@ pub mod optimize {
                             caller_locals.push((*count, *typ));
                         }
 
-                        // Step 4: Clone and remap callee's instructions
-                        // Replace parameter references with our temporary locals
+                        // Step 4: Clone and remap callee's instructions per param_targets.
                         let inlined_body = remap_locals_in_block(
                             &callee.instructions,
                             callee_locals_start,
                             param_count,
-                            param_start_idx,
+                            &param_targets,
                         );
 
                         result.extend(inlined_body);
@@ -13967,31 +13997,68 @@ pub mod optimize {
         result
     }
 
-    /// Remap local indices in inlined code to avoid conflicts
+    /// loom#228 — which of the callee's parameters does its body WRITE
+    /// (`local.set`/`local.tee`, recursively)? A written parameter cannot be
+    /// arg-forwarded: forwarding maps the param to the caller's source local, so
+    /// a write would clobber that caller local. Returns a `param_count`-length
+    /// vector; index i true ⇒ parameter i is assigned somewhere in the body.
+    fn callee_param_writes(func: &super::Function, param_count: u32) -> Vec<bool> {
+        fn scan(instrs: &[Instruction], param_count: u32, writes: &mut [bool]) {
+            for instr in instrs {
+                match instr {
+                    Instruction::LocalSet(idx) | Instruction::LocalTee(idx)
+                        if *idx < param_count =>
+                    {
+                        writes[*idx as usize] = true;
+                    }
+                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                        scan(body, param_count, writes);
+                    }
+                    Instruction::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        scan(then_body, param_count, writes);
+                        scan(else_body, param_count, writes);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut writes = vec![false; param_count as usize];
+        scan(&func.instructions, param_count, &mut writes);
+        writes
+    }
+
+    /// Remap local indices in inlined code to avoid conflicts.
     ///
     /// Parameters:
     /// - instructions: The callee's instructions to remap
     /// - offset: The offset for remapping the callee's locals (non-parameter locals)
     /// - param_count: Number of parameters in the callee
-    /// - param_start_idx: The starting index in the caller where we stored parameters
+    /// - param_targets: Per-parameter destination local in the caller — either a
+    ///   spill temp, or (loom#228 arg-forwarding) the caller local the argument
+    ///   was loaded from, so a `local.get K` argument is used directly instead of
+    ///   spilled to a temp and reloaded.
     fn remap_locals_in_block(
         instructions: &[Instruction],
         offset: u32,
         param_count: u32,
-        param_start_idx: u32,
+        param_targets: &[u32],
     ) -> Vec<Instruction> {
         instructions
             .iter()
             .map(|instr| match instr {
-                // Remap parameter accesses to our temporary parameter locals
+                // Remap parameter accesses to their per-parameter target local
                 Instruction::LocalGet(idx) if *idx < param_count => {
-                    Instruction::LocalGet(param_start_idx + idx)
+                    Instruction::LocalGet(param_targets[*idx as usize])
                 }
                 Instruction::LocalSet(idx) if *idx < param_count => {
-                    Instruction::LocalSet(param_start_idx + idx)
+                    Instruction::LocalSet(param_targets[*idx as usize])
                 }
                 Instruction::LocalTee(idx) if *idx < param_count => {
-                    Instruction::LocalTee(param_start_idx + idx)
+                    Instruction::LocalTee(param_targets[*idx as usize])
                 }
 
                 // Remap the callee's local variables (non-parameters)
@@ -14008,12 +14075,12 @@ pub mod optimize {
                 // Recursively remap in control flow
                 Instruction::Block { block_type, body } => Instruction::Block {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
+                    body: remap_locals_in_block(body, offset, param_count, param_targets),
                 },
 
                 Instruction::Loop { block_type, body } => Instruction::Loop {
                     block_type: block_type.clone(),
-                    body: remap_locals_in_block(body, offset, param_count, param_start_idx),
+                    body: remap_locals_in_block(body, offset, param_count, param_targets),
                 },
 
                 Instruction::If {
@@ -14022,18 +14089,8 @@ pub mod optimize {
                     else_body,
                 } => Instruction::If {
                     block_type: block_type.clone(),
-                    then_body: remap_locals_in_block(
-                        then_body,
-                        offset,
-                        param_count,
-                        param_start_idx,
-                    ),
-                    else_body: remap_locals_in_block(
-                        else_body,
-                        offset,
-                        param_count,
-                        param_start_idx,
-                    ),
+                    then_body: remap_locals_in_block(then_body, offset, param_count, param_targets),
+                    else_body: remap_locals_in_block(else_body, offset, param_count, param_targets),
                 },
 
                 // Keep everything else unchanged
@@ -19017,6 +19074,79 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // Tier 0 (loom#228 secondary): inline arg-forwarding. A bare `local.get K`
+    // argument to a callee that does NOT write that param is forwarded into the
+    // inlined body — no spill-to-temp + immediate reload. Pre-fix every inlined
+    // site emitted `local.set TEMP` for each param; post-fix a forwarded param
+    // emits none.
+    #[test]
+    fn test_inline_arg_forwarding_no_redundant_copy() {
+        let wat = r#"(module
+            (func $leaf (param i32 i32) (result i32)
+                local.get 0  local.get 1  i32.add  i32.const 3  i32.shl)
+            (func $caller (export "c") (param i32 i32) (result i32)
+                local.get 0  local.get 1  call $leaf)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::inline_functions(&mut module).expect("inline must not panic");
+
+        // $caller (function index 1) should now contain the leaf body with both
+        // params forwarded to caller locals 0 and 1 — i.e. NO Call and NO LocalSet.
+        let caller = &module.functions[1];
+        let calls = caller
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        let sets = caller
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::LocalSet(_) | Instruction::LocalTee(_)))
+            .count();
+        assert_eq!(calls, 0, "leaf must be inlined");
+        assert_eq!(
+            sets, 0,
+            "both `local.get` args must be FORWARDED (no spill `local.set`) — \
+             pre-fix this was 2"
+        );
+        let wasm = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm).expect("output validates");
+    }
+
+    // Tier 0 SOUNDNESS GUARD: a callee that WRITES its parameter must NOT be
+    // arg-forwarded — forwarding would map the param to the caller's source local
+    // and the write would clobber it. The param must stay spilled to a temp.
+    #[test]
+    fn test_inline_arg_forwarding_skips_written_param() {
+        // $writer reassigns its parameter (local 0) before reading it.
+        let wat = r#"(module
+            (func $writer (param i32) (result i32)
+                i32.const 99  local.set 0
+                local.get 0)
+            (func $caller (export "c") (param i32) (result i32)
+                local.get 0  call $writer
+                local.get 0  i32.add)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::inline_functions(&mut module).expect("inline must not panic");
+
+        let caller = &module.functions[1];
+        // The forwarded path would have remapped the writer's `local.set 0` onto
+        // caller local 0 (clobbering the arg used in the trailing add). The guard
+        // must keep a spill: the inlined `local.set` targets a TEMP (index >= the
+        // caller's own local count = 1), never caller local 0.
+        let clobbers_caller_local0 = caller
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::LocalSet(0) | Instruction::LocalTee(0)));
+        assert!(
+            !clobbers_caller_local0,
+            "written param must be spilled to a temp, never forwarded onto caller local 0"
+        );
+        let wasm = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm).expect("output validates");
     }
 
     #[cfg(feature = "verification")]

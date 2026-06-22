@@ -5,6 +5,24 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.16] - 2026-06-22
+
+Inliner code-quality release (the #228 secondary finding). Z3-gated, no behavior
+change beyond cleaner inlined code.
+
+### Changed
+
+- **Inline argument forwarding (#228).** Inlining spilled every callee parameter
+  to a fresh temp, so a bare `local.get K` argument became a `local.set TEMP; …;
+  local.get TEMP` round-trip. `simplify_locals` cleans that in straight-line
+  callers but bails on any control flow, so in control-flow callers (the gust hot
+  path) the copy survived. The inliner now forwards a trailing `local.get K`
+  argument directly into the inlined body when the callee does **not** write that
+  parameter — no spill, no reload. Sound (K is not rewritten before the inlined
+  body, and the body never writes K); the Z3 translation validator remains the
+  backstop. Forwardable arguments form a value-stack top-suffix; a written
+  parameter (`callee_param_writes`) is never forwarded.
+
 ## [1.1.15] - 2026-06-22
 
 Inliner release: the dissolve pipeline now inlines two real seam shapes it
