@@ -29,6 +29,7 @@ fn main() {
         PathBuf::from("isle/types.isle"),
         PathBuf::from("isle/constructors.isle"),
         PathBuf::from("isle/rules/constant_folding.isle"),
+        PathBuf::from("isle/rules/seam_sroa.isle"),
         PathBuf::from("isle/rules/default.isle"),
     ];
 
@@ -100,6 +101,10 @@ fn fix_extractor_ownership(code: &str) -> String {
         "iadd64_extract",
         "isub64_extract",
         "imul64_extract",
+        // #219 seam-SROA — unary conversion extractors (cranelift-isle emits
+        // these with owned `Value`; rewrite to `&Value` like the rest).
+        "i32_wrap_i64_extract",
+        "i64_extend_i32_u_extract",
     ];
 
     for extractor in &extractors {

@@ -209,6 +209,51 @@ fn callee_inlinable_by_body(func: &Function) -> bool {
     func.instructions.iter().all(is_inline_modelable_instr)
 }
 
+/// PR-C (#219): true if `func` provably never returns to its caller — every
+/// path traps. Conservative-sound definition: the body contains NO `Return`
+/// and NO branch (`Br`/`BrIf`/`BrTable`) anywhere (recursing into nested
+/// control flow), and its final top-level instruction is `Unreachable`. With
+/// no `return` and no branch, the only way to leave the function is to fall off
+/// the end — which `Unreachable` makes a trap. This admits exactly the
+/// `core::panicking` helpers here (`panic_fmt → unreachable`,
+/// `panic_const_add_overflow → call panic_fmt; unreachable`) and rejects any
+/// normal-returning or branching function.
+///
+/// Used by the by-body inline modeler to encode a `call` to such a callee as
+/// "diverge if reached" (⊥) rather than havoc: control never returns, so the
+/// call constrains only the reachability of the trapping branch, never the
+/// post-state (Alive2's `ub` discipline). Modeling it as a fresh symbolic
+/// (havoc) would reopen the #155/#159 havoc-vs-concrete false-positive surface.
+#[cfg(feature = "verification")]
+#[allow(dead_code)] // wired into the by-body inline gate in PR-C M3 (#219)
+pub(crate) fn is_noreturn_callee(func: &Function) -> bool {
+    !body_has_branch_or_return(&func.instructions)
+        && matches!(func.instructions.last(), Some(Instruction::Unreachable))
+}
+
+/// Recursively detect any `Return` or branch (`Br`/`BrIf`/`BrTable`) in a body,
+/// descending into Block/Loop/If. Used by `is_noreturn_callee` — a branch could
+/// transfer control to the function-level label (a return-via-br), so any
+/// branch conservatively disqualifies the "every path traps" classification.
+#[cfg(feature = "verification")]
+fn body_has_branch_or_return(instrs: &[Instruction]) -> bool {
+    instrs.iter().any(|i| match i {
+        Instruction::Return
+        | Instruction::Br(_)
+        | Instruction::BrIf(_)
+        | Instruction::BrTable { .. } => true,
+        Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+            body_has_branch_or_return(body)
+        }
+        Instruction::If {
+            then_body,
+            else_body,
+            ..
+        } => body_has_branch_or_return(then_body) || body_has_branch_or_return(else_body),
+        _ => false,
+    })
+}
+
 /// loom#151/#155: whitelist of instructions the by-body inline modeler can
 /// encode faithfully and **identically to the main encoder**. The callee must
 /// be straight-line (no Block/Loop/If), leaf (no calls), single-result, and
@@ -2962,6 +3007,31 @@ impl TranslationValidator {
         if n_instr > max_instructions {
             crate::stats::record_revert(&format!("{}/z3-size-skipped", self.pass_name));
             return Ok(());
+        }
+
+        // PR-C (#219) M3.2: precise acyclic-CF fast-path for the inliner. The
+        // main encoder models br_table approximately and a br_table callee is
+        // not straight-line-by-body-modelable, so it cannot prove `call F`
+        // (br_table callee) equal to its inlined body → the inline reverts. The
+        // acyclic executor is EXACT for acyclic CF + by-body calls. Try it here.
+        //
+        // PURELY ADDITIVE + scoped to the inliner: ONLY a precise Ok(true) (a
+        // real proof) short-circuits to accept; Ok(false)/Err/panic FALL THROUGH
+        // to the existing encoder unchanged. So this can only ADD accepts (the
+        // br_table-callee inlines), never weaken an existing check, and every
+        // non-inline pass is byte-identical. (catch_unwind: the acyclic encoder
+        // builds Z3 exprs and could panic on a malformed input.)
+        if self.pass_name == "inline_functions" {
+            let original = self.original.clone();
+            let sig_ctx = self.sig_ctx.clone();
+            let optimized_clone = optimized.clone();
+            let acyclic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                verify_acyclic_equivalence(&original, &optimized_clone, &sig_ctx)
+            }));
+            if let Ok(Ok(true)) = acyclic {
+                return Ok(());
+            }
+            // else: fall through to the existing encoder (no behavior change).
         }
 
         // Use catch_unwind to handle Z3 internal panics gracefully. (The
@@ -7169,6 +7239,890 @@ fn encode_simple_instruction(
     Ok(())
 }
 
+// ===========================================================================
+// PR-C (gale #219): precise acyclic control-flow symbolic execution.
+//
+// An ISOLATED executor that models structured, acyclic wasm control flow
+// (block / if / br / br_if / br_table) by *state merging with ITE* driven by an
+// explicit label/join stack — never path-forking. For a bounded acyclic region
+// this is EXACT (a passing SMT check is a real proof, not a bounded
+// approximation), and it produces ONE verification condition instead of N
+// per-arm obligations. Precedent: Alive2 (PLDI'21, "we do not fork expressions
+// across paths"; final state a linear chain of ITEs), Kuznetsov state-merging
+// (PLDI'12), WASP br_table rules (ECOOP'22). See
+// docs/design/pr-c-precise-cf-verification.md.
+//
+// Phase 1 = integer only (no memory): every non-control instruction must be in
+// the `is_acyclic_simple_modelable` allowlist (the ops `encode_simple_instruction`
+// models PRECISELY) and is delegated there. Loop (back-edge), Call/CallIndirect,
+// memory ops, unknown opcodes, and multi-result/param blocks are REJECTED — the
+// `is_acyclic_modelable_body` gate fails the whole function and the caller falls
+// back (over-approximate-and-skip), NEVER a false equivalence. We must reject
+// rather than delegate-and-hope because `encode_simple_instruction`'s catch-all
+// HAVOCS (pushes a fresh BV without popping operands) → it would desync the
+// stack for an unmodeled op.
+//
+// Currently `#[allow(dead_code)]`: built + tested in isolation (Z3 equivalence
+// over hand-written br_table fixtures, incl. the 0x8000_0000-selector default
+// case) BEFORE being wired into the live inline-verify path (PR-C M3).
+// ===========================================================================
+
+/// Symbolic state threaded along the *current* straight-line path.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+struct AcyclicState {
+    stack: Vec<BV>,
+    locals: Vec<BV>,
+    globals: Vec<BV>,
+    /// Linear memory as a Z3 `Array[BV32 → BV8]` (PR-C Phase 2). Loads/stores use
+    /// the SAME shared helpers (`encode_i32_load_from` etc.) the main encoder
+    /// uses, so a `call F` modeled by-body and the inlined body produce
+    /// bit-identical memory expressions. Memory is MUTABLE branch state, so it is
+    /// ITE-merged at every join exactly like locals/globals.
+    memory: Array,
+    /// Path condition guarding the current straight-line path.
+    path: Bool,
+    /// False once this path has branched / returned (subsequent straight-line
+    /// instructions in the same sequence are dead and must not be executed).
+    reachable: bool,
+}
+
+/// One incoming branch to a label: its path guard plus the result/locals/globals/
+/// memory snapshot at the branch point.
+#[cfg(feature = "verification")]
+type BranchEntry = (Bool, Vec<BV>, Vec<BV>, Vec<BV>, Array);
+
+/// The ITE-merged successor of a join: result values, locals, globals, memory,
+/// and the merged path condition.
+#[cfg(feature = "verification")]
+type MergedState = (Vec<BV>, Vec<BV>, Vec<BV>, Array, Bool);
+
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+struct LabelJoin {
+    /// Number of result values the label carries (0 or 1 in Phase 1).
+    arity: usize,
+    entries: Vec<BranchEntry>,
+}
+
+/// Result arity of a structured block type, or `Err` if it has parameters or
+/// more than one result (rejected in Phase 1 — over-approximate-and-skip).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_block_arity(block_type: &BlockType) -> Result<usize> {
+    match block_type {
+        BlockType::Empty => Ok(0),
+        BlockType::Value(_) => Ok(1),
+        BlockType::Func { params, results } => {
+            if !params.is_empty() || results.len() > 1 {
+                Err(anyhow!(
+                    "acyclic executor: block with params/multi-result not modeled"
+                ))
+            } else {
+                Ok(results.len())
+            }
+        }
+    }
+}
+
+/// Allowlist of non-control instructions `encode_simple_instruction` models
+/// PRECISELY (pure integer ops + locals/globals, no memory, no havoc). Anything
+/// outside this set is rejected by `is_acyclic_modelable_body`.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn is_acyclic_simple_modelable(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::I32Const(_)
+            | Instruction::I64Const(_)
+            | Instruction::F32Const(_)
+            | Instruction::F64Const(_)
+            | Instruction::I32Add
+            | Instruction::I32Sub
+            | Instruction::I32Mul
+            | Instruction::I32And
+            | Instruction::I32Or
+            | Instruction::I32Xor
+            | Instruction::I32Shl
+            | Instruction::I32ShrS
+            | Instruction::I32ShrU
+            | Instruction::I32DivS
+            | Instruction::I32DivU
+            | Instruction::I32RemS
+            | Instruction::I32RemU
+            | Instruction::I32Eq
+            | Instruction::I32Ne
+            | Instruction::I32LtS
+            | Instruction::I32LtU
+            | Instruction::I32GtS
+            | Instruction::I32GtU
+            | Instruction::I32LeS
+            | Instruction::I32LeU
+            | Instruction::I32GeS
+            | Instruction::I32GeU
+            | Instruction::I32Eqz
+            | Instruction::I64Add
+            | Instruction::I64Sub
+            | Instruction::I64Mul
+            | Instruction::I64And
+            | Instruction::I64Or
+            | Instruction::I64Xor
+            | Instruction::I64Shl
+            | Instruction::I64ShrS
+            | Instruction::I64ShrU
+            | Instruction::I64DivS
+            | Instruction::I64DivU
+            | Instruction::I64RemS
+            | Instruction::I64RemU
+            | Instruction::I64Eq
+            | Instruction::I64Ne
+            | Instruction::I64LtS
+            | Instruction::I64LtU
+            | Instruction::I64GtS
+            | Instruction::I64GtU
+            | Instruction::I64LeS
+            | Instruction::I64LeU
+            | Instruction::I64GeS
+            | Instruction::I64GeU
+            | Instruction::I64Eqz
+            | Instruction::I32WrapI64
+            | Instruction::I64ExtendI32S
+            | Instruction::I64ExtendI32U
+            | Instruction::LocalGet(_)
+            | Instruction::LocalSet(_)
+            | Instruction::LocalTee(_)
+            | Instruction::GlobalGet(_)
+            | Instruction::GlobalSet(_)
+            | Instruction::Drop
+            | Instruction::Nop
+            | Instruction::Select
+    )
+}
+
+/// PR-C Phase 2: memory loads/stores `exec_acyclic` models explicitly (via the
+/// shared `encode_*_load_from`/`*_store_into` helpers). Kept SEPARATE from
+/// `is_acyclic_simple_modelable` because memory ops must NOT be delegated to
+/// `encode_simple_instruction` (it havocs them, desyncing the stack).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn is_acyclic_memory_op(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::I32Load { .. }
+            | Instruction::I64Load { .. }
+            | Instruction::I32Store { .. }
+            | Instruction::I64Store { .. }
+            | Instruction::I32Load8S { .. }
+            | Instruction::I32Load8U { .. }
+            | Instruction::I32Load16S { .. }
+            | Instruction::I32Load16U { .. }
+            | Instruction::I32Store8 { .. }
+            | Instruction::I32Store16 { .. }
+    )
+}
+
+/// Max by-body call-recursion depth the acyclic executor will model. The seam
+/// decides call only `panic*` (no-return → diverge, no further recursion), so
+/// depth 2 suffices; 8 gives headroom and bounds any cyclic/recursive call
+/// graph (which is rejected, not unrolled).
+#[cfg(feature = "verification")]
+const MAX_ACYCLIC_CALL_DEPTH: usize = 8;
+
+/// Whole-function gate: true iff every instruction (recursing into block/if
+/// bodies) is structurally modelable by `exec_acyclic`. Back-edges (Loop),
+/// call_indirect, unknown opcodes, and unmodeled block shapes (params/multi-
+/// result) fail. As of Phase 2b the gate is purely STRUCTURAL — it needs no
+/// module context, because ANY direct call is modelable (the executor diverges
+/// no-return callees, models acyclic locals by-body, and HAVOCS the rest —
+/// havoc is conservative-sound), and memory ops are handled explicitly.
+///
+/// A fast pre-check for the M3 routing decision; `exec_acyclic` is the actual
+/// soundness enforcer (it returns `Err` on anything it cannot model, never havoc
+/// a value-producing op silently).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
+    body.iter().all(|instr| match instr {
+        // Back-edges and indirect calls are out of scope.
+        Instruction::Loop { .. } | Instruction::CallIndirect { .. } => false,
+        // ANY direct call is modelable: by-body (acyclic local), ⊥-diverge
+        // (no-return), or HAVOC (import / loop-containing / multi-result). The
+        // executor's Call arm makes the choice; havoc never forges a false ≡.
+        Instruction::Call(_) => true,
+        Instruction::Block { block_type, body } => {
+            acyclic_block_arity(block_type).is_ok() && is_acyclic_modelable_body(body)
+        }
+        Instruction::If {
+            block_type,
+            then_body,
+            else_body,
+        } => {
+            acyclic_block_arity(block_type).is_ok()
+                && is_acyclic_modelable_body(then_body)
+                && is_acyclic_modelable_body(else_body)
+        }
+        Instruction::Br(_)
+        | Instruction::BrIf(_)
+        | Instruction::BrTable { .. }
+        | Instruction::Return
+        // Unreachable is a trap (⊥): the executor diverges the path, never havoc.
+        | Instruction::Unreachable => true,
+        other => is_acyclic_simple_modelable(other) || is_acyclic_memory_op(other),
+    })
+}
+
+/// Resolve a relative branch depth to an absolute index in the label stack
+/// (0 = innermost = top). `labels[0]` is the implicit function label.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_label_index(labels: &[LabelJoin], depth: u32) -> Result<usize> {
+    let depth = depth as usize;
+    if depth >= labels.len() {
+        return Err(anyhow!(
+            "acyclic executor: branch depth {} out of range",
+            depth
+        ));
+    }
+    Ok(labels.len() - 1 - depth)
+}
+
+/// Record the current state as an incoming branch to `labels[target]`, carrying
+/// that label's arity result values from the top of the stack.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_push_branch(
+    labels: &mut [LabelJoin],
+    target: usize,
+    guard: Bool,
+    state: &AcyclicState,
+) -> Result<()> {
+    let arity = labels[target].arity;
+    if state.stack.len() < arity {
+        return Err(anyhow!("acyclic executor: stack underflow at branch"));
+    }
+    let results: Vec<BV> = state.stack[state.stack.len() - arity..].to_vec();
+    labels[target].entries.push((
+        guard,
+        results,
+        state.locals.clone(),
+        state.globals.clone(),
+        state.memory.clone(),
+    ));
+    Ok(())
+}
+
+/// ITE-merge a label's incoming branches into one successor. Guards are pairwise
+/// disjoint (if: cond vs ¬cond; br_table: sel==i vs sel≥n unsigned), so the
+/// fold `ite(g0, v0, ite(g1, v1, … v_last))` selects the live branch under the
+/// merged path (= disjunction of guards). Returns `(results, locals, globals,
+/// path)`, or `None` if no branch reaches the label (unreachable join).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_merge_entries(entries: &[BranchEntry]) -> Option<MergedState> {
+    let (_, last_res, last_loc, last_glob, last_mem) = entries.last()?;
+    let mut res = last_res.clone();
+    let mut loc = last_loc.clone();
+    let mut glob = last_glob.clone();
+    let mut mem = last_mem.clone();
+    let mut guards: Vec<Bool> = vec![entries.last().unwrap().0.clone()];
+    // Fold earlier entries outward: each takes precedence under its own guard.
+    for (g, r, l, gl, m) in entries[..entries.len() - 1].iter().rev() {
+        res = r
+            .iter()
+            .zip(res.iter())
+            .map(|(t, f)| merge_bv(g, t, f))
+            .collect();
+        loc = l
+            .iter()
+            .zip(loc.iter())
+            .map(|(t, f)| merge_bv(g, t, f))
+            .collect();
+        glob = gl
+            .iter()
+            .zip(glob.iter())
+            .map(|(t, f)| merge_bv(g, t, f))
+            .collect();
+        // ITE-merge the memory Array (Bool::ite is generic over the Z3 sort).
+        mem = g.ite(m, &mem);
+        guards.push(g.clone());
+    }
+    let path = Bool::or(&guards);
+    Some((res, loc, glob, mem, path))
+}
+
+/// Apply a popped label's join to the state: the post-block state is the
+/// ITE-merge of all branches that targeted it, with the block's result values
+/// pushed on top of `base_stack` (the operand stack below the block entry).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_apply_join(
+    state: &mut AcyclicState,
+    base_stack: Vec<BV>,
+    join: &LabelJoin,
+) -> Result<()> {
+    match acyclic_merge_entries(&join.entries) {
+        None => {
+            // No branch reaches this join — code after the block is unreachable.
+            state.reachable = false;
+            Ok(())
+        }
+        Some((results, locals, globals, memory, path)) => {
+            let mut stack = base_stack;
+            stack.extend(results);
+            state.stack = stack;
+            state.locals = locals;
+            state.globals = globals;
+            state.memory = memory;
+            state.path = path;
+            state.reachable = true;
+            Ok(())
+        }
+    }
+}
+
+/// Execute a structured, acyclic instruction sequence, merging branch states at
+/// label joins. Precondition: the enclosing function passed
+/// `is_acyclic_modelable_body`. `labels[0]` is the function label.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn exec_acyclic(
+    body: &[Instruction],
+    state: &mut AcyclicState,
+    labels: &mut Vec<LabelJoin>,
+    ctx: &VerificationSignatureContext,
+    depth: usize,
+    // Monotonic per-ENCODE counter for impure-call havoc names. Threaded (not in
+    // AcyclicState, which is saved/restored at branches) so the Nth impure call
+    // gets the same id in the original and optimized encodings → they unify.
+    havoc_counter: &mut u64,
+) -> Result<()> {
+    for instr in body {
+        if !state.reachable {
+            // Dead code after an unconditional branch / return.
+            break;
+        }
+        match instr {
+            Instruction::Block { block_type, body } => {
+                let arity = acyclic_block_arity(block_type)?;
+                let base_stack = state.stack.clone();
+                labels.push(LabelJoin {
+                    arity,
+                    entries: Vec::new(),
+                });
+                exec_acyclic(body, state, labels, ctx, depth, havoc_counter)?;
+                // Fall-through off the end == implicit `br 0` to this block.
+                if state.reachable {
+                    let target = labels.len() - 1;
+                    acyclic_push_branch(labels, target, state.path.clone(), state)?;
+                }
+                let join = labels.pop().unwrap();
+                acyclic_apply_join(state, base_stack, &join)?;
+            }
+            Instruction::If {
+                block_type,
+                then_body,
+                else_body,
+            } => {
+                let arity = acyclic_block_arity(block_type)?;
+                let cond = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: If underflow"))?;
+                let cond_nz = cond.eq(BV::from_i64(0, 32)).not();
+                let base_stack = state.stack.clone();
+                let saved_locals = state.locals.clone();
+                let saved_globals = state.globals.clone();
+                let saved_memory = state.memory.clone();
+                let saved_path = state.path.clone();
+                labels.push(LabelJoin {
+                    arity,
+                    entries: Vec::new(),
+                });
+                let target = labels.len() - 1;
+                // then-branch under path ∧ cond≠0
+                state.path = Bool::and(&[saved_path.clone(), cond_nz.clone()]);
+                state.reachable = true;
+                exec_acyclic(then_body, state, labels, ctx, depth, havoc_counter)?;
+                if state.reachable {
+                    acyclic_push_branch(labels, target, state.path.clone(), state)?;
+                }
+                // else-branch under path ∧ cond=0 (restore entry state)
+                state.stack = base_stack.clone();
+                state.locals = saved_locals;
+                state.globals = saved_globals;
+                state.memory = saved_memory;
+                state.path = Bool::and(&[saved_path, cond_nz.not()]);
+                state.reachable = true;
+                exec_acyclic(else_body, state, labels, ctx, depth, havoc_counter)?;
+                if state.reachable {
+                    acyclic_push_branch(labels, target, state.path.clone(), state)?;
+                }
+                let join = labels.pop().unwrap();
+                acyclic_apply_join(state, base_stack, &join)?;
+            }
+            Instruction::Br(depth) => {
+                let target = acyclic_label_index(labels, *depth)?;
+                acyclic_push_branch(labels, target, state.path.clone(), state)?;
+                state.reachable = false;
+            }
+            Instruction::BrIf(depth) => {
+                let cond = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: BrIf underflow"))?;
+                let cond_nz = cond.eq(BV::from_i64(0, 32)).not();
+                let target = acyclic_label_index(labels, *depth)?;
+                let branch_guard = Bool::and(&[state.path.clone(), cond_nz.clone()]);
+                acyclic_push_branch(labels, target, branch_guard, state)?;
+                // Fall-through path narrows to cond=0.
+                state.path = Bool::and(&[state.path.clone(), cond_nz.not()]);
+            }
+            Instruction::BrTable { targets, default } => {
+                let sel = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: BrTable underflow"))?;
+                let n = targets.len() as u64;
+                // Arm i is taken iff sel == i.
+                for (i, d) in targets.iter().enumerate() {
+                    let target = acyclic_label_index(labels, *d)?;
+                    let guard =
+                        Bool::and(&[state.path.clone(), sel.eq(BV::from_u64(i as u64, 32))]);
+                    acyclic_push_branch(labels, target, guard, state)?;
+                }
+                // Default is taken iff sel >=u n (UNSIGNED — gale must-fix: a
+                // signed >= would leave selectors in [2^31, 2^32) in a gap
+                // between the arm guards and the default, letting Z3 pick any
+                // arm → a false equivalence).
+                let target = acyclic_label_index(labels, *default)?;
+                let guard = Bool::and(&[state.path.clone(), sel.bvuge(BV::from_u64(n, 32))]);
+                acyclic_push_branch(labels, target, guard, state)?;
+                state.reachable = false;
+            }
+            Instruction::Return => {
+                // Branch to the implicit function label.
+                acyclic_push_branch(labels, 0, state.path.clone(), state)?;
+                state.reachable = false;
+            }
+            Instruction::Unreachable => {
+                // Trap: this path diverges (⊥) — it drops out of the result
+                // ITE and contributes to no join, exactly like a no-return
+                // call. NEVER havoc (Alive2 ub discipline).
+                state.reachable = false;
+            }
+            Instruction::Call(g) => {
+                let callee_opt = ctx
+                    .function_bodies
+                    .get(*g as usize)
+                    .and_then(|o| o.as_deref());
+                match callee_opt {
+                    // No-return callee (panic→unreachable): ⊥-diverge — the path
+                    // traps and drops out of the result ITE, NEVER havoc (Alive2
+                    // `ub` discipline; havoc reopens #155/#159).
+                    Some(callee) if is_noreturn_callee(callee) => {
+                        state.reachable = false;
+                    }
+                    // Acyclic, single-result local callee: model BY BODY (the
+                    // same executor models the original `call F` and the inlined
+                    // body identically → the inline is provable). Its OWN impure
+                    // calls get havoc'd via the shared counter.
+                    Some(callee)
+                        if depth + 1 < MAX_ACYCLIC_CALL_DEPTH
+                            && callee.signature.results.len() <= 1
+                            && is_acyclic_modelable_body(&callee.instructions) =>
+                    {
+                        encode_acyclic_call(callee, state, ctx, depth, havoc_counter)?;
+                    }
+                    // Impure / opaque call (import, multi-result, too-deep, or a
+                    // local callee with a loop/unmodelable shape): HAVOC. Sound
+                    // and conservative — corresponding calls in the original and
+                    // optimized encodings get the SAME havoc id (shared counter)
+                    // so they unify; only a havoc-vs-CONCRETE mismatch (e.g.
+                    // original havocs `call F` but optimized inlines F's effect)
+                    // refuses to prove → revert (the #155/#159 guard).
+                    _ => {
+                        acyclic_havoc_call(*g, state, ctx, havoc_counter)?;
+                    }
+                }
+            }
+            // PR-C Phase 2: memory loads/stores via the SAME shared helpers the
+            // main encoder uses (so a by-body call and its inlined body produce
+            // bit-identical memory expressions). Handled explicitly — NEVER
+            // delegated to encode_simple_instruction, which havocs memory ops.
+            Instruction::I32Load { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Load underflow"))?;
+                state
+                    .stack
+                    .push(encode_i32_load_from(&state.memory, &addr, *offset)?);
+            }
+            Instruction::I64Load { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Load underflow"))?;
+                state
+                    .stack
+                    .push(encode_i64_load_from(&state.memory, &addr, *offset)?);
+            }
+            Instruction::I32Store { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I32Store addr underflow"))?;
+                state.memory = encode_i32_store_into(&state.memory, &addr, &value, *offset);
+            }
+            Instruction::I64Store { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: I64Store addr underflow"))?;
+                state.memory = encode_i64_store_into(&state.memory, &addr, &value, *offset);
+            }
+            // Partial-width (8/16-bit) loads/stores (loom#161 helpers).
+            Instruction::I32Load8S { offset, .. }
+            | Instruction::I32Load8U { offset, .. }
+            | Instruction::I32Load16S { offset, .. }
+            | Instruction::I32Load16U { offset, .. } => {
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial load underflow"))?;
+                let (bytes, signed) = match instr {
+                    Instruction::I32Load8S { .. } => (1, true),
+                    Instruction::I32Load8U { .. } => (1, false),
+                    Instruction::I32Load16S { .. } => (2, true),
+                    _ => (2, false),
+                };
+                state.stack.push(encode_partial_load_from(
+                    &state.memory,
+                    &addr,
+                    *offset,
+                    bytes,
+                    signed,
+                    32,
+                )?);
+            }
+            Instruction::I32Store8 { offset, .. } | Instruction::I32Store16 { offset, .. } => {
+                let value = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial store value underflow"))?;
+                let addr = state
+                    .stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("acyclic executor: partial store addr underflow"))?;
+                let bytes = if matches!(instr, Instruction::I32Store8 { .. }) {
+                    1
+                } else {
+                    2
+                };
+                state.memory =
+                    encode_partial_store_into(&state.memory, &addr, &value, *offset, bytes);
+            }
+            other => {
+                // Defense in depth: never delegate an unmodeled op (the
+                // delegate's catch-all havocs and would desync the stack).
+                if !is_acyclic_simple_modelable(other) {
+                    return Err(anyhow!(
+                        "acyclic executor: instruction not modelable: {:?}",
+                        other
+                    ));
+                }
+                encode_simple_instruction(
+                    other,
+                    &mut state.stack,
+                    &mut state.locals,
+                    &mut state.globals,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Model an opaque / impure `call g` by HAVOC (PR-C Phase 2b): pop the args,
+/// push a fresh symbolic per result, and havoc all globals + memory. Naming is
+/// deterministic in the per-encode `havoc_counter` so the Nth impure call gets
+/// the SAME names in the original and optimized encodings → they unify in Z3
+/// (the original's `call F` and the optimized's `call F` cancel). Mirrors the
+/// main encoder's conservative Call tier. Used for imports and local callees the
+/// acyclic executor cannot model by-body (loops, multi-result, too-deep).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn acyclic_havoc_call(
+    g: u32,
+    state: &mut AcyclicState,
+    ctx: &VerificationSignatureContext,
+    havoc_counter: &mut u64,
+) -> Result<()> {
+    let sig = ctx
+        .get_function_signature(g)
+        .ok_or_else(|| anyhow!("acyclic executor: no signature for call {}", g))?;
+    let nparams = sig.params.len();
+    if state.stack.len() < nparams {
+        return Err(anyhow!("acyclic executor: havoc-call arg underflow"));
+    }
+    // Discard the args (the opaque result is independent of them, matching the
+    // main encoder's conservative tier).
+    state.stack.truncate(state.stack.len() - nparams);
+    // Fresh symbolic result(s).
+    for (i, rt) in sig.results.iter().enumerate() {
+        state.stack.push(BV::new_const(
+            format!("call_{}_result_{}", g, i),
+            bv_width_for_value_type(*rt),
+        ));
+    }
+    // Havoc globals + memory with the shared deterministic id.
+    let id = *havoc_counter;
+    *havoc_counter += 1;
+    for (idx, global) in state.globals.iter_mut().enumerate() {
+        *global = BV::new_const(
+            format!("global_{}_after_call_{}_{}", idx, g, id),
+            global.get_size(),
+        );
+    }
+    state.memory = Array::new_const(
+        format!("mem_after_call_{}_{}", g, id),
+        &Sort::bitvector(32),
+        &Sort::bitvector(8),
+    );
+    Ok(())
+}
+
+/// Model a `call` to `callee` BY BODY: pop the args, recursively encode the
+/// callee through `exec_acyclic` (params bound to the args, declared locals
+/// zero-init, globals SHARED with the caller so the callee's global writes
+/// propagate back), and push the merged single result. Sets `reachable=false`
+/// if every callee path traps (no normal exit). The SAME executor models both
+/// the original `call F` (here) and the inlined body, so they yield the same
+/// expression → the inline is provable.
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn encode_acyclic_call(
+    callee: &Function,
+    state: &mut AcyclicState,
+    ctx: &VerificationSignatureContext,
+    depth: usize,
+    havoc_counter: &mut u64,
+) -> Result<()> {
+    if depth + 1 >= MAX_ACYCLIC_CALL_DEPTH {
+        return Err(anyhow!("acyclic executor: call recursion too deep"));
+    }
+    let arity = callee.signature.results.len();
+    if arity > 1 {
+        return Err(anyhow!("acyclic executor: multi-result callee"));
+    }
+    let nparams = callee.signature.params.len();
+    if state.stack.len() < nparams {
+        return Err(anyhow!("acyclic executor: call arg underflow"));
+    }
+    // Pop args (last param on top of stack); bind to the callee's param locals.
+    let mut callee_locals: Vec<BV> = state.stack.split_off(state.stack.len() - nparams);
+    for (count, lt) in callee.locals.iter() {
+        let width = bv_width_for_value_type(*lt);
+        for _ in 0..*count {
+            callee_locals.push(BV::from_u64(0, width));
+        }
+    }
+    let mut sub = AcyclicState {
+        stack: Vec::new(),
+        locals: callee_locals,
+        // SHARED globals + memory — the callee may read/write module globals and
+        // linear memory; the merged result threads the updated state back to the
+        // caller.
+        globals: state.globals.clone(),
+        memory: state.memory.clone(),
+        // Inherit the caller's path so callee branch guards conjoin it.
+        path: state.path.clone(),
+        reachable: true,
+    };
+    let mut sub_labels = vec![LabelJoin {
+        arity,
+        entries: Vec::new(),
+    }];
+    exec_acyclic(
+        &callee.instructions,
+        &mut sub,
+        &mut sub_labels,
+        ctx,
+        depth + 1,
+        havoc_counter,
+    )?;
+    if sub.reachable {
+        acyclic_push_branch(&mut sub_labels, 0, sub.path.clone(), &sub)?;
+    }
+    let join = sub_labels.pop().unwrap();
+    match acyclic_merge_entries(&join.entries) {
+        Some((results, _locals, globals, memory, path)) => {
+            // Propagate callee global + memory writes; narrow the caller path to
+            // the callee's returning paths.
+            state.globals = globals;
+            state.memory = memory;
+            state.path = path;
+            if arity == 1 {
+                state.stack.push(results[0].clone());
+            }
+        }
+        None => {
+            // Callee never returns normally (all paths trap) → caller diverges.
+            state.reachable = false;
+        }
+    }
+    Ok(())
+}
+
+/// Encode a function via the precise acyclic CF executor. Mirrors
+/// `encode_function_to_smt`'s deterministic input naming (`param{i}`,
+/// `global{i}`) so two encodings UNIFY in Z3 and can be compared directly.
+/// Returns `Err` if the function is not acyclic-modelable (caller falls back).
+#[cfg(feature = "verification")]
+#[allow(dead_code)]
+fn encode_acyclic_function(
+    func: &Function,
+    ctx: &VerificationSignatureContext,
+) -> Result<Option<BV>> {
+    if !is_acyclic_modelable_body(&func.instructions) {
+        return Err(anyhow!("function not acyclic-modelable"));
+    }
+    let arity = func.signature.results.len();
+    if arity > 1 {
+        return Err(anyhow!("acyclic executor: multi-result not modeled"));
+    }
+
+    let mut locals: Vec<BV> = Vec::new();
+    for (idx, pt) in func.signature.params.iter().enumerate() {
+        locals.push(BV::new_const(
+            format!("param{}", idx),
+            bv_width_for_value_type(*pt),
+        ));
+    }
+    for (count, lt) in func.locals.iter() {
+        let width = bv_width_for_value_type(*lt);
+        for _ in 0..*count {
+            locals.push(BV::from_u64(0, width));
+        }
+    }
+    let mut globals: Vec<BV> = Vec::new();
+    for i in 0..16 {
+        globals.push(BV::new_const(format!("global{}", i), 32));
+    }
+    // Symbolic initial memory — same name as the main encoder so two
+    // encode_acyclic_function calls (original + optimized) unify in Z3.
+    let memory = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
+
+    let mut state = AcyclicState {
+        stack: Vec::new(),
+        locals,
+        globals,
+        memory,
+        path: Bool::from_bool(true),
+        reachable: true,
+    };
+    let mut labels = vec![LabelJoin {
+        arity,
+        entries: Vec::new(),
+    }];
+    // Per-encode impure-call havoc counter (reset to 0 each encode so the Nth
+    // impure call gets the same id in the original and optimized encodings).
+    let mut havoc_counter: u64 = 0;
+    exec_acyclic(
+        &func.instructions,
+        &mut state,
+        &mut labels,
+        ctx,
+        0,
+        &mut havoc_counter,
+    )?;
+    // Fall-through off the function body == implicit return.
+    if state.reachable {
+        acyclic_push_branch(&mut labels, 0, state.path.clone(), &state)?;
+    }
+    let func_join = labels.pop().unwrap();
+
+    if arity == 0 {
+        return Ok(None);
+    }
+    match acyclic_merge_entries(&func_join.entries) {
+        Some((results, _, _, _, _)) => Ok(Some(results[0].clone())),
+        None => Err(anyhow!("acyclic executor: function has no reachable exit")),
+    }
+}
+
+/// PR-C (#219) M3: precise FAST PATH for proving `original ≡ optimized` when
+/// BOTH functions are acyclic-CF-modelable (integer, block/if/br/br_if/br_table,
+/// by-body calls, no loops/memory). Encodes both via the precise acyclic
+/// executor (deterministic input names → they unify in Z3) and checks semantic
+/// equivalence (`a == b` has no counterexample). This is what lets the verified
+/// inliner prove a `call F` (with a `br_table` callee) equal to its inlined
+/// body — the case the straight-line by-body modeler (`callee_inlinable_by_body`)
+/// cannot reach.
+///
+/// Returns `Err` if either function is not acyclic-modelable, if a result width
+/// mismatches, or if the encoding fails — the caller then FALLS BACK to the
+/// existing encoder-based `verify_function_equivalence` (no behavior change for
+/// non-acyclic functions; this only ADDS proving power, never removes a check).
+#[cfg(feature = "verification")]
+#[allow(dead_code)] // wired into inline_functions' verify-or-revert in M3 step 2
+pub(crate) fn verify_acyclic_equivalence(
+    original: &Function,
+    optimized: &Function,
+    ctx: &VerificationSignatureContext,
+) -> Result<bool> {
+    if original.signature.params != optimized.signature.params
+        || original.signature.results != optimized.signature.results
+    {
+        return Err(anyhow!("acyclic verify: signature changed"));
+    }
+    // Only handle the precise acyclic case; anything else → caller falls back.
+    if !is_acyclic_modelable_body(&original.instructions)
+        || !is_acyclic_modelable_body(&optimized.instructions)
+    {
+        return Err(anyhow!("acyclic verify: not acyclic-modelable"));
+    }
+
+    let cfg = z3_config_with_timeout();
+    with_z3_config(&cfg, || {
+        let solver = Solver::new();
+        let orig_result = encode_acyclic_function(original, ctx);
+        let opt_result = encode_acyclic_function(optimized, ctx);
+        match (&orig_result, &opt_result) {
+            (Ok(Some(orig)), Ok(Some(opt))) => {
+                // loom#145 soundness boundary: never width-match the final
+                // equality — a width mismatch is a model artifact we cannot
+                // soundly resolve, so bail to "not proven" and let the caller
+                // fall back / revert.
+                if orig.get_size() != opt.get_size() {
+                    return Err(anyhow!("acyclic verify: result width mismatch"));
+                }
+                solver.assert(orig.eq(opt).not());
+                match solver.check() {
+                    SatResult::Unsat => Ok(true),
+                    SatResult::Sat => Ok(false),
+                    SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
+                }
+            }
+            // Both void: no return value to compare. The acyclic executor does
+            // not yet model side-effect (global/memory) equivalence for void
+            // functions, so defer to the existing verifier — signal fall-back.
+            (Ok(None), Ok(None)) => Err(anyhow!("acyclic verify: void — defer to fallback")),
+            (Err(e), _) => Err(anyhow!("acyclic verify: encode original: {}", e)),
+            (_, Err(e)) => Err(anyhow!("acyclic verify: encode optimized: {}", e)),
+            _ => Err(anyhow!("acyclic verify: return-type mismatch")),
+        }
+    })
+}
+
 /// Verify that block stack properties are preserved across optimization
 ///
 /// Uses Z3 to formally verify that a block transformation preserves:
@@ -7396,6 +8350,412 @@ pub fn verify_stack_properties(
 mod tests {
     use super::*;
     use crate::parse;
+
+    // ---- PR-C (gale #219) M1a: precise acyclic CF executor, tested in isolation ----
+
+    /// Encode both functions via the precise acyclic executor (deterministic
+    /// input names → they unify in Z3) and check semantic equivalence.
+    /// `Ok(true)` = proven equivalent, `Ok(false)` = counterexample found.
+    #[cfg(feature = "verification")]
+    fn acyclic_equiv(wat_a: &str, wat_b: &str) -> Result<bool> {
+        acyclic_equiv_at(wat_a, 0, wat_b, 0)
+    }
+
+    /// As `acyclic_equiv` but comparing a chosen function index in each module
+    /// (so a caller that `call`s a sibling can be compared to its inlined form).
+    #[cfg(feature = "verification")]
+    fn acyclic_equiv_at(wat_a: &str, ia: usize, wat_b: &str, ib: usize) -> Result<bool> {
+        let ma = parse::parse_wat(wat_a).unwrap();
+        let mb = parse::parse_wat(wat_b).unwrap();
+        let ctx_a = VerificationSignatureContext::from_module(&ma);
+        let ctx_b = VerificationSignatureContext::from_module(&mb);
+        let fa = &ma.functions[ia];
+        let fb = &mb.functions[ib];
+        let cfg = z3_config_with_timeout();
+        with_z3_config(&cfg, || {
+            let solver = Solver::new();
+            let ra = encode_acyclic_function(fa, &ctx_a)?;
+            let rb = encode_acyclic_function(fb, &ctx_b)?;
+            match (ra, rb) {
+                (Some(a), Some(b)) => {
+                    if a.get_size() != b.get_size() {
+                        return Ok(false);
+                    }
+                    solver.assert(a.eq(&b).not());
+                    match solver.check() {
+                        SatResult::Unsat => Ok(true),
+                        SatResult::Sat => Ok(false),
+                        SatResult::Unknown => Err(anyhow!("solver unknown")),
+                    }
+                }
+                _ => Err(anyhow!("void/encode mismatch")),
+            }
+        })
+    }
+
+    /// 3-way `br_table` switch (0→10, 1→20, default→30).
+    #[cfg(feature = "verification")]
+    const SWITCH_10_20_30: &str = r#"
+        (module (func (param i32) (result i32)
+            (block (block (block
+                local.get 0
+                br_table 0 1 2)
+              i32.const 10
+              return)
+              i32.const 20
+              return)
+            i32.const 30
+            return))"#;
+
+    /// Same dispatch expressed as an if/else chain — semantically identical.
+    #[cfg(feature = "verification")]
+    const IFELSE_10_20_30: &str = r#"
+        (module (func (param i32) (result i32)
+            local.get 0
+            i32.eqz
+            if (result i32)
+                i32.const 10
+            else
+                local.get 0
+                i32.const 1
+                i32.eq
+                if (result i32)
+                    i32.const 20
+                else
+                    i32.const 30
+                end
+            end))"#;
+
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_brtable_equiv_ifelse() {
+        // The precise executor must model a br_table switch identically to the
+        // equivalent if/else chain (independent encodings → real proof).
+        assert!(
+            acyclic_equiv(SWITCH_10_20_30, IFELSE_10_20_30).unwrap(),
+            "br_table switch must prove equivalent to the if/else chain"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_brtable_identity() {
+        // A switch is trivially equivalent to itself (sanity: the executor is
+        // deterministic and the merge is stable).
+        assert!(acyclic_equiv(SWITCH_10_20_30, SWITCH_10_20_30).unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_brtable_detects_difference() {
+        // A switch whose default returns 99 instead of 30 must NOT prove
+        // equivalent — the executor must distinguish, not over-approve.
+        let switch_wrong_default = r#"
+            (module (func (param i32) (result i32)
+                (block (block (block
+                    local.get 0
+                    br_table 0 1 2)
+                  i32.const 10
+                  return)
+                  i32.const 20
+                  return)
+                i32.const 99
+                return))"#;
+        assert!(
+            !acyclic_equiv(SWITCH_10_20_30, switch_wrong_default).unwrap(),
+            "differing default arm must yield a counterexample (sel >= 2)"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_brtable_detects_swapped_arms() {
+        // Swapping arm 0 and arm 1 results must be caught (sel==0 / sel==1).
+        let swapped = r#"
+            (module (func (param i32) (result i32)
+                (block (block (block
+                    local.get 0
+                    br_table 0 1 2)
+                  i32.const 20
+                  return)
+                  i32.const 10
+                  return)
+                i32.const 30
+                return))"#;
+        assert!(
+            !acyclic_equiv(SWITCH_10_20_30, swapped).unwrap(),
+            "swapped arm values must yield a counterexample"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_modelable_gate() {
+        // The whole-function gate must reject loops (back-edges).
+        let with_loop =
+            parse::parse_wat("(module (func (param i32) (result i32) (loop local.get 0)))")
+                .unwrap();
+        assert!(
+            !is_acyclic_modelable_body(&with_loop.functions[0].instructions),
+            "loops (back-edges) must be rejected"
+        );
+
+        // PR-C Phase 2: memory ops are now ADMITTED (the executor threads a
+        // memory Array). (Phase 1 rejected them.)
+        let with_memory = parse::parse_wat(
+            "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))",
+        )
+        .unwrap();
+        assert!(
+            is_acyclic_modelable_body(&with_memory.functions[0].instructions),
+            "memory ops are modelable in Phase 2"
+        );
+
+        // A pure-integer br_table switch must be admitted.
+        let switch = parse::parse_wat(SWITCH_10_20_30).unwrap();
+        assert!(
+            is_acyclic_modelable_body(&switch.functions[0].instructions),
+            "pure-integer acyclic br_table function must be admitted"
+        );
+    }
+
+    /// M1b: a caller that `call`s a br_table callee must prove equivalent to the
+    /// same logic with the callee inlined — i.e. the executor models `call F`
+    /// by-body identically to the inlined body (the inline-soundness principle
+    /// extended to control flow). func 0 = decide (switch), func 1 = z (calls it).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_call_by_body_equiv_inlined() {
+        let caller_with_call = r#"
+            (module
+                (func (param i32) (result i32)
+                    (block (block (block
+                        local.get 0
+                        br_table 0 1 2)
+                      i32.const 10
+                      return)
+                      i32.const 20
+                      return)
+                    i32.const 30
+                    return)
+                (func (param i32) (result i32)
+                    local.get 0
+                    call 0))"#;
+        // z (func 1) calls decide (func 0); compare to the inlined switch.
+        assert!(
+            acyclic_equiv_at(caller_with_call, 1, SWITCH_10_20_30, 0).unwrap(),
+            "call-by-body must prove equivalent to the inlined callee body"
+        );
+    }
+
+    /// M1b: a call to a no-return callee (panic→unreachable) must be modeled as
+    /// ⊥ (diverge), never havoc. A function that returns 7 on one path and traps
+    /// on the other proves equivalent to one that simply returns 7 (the trapping
+    /// path drops out of the result; both sides agree on the returning path).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_noreturn_call_diverges() {
+        // func 0 = panic (no params, unreachable); func 1 = g: if arg!=0 return 7
+        // else call panic (diverge). func 1 should equal "always return 7".
+        let with_trap = r#"
+            (module
+                (func unreachable)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if (result i32)
+                        i32.const 7
+                    else
+                        call 0
+                        i32.const 7
+                    end))"#;
+        let always7 = r#"
+            (module (func (param i32) (result i32) i32.const 7))"#;
+        assert!(
+            acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
+            "no-return call path must diverge (drop out), leaving only the return-7 path"
+        );
+    }
+
+    /// A direct `unreachable` (trap) on one path must diverge — same ⊥ discipline
+    /// as a no-return call. The seam decides end their overflow arms in
+    /// `unreachable`, so the executor must model it (not reject the function).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_unreachable_diverges() {
+        let with_trap = r#"
+            (module (func (param i32) (result i32)
+                local.get 0
+                if (result i32)
+                    i32.const 7
+                else
+                    unreachable
+                end))"#;
+        let always7 = r#"(module (func (param i32) (result i32) i32.const 7))"#;
+        assert!(
+            acyclic_equiv(with_trap, always7).unwrap(),
+            "the unreachable (trap) path must diverge, leaving only the return-7 path"
+        );
+    }
+
+    /// PR-C Phase 2: a store on each branch followed by a load must MERGE memory
+    /// correctly (the load sees ite(cond, mem_then, mem_else)). Equivalent to the
+    /// direct if/else — proves the per-join memory ITE-merge is wired right.
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_memory_merge() {
+        let with_mem = r#"
+            (module (memory 1)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if
+                        i32.const 100
+                        i32.const 5
+                        i32.store
+                    else
+                        i32.const 100
+                        i32.const 6
+                        i32.store
+                    end
+                    i32.const 100
+                    i32.load))"#;
+        let direct = r#"
+            (module (memory 1)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if (result i32)
+                        i32.const 5
+                    else
+                        i32.const 6
+                    end))"#;
+        assert!(
+            acyclic_equiv(with_mem, direct).unwrap(),
+            "store-on-each-branch then load must merge memory (ite) → loaded value matches"
+        );
+    }
+
+    /// PR-C Phase 2b: a call to an impure import is HAVOC'd. Two encodings of the
+    /// same impure call must UNIFY (same per-encode havoc id) → equivalent. (If
+    /// the counter weren't deterministic per-encode, the two `call_0_result_0`
+    /// names would differ and this would spuriously fail.)
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_havoc_call_unifies() {
+        let calls_import = r#"
+            (module
+                (import "env" "f" (func $f (param i32) (result i32)))
+                (func (param i32) (result i32)
+                    local.get 0
+                    call $f))"#;
+        assert!(
+            acyclic_equiv(calls_import, calls_import).unwrap(),
+            "two encodings of the same impure call must unify (havoc id parity)"
+        );
+    }
+
+    /// PR-C Phase 2b SOUNDNESS: a havoc'd call result must NOT be provably equal
+    /// to a concrete value — `call $f(x)` (opaque) is not `x`. This is the guard
+    /// against a havoc-vs-concrete false equivalence (#155/#159 surface).
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_havoc_not_concrete() {
+        let calls_import = r#"
+            (module
+                (import "env" "f" (func $f (param i32) (result i32)))
+                (func (param i32) (result i32)
+                    local.get 0
+                    call $f))"#;
+        let identity = r#"
+            (module
+                (import "env" "f" (func $f (param i32) (result i32)))
+                (func (param i32) (result i32)
+                    local.get 0))"#;
+        assert!(
+            !acyclic_equiv(calls_import, identity).unwrap(),
+            "a havoc'd call result must NOT prove equal to a concrete value"
+        );
+    }
+
+    /// PR-C Phase 2b SOUNDNESS: an impure call havocs memory, so a load AFTER the
+    /// call reads the havoc'd memory — NOT provably equal to loading the initial
+    /// memory. Guards against the havoc failing to invalidate memory.
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_acyclic_havoc_memory() {
+        let load_after_call = r#"
+            (module
+                (import "env" "g" (func $g))
+                (memory 1)
+                (func (result i32)
+                    call $g
+                    i32.const 0
+                    i32.load))"#;
+        let load_initial = r#"
+            (module
+                (import "env" "g" (func $g))
+                (memory 1)
+                (func (result i32)
+                    i32.const 0
+                    i32.load))"#;
+        assert!(
+            !acyclic_equiv(load_after_call, load_initial).unwrap(),
+            "a load after an impure call must read havoc'd memory, not the initial"
+        );
+    }
+
+    /// M3: the public verify_acyclic_equivalence fast-path proves a caller that
+    /// `call`s a br_table decide equivalent to the inlined switch, and rejects a
+    /// non-equivalent optimized body — the exact inline verify-or-revert pattern.
+    #[test]
+    #[cfg(feature = "verification")]
+    fn test_verify_acyclic_equivalence_inline() {
+        let module_wat = r#"
+            (module
+                (func (param i32) (result i32)
+                    (block (block (block
+                        local.get 0
+                        br_table 0 1 2)
+                      i32.const 10
+                      return)
+                      i32.const 20
+                      return)
+                    i32.const 30
+                    return)
+                (func (param i32) (result i32)
+                    local.get 0
+                    call 0))"#;
+        let m = parse::parse_wat(module_wat).unwrap();
+        let ctx = VerificationSignatureContext::from_module(&m);
+        let z = &m.functions[1]; // caller: local.get 0; call decide
+
+        // Equivalent: the inlined switch.
+        let inlined = parse::parse_wat(SWITCH_10_20_30).unwrap();
+        assert!(
+            verify_acyclic_equivalence(z, &inlined.functions[0], &ctx).unwrap(),
+            "z (calls decide) must verify ≡ the inlined switch"
+        );
+
+        // Non-equivalent: a switch with a wrong default (99) must NOT verify.
+        let wrong = parse::parse_wat(
+            r#"(module (func (param i32) (result i32)
+                (block (block (block local.get 0 br_table 0 1 2)
+                  i32.const 10 return) i32.const 20 return) i32.const 99 return))"#,
+        )
+        .unwrap();
+        assert!(
+            !verify_acyclic_equivalence(z, &wrong.functions[0], &ctx).unwrap(),
+            "a wrong-default body must NOT verify equivalent"
+        );
+
+        // A function with a loop is not acyclic-modelable → Err (caller falls back).
+        let loopy = parse::parse_wat(
+            "(module (func (param i32) (result i32) (loop (result i32) local.get 0)))",
+        )
+        .unwrap();
+        assert!(
+            verify_acyclic_equivalence(&loopy.functions[0], &loopy.functions[0], &ctx).is_err(),
+            "non-acyclic functions must Err so the caller falls back"
+        );
+    }
 
     #[test]
     fn test_verify_constant_folding() {

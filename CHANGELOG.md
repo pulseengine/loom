@@ -5,6 +5,38 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.15] - 2026-06-22
+
+Inliner release: the dissolve pipeline now inlines two real seam shapes it
+previously left as opaque `call`s, both gated by the Z3 translation validator
+(verify-or-revert). Found by gale's `gust` codegen bench. The #219 seam-teardown
+(carrier forwarding) is intentionally NOT in this release — it stays on its branch
+until the G474RE silicon dual-flash confirms it.
+
+### Added
+
+- **Acyclic control-flow inlining (#226).** The inline-modelability gate was
+  straight-line only, so a `#[inline]` leaf whose body is `if oob { call
+  panic_bounds_check; unreachable }` + a load + arithmetic (gale's `mix`) stayed
+  an opaque `call`. A precise acyclic-CF symbolic executor (PR-C) + a matching
+  candidate gate (Regime B) now admit acyclic CF + by-body calls + divergent
+  (no-return) calls, all proven by the validator. `mix` now inlines.
+- **Whole-function dead-code elimination in `loom optimize` (#228).** New
+  `dce-functions` CLI pass (default-on, after `inline`) exposes
+  `eliminate_dead_functions`: multi-site inlining duplicates a body and orphans
+  the original, which the intra-function `dce` could never remove. Keeps exports,
+  the start function, and element-table (indirect-call) targets live —
+  conservative on a parse failure (#196-safe).
+
+### Fixed
+
+- **Small multi-call-site leaves are inlined again (#228).** The candidate
+  predicate `(call_count == 1 || size < 10) && size < limit` made
+  `MULTI_CALL_SITE_LIMIT` (50) dead code — a multi-site callee only passed when
+  `size < 10`, so nothing in `[10, 50)` ever inlined (gale's 23-instruction,
+  2-site `gust_mix`). Now governed purely by the site-count-dependent budget
+  (`size < limit`); the per-inline Z3 verify-or-revert stays the correctness gate.
+
 ## [1.1.14] - 2026-06-15
 
 Correctness + release-engineering release. One optimizer correctness fix (#220);

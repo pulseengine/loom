@@ -2132,6 +2132,23 @@ pub fn i64_extend_i32_u(val: Value) -> Value {
     Value(Box::new(ValueData::I64ExtendI32U { val }))
 }
 
+/// Extractor for i32.wrap_i64 — used by ISLE rules to pattern-match the term
+/// on a rule LHS (#219 seam-SROA). Returns the inner operand.
+pub fn i32_wrap_i64_extract(val: &Value) -> Option<Value> {
+    match val.0.as_ref() {
+        ValueData::I32WrapI64 { val } => Some(val.clone()),
+        _ => None,
+    }
+}
+
+/// Extractor for i64.extend_i32_u — ISLE rule LHS matching (#219 seam-SROA).
+pub fn i64_extend_i32_u_extract(val: &Value) -> Option<Value> {
+    match val.0.as_ref() {
+        ValueData::I64ExtendI32U { val } => Some(val.clone()),
+        _ => None,
+    }
+}
+
 // ============================================================================
 // Float-to-Integer Truncation Constructors (trapping)
 // ============================================================================
@@ -3344,6 +3361,51 @@ fn are_values_equal(lhs: &Value, rhs: &Value) -> bool {
     }
 }
 
+/// #219 seam-SROA helper: true if `op` is `(i64.shl _ (i64.const k))` with
+/// `0 < k < 64` and every set bit of `mask` is below k (`(mask as u64) >> k ==
+/// 0`). In that case `(op & mask) == 0` for ALL shift inputs — the shifted
+/// value only occupies bits [k,64), which the mask zeroes. k is restricted to
+/// (0,64) so the wasm shift-amount-mod-64 wrap can't change the effective
+/// shift; k>=64 is left to the verifier rather than reasoned about here.
+fn i64_shl_cleared_by_mask(op: &Value, mask: &Imm64) -> bool {
+    if let ValueData::I64Shl { rhs, .. } = op.data() {
+        if let ValueData::I64Const { val: k } = rhs.data() {
+            let k = k.value();
+            if k > 0 && k < 64 {
+                return (mask.value() as u64) >> (k as u64) == 0;
+            }
+        }
+    }
+    false
+}
+
+/// #219 seam-SROA helper: true if `shl_amt` is the constant `k` and `0 < k <
+/// 64` — i.e. an `(i64.shl _ k)` whose amount equals the enclosing `shr_u`'s.
+/// `(Z << k) >> k == Z & (u64::MAX >> k)` exactly when k is in (0,64) (no wasm
+/// shift-mod-64 wrap).
+fn i64_shr_undoes_shl(shl_amt: &Value, shr_amt: &Imm64) -> bool {
+    if let ValueData::I64Const { val: k2 } = shl_amt.data() {
+        let k = shr_amt.value();
+        return k == k2.value() && k > 0 && k < 64;
+    }
+    false
+}
+
+/// #219 seam-SROA helper: true if `op` is `(i64.shl _ (i64.const amt))` with
+/// `0 < amt < 64`. Used to target the shr_u-over-or distribution at the pack
+/// shape (`(or (shl Z k) B) >> k`) so it only fires where it dissolves.
+fn i64_is_shl_by(op: &Value, amt: i64) -> bool {
+    if amt <= 0 || amt >= 64 {
+        return false;
+    }
+    if let ValueData::I64Shl { rhs, .. } = op.data() {
+        if let ValueData::I64Const { val: k } = rhs.data() {
+            return k.value() == amt;
+        }
+    }
+    false
+}
+
 /// Stateless simplification (expression-level only)
 fn rewrite_pure_impl(val: Value) -> Value {
     match val.data() {
@@ -3713,6 +3775,37 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // Algebraic: x & -1 = x (all bits set)
                 (_, ValueData::I64Const { val }) if val.value() == -1 => lhs_simplified,
                 (ValueData::I64Const { val }, _) if val.value() == -1 => rhs_simplified,
+
+                // #219 seam-SROA: (shl Z k) & M → 0 when M's set bits are all
+                // below k — the left shift zeroes bits [0,k), the mask zeroes
+                // bits [k,64), so nothing survives. Unconditionally sound for
+                // any Z (Z3: (Z<<k) & M == 0 when M >> k == 0). Dissolves the
+                // high half of a u64 pack under a low-byte unpack mask.
+                (ValueData::I64Shl { .. }, ValueData::I64Const { val: m })
+                    if i64_shl_cleared_by_mask(&lhs_simplified, m) =>
+                {
+                    iconst64(Imm64(0))
+                }
+                (ValueData::I64Const { val: m }, ValueData::I64Shl { .. })
+                    if i64_shl_cleared_by_mask(&rhs_simplified, m) =>
+                {
+                    iconst64(Imm64(0))
+                }
+                // #219 seam-SROA: (or A B) & M → (survivor & M) when one OR
+                // operand is a left shift the mask clears. Recurse so the
+                // survivor (and a both-shifted case) simplifies further.
+                (ValueData::I64Or { lhs: a, rhs: b }, ValueData::I64Const { val: m })
+                    if i64_shl_cleared_by_mask(a, m) || i64_shl_cleared_by_mask(b, m) =>
+                {
+                    let survivor = if i64_shl_cleared_by_mask(a, m) { b } else { a };
+                    rewrite_pure(iand64(survivor.clone(), iconst64(*m)))
+                }
+                (ValueData::I64Const { val: m }, ValueData::I64Or { lhs: a, rhs: b })
+                    if i64_shl_cleared_by_mask(a, m) || i64_shl_cleared_by_mask(b, m) =>
+                {
+                    let survivor = if i64_shl_cleared_by_mask(a, m) { b } else { a };
+                    rewrite_pure(iand64(survivor.clone(), iconst64(*m)))
+                }
                 _ => iand64(lhs_simplified, rhs_simplified),
             }
         }
@@ -3808,6 +3901,31 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 }
                 // Algebraic: x >> 0 = x
                 (_, ValueData::I64Const { val }) if (val.value() & 0x3F) == 0 => lhs_simplified,
+
+                // #219 seam-SROA: (shr_u (shl Z k) k) → Z & (low 64-k bits).
+                // Shifting left by k then logically right by the same k clears
+                // the high k bits and keeps the low 64-k. Unconditionally sound
+                // for 0<k<64 (Z3: (Z<<k)>>k == Z & (2^(64-k)-1)). Dissolves the
+                // high half of a u64 pack under a >>k unpack.
+                (ValueData::I64Shl { lhs: z, rhs: shamt }, ValueData::I64Const { val: k })
+                    if i64_shr_undoes_shl(shamt, k) =>
+                {
+                    let mask = (u64::MAX >> (k.value() as u64)) as i64;
+                    rewrite_pure(iand64(z.clone(), iconst64(Imm64(mask))))
+                }
+                // #219 seam-SROA: (shr_u (or P Q) k) → (or (P>>k) (Q>>k)) when an
+                // OR operand is (shl _ k) — logical right shift distributes over
+                // bitwise OR (sound), and recursing lets the shl side collapse
+                // via the rule above. Targeted to the pack shape (matching shl
+                // present) so it never bloats unrelated `(or _ _) >> k`.
+                (ValueData::I64Or { lhs: p, rhs: q }, ValueData::I64Const { val: k })
+                    if i64_is_shl_by(p, k.value()) || i64_is_shl_by(q, k.value()) =>
+                {
+                    rewrite_pure(ior64(
+                        ishru64(p.clone(), iconst64(*k)),
+                        ishru64(q.clone(), iconst64(*k)),
+                    ))
+                }
                 _ => ishru64(lhs_simplified, rhs_simplified),
             }
         }
@@ -4342,6 +4460,30 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // Constant folding: (i64.popcnt (i64.const N)) → (i64.const count_ones(N))
                 ValueData::I64Const { val: v } => iconst64(Imm64(v.value().count_ones() as i64)),
                 _ => ipopcnt64(val_simplified),
+            }
+        }
+
+        // Integer width conversions (#219 seam-SROA). The live rewrite for the
+        // decide seam's u64 pack/unpack round-trip. Z3-validated per pass.
+        ValueData::I32WrapI64 { val } => {
+            let val_simplified = rewrite_pure(val.clone());
+            match val_simplified.data() {
+                // #219 seam-SROA: wrap_i64(extend_i32_u(x)) = x. zero-extending an
+                // i32 to i64 then taking the low 32 bits is the identity on i32 —
+                // unconditionally sound (Z3: extract(31,0, zero_ext(32,x)) = x).
+                ValueData::I64ExtendI32U { val: inner } => inner.clone(),
+                // Constant folding: wrap_i64(i64.const N) → i32.const (low 32 bits).
+                ValueData::I64Const { val: v } => iconst32(Imm32(v.value() as i32)),
+                _ => i32_wrap_i64(val_simplified),
+            }
+        }
+
+        ValueData::I64ExtendI32U { val } => {
+            let val_simplified = rewrite_pure(val.clone());
+            match val_simplified.data() {
+                // Constant folding: extend_i32_u(i32.const N) → i64.const (zero-extended).
+                ValueData::I32Const { val: v } => iconst64(Imm64((v.value() as u32 as u64) as i64)),
+                _ => i64_extend_i32_u(val_simplified),
             }
         }
 
