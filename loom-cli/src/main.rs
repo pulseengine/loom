@@ -502,6 +502,27 @@ fn optimize_command(
         track_pass("inline", before, after);
     }
 
+    // loom#228: whole-function (module-level) dead-function elimination.
+    // Multi-site inlining duplicates a callee's body into each caller and
+    // leaves the ORIGINAL orphaned; the body-level `dce` (eliminate_dead_code)
+    // is intra-function and never removes a whole function, so the orphan
+    // survived every `loom optimize` run and grew the module. Run it right
+    // after `inline` so the orphan is gone before downstream passes touch it.
+    // eliminate_dead_functions keeps exports, the start function, and every
+    // element-segment (indirect-call table) target live — conservative on a
+    // parse failure — so it can never drop a reachable function (#196).
+    if should_run("dce-functions") {
+        println!("  Running: dce-functions");
+        let before = count_instructions(&module);
+        let removed = loom_core::fused_optimizer::eliminate_dead_functions(&mut module)
+            .context("Whole-function DCE failed")?;
+        if removed > 0 {
+            println!("    removed {removed} dead function(s)");
+        }
+        let after = count_instructions(&module);
+        track_pass("dce-functions", before, after);
+    }
+
     if should_run("precompute") {
         println!("  Running: precompute");
         let before = count_instructions(&module);

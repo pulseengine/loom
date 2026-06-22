@@ -13453,19 +13453,24 @@ pub mod optimize {
                 }
                 let size = function_sizes.get(func_idx).copied().unwrap_or(0);
 
-                // Heuristic: inline if:
-                // 1. Single call site — profitable: inlining removes the call
-                //    overhead and opens cross-function optimization (the gale
-                //    flight_control seam, #155). A single-call-site callee is
-                //    not duplicated, so a generous size budget is justified.
-                // 2. Small function (< 10 instructions) — cheap even when
-                //    called from multiple sites.
+                // Heuristic: inline a modelable callee whose size is under the
+                // site-count-dependent budget.
+                // - Single call site — generous budget (not duplicated): inlining
+                //   removes the call and opens cross-function optimization (the
+                //   gale flight_control seam, #155).
+                // - Multiple call sites — a tighter budget bounds the per-copy
+                //   duplication cost, but the leaf STILL inlines (the gale gust
+                //   `mix` seam, #228: a 23-insn 2-site leaf).
                 //
-                // SIZE_LIMIT stays well under the Z3 verify cap
-                // (LOOM_Z3_MAX_INSTRUCTIONS, default 2000) so the inlined
-                // function is still VERIFIED, never silently skipped — the
-                // translation validator remains the correctness gate, and the
-                // #147 fixpoint guard bounds total expansion.
+                // loom#228: the old guard `(call_count == 1 || size < 10)` made
+                // MULTI_CALL_SITE_LIMIT dead — a multi-site callee only passed
+                // when `size < 10`, so nothing in [10, 50) ever inlined however
+                // small the budget said it could. Governing purely by the budget
+                // restores the intended behavior. Both limits stay well under the
+                // Z3 verify cap (LOOM_Z3_MAX_INSTRUCTIONS, default 2000) so every
+                // inlined body is still VERIFIED (the translation validator is the
+                // correctness gate, never bypassed); the #147 fixpoint guard
+                // bounds total expansion.
                 const SINGLE_CALL_SITE_LIMIT: usize = 200;
                 const MULTI_CALL_SITE_LIMIT: usize = 50;
                 let limit = if call_count == 1 {
@@ -13473,7 +13478,7 @@ pub mod optimize {
                 } else {
                     MULTI_CALL_SITE_LIMIT
                 };
-                if (call_count == 1 || size < 10) && size < limit {
+                if size < limit {
                     inline_candidates.push(*func_idx);
                 }
             }
@@ -18959,6 +18964,55 @@ mod tests {
             calls_after, 0,
             "i64 helper must be inlined — pre-fix the verifier panicked \
              and reverted every function, leaving the Call in place"
+        );
+
+        let wasm_bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // loom#228: a modelable leaf whose size is in [10, 50) called from MULTIPLE
+    // sites was never inlined. The old candidate guard `(call_count == 1 ||
+    // size < 10) && size < limit` made MULTI_CALL_SITE_LIMIT (=50) dead: a
+    // multi-site callee only passed when `size < 10`, so nothing in [10, 50)
+    // ever inlined. Budget-governed selection (`size < limit`) inlines it at
+    // every site; the Z3 gate stays the correctness backstop.
+    #[test]
+    fn test_inline_multisite_small_leaf_228() {
+        // 11-instruction straight-line modelable leaf (tee+select+arith), no
+        // calls, size in [10, 50), called from two sites.
+        let wat = r#"(module
+            (func $leaf (param i32 i32) (result i32)
+                local.get 0  local.get 1  i32.add  local.tee 0
+                i32.const 1  i32.add
+                local.get 0  i32.const 2  i32.shl
+                i32.const 0  select)
+            (func $a (export "a") (param i32) (result i32)
+                local.get 0  i32.const 7  call $leaf)
+            (func $b (export "b") (param i32) (result i32)
+                local.get 0  i32.const 9  call $leaf)
+        )"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        // leaf is flat (no nested blocks) → instruction count == body length.
+        let leaf_size = module.functions[0].instructions.len();
+        assert!(
+            (10..50).contains(&leaf_size),
+            "leaf must be in the previously-dead [10,50) band (got {leaf_size})"
+        );
+
+        optimize::inline_functions(&mut module).expect("inline must not panic");
+
+        // Both call sites must be gone (the leaf body is inlined into $a and $b;
+        // the orphaned $leaf itself is removed by the CLI dce-functions pass, not
+        // by inline_functions — so it may still be present here, callless).
+        let total_calls: usize = module
+            .functions
+            .iter()
+            .flat_map(|f| f.instructions.iter())
+            .filter(|i| matches!(i, Instruction::Call(_)))
+            .count();
+        assert_eq!(
+            total_calls, 0,
+            "#228: the multi-site [10,50) leaf must inline at BOTH sites"
         );
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
