@@ -25,7 +25,7 @@ wat = "1.241"
 wit-component = "0.252"
 
 # ISLE compiler and runtime
-cranelift-isle = "0.132"
+cranelift-isle = "0.133"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
