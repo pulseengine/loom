@@ -271,6 +271,61 @@ jobs:
             echo "Z3 WASM verification: $verified verified, $skipped skipped"
           fi
 
+  differential-gate:
+    name: Behavioral Differential Gate (#238)
+    # ubuntu-latest: default features pull `verification` (needs z3); the
+    # `differential` feature additionally pulls wasmtime. Both build here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Z3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+      - name: Build loom with the differential gate
+        run: cargo build --release -p loom-cli --features differential
+      - name: Differentially gate the runnable core-module corpus
+        run: |
+          # Policy (#238): the CLI `--differential` gate HARD-FAILS on BOTH
+          # divergence and inconclusive (it refuses to certify behavior it never
+          # observed). For this fixed corpus the CI job is a narrower consumer:
+          #   - DIVERGENCE / invalid output -> CI FAILURE (a real miscompile)
+          #   - inconclusive (no runnable export / exec coverage gap)
+          #                                 -> logged SKIP, not a CI failure
+          # Component fixtures are excluded: component-model execution is not
+          # wired yet, so they are always inconclusive (gap tracked in #238/#239).
+          set -u
+          corpus=(tests/corpus/*.wasm loom-core/tests/fixtures/repro-219/sem.loom.wasm)
+          certified=0; skipped=0; diverged=()
+          for w in "${corpus[@]}"; do
+            [ -f "$w" ] || continue
+            name=$(basename "$w")
+            if log=$(./target/release/loom optimize "$w" -o /tmp/diff_out.wasm --differential 2>&1); then
+              echo "✅ certified: $name"
+              certified=$((certified + 1))
+            elif echo "$log" | grep -q "inconclusive"; then
+              echo "⏭️  inconclusive (skipped, not runnable): $name"
+              skipped=$((skipped + 1))
+            else
+              echo "❌ DIVERGENCE / invalid: $name"
+              echo "$log" | tail -3
+              diverged+=("$name")
+            fi
+          done
+          echo ""
+          echo "Differential gate: $certified certified, $skipped inconclusive-skipped, ${#diverged[@]} diverged"
+          if [ "${#diverged[@]}" -gt 0 ]; then
+            echo "❌ behavioral divergence on: ${diverged[*]}"
+            exit 1
+          fi
+          if [ "$certified" -eq 0 ]; then
+            echo "❌ gate certified 0 modules — corpus or executor regression"
+            exit 1
+          fi
+          echo "✅ differential gate green ($certified certified)"
+
   wasm-build:
     name: WASM Build (wasm32-wasip2 with Z3)
     # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
