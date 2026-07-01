@@ -7032,6 +7032,11 @@ pub mod optimize {
             }
         }
 
+        // #242: optimization changed instruction offsets, so any `.debug_*`
+        // (DWARF) sections are stale. Drop them rather than carry misleading
+        // debug info through the transformed module.
+        super::fused_optimizer::strip_debug_sections(module);
+
         Ok(())
     }
 

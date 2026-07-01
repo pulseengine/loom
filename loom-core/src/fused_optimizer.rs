@@ -2069,7 +2069,180 @@ pub fn eliminate_dead_functions(module: &mut Module) -> Result<usize> {
         }
     }
 
+    // #242: keep debug info honest across the changed function index space.
+    // Previously the `name` and `.debug_*` custom sections were emitted
+    // byte-identical over a renumbered function section, so surviving functions
+    // were MISATTRIBUTED (e.g. `gamma` labeled `dead`) with dangling indices —
+    // silent debug-info corruption that Z3 / wasm-tools validate never catch.
+    //   - `name`:    remap the function/local/label name subsections through
+    //                `remap` (drop dead entries); if it won't parse, drop it.
+    //   - `.debug_*`: drop. DWARF line tables reference code offsets that
+    //                optimization has changed; they cannot be safely remapped.
+    module.custom_sections.retain_mut(|(name, data)| {
+        if name == "name" {
+            match remap_name_section(data, &remap) {
+                Some(remapped) => {
+                    *data = remapped;
+                    true
+                }
+                None => false, // unparseable → drop rather than misattribute
+            }
+        } else if name.starts_with(".debug") {
+            false
+        } else {
+            // Other custom sections (producers, etc.) do not reference the
+            // function index space and are unaffected by function removal.
+            true
+        }
+    });
+
     Ok(eliminated)
+}
+
+/// #242 follow-up — drop `.debug_*` custom sections. DWARF line/info tables
+/// reference code offsets that any body-changing optimization invalidates, and
+/// loom does not rewrite them; retaining them byte-identical over transformed
+/// code is stale, misleading debug info (a debugger would report wrong source
+/// lines). Call this once optimization has run. Returns the number dropped.
+///
+/// The `name` section is handled separately (remapped, not dropped) in
+/// `eliminate_dead_functions` — its function indices can be remapped soundly;
+/// DWARF cannot.
+pub fn strip_debug_sections(module: &mut Module) -> usize {
+    let before = module.custom_sections.len();
+    module
+        .custom_sections
+        .retain(|(name, _)| !name.starts_with(".debug"));
+    before - module.custom_sections.len()
+}
+
+/// #242 — LEB128 + name-section helpers for remapping the `name` custom section
+/// through a function-index remap. Hand-rolled (rather than via wasm-encoder's
+/// `NameSection`) so we can emit exactly the raw subsection payload loom stores
+/// in `custom_sections`, and so an unparseable section degrades to `None`
+/// (→ dropped) instead of panicking.
+fn read_uleb(data: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut result: u32 = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let byte = *data.get(*pos)?;
+        *pos += 1;
+        result |= ((byte & 0x7f) as u32).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 32 {
+            return None;
+        }
+    }
+}
+
+fn write_uleb(out: &mut Vec<u8>, mut v: u32) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
+/// Read a length-prefixed name, returning its raw bytes and advancing `pos`.
+fn read_name_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let len = read_uleb(data, pos)? as usize;
+    let end = pos.checked_add(len)?;
+    let s = data.get(*pos..end)?;
+    *pos = end;
+    Some(s)
+}
+
+/// Remap a direct name map (`vec(idx, name)`, e.g. the function-names subsection).
+/// Drops entries whose index is not in `remap` (dead functions).
+fn remap_direct_namemap(sub: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let count = read_uleb(sub, &mut pos)?;
+    let mut entries: Vec<(u32, &[u8])> = Vec::new();
+    for _ in 0..count {
+        let idx = read_uleb(sub, &mut pos)?;
+        let name = read_name_bytes(sub, &mut pos)?;
+        if let Some(&new_idx) = remap.get(&idx) {
+            entries.push((new_idx, name));
+        }
+    }
+    entries.sort_by_key(|(i, _)| *i);
+    let mut out = Vec::new();
+    write_uleb(&mut out, entries.len() as u32);
+    for (i, name) in entries {
+        write_uleb(&mut out, i);
+        write_uleb(&mut out, name.len() as u32);
+        out.extend_from_slice(name);
+    }
+    Some(out)
+}
+
+/// Remap an indirect name map (`vec(func_idx, inner_namemap)`, e.g. local/label
+/// names). The outer key is a function index (remapped); the inner map indexes
+/// locals/labels within the function, which dce does not renumber, so its bytes
+/// are preserved verbatim. Drops entries for dead functions.
+fn remap_indirect_namemap(sub: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let count = read_uleb(sub, &mut pos)?;
+    let mut entries: Vec<(u32, &[u8])> = Vec::new();
+    for _ in 0..count {
+        let func_idx = read_uleb(sub, &mut pos)?;
+        let inner_start = pos;
+        let inner_count = read_uleb(sub, &mut pos)?;
+        for _ in 0..inner_count {
+            let _local_idx = read_uleb(sub, &mut pos)?;
+            let _name = read_name_bytes(sub, &mut pos)?;
+        }
+        let inner = sub.get(inner_start..pos)?;
+        if let Some(&new_idx) = remap.get(&func_idx) {
+            entries.push((new_idx, inner));
+        }
+    }
+    entries.sort_by_key(|(i, _)| *i);
+    let mut out = Vec::new();
+    write_uleb(&mut out, entries.len() as u32);
+    for (i, inner) in entries {
+        write_uleb(&mut out, i);
+        out.extend_from_slice(inner);
+    }
+    Some(out)
+}
+
+/// Remap the `name` custom section payload through a function-index remap.
+/// Function-indexed subsections (function names id=1, local names id=2, labels
+/// id=3) are remapped; the module-name subsection (id=0) and subsections keyed
+/// by other index spaces (types/tables/memories/globals/elems/data, id>=4 —
+/// which function removal does not renumber) are preserved verbatim. Returns
+/// `None` on any malformed input so the caller drops the section (never
+/// misattributes).
+fn remap_name_section(data: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let mut out: Vec<u8> = Vec::new();
+    while pos < data.len() {
+        let id = *data.get(pos)?;
+        pos += 1;
+        let size = read_uleb(data, &mut pos)? as usize;
+        let end = pos.checked_add(size)?;
+        let sub = data.get(pos..end)?;
+        pos = end;
+        let new_payload = match id {
+            1 => remap_direct_namemap(sub, remap)?,
+            2 | 3 => remap_indirect_namemap(sub, remap)?,
+            _ => sub.to_vec(),
+        };
+        out.push(id);
+        write_uleb(&mut out, new_payload.len() as u32);
+        out.extend_from_slice(&new_payload);
+    }
+    Some(out)
 }
 
 /// Collect all function references (call targets, ref.func) from a block of instructions.
@@ -2614,6 +2787,97 @@ fn get_function_signature(
 mod tests {
     use super::*;
     use crate::{BlockType, DataSegment, Export, ValueType};
+
+    /// #242 — the `name` custom section must be remapped through the function
+    /// index remap: dead entries dropped, survivors renumbered, other
+    /// subsections preserved. Guards against the misattribution/dangling-index
+    /// corruption (surviving `gamma` was labeled `dead` after dce removed idx 1).
+    #[test]
+    fn test_242_remap_name_section_drops_dead_and_renumbers() {
+        // Build a `name` payload: [id=0 module "m"][id=1 funcs {0:alpha,1:dead,2:gamma}]
+        let mut fn_sub = Vec::new();
+        write_uleb(&mut fn_sub, 3);
+        for (i, n) in [(0u32, "alpha"), (1, "dead"), (2, "gamma")] {
+            write_uleb(&mut fn_sub, i);
+            write_uleb(&mut fn_sub, n.len() as u32);
+            fn_sub.extend_from_slice(n.as_bytes());
+        }
+        let module_name_payload = b"\x01m"; // len=1, "m"
+
+        let mut data = Vec::new();
+        data.push(0);
+        write_uleb(&mut data, module_name_payload.len() as u32);
+        data.extend_from_slice(module_name_payload);
+        data.push(1);
+        write_uleb(&mut data, fn_sub.len() as u32);
+        data.extend_from_slice(&fn_sub);
+
+        // dce removed idx 1 ("dead"): alpha 0->0, gamma 2->1.
+        let mut remap = HashMap::new();
+        remap.insert(0u32, 0u32);
+        remap.insert(2u32, 1u32);
+
+        let out = remap_name_section(&data, &remap).expect("name section should remap");
+
+        // Decode the remapped function-names subsection.
+        let mut pos = 0usize;
+        let mut names: Vec<(u32, String)> = Vec::new();
+        let mut saw_module = false;
+        while pos < out.len() {
+            let id = out[pos];
+            pos += 1;
+            let size = read_uleb(&out, &mut pos).unwrap() as usize;
+            let sub = &out[pos..pos + size];
+            pos += size;
+            if id == 0 {
+                saw_module = true; // module-name subsection preserved
+            } else if id == 1 {
+                let mut p = 0usize;
+                let c = read_uleb(sub, &mut p).unwrap();
+                for _ in 0..c {
+                    let idx = read_uleb(sub, &mut p).unwrap();
+                    let nb = read_name_bytes(sub, &mut p).unwrap();
+                    names.push((idx, String::from_utf8(nb.to_vec()).unwrap()));
+                }
+            }
+        }
+        assert!(
+            saw_module,
+            "module-name subsection must be preserved verbatim"
+        );
+        assert_eq!(
+            names,
+            vec![(0, "alpha".to_string()), (1, "gamma".to_string())],
+            "dead entry dropped, gamma renumbered 2->1, no dangling index 2"
+        );
+    }
+
+    /// #242 follow-up — `.debug_*` sections are dropped (stale DWARF), other
+    /// custom sections (name, producers, …) are kept.
+    #[test]
+    fn test_242_strip_debug_sections() {
+        let mut m = empty_module();
+        m.custom_sections = vec![
+            ("name".to_string(), vec![]),
+            (".debug_line".to_string(), vec![1, 2, 3]),
+            (".debug_info".to_string(), vec![4]),
+            ("producers".to_string(), vec![5]),
+        ];
+        let dropped = strip_debug_sections(&mut m);
+        assert_eq!(dropped, 2, "both .debug_* sections dropped");
+        let names: Vec<&str> = m.custom_sections.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["name", "producers"], "non-debug sections kept");
+    }
+
+    /// #242 — a malformed `name` section degrades to `None` (caller drops it)
+    /// rather than panicking or emitting garbage.
+    #[test]
+    fn test_242_malformed_name_section_returns_none() {
+        let remap = HashMap::new();
+        // id=1 subsection claims size 99 but no bytes follow.
+        let data = vec![1u8, 99u8];
+        assert!(remap_name_section(&data, &remap).is_none());
+    }
 
     /// Create a minimal module for testing
     fn empty_module() -> Module {
