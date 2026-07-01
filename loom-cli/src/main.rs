@@ -73,6 +73,13 @@ enum Commands {
         #[arg(long)]
         #[cfg(feature = "differential")]
         differential: bool,
+
+        /// (#239) For COMPONENTS: also strip the `component-type` metadata custom
+        /// section. Default is to PRESERVE it — `wit-component` introspection
+        /// (e.g. `wasm-tools component wit`) depends on it. Stripping is sound
+        /// (the section is inert to execution) but degrades tooling.
+        #[arg(long)]
+        strip_component_type: bool,
     },
 
     /// Verify ISLE optimization rules
@@ -328,6 +335,7 @@ fn optimize_command(
     passes: Option<Vec<String>>,
     islands: usize,
     run_differential: bool,
+    strip_component_type: bool,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -356,7 +364,10 @@ fn optimize_command(
             println!("📦 Attempting component optimization...");
 
             // Use component optimization
-            match loom_core::optimize_component(&input_bytes) {
+            let component_config = loom_core::ComponentOptimizeConfig {
+                strip_component_type,
+            };
+            match loom_core::optimize_component_with_config(&input_bytes, component_config) {
                 Ok((optimized_bytes, stats)) => {
                     println!("\n📊 Component Optimization Results");
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -388,6 +399,35 @@ fn optimize_command(
                         );
                     }
                     println!("Status:       {}", stats.message);
+
+                    // #239 size breakdown — attribute the win by category.
+                    let bd = &stats.size_breakdown;
+                    println!("\n📐 Size Breakdown (component-level)");
+                    println!(
+                        "  Core module code:   {} → {} bytes",
+                        bd.core_module_bytes_before, bd.core_module_bytes_after
+                    );
+                    println!(
+                        "  Component types:    {} bytes ({})",
+                        bd.component_type_bytes,
+                        if bd.component_type_stripped {
+                            "STRIPPED (--strip-component-type)"
+                        } else if bd.component_type_bytes > 0 {
+                            "preserved (default)"
+                        } else {
+                            "none"
+                        }
+                    );
+                    println!(
+                        "  Custom stripped:    {} bytes",
+                        bd.custom_sections_stripped
+                    );
+                    if !bd.stripped_section_names.is_empty() {
+                        println!(
+                            "                      [{}]",
+                            bd.stripped_section_names.join(", ")
+                        );
+                    }
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
                     // Write optimized component
@@ -983,6 +1023,7 @@ fn main() -> Result<()> {
             islands,
             #[cfg(feature = "differential")]
             differential,
+            strip_component_type,
         }) => {
             #[cfg(feature = "attestation")]
             let add_attestation = attestation;
@@ -1002,6 +1043,7 @@ fn main() -> Result<()> {
                 passes,
                 islands,
                 run_differential,
+                strip_component_type,
             )?;
         }
 
@@ -1078,6 +1120,7 @@ mod tests {
             None,
             1,     // islands: serial path
             false, // run_differential
+            false, // strip_component_type
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -1116,6 +1159,7 @@ mod tests {
             None,
             1,     // islands: serial path
             false, // run_differential
+            false, // strip_component_type
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -1151,6 +1195,7 @@ mod tests {
             None,
             1,     // islands: serial path
             false, // run_differential
+            false, // strip_component_type
         );
 
         assert!(
@@ -1189,6 +1234,7 @@ mod tests {
             None,
             1,     // islands: serial path
             false, // run_differential
+            false, // strip_component_type
         );
 
         assert!(
