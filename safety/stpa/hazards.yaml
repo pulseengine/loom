@@ -178,7 +178,7 @@ hazards:
       compositional-analysis false positives. CODE-VERIFIED: active on
       main branch.
     losses: [L-2]
-    status: MITIGATED
+    status: accepted
     mitigation: |
       Re-enabled by 84ce9f7 ("fix(safety): re-enable post-optimization
       stack validation"). Active in lib.rs:6782+ Phase 5 block.
@@ -193,7 +193,7 @@ hazards:
       ['verification', 'attestation']"). Main CI test job now exercises
       Z3-backed verification on the default feature set.
     losses: [L-3]
-    status: MITIGATED
+    status: accepted
     mitigation: |
       Wave 2 (#77) added Z3-based ISLE rule verification (REQ-6, SG-3).
       verification feature is default-on in loom-core and loom-cli Cargo.toml.
@@ -208,7 +208,7 @@ hazards:
       BrIf/BrTable now receive structural ISLE rewrites (constant folding,
       algebraic identities, strength reduction) without dataflow tracking.
     losses: [L-4]
-    status: MITIGATED
+    status: accepted
     mitigation: |
       PR #53 (ac01a19) and PR #80 (c1eb8f3) together cover the prior skip
       cases. Functions with control flow now optimize via rewrite_pure().
@@ -222,7 +222,7 @@ hazards:
       local_info, global_constants. Pure-lookup HashMaps remain where
       iteration order does not affect output.
     losses: [L-5]
-    status: MITIGATED
+    status: accepted
     mitigation: |
       Wave 2 (REQ-14, #77) swapped 5 iteration-order-sensitive HashMaps
       to BTreeMap. Verified by running optimizer twice on same input.

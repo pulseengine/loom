@@ -34,7 +34,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- verify::
-    status: passing
+    status: verified
     tags: [v100, verification, z3]
     links:
       - type: verifies
@@ -55,7 +55,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- summary::
-    status: passing
+    status: verified
     tags: [v100, ipa, verification]
     links:
       - type: verifies
@@ -83,7 +83,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- test_cse_does_not_dedupe
-    status: passing
+    status: verified
     tags: [v100, cse, safety]
     links:
       - type: verifies
@@ -115,7 +115,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- test_cse_dedupes
-    status: passing
+    status: verified
     tags: [v100, cse, ipa]
     links:
       - type: verifies
@@ -140,7 +140,7 @@ artifacts:
       steps:
         - run: |
             bazel build //proofs/... 2>&1 || echo "SKIP if bazel not available on this runner"
-    status: passing
+    status: verified
     tags: [v100, rocq, proofs]
     links:
       - type: verifies
@@ -162,7 +162,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release -p loom-testing -- self_optimization 2>&1 || echo "SKIP if dogfood target missing"
-    status: passing
+    status: verified
     tags: [v100, dogfooding]
     links:
       - type: verifies
@@ -185,7 +185,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- spec_features
-    status: passing
+    status: verified
     tags: [v100, wasm-spec]
     links:
       - type: verifies
@@ -209,7 +209,7 @@ artifacts:
       steps:
         - run: |
             cargo build --release -p loom-cli && ./target/release/loom optimize scripts/mythos/gale_measure/gale_in_baseline.wasm --attestation false -o /tmp/loom-pipeline-smoke.wasm
-    status: passing
+    status: verified
     tags: [v100, cli, pipeline]
     links:
       - type: verifies
@@ -233,7 +233,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- specialize_adapters
-    status: passing
+    status: verified
     tags: [v100, component-model]
     links:
       - type: verifies
@@ -256,7 +256,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- encode wasmparser
-    status: passing
+    status: verified
     tags: [v100, validation]
     links:
       - type: verifies
@@ -282,7 +282,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- stack
-    status: passing
+    status: verified
     tags: [v100, stack-validation]
     links:
       - type: verifies
@@ -305,7 +305,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release --lib -p loom-core -- test_null_check
-    status: passing
+    status: verified
     tags: [v100, determinism]
     links:
       - type: verifies
@@ -329,7 +329,7 @@ artifacts:
       steps:
         - run: |
             cargo build --release -p loom-cli && PER_RUN_TIMEOUT=60 bash scripts/measure_corpus.sh
-    status: passing
+    status: verified
     tags: [v100, measurement]
     links:
       - type: verifies
@@ -352,7 +352,7 @@ artifacts:
       steps:
         - run: |
             (test -d fuzz && cd fuzz && cargo check) || echo "SKIP if fuzz directory absent"
-    status: passing
+    status: verified
     tags: [v100, fuzzing]
     links:
       - type: verifies
@@ -375,7 +375,7 @@ artifacts:
       steps:
         - run: |
             cargo test --release -p loom-testing 2>&1 || echo "SKIP if differential dependencies absent"
-    status: passing
+    status: verified
     tags: [v100, abi, meld-interop]
     links:
       - type: verifies
@@ -397,7 +397,7 @@ artifacts:
       steps:
         - run: |
             (rustup target list --installed | grep -q wasm32-wasip2 && cargo build --release --target wasm32-wasip2 -p loom-core) || echo "SKIP if wasm32-wasip2 toolchain absent"
-    status: passing
+    status: verified
     tags: [v100, build-target]
     links:
       - type: verifies
