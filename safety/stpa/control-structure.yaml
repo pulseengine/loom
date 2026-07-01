@@ -28,6 +28,9 @@ controllers:
       - Input is a valid WebAssembly binary
       - All Operator variants have corresponding Instruction mappings
       - Unsupported operators are tracked for function-level skip decisions
+    links:
+      - type: acts-on
+        target: CP-1
 
   - id: CTRL-2
     name: ISLE term rewriter
@@ -57,6 +60,9 @@ controllers:
       - Terms faithfully represent instruction semantics
       - Rewrite rules preserve equivalence
       - Term environment tracks local variable bindings
+    links:
+      - type: acts-on
+        target: CP-2
 
   - id: CTRL-3
     name: Optimization pipeline orchestrator
@@ -100,6 +106,9 @@ controllers:
       - Functions with unsupported instructions must be skipped entirely
       - Phase ordering is fixed and deterministic
       - Each phase receives output of previous phase
+    links:
+      - type: acts-on
+        target: CP-1
 
   - id: CTRL-4
     name: Stack validator
@@ -160,6 +169,9 @@ controllers:
       - IR types map to valid WASM section encodings
       - Function body byte lengths are computed correctly
       - All indices (type, function, memory, table) are valid
+    links:
+      - type: acts-on
+        target: CP-3
 
   - id: CTRL-7
     name: Component model optimizer
@@ -182,6 +194,9 @@ controllers:
       - Component external interface must be preserved
       - Adapter collapse only valid for same-memory, no-transform cases
       - Fused modules retain Meld/Kiln ABI compatibility
+    links:
+      - type: acts-on
+        target: CP-1
 
 controlled-processes:
   - id: CP-1
@@ -190,13 +205,9 @@ controlled-processes:
       The in-memory Module struct containing types, functions, tables,
       memories, globals, and exports. All optimization phases read and
       modify this structure.
-    links:
-      - type: acted-on-by
-        target: CTRL-1
-      - type: acted-on-by
-        target: CTRL-3
-      - type: acted-on-by
-        target: CTRL-7
+    # Acted on by CTRL-1 (parser), CTRL-3 (pipeline orchestrator),
+    # CTRL-7 (component optimizer) — see the `acts-on` links on those
+    # controllers, which rivet resolves into `acted-on-by` backlinks here.
 
   - id: CP-2
     name: ISLE term environment
@@ -204,9 +215,7 @@ controlled-processes:
       The term environment used during ISLE rewriting. Contains Value
       terms representing instruction sequences, local variable bindings,
       and the simplification context.
-    links:
-      - type: acted-on-by
-        target: CTRL-2
+    # Acted on by CTRL-2 (ISLE term rewriter) — see its `acts-on` link.
 
   - id: CP-3
     name: Output WASM binary
@@ -214,6 +223,4 @@ controlled-processes:
       The final encoded WebAssembly binary. Once encoded, this is the
       artifact consumed by downstream tools (Meld, Kiln, Synth, or
       direct execution runtimes).
-    links:
-      - type: acted-on-by
-        target: CTRL-6
+    # Acted on by CTRL-6 (binary encoder) — see its `acts-on` link.

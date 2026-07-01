@@ -3,8 +3,9 @@
 # Each `TEST-*` artifact is `type: feature` with `fields.method: automated-test`
 # and a list of `fields.steps[].run` shell commands that the
 # `tools/run_verification.py` harness executes during the Verification Gate
-# CI job. The link `type: satisfies, target: REQ-N` is what closes the
-# rivet lifecycle-coverage check for that requirement.
+# CI job. The link `type: verifies, target: REQ-N` is what closes the
+# rivet lifecycle-coverage check for that requirement (every requirement
+# must have an incoming `verifies` backlink from at least one test).
 #
 # Pattern is borrowed verbatim from pulseengine/spar commit ba329f3d.
 #
@@ -32,13 +33,13 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- verify::
+            cargo test --release --lib -p loom-core -- verify::
     status: passing
     tags: [v100, verification, z3]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-1
-      - type: satisfies
+      - type: verifies
         target: REQ-6
 
   - id: TEST-IPA-FUNCTION-SUMMARIES
@@ -53,13 +54,13 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- summary::
+            cargo test --release --lib -p loom-core -- summary::
     status: passing
     tags: [v100, ipa, verification]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-1
-      - type: satisfies
+      - type: verifies
         target: REQ-4
 
   # ============================================================================
@@ -81,17 +82,24 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- test_cse_does_not_dedupe
+            cargo test --release --lib -p loom-core -- test_cse_does_not_dedupe
     status: passing
     tags: [v100, cse, safety]
     links:
+      - type: verifies
+        target: REQ-2
+      # REQ-2 (No temporary fixes) has no design-decision/feature that
+      # *satisfies* it other than this CI enforcement mechanism: the
+      # negative CSE guards are what make "fix it properly or don't ship
+      # it" observable in the build. Keep the `satisfies` backlink so the
+      # requirement stays covered by both a satisfier and a verifier.
       - type: satisfies
         target: REQ-2
-      - type: satisfies
+      - type: verifies
         target: REQ-3
-      - type: satisfies
+      - type: verifies
         target: REQ-4
-      - type: satisfies
+      - type: verifies
         target: REQ-5
 
   - id: TEST-CSE-CROSS-CALL-DEDUP
@@ -106,13 +114,13 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- test_cse_dedupes
+            cargo test --release --lib -p loom-core -- test_cse_dedupes
     status: passing
     tags: [v100, cse, ipa]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-1
-      - type: satisfies
+      - type: verifies
         target: REQ-3
 
   # ============================================================================
@@ -131,11 +139,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && bazel build //proofs/... 2>&1 || echo "SKIP if bazel not available on this runner"
+            bazel build //proofs/... 2>&1 || echo "SKIP if bazel not available on this runner"
     status: passing
     tags: [v100, rocq, proofs]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-7
 
   # ============================================================================
@@ -153,11 +161,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release -p loom-testing -- self_optimization 2>&1 || echo "SKIP if dogfood target missing"
+            cargo test --release -p loom-testing -- self_optimization 2>&1 || echo "SKIP if dogfood target missing"
     status: passing
     tags: [v100, dogfooding]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-8
 
   # ============================================================================
@@ -176,11 +184,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- spec_features
+            cargo test --release --lib -p loom-core -- spec_features
     status: passing
     tags: [v100, wasm-spec]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-9
 
   # ============================================================================
@@ -200,11 +208,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo build --release -p loom-cli && ./target/release/loom optimize scripts/mythos/gale_measure/gale_in_baseline.wasm --attestation false -o /tmp/loom-pipeline-smoke.wasm
+            cargo build --release -p loom-cli && ./target/release/loom optimize scripts/mythos/gale_measure/gale_in_baseline.wasm --attestation false -o /tmp/loom-pipeline-smoke.wasm
     status: passing
     tags: [v100, cli, pipeline]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-10
 
   # ============================================================================
@@ -224,11 +232,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- specialize_adapters
+            cargo test --release --lib -p loom-core -- specialize_adapters
     status: passing
     tags: [v100, component-model]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-11
 
   # ============================================================================
@@ -247,13 +255,13 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- encode wasmparser
+            cargo test --release --lib -p loom-core -- encode wasmparser
     status: passing
     tags: [v100, validation]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-12
-      - type: satisfies
+      - type: verifies
         target: REQ-13
 
   # ============================================================================
@@ -273,11 +281,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- stack
+            cargo test --release --lib -p loom-core -- stack
     status: passing
     tags: [v100, stack-validation]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-13
 
   # ============================================================================
@@ -296,11 +304,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release --lib -p loom-core -- test_null_check
+            cargo test --release --lib -p loom-core -- test_null_check
     status: passing
     tags: [v100, determinism]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-14
 
   # ============================================================================
@@ -320,11 +328,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo build --release -p loom-cli && PER_RUN_TIMEOUT=60 bash scripts/measure_corpus.sh
+            cargo build --release -p loom-cli && PER_RUN_TIMEOUT=60 bash scripts/measure_corpus.sh
     status: passing
     tags: [v100, measurement]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-15
 
   # ============================================================================
@@ -343,11 +351,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && (test -d fuzz && cd fuzz && cargo check) || echo "SKIP if fuzz directory absent"
+            (test -d fuzz && cd fuzz && cargo check) || echo "SKIP if fuzz directory absent"
     status: passing
     tags: [v100, fuzzing]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-16
 
   # ============================================================================
@@ -366,11 +374,11 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h LIBRARY_PATH=/opt/homebrew/lib cargo test --release -p loom-testing 2>&1 || echo "SKIP if differential dependencies absent"
+            cargo test --release -p loom-testing 2>&1 || echo "SKIP if differential dependencies absent"
     status: passing
     tags: [v100, abi, meld-interop]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-17
 
   # ============================================================================
@@ -388,9 +396,9 @@ artifacts:
       method: automated-test
       steps:
         - run: |
-            cd /Users/r/git/pulseengine/loom && (rustup target list --installed | grep -q wasm32-wasip2 && cargo build --release --target wasm32-wasip2 -p loom-core) || echo "SKIP if wasm32-wasip2 toolchain absent"
+            (rustup target list --installed | grep -q wasm32-wasip2 && cargo build --release --target wasm32-wasip2 -p loom-core) || echo "SKIP if wasm32-wasip2 toolchain absent"
     status: passing
     tags: [v100, build-target]
     links:
-      - type: satisfies
+      - type: verifies
         target: REQ-18
