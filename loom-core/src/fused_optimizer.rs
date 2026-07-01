@@ -2099,6 +2099,23 @@ pub fn eliminate_dead_functions(module: &mut Module) -> Result<usize> {
     Ok(eliminated)
 }
 
+/// #242 follow-up — drop `.debug_*` custom sections. DWARF line/info tables
+/// reference code offsets that any body-changing optimization invalidates, and
+/// loom does not rewrite them; retaining them byte-identical over transformed
+/// code is stale, misleading debug info (a debugger would report wrong source
+/// lines). Call this once optimization has run. Returns the number dropped.
+///
+/// The `name` section is handled separately (remapped, not dropped) in
+/// `eliminate_dead_functions` — its function indices can be remapped soundly;
+/// DWARF cannot.
+pub fn strip_debug_sections(module: &mut Module) -> usize {
+    let before = module.custom_sections.len();
+    module
+        .custom_sections
+        .retain(|(name, _)| !name.starts_with(".debug"));
+    before - module.custom_sections.len()
+}
+
 /// #242 — LEB128 + name-section helpers for remapping the `name` custom section
 /// through a function-index remap. Hand-rolled (rather than via wasm-encoder's
 /// `NameSection`) so we can emit exactly the raw subsection payload loom stores
@@ -2833,6 +2850,23 @@ mod tests {
             vec![(0, "alpha".to_string()), (1, "gamma".to_string())],
             "dead entry dropped, gamma renumbered 2->1, no dangling index 2"
         );
+    }
+
+    /// #242 follow-up — `.debug_*` sections are dropped (stale DWARF), other
+    /// custom sections (name, producers, …) are kept.
+    #[test]
+    fn test_242_strip_debug_sections() {
+        let mut m = empty_module();
+        m.custom_sections = vec![
+            ("name".to_string(), vec![]),
+            (".debug_line".to_string(), vec![1, 2, 3]),
+            (".debug_info".to_string(), vec![4]),
+            ("producers".to_string(), vec![5]),
+        ];
+        let dropped = strip_debug_sections(&mut m);
+        assert_eq!(dropped, 2, "both .debug_* sections dropped");
+        let names: Vec<&str> = m.custom_sections.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["name", "producers"], "non-debug sections kept");
     }
 
     /// #242 — a malformed `name` section degrades to `None` (caller drops it)

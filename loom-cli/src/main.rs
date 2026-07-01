@@ -418,6 +418,9 @@ fn optimize_command(
         // Collect post-optimization stats
         stats.instructions_after = count_instructions(&module);
 
+        // #242: drop stale .debug_* (code offsets changed under optimization).
+        loom_core::fused_optimizer::strip_debug_sections(&mut module);
+
         // Skip the serial pipeline below — the islands already ran a full
         // pass sequence on the winning module. Jump directly to encoding.
         let output_bytes = if output_wat {
@@ -670,6 +673,15 @@ fn optimize_command(
         loom_core::optimize::vacuum(&mut module).context("Final vacuum failed")?;
         let after = count_instructions(&module);
         track_pass("vacuum-final", before, after);
+    }
+
+    // #242: loom has transformed the code, so any `.debug_*` (DWARF) sections —
+    // whose line/info tables reference the original instruction offsets — are now
+    // stale and would mislead a debugger. Drop them. (The `name` section is
+    // remapped, not dropped, inside dce-functions when functions are renumbered.)
+    let dropped_debug = loom_core::fused_optimizer::strip_debug_sections(&mut module);
+    if dropped_debug > 0 {
+        println!("  Dropped {} stale .debug_* section(s)", dropped_debug);
     }
 
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
