@@ -29,7 +29,7 @@ wit-component = "0.252"
 # is not yet stable (stable is 1.93.1), breaking the wasm32-wasip2 build and
 # main CI (#236 bump). 0.132.x is the known-good line v1.1.13–v1.1.16 shipped on.
 # Revisit once rustc 1.94 is stable (or when the lockfile is committed, #142).
-cranelift-isle = "0.132"
+cranelift-isle = "0.133"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
