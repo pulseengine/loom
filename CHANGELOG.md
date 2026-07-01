@@ -5,6 +5,44 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - 2026-07-01
+
+Debug-info correctness and a behavioral-differential safety gate, plus a
+dependency pin to keep the toolchain buildable on stable.
+
+### Added
+
+- **Behavioral differential gate (#238).** `loom optimize --differential`
+  (opt-in `differential` cargo feature; pulls wasmtime, off by default) executes
+  the original and optimized modules through wasmtime and compares outputs.
+  **Hard fail**: on any output divergence — or if execution is inconclusive
+  (could not instantiate, no runnable exports) — the optimization is rejected,
+  the original is written to the output path, and the process exits non-zero.
+  This makes instruction-level transforms that Z3 translation validation cannot
+  certify (e.g. the #219 seam carrier-forward) self-certifying against observed
+  behavior instead of relying on external silicon. A new CI job runs it over the
+  core-module corpus (all fixtures certify).
+
+### Fixed
+
+- **Stale debug info after function renumbering (#242).** `dce-functions`
+  removes/renumbers functions but the `name` and `.debug_*` custom sections were
+  emitted byte-identical over the changed index space, misattributing surviving
+  functions (e.g. labeling `gamma` as `dead`) and leaving dangling indices —
+  silent debug-info corruption that Z3 and `wasm-tools validate` do not catch.
+  The `name` section's function/local/label subsections are now remapped through
+  the function-index remap (dead entries dropped, survivors renumbered; the
+  section is dropped if it cannot be parsed). `.debug_*` (DWARF) sections are
+  dropped whenever loom transforms the code, since their line tables reference
+  instruction offsets optimization has changed and cannot be safely remapped.
+
+### Changed
+
+- **Pinned `cranelift-isle` to 0.132 (#236 follow-up).** 0.133.x raised its MSRV
+  to rustc 1.94.0, which is not yet stable (1.93.1), breaking the wasm32-wasip2
+  build and main CI. Pinned back to the 0.132 line that v1.1.13–v1.1.16 shipped
+  on; revisit when rustc 1.94 is stable or the lockfile is committed (#142).
+
 ## [1.1.16] - 2026-06-22
 
 Inliner code-quality release (the #228 secondary finding). Z3-gated, no behavior
