@@ -2712,6 +2712,18 @@ pub struct OptimizationEnv {
     pub locals: std::collections::HashMap<u32, Value>,
     /// Memory state: location → stored value
     pub memory: std::collections::HashMap<MemoryLocation, Value>,
+    /// #219 carrier scalar-forwarding: indices of SINGLE-ASSIGNMENT locals
+    /// (exactly one write in the whole function, precomputed by the caller) whose
+    /// pure defining expression may be forwarded to its uses. Empty by default →
+    /// forwarding OFF, behavior identical to plain dataflow.
+    pub single_assign: std::collections::HashSet<u32>,
+    /// #219: captured defining expression for each `single_assign` local, recorded
+    /// at its (single) `local.set`/`local.tee`. SURVIVES control-flow `clear()`
+    /// (sound: a single-assignment local has one value on every path that reaches
+    /// a use). INVALIDATED when any input local of the expression is reassigned
+    /// (reaching-defs guard), so a forwarded expression always carries its
+    /// def-time inputs. `local.get` of such a local forwards to this expression.
+    pub pinned: std::collections::HashMap<u32, Value>,
 }
 
 impl Default for OptimizationEnv {
@@ -2725,6 +2737,8 @@ impl OptimizationEnv {
         OptimizationEnv {
             locals: std::collections::HashMap::new(),
             memory: std::collections::HashMap::new(),
+            single_assign: std::collections::HashSet::new(),
+            pinned: std::collections::HashMap::new(),
         }
     }
 
@@ -2737,6 +2751,162 @@ impl OptimizationEnv {
 /// Legacy type alias for compatibility
 pub type LocalEnv = OptimizationEnv;
 
+/// #219 carrier scalar-forwarding: is `v` a side-effect-free, re-evaluatable
+/// value expression safe to FORWARD to a single-assignment local's use sites?
+/// Whitelist of total pure ops (constants, locals, globals, integer
+/// arithmetic/bitwise/shift/rotate/compare, width converts, select); recurses
+/// into operands. Calls, ANY load/store, div/rem (trap), floats, blocks/branches
+/// → `false`. Bounded to the listed variants (NOT a full 187-variant walk):
+/// unknown/impure → `false` (conservative, sound).
+#[allow(clippy::match_like_matches_macro)]
+fn is_forwardable_expr(v: &Value) -> bool {
+    match v.data() {
+        ValueData::I32Const { .. }
+        | ValueData::I64Const { .. }
+        | ValueData::LocalGet { .. }
+        | ValueData::GlobalGet { .. } => true,
+        ValueData::I32WrapI64 { val }
+        | ValueData::I64ExtendI32S { val }
+        | ValueData::I64ExtendI32U { val }
+        | ValueData::I32Eqz { val }
+        | ValueData::I64Eqz { val } => is_forwardable_expr(val),
+        ValueData::I32Add { lhs, rhs }
+        | ValueData::I32Sub { lhs, rhs }
+        | ValueData::I32Mul { lhs, rhs }
+        | ValueData::I32And { lhs, rhs }
+        | ValueData::I32Or { lhs, rhs }
+        | ValueData::I32Xor { lhs, rhs }
+        | ValueData::I32Shl { lhs, rhs }
+        | ValueData::I32ShrS { lhs, rhs }
+        | ValueData::I32ShrU { lhs, rhs }
+        | ValueData::I32Rotl { lhs, rhs }
+        | ValueData::I32Rotr { lhs, rhs }
+        | ValueData::I32Eq { lhs, rhs }
+        | ValueData::I32Ne { lhs, rhs }
+        | ValueData::I32LtS { lhs, rhs }
+        | ValueData::I32LtU { lhs, rhs }
+        | ValueData::I32GtS { lhs, rhs }
+        | ValueData::I32GtU { lhs, rhs }
+        | ValueData::I32LeS { lhs, rhs }
+        | ValueData::I32LeU { lhs, rhs }
+        | ValueData::I32GeS { lhs, rhs }
+        | ValueData::I32GeU { lhs, rhs }
+        | ValueData::I64Add { lhs, rhs }
+        | ValueData::I64Sub { lhs, rhs }
+        | ValueData::I64Mul { lhs, rhs }
+        | ValueData::I64And { lhs, rhs }
+        | ValueData::I64Or { lhs, rhs }
+        | ValueData::I64Xor { lhs, rhs }
+        | ValueData::I64Shl { lhs, rhs }
+        | ValueData::I64ShrS { lhs, rhs }
+        | ValueData::I64ShrU { lhs, rhs }
+        | ValueData::I64Rotl { lhs, rhs }
+        | ValueData::I64Rotr { lhs, rhs }
+        | ValueData::I64Eq { lhs, rhs }
+        | ValueData::I64Ne { lhs, rhs }
+        | ValueData::I64LtS { lhs, rhs }
+        | ValueData::I64LtU { lhs, rhs }
+        | ValueData::I64GtS { lhs, rhs }
+        | ValueData::I64GtU { lhs, rhs }
+        | ValueData::I64LeS { lhs, rhs }
+        | ValueData::I64LeU { lhs, rhs }
+        | ValueData::I64GeS { lhs, rhs }
+        | ValueData::I64GeU { lhs, rhs } => is_forwardable_expr(lhs) && is_forwardable_expr(rhs),
+        ValueData::Select {
+            cond,
+            true_val,
+            false_val,
+        } => {
+            is_forwardable_expr(cond)
+                && is_forwardable_expr(true_val)
+                && is_forwardable_expr(false_val)
+        }
+        _ => false,
+    }
+}
+
+/// #219: does `v` (a forwardable expr — same whitelist as `is_forwardable_expr`)
+/// reference `local.get local_idx`? Used to INVALIDATE a pinned forwarding when
+/// one of its input locals is reassigned (reaching-defs guard), so a forwarded
+/// expression never picks up a later redefinition of an input.
+fn expr_references_local(v: &Value, local_idx: u32) -> bool {
+    match v.data() {
+        ValueData::LocalGet { idx } => *idx == local_idx,
+        ValueData::I32Const { .. } | ValueData::I64Const { .. } | ValueData::GlobalGet { .. } => {
+            false
+        }
+        ValueData::I32WrapI64 { val }
+        | ValueData::I64ExtendI32S { val }
+        | ValueData::I64ExtendI32U { val }
+        | ValueData::I32Eqz { val }
+        | ValueData::I64Eqz { val } => expr_references_local(val, local_idx),
+        ValueData::I32Add { lhs, rhs }
+        | ValueData::I32Sub { lhs, rhs }
+        | ValueData::I32Mul { lhs, rhs }
+        | ValueData::I32And { lhs, rhs }
+        | ValueData::I32Or { lhs, rhs }
+        | ValueData::I32Xor { lhs, rhs }
+        | ValueData::I32Shl { lhs, rhs }
+        | ValueData::I32ShrS { lhs, rhs }
+        | ValueData::I32ShrU { lhs, rhs }
+        | ValueData::I32Rotl { lhs, rhs }
+        | ValueData::I32Rotr { lhs, rhs }
+        | ValueData::I32Eq { lhs, rhs }
+        | ValueData::I32Ne { lhs, rhs }
+        | ValueData::I32LtS { lhs, rhs }
+        | ValueData::I32LtU { lhs, rhs }
+        | ValueData::I32GtS { lhs, rhs }
+        | ValueData::I32GtU { lhs, rhs }
+        | ValueData::I32LeS { lhs, rhs }
+        | ValueData::I32LeU { lhs, rhs }
+        | ValueData::I32GeS { lhs, rhs }
+        | ValueData::I32GeU { lhs, rhs }
+        | ValueData::I64Add { lhs, rhs }
+        | ValueData::I64Sub { lhs, rhs }
+        | ValueData::I64Mul { lhs, rhs }
+        | ValueData::I64And { lhs, rhs }
+        | ValueData::I64Or { lhs, rhs }
+        | ValueData::I64Xor { lhs, rhs }
+        | ValueData::I64Shl { lhs, rhs }
+        | ValueData::I64ShrS { lhs, rhs }
+        | ValueData::I64ShrU { lhs, rhs }
+        | ValueData::I64Rotl { lhs, rhs }
+        | ValueData::I64Rotr { lhs, rhs }
+        | ValueData::I64Eq { lhs, rhs }
+        | ValueData::I64Ne { lhs, rhs }
+        | ValueData::I64LtS { lhs, rhs }
+        | ValueData::I64LtU { lhs, rhs }
+        | ValueData::I64GtS { lhs, rhs }
+        | ValueData::I64GtU { lhs, rhs }
+        | ValueData::I64LeS { lhs, rhs }
+        | ValueData::I64LeU { lhs, rhs }
+        | ValueData::I64GeS { lhs, rhs }
+        | ValueData::I64GeU { lhs, rhs } => {
+            expr_references_local(lhs, local_idx) || expr_references_local(rhs, local_idx)
+        }
+        ValueData::Select {
+            cond,
+            true_val,
+            false_val,
+        } => {
+            expr_references_local(cond, local_idx)
+                || expr_references_local(true_val, local_idx)
+                || expr_references_local(false_val, local_idx)
+        }
+        // A pinned expr only ever holds is_forwardable_expr shapes; anything else
+        // conservatively "might reference" → invalidate.
+        _ => true,
+    }
+}
+
+/// #219: a local `idx` was just (re)assigned — drop any pinned forwarding whose
+/// expression references it, so a forwarded expression never captures a stale or
+/// post-redefinition input value.
+fn invalidate_pins_referencing(env: &mut OptimizationEnv, idx: u32) {
+    env.pinned
+        .retain(|_, expr| !expr_references_local(expr, idx));
+}
+
 /// Dataflow-aware ISLE rewrite — tracks local variables and memory state.
 ///
 /// Applies all pure structural rewrites (constant folding, algebraic
@@ -2747,6 +2917,10 @@ pub type LocalEnv = OptimizationEnv;
 ///
 /// Only safe for straight-line code or with env clearing at join points.
 /// For functions with BrIf/BrTable, use `rewrite_pure` instead.
+///
+/// #219: when `env.single_assign` is non-empty, also forwards those
+/// single-assignment locals' pure defining expressions (carrier scalar-
+/// forwarding), with a reaching-defs invalidation guard.
 pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
     match val.data() {
         // Local variable operations
@@ -2763,6 +2937,15 @@ pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.locals.remove(idx);
             }
 
+            // #219 reaching-defs guard: reassigning `idx` invalidates any pinned
+            // forwarding that references it (so a forwarded expr never captures a
+            // post-redefinition input). Then, if `idx` is the single-assignment
+            // carrier with a forwardable RHS, pin its defining expression.
+            invalidate_pins_referencing(env, *idx);
+            if env.single_assign.contains(idx) && is_forwardable_expr(&simplified_val) {
+                env.pinned.insert(*idx, simplified_val.clone());
+            }
+
             local_set(*idx, simplified_val)
         }
 
@@ -2770,6 +2953,10 @@ pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
             // Look up in environment - dataflow analysis!
             if let Some(known_val) = env.locals.get(idx) {
                 known_val.clone()
+            } else if let Some(pinned_val) = env.pinned.get(idx) {
+                // #219 carrier scalar-forwarding: forward the single-assignment
+                // local's defining expression to this use, exposing pack/unpack.
+                pinned_val.clone()
             } else {
                 local_get(*idx)
             }
@@ -2785,6 +2972,13 @@ pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
                 env.locals.insert(*idx, simplified_val.clone());
             } else {
                 env.locals.remove(idx);
+            }
+
+            // #219 (see LocalSet): invalidate pins referencing `idx`, then pin the
+            // single-assignment carrier. local.tee both stores AND leaves the value.
+            invalidate_pins_referencing(env, *idx);
+            if env.single_assign.contains(idx) && is_forwardable_expr(&simplified_val) {
+                env.pinned.insert(*idx, simplified_val.clone());
             }
 
             local_tee(*idx, simplified_val)
@@ -3192,6 +3386,13 @@ pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
             // After if: clear env. We don't know which branch was taken.
             env.locals.clear();
             env.invalidate_memory();
+            // #219 reaching-defs across the fork: keep a pin only if it SURVIVED
+            // in BOTH branches. A branch that reassigned one of the pin's input
+            // locals dropped it (via invalidate_pins_referencing during that
+            // branch), so the intersection drops any pin whose inputs could have
+            // changed on either path — sound regardless of which branch ran.
+            env.pinned
+                .retain(|k, _| then_env.pinned.contains_key(k) && else_env.pinned.contains_key(k));
             Value(Box::new(ValueData::If {
                 label: label.clone(),
                 block_type: block_type.clone(),
@@ -3790,6 +3991,21 @@ fn rewrite_pure_impl(val: Value) -> Value {
                     if i64_shl_cleared_by_mask(&rhs_simplified, m) =>
                 {
                     iconst64(Imm64(0))
+                }
+                // #219 seam-SROA: extend_i32_u(x) & M → extend_i32_u(x) when
+                // M's low 32 bits are all set. Zero-extending an i32 yields a
+                // value in [0, 2^32), so a mask covering bits [0,32) preserves
+                // it (bits [32,64) of the extend are already 0). Z3: (zext32 x)
+                // & M == (zext32 x) when (M & 0xffffffff) == 0xffffffff.
+                (ValueData::I64ExtendI32U { .. }, ValueData::I64Const { val: m })
+                    if (m.value() as u64) & 0xffff_ffff == 0xffff_ffff =>
+                {
+                    lhs_simplified
+                }
+                (ValueData::I64Const { val: m }, ValueData::I64ExtendI32U { .. })
+                    if (m.value() as u64) & 0xffff_ffff == 0xffff_ffff =>
+                {
+                    rhs_simplified
                 }
                 // #219 seam-SROA: (or A B) & M → (survivor & M) when one OR
                 // operand is a left shift the mask clears. Recurse so the

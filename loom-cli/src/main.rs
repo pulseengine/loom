@@ -582,6 +582,18 @@ fn optimize_command(
         track_pass("inline", before, after);
     }
 
+    // #219: dissolve the u64 ABI carrier the inline leaves behind (scalar-forward
+    // the single-assignment carrier to its unpack sites, then SROA). Runs right
+    // after inline so the carrier is fresh; downstream dce/dead-locals reap it.
+    if should_run("forward-carrier") {
+        println!("  Running: forward-carrier");
+        let before = count_instructions(&module);
+        loom_core::optimize::forward_carrier_locals(&mut module)
+            .context("Carrier forwarding failed")?;
+        let after = count_instructions(&module);
+        track_pass("forward-carrier", before, after);
+    }
+
     // loom#228: whole-function (module-level) dead-function elimination.
     // Multi-site inlining duplicates a callee's body into each caller and
     // leaves the ORIGINAL orphaned; the body-level `dce` (eliminate_dead_code)

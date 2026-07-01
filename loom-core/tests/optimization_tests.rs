@@ -1155,13 +1155,19 @@ fn test_rse_different_locals() {
     let wasm_bytes = encode::encode_wasm(&module).expect("Failed to encode");
     wasmparser::validate(&wasm_bytes).expect("Generated WASM is invalid");
 
-    // Only $y store remains (local $x is completely eliminated via optimization cascade)
+    // After the #219 merge the library pipeline (optimize_module now runs
+    // forward_carrier_locals + main's stronger simplify_locals) folds this whole
+    // function to its constant result: x=30, y=20, x+y == 50. Both locals are
+    // eliminated and the add is constant-folded, leaving `[I32Const(50)]` — 0
+    // stores. This is strictly more aggressive than the old "1 store ($y)
+    // survives" expectation and is provably equivalent (30 + 20 == 50); the
+    // behavioral differential gate certifies semantics PRESERVED on this module.
     let instructions_str = format!("{:?}", module.functions[0].instructions);
     let store_count =
         instructions_str.matches("LocalSet").count() + instructions_str.matches("LocalTee").count();
     assert_eq!(
-        store_count, 1,
-        "Expected 1 store ($y only - $x eliminated), got {} in: {:?}",
+        store_count, 0,
+        "Expected 0 stores (both locals eliminated, x+y folded to const 50), got {} in: {:?}",
         store_count, module.functions[0].instructions
     );
 }
