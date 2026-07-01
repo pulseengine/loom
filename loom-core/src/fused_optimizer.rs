@@ -2116,6 +2116,26 @@ pub fn strip_debug_sections(module: &mut Module) -> usize {
     before - module.custom_sections.len()
 }
 
+/// #239 Phase A — strip ALL semantically-inert custom sections from a core
+/// module: `.debug_*` (stale DWARF), `name` (debug names), and `producers`
+/// (build-tool provenance). None of these affect execution.
+///
+/// This is the component-path counterpart to [`strip_debug_sections`]: inside a
+/// component, a nested core module's `name`/`producers` sections carry no
+/// interface contract (the component's own type/name metadata lives at the
+/// component level), so they can be dropped wholesale. Used by the component
+/// optimizer's core-module path, which — unlike the standalone module path —
+/// does not run the `name`-remapping dead-function pass unconditionally.
+///
+/// Returns the number of sections dropped.
+pub fn strip_inert_module_sections(module: &mut Module) -> usize {
+    let before = module.custom_sections.len();
+    module
+        .custom_sections
+        .retain(|(name, _)| !(name.starts_with(".debug") || name == "name" || name == "producers"));
+    before - module.custom_sections.len()
+}
+
 /// #242 — LEB128 + name-section helpers for remapping the `name` custom section
 /// through a function-index remap. Hand-rolled (rather than via wasm-encoder's
 /// `NameSection`) so we can emit exactly the raw subsection payload loom stores
@@ -2867,6 +2887,23 @@ mod tests {
         assert_eq!(dropped, 2, "both .debug_* sections dropped");
         let names: Vec<&str> = m.custom_sections.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["name", "producers"], "non-debug sections kept");
+    }
+
+    /// #239 Phase A — the component core-module strip drops ALL inert sections
+    /// (`.debug_*`, `name`, `producers`) but preserves vendor/unknown sections.
+    #[test]
+    fn test_239_strip_inert_module_sections() {
+        let mut m = empty_module();
+        m.custom_sections = vec![
+            ("name".to_string(), vec![]),
+            (".debug_line".to_string(), vec![1, 2, 3]),
+            ("producers".to_string(), vec![5]),
+            ("vendor:keep".to_string(), vec![9]),
+        ];
+        let dropped = strip_inert_module_sections(&mut m);
+        assert_eq!(dropped, 3, "name + .debug_line + producers dropped");
+        let names: Vec<&str> = m.custom_sections.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["vendor:keep"], "only vendor section survives");
     }
 
     /// #242 — a malformed `name` section degrades to `None` (caller drops it)

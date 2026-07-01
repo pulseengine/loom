@@ -45,6 +45,53 @@ use crate::{BlockType, Instruction, Module};
 use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload, Validator};
 
+/// Configuration for component optimization (#239 Phase A).
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentOptimizeConfig {
+    /// Strip the `component-type` metadata custom section.
+    ///
+    /// **Default: `false` (PRESERVE).** The `component-type` section carries the
+    /// component's WIT world encoded by `wit-component`; tooling that introspects
+    /// a component (e.g. `wasm-tools component wit`) relies on it. It is
+    /// semantically inert to *execution*, so stripping it is sound, but it is
+    /// opt-in because removing it degrades tooling. Enable via
+    /// `--strip-component-type`.
+    pub strip_component_type: bool,
+}
+
+impl Default for ComponentOptimizeConfig {
+    fn default() -> Self {
+        Self {
+            strip_component_type: false,
+        }
+    }
+}
+
+/// Per-category byte breakdown of a component (#239 acceptance criteria).
+///
+/// This attributes the optimization win: how many bytes were core module code,
+/// how many were component-level type metadata, and how many inert custom
+/// sections were stripped. All figures are measured on the ORIGINAL component;
+/// `custom_sections_stripped` is the total size of the component-level custom
+/// sections that were removed.
+#[derive(Debug, Clone, Default)]
+pub struct ComponentSizeBreakdown {
+    /// Total bytes of nested core module sections (original).
+    pub core_module_bytes_before: usize,
+    /// Total bytes of nested core module sections (optimized).
+    pub core_module_bytes_after: usize,
+    /// Total bytes of component-level `component-type` metadata sections.
+    pub component_type_bytes: usize,
+    /// Whether the `component-type` metadata was stripped.
+    pub component_type_stripped: bool,
+    /// Total bytes of component-level inert custom sections that were stripped
+    /// (`producers`, `component-name`/`name`, `.debug_*`, and — when opted in —
+    /// `component-type`).
+    pub custom_sections_stripped: usize,
+    /// Names of the component-level custom sections that were stripped.
+    pub stripped_section_names: Vec<String>,
+}
+
 /// Statistics about component optimization
 #[derive(Debug, Clone)]
 pub struct ComponentStats {
@@ -60,6 +107,8 @@ pub struct ComponentStats {
     pub original_module_size: usize,
     /// Total size of optimized modules
     pub optimized_module_size: usize,
+    /// Per-category size breakdown (#239 Phase A).
+    pub size_breakdown: ComponentSizeBreakdown,
     /// Status message
     pub message: String,
 }
@@ -92,10 +141,28 @@ impl ComponentStats {
 ///
 /// Returns the optimized component bytes and statistics.
 pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentStats)> {
+    optimize_component_with_config(component_bytes, ComponentOptimizeConfig::default())
+}
+
+/// Optimize a WebAssembly Component with an explicit configuration (#239 Phase A).
+///
+/// Identical to [`optimize_component`], but lets the caller opt in to stripping
+/// the `component-type` metadata section.
+pub fn optimize_component_with_config(
+    component_bytes: &[u8],
+    config: ComponentOptimizeConfig,
+) -> Result<(Vec<u8>, ComponentStats)> {
     // Step 1: Parse component and extract core modules
     let parser = Parser::new(0);
     let mut core_modules: Vec<CoreModule> = Vec::new();
     let mut is_component = false;
+    // Byte ranges (in `component_bytes`) covered by nested core modules. Used to
+    // classify a `CustomSection` payload as component-level (outside any module)
+    // vs. module-level (inside a module — handled by the module re-encode path).
+    let mut module_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    // Component-LEVEL custom sections and their byte sizes (name → total bytes of
+    // the section content). Used only for the size breakdown report.
+    let mut component_custom: Vec<(String, usize)> = Vec::new();
 
     for payload in parser.parse_all(component_bytes) {
         let payload = payload.context("Failed to parse component")?;
@@ -114,10 +181,21 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
                 let module_bytes =
                     component_bytes[unchecked_range.start..unchecked_range.end].to_vec();
 
+                module_ranges.push(unchecked_range.clone());
                 core_modules.push(CoreModule {
                     original_bytes: module_bytes,
                     optimized_bytes: None,
                 });
+            }
+            Payload::CustomSection(reader) => {
+                // Only account for component-LEVEL custom sections here (those
+                // outside every nested core-module byte range). Module-level
+                // custom sections are handled by the module re-encode path.
+                let start = reader.range().start;
+                let inside_module = module_ranges.iter().any(|r| r.contains(&start));
+                if !inside_module {
+                    component_custom.push((reader.name().to_string(), reader.data().len()));
+                }
             }
             _ => {}
         }
@@ -148,8 +226,10 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
         }
     }
 
-    // Step 3: Reconstruct component with optimized modules
-    let optimized_component = reconstruct_component(component_bytes, &core_modules)?;
+    // Step 3: Reconstruct component with optimized modules, stripping the
+    // component's own semantically-inert custom sections (#239 Phase A).
+    let (optimized_component, stripped_section_names) =
+        reconstruct_component(component_bytes, &core_modules, config, &module_ranges)?;
 
     // Step 4: Validate
     if let Err(e) =
@@ -171,6 +251,29 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
         })
         .sum();
 
+    // Build the per-category size breakdown from the component-level custom
+    // section inventory gathered during parsing.
+    let component_type_bytes: usize = component_custom
+        .iter()
+        .filter(|(name, _)| is_component_type_section(name))
+        .map(|(_, len)| *len)
+        .sum();
+    let component_type_stripped = config.strip_component_type && component_type_bytes > 0;
+    let custom_sections_stripped: usize = component_custom
+        .iter()
+        .filter(|(name, _)| is_inert_component_custom(name, config.strip_component_type))
+        .map(|(_, len)| *len)
+        .sum();
+
+    let size_breakdown = ComponentSizeBreakdown {
+        core_module_bytes_before: original_module_size,
+        core_module_bytes_after: optimized_module_size,
+        component_type_bytes,
+        component_type_stripped,
+        custom_sections_stripped,
+        stripped_section_names,
+    };
+
     let stats = ComponentStats {
         original_size: component_bytes.len(),
         optimized_size: optimized_component.len(),
@@ -178,6 +281,7 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
         modules_optimized: optimized_count,
         original_module_size,
         optimized_module_size,
+        size_breakdown,
         message: format!(
             "Successfully optimized {} of {} core modules",
             optimized_count,
@@ -186,6 +290,31 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
     };
 
     Ok((optimized_component, stats))
+}
+
+/// Is `name` the `component-type` metadata section?
+///
+/// `wit-component` emits the WIT world under a custom section whose name begins
+/// with `component-type`. We match the prefix so variants like
+/// `component-type:<world>` are all recognized.
+fn is_component_type_section(name: &str) -> bool {
+    name.starts_with("component-type")
+}
+
+/// Should a COMPONENT-LEVEL custom section named `name` be stripped?
+///
+/// Semantically inert (never affects execution) and always stripped:
+/// - `producers`      — build-tool provenance metadata.
+/// - `name` / `component-name` — human-readable debug names.
+/// - `.debug_*`       — DWARF debug info (stale after core-module optimization).
+///
+/// `component-type` is stripped ONLY when `strip_component_type` is set
+/// (default preserve — tooling introspection depends on it).
+fn is_inert_component_custom(name: &str, strip_component_type: bool) -> bool {
+    if strip_component_type && is_component_type_section(name) {
+        return true;
+    }
+    name == "producers" || name == "name" || name == "component-name" || name.starts_with(".debug")
 }
 
 /// Information about a core module within a component
@@ -456,6 +585,15 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
         }
     }
 
+    // #239 Phase A: strip the nested core module's semantically-inert custom
+    // sections (`.debug_*`, `name`, `producers`). Optimization has changed
+    // instruction offsets and the function index space, so DWARF/name info is
+    // stale; `producers` is pure provenance metadata. None affect execution.
+    let stripped = crate::fused_optimizer::strip_inert_module_sections(&mut module);
+    if stripped > 0 {
+        eprintln!("  Stripped {stripped} inert custom section(s) from core module");
+    }
+
     // Encode the optimized module
     let optimized_bytes = crate::encode::encode_wasm(&module)?;
 
@@ -488,11 +626,26 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
 /// - Start section
 ///
 /// Only ModuleSection contents are replaced with optimized bytes.
-fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Result<Vec<u8>> {
+///
+/// **#239 Phase A:** component-level semantically-inert custom sections
+/// (`producers`, `name`/`component-name`, `.debug_*`, and — when opted in —
+/// `component-type`) are STRIPPED rather than copied. Module-level custom
+/// sections are left to the module re-encode path (their bytes are replaced
+/// wholesale when the module optimizes).
+///
+/// Returns the reconstructed bytes and the names of the stripped component-level
+/// custom sections.
+fn reconstruct_component(
+    original_bytes: &[u8],
+    modules: &[CoreModule],
+    config: ComponentOptimizeConfig,
+    module_ranges: &[std::ops::Range<usize>],
+) -> Result<(Vec<u8>, Vec<String>)> {
     // Strategy: Copy the original component byte-by-byte, but replace module sections
     // with optimized versions. This ensures perfect preservation of all other sections.
 
     let mut result = Vec::new();
+    let mut stripped_names: Vec<String> = Vec::new();
     let parser = Parser::new(0);
     let mut module_index = 0;
     let mut last_pos;
@@ -508,31 +661,45 @@ fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Resul
             // Skip version payload - already handled above
             Payload::Version { .. } => {}
 
+            Payload::CustomSection(reader) => {
+                // Component-LEVEL custom sections only (outside every nested
+                // core-module range). Module-level custom sections fall inside a
+                // module range and are carried by the module bytes; we must not
+                // touch the raw component bytes for those.
+                let content_start = reader.range().start;
+                let inside_module = module_ranges.iter().any(|r| r.contains(&content_start));
+                if inside_module {
+                    // Leave module-level custom sections to the module path.
+                    continue;
+                }
+                if !is_inert_component_custom(reader.name(), config.strip_component_type) {
+                    // Preserve this component-level custom section verbatim.
+                    continue;
+                }
+
+                // Strip: locate the full section header (id + LEB128 size) that
+                // precedes the section content, copy everything up to it, then
+                // skip the whole section.
+                let section_start = section_header_start(original_bytes, content_start);
+                if section_start < last_pos {
+                    // Overlapping / already-consumed region — refuse to guess.
+                    return Err(anyhow!(
+                        "custom-section GC: section header for '{}' precedes last copied position \
+                         (component structure not as expected); refusing to corrupt output",
+                        reader.name()
+                    ));
+                }
+                result.extend_from_slice(&original_bytes[last_pos..section_start]);
+                stripped_names.push(reader.name().to_string());
+                last_pos = reader.range().end;
+            }
+
             Payload::ModuleSection {
                 unchecked_range, ..
             } => {
                 // unchecked_range points to MODULE content only (starts at module magic \0asm)
                 // We need to skip the SECTION header (section_id + LEB128 size) which comes before it
-
-                // Find section start by walking backwards from unchecked_range.start
-                // Format: [section_id=1] [LEB128 size] [module_magic...]
-                // LEB128 encoding: last byte has bit 7 clear, earlier bytes have bit 7 set
-
-                let mut pos = unchecked_range.start - 1; // Start at last byte before module content
-
-                // Walk backwards while bytes have high bit set (continuation bytes)
-                while pos > 0 && original_bytes[pos] >= 0x80 {
-                    pos -= 1;
-                }
-                // Now pos is at the LAST byte of LEB128 (high bit clear)
-                // Continue backwards while we see more LEB128 continuation bytes
-                while pos > 1 && original_bytes[pos - 1] >= 0x80 {
-                    pos -= 1;
-                }
-
-                // pos now points to the first byte of the LEB128 size
-                // Section ID is one byte before that
-                let section_start = pos - 1;
+                let section_start = section_header_start(original_bytes, unchecked_range.start);
 
                 // Copy everything before this module section (excluding section header)
                 result.extend_from_slice(&original_bytes[last_pos..section_start]);
@@ -577,7 +744,28 @@ fn reconstruct_component(original_bytes: &[u8], modules: &[CoreModule]) -> Resul
     // Copy any remaining bytes after the last module
     result.extend_from_slice(&original_bytes[last_pos..]);
 
-    Ok(result)
+    Ok((result, stripped_names))
+}
+
+/// Given the byte offset of a section's CONTENT (`content_start`), walk backwards
+/// over the LEB128 size and the 1-byte section id to find the offset of the
+/// section HEADER. Shared by module-section replacement and custom-section GC.
+///
+/// Layout: `[section_id: u8] [size: LEB128] [content...]`. The LEB128 size ends
+/// at `content_start - 1` (its last byte has the high bit clear); continuation
+/// bytes precede it with the high bit set.
+fn section_header_start(bytes: &[u8], content_start: usize) -> usize {
+    let mut pos = content_start - 1; // last byte of the LEB128 size
+    // Walk backwards over any leading zero region defensively (shouldn't happen).
+    while pos > 0 && bytes[pos] >= 0x80 {
+        pos -= 1;
+    }
+    // Continue backwards while the preceding byte is a LEB128 continuation byte.
+    while pos > 1 && bytes[pos - 1] >= 0x80 {
+        pos -= 1;
+    }
+    // `pos` is the first byte of the LEB128 size; the section id is one before.
+    pos - 1
 }
 
 // ============================================================================
@@ -1906,5 +2094,212 @@ mod adapter_spec_tests {
         wasmparser::Validator::new_with_features(wasm_features_with_async())
             .validate_all(&optimized)
             .expect("Optimized component must validate");
+    }
+}
+
+// ============================================================================
+// #239 Phase A — component custom-section GC tests
+// ============================================================================
+#[cfg(test)]
+mod custom_section_gc_tests {
+    use super::*;
+
+    const FIXTURES: &[&str] = &[
+        "tests/component_fixtures/calc.component.wasm",
+        "tests/component_fixtures/simple.component.wasm",
+    ];
+
+    /// Collect every custom-section name in a component (component-level AND
+    /// nested-module-level), via a full parse walk.
+    fn custom_section_names(bytes: &[u8]) -> Vec<String> {
+        let mut names = Vec::new();
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Ok(Payload::CustomSection(reader)) = payload {
+                names.push(reader.name().to_string());
+            }
+        }
+        names
+    }
+
+    /// Append a component-level custom section (component custom-section id = 0)
+    /// with the given `name` and `data` to the end of a valid component. This
+    /// lets us construct a `component-type`-bearing component deterministically
+    /// (the toolchain does not always emit one at the top level).
+    fn append_component_custom(mut bytes: Vec<u8>, name: &str, data: &[u8]) -> Vec<u8> {
+        // Section payload = name (len-prefixed) + data.
+        let mut payload = Vec::new();
+        let mut lenbuf = [0u8; 10];
+        let n = leb128::write::unsigned(&mut &mut lenbuf[..], name.len() as u64).unwrap();
+        payload.extend_from_slice(&lenbuf[..n]);
+        payload.extend_from_slice(name.as_bytes());
+        payload.extend_from_slice(data);
+
+        // Section = id(0) + size(LEB) + payload.
+        bytes.push(0);
+        let n = leb128::write::unsigned(&mut &mut lenbuf[..], payload.len() as u64).unwrap();
+        bytes.extend_from_slice(&lenbuf[..n]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    /// Every inert component-level custom section (`producers`,
+    /// `component-name`, `.debug_*`) — plus every nested-module inert section —
+    /// must be GONE after a default optimize, and the output must still validate.
+    #[test]
+    fn test_239_strips_inert_custom_sections_default() {
+        for path in FIXTURES {
+            let bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(_) => continue, // fixture unavailable — skip
+            };
+
+            let before = custom_section_names(&bytes);
+            // Sanity: the fixtures we ship carry producers + component-name.
+            assert!(
+                before.iter().any(|n| n == "producers"),
+                "{path}: expected a 'producers' section to strip"
+            );
+
+            let (optimized, stats) =
+                optimize_component(&bytes).expect("component optimize must succeed");
+
+            // Must still validate.
+            Validator::new_with_features(wasm_features_with_async())
+                .validate_all(&optimized)
+                .expect("optimized component must validate");
+
+            // No inert custom section may survive anywhere in the output.
+            let after = custom_section_names(&optimized);
+            for n in &after {
+                assert!(
+                    !(n == "producers"
+                        || n == "name"
+                        || n == "component-name"
+                        || n.starts_with(".debug")),
+                    "{path}: inert custom section '{n}' survived optimize"
+                );
+            }
+
+            // The win must be attributable via the size breakdown.
+            assert!(
+                stats.size_breakdown.custom_sections_stripped > 0,
+                "{path}: breakdown must report stripped custom bytes"
+            );
+            assert!(
+                optimized.len() < bytes.len(),
+                "{path}: output must be smaller ({} !< {})",
+                optimized.len(),
+                bytes.len()
+            );
+        }
+    }
+
+    /// `component-type` is PRESERVED by default and STRIPPED only with the
+    /// opt-in flag. We inject a synthetic `component-type` section to prove both.
+    #[test]
+    fn test_239_component_type_opt_in() {
+        let path = "tests/component_fixtures/simple.component.wasm";
+        let base = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return, // fixture unavailable — skip
+        };
+        // Inject a synthetic component-type section (opaque bytes are fine — a
+        // custom section is uninterpreted by the wasm validator).
+        let injected =
+            append_component_custom(base, "component-type:test", &[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        // Injected component must still validate (custom sections are inert).
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&injected)
+            .expect("injected component must validate");
+
+        // Default: component-type PRESERVED.
+        let (default_out, default_stats) = optimize_component(&injected).expect("default optimize");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&default_out)
+            .expect("default output must validate");
+        assert!(
+            custom_section_names(&default_out)
+                .iter()
+                .any(|n| n.starts_with("component-type")),
+            "component-type must be preserved by default"
+        );
+        assert!(
+            !default_stats.size_breakdown.component_type_stripped,
+            "default must not report component-type stripped"
+        );
+        assert!(
+            default_stats.size_breakdown.component_type_bytes > 0,
+            "default breakdown must account component-type bytes"
+        );
+
+        // Opt-in: component-type STRIPPED.
+        let cfg = ComponentOptimizeConfig {
+            strip_component_type: true,
+        };
+        let (stripped_out, stripped_stats) =
+            optimize_component_with_config(&injected, cfg).expect("opt-in optimize");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&stripped_out)
+            .expect("opt-in output must validate");
+        assert!(
+            !custom_section_names(&stripped_out)
+                .iter()
+                .any(|n| n.starts_with("component-type")),
+            "component-type must be stripped with the opt-in flag"
+        );
+        assert!(
+            stripped_stats.size_breakdown.component_type_stripped,
+            "opt-in must report component-type stripped"
+        );
+        assert!(
+            stripped_out.len() < default_out.len(),
+            "opt-in output must be smaller than default"
+        );
+    }
+
+    /// A NON-inert component-level custom section (some vendor metadata) must be
+    /// PRESERVED — we only strip the known inert set.
+    #[test]
+    fn test_239_preserves_unknown_custom_section() {
+        let path = "tests/component_fixtures/simple.component.wasm";
+        let base = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let injected = append_component_custom(base, "vendor:keepme", &[1, 2, 3, 4]);
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&injected)
+            .expect("injected must validate");
+
+        let (out, _stats) = optimize_component(&injected).expect("optimize");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&out)
+            .expect("output must validate");
+        assert!(
+            custom_section_names(&out)
+                .iter()
+                .any(|n| n == "vendor:keepme"),
+            "unknown custom section must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_239_matchers() {
+        assert!(is_component_type_section("component-type"));
+        assert!(is_component_type_section("component-type:foo"));
+        assert!(!is_component_type_section("component-name"));
+
+        // Default (preserve component-type): producers/name/component-name/.debug stripped.
+        assert!(is_inert_component_custom("producers", false));
+        assert!(is_inert_component_custom("name", false));
+        assert!(is_inert_component_custom("component-name", false));
+        assert!(is_inert_component_custom(".debug_info", false));
+        assert!(!is_inert_component_custom("component-type", false));
+        assert!(!is_inert_component_custom("vendor:x", false));
+
+        // Opt-in: component-type also stripped.
+        assert!(is_inert_component_custom("component-type", true));
+        assert!(is_inert_component_custom("component-type:foo", true));
     }
 }
