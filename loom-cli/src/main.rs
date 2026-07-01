@@ -63,6 +63,16 @@ enum Commands {
         /// Maximum is 4 (the size of the default fleet).
         #[arg(long, default_value_t = 1)]
         islands: usize,
+
+        /// Behavioral differential gate (#238): after optimizing, execute the
+        /// original and optimized modules through wasmtime and compare outputs.
+        /// HARD FAIL — on any output divergence OR if execution was inconclusive
+        /// (could not instantiate / no runnable exports), the optimization is
+        /// REJECTED: the original is written to the output path and the process
+        /// exits non-zero. Refuses to certify behavior it never observed.
+        #[arg(long)]
+        #[cfg(feature = "differential")]
+        differential: bool,
     },
 
     /// Verify ISLE optimization rules
@@ -263,6 +273,49 @@ fn count_instructions_from_bytes(bytes: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
+/// Behavioral differential gate (#238). When enabled (`original` is `Some`),
+/// execute the original and optimized WASM through wasmtime and compare outputs.
+/// HARD FAIL: on any divergence or inconclusive execution, write the ORIGINAL
+/// (safe, unoptimized) bytes to `output_path` and return `Err` so the process
+/// exits non-zero. A no-op when the gate is disabled (`original` is `None`).
+#[allow(unused_variables)]
+fn maybe_differential_gate(
+    original: Option<&[u8]>,
+    optimized_wasm: &[u8],
+    output_path: &str,
+) -> Result<()> {
+    let original = match original {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+    #[cfg(feature = "differential")]
+    {
+        use loom_testing::differential::{DifferentialExecutor, ExecutionConfig};
+        println!("🔬 Differential gate: executing original vs optimized...");
+        // Use the `thorough` profile so the gate actually exercises wider exports
+        // (up to 6 params) instead of skipping them — fewer false "inconclusive"
+        // rejections on real modules. Strict certification still requires zero
+        // skipped functions; this just widens what we can drive.
+        let exec = DifferentialExecutor::with_config(ExecutionConfig::thorough())
+            .context("Failed to initialize differential executor")?;
+        let result = exec
+            .test_pair(original, optimized_wasm)
+            .context("Differential execution failed")?;
+        println!("   {}", result.summary());
+        if let Some(reason) = result.strict_failure_reason() {
+            fs::write(output_path, original)
+                .context("Failed to write original after differential rejection")?;
+            println!("✗ Differential gate REJECTED — wrote ORIGINAL to {output_path}");
+            return Err(anyhow!("differential gate rejected optimization: {reason}"));
+        }
+        println!(
+            "✓ Differential gate: behavior preserved on {} executed export(s)",
+            result.functions_tested
+        );
+    }
+    Ok(())
+}
+
 /// Optimize command implementation
 #[allow(clippy::too_many_arguments)]
 fn optimize_command(
@@ -274,6 +327,7 @@ fn optimize_command(
     add_attestation: bool,
     passes: Option<Vec<String>>,
     islands: usize,
+    run_differential: bool,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -372,6 +426,20 @@ fn optimize_command(
         None
     };
 
+    // Capture the UNOPTIMIZED wasm for the behavioral differential gate (#238).
+    // For wasm input that's the input bytes; for WAT we re-encode the freshly
+    // parsed (pre-optimization) module so original and optimized are both wasm.
+    let original_wasm: Option<Vec<u8>> = if run_differential {
+        Some(if is_wat_input {
+            loom_core::encode::encode_wasm(&module)
+                .context("Failed to encode original (from WAT) for differential gate")?
+        } else {
+            input_bytes.clone()
+        })
+    } else {
+        None
+    };
+
     // Collect statistics before optimization
     let mut stats = OptimizationStats {
         instructions_before: count_instructions(&module),
@@ -418,6 +486,9 @@ fn optimize_command(
         // Collect post-optimization stats
         stats.instructions_after = count_instructions(&module);
 
+        // #242: drop stale .debug_* (code offsets changed under optimization).
+        loom_core::fused_optimizer::strip_debug_sections(&mut module);
+
         // Skip the serial pipeline below — the islands already ran a full
         // pass sequence on the winning module. Jump directly to encoding.
         let output_bytes = if output_wat {
@@ -438,6 +509,15 @@ fn optimize_command(
                 "output.wasm".to_string()
             }
         });
+        if run_differential {
+            let opt_wasm = if output_wat {
+                loom_core::encode::encode_wasm(&module)
+                    .context("Failed to encode optimized module for differential gate")?
+            } else {
+                output_bytes.clone()
+            };
+            maybe_differential_gate(original_wasm.as_deref(), &opt_wasm, &output_path)?;
+        }
         fs::write(&output_path, &output_bytes).context("Failed to write output file")?;
         println!("✓ Written to: {}", output_path);
 
@@ -512,6 +592,27 @@ fn optimize_command(
             .context("Carrier forwarding failed")?;
         let after = count_instructions(&module);
         track_pass("forward-carrier", before, after);
+    }
+
+    // loom#228: whole-function (module-level) dead-function elimination.
+    // Multi-site inlining duplicates a callee's body into each caller and
+    // leaves the ORIGINAL orphaned; the body-level `dce` (eliminate_dead_code)
+    // is intra-function and never removes a whole function, so the orphan
+    // survived every `loom optimize` run and grew the module. Run it right
+    // after `inline` so the orphan is gone before downstream passes touch it.
+    // eliminate_dead_functions keeps exports, the start function, and every
+    // element-segment (indirect-call table) target live — conservative on a
+    // parse failure — so it can never drop a reachable function (#196).
+    if should_run("dce-functions") {
+        println!("  Running: dce-functions");
+        let before = count_instructions(&module);
+        let removed = loom_core::fused_optimizer::eliminate_dead_functions(&mut module)
+            .context("Whole-function DCE failed")?;
+        if removed > 0 {
+            println!("    removed {removed} dead function(s)");
+        }
+        let after = count_instructions(&module);
+        track_pass("dce-functions", before, after);
     }
 
     if should_run("precompute") {
@@ -663,6 +764,15 @@ fn optimize_command(
         track_pass("vacuum-final", before, after);
     }
 
+    // #242: loom has transformed the code, so any `.debug_*` (DWARF) sections —
+    // whose line/info tables reference the original instruction offsets — are now
+    // stale and would mislead a debugger. Drop them. (The `name` section is
+    // remapped, not dropped, inside dce-functions when functions are renumbered.)
+    let dropped_debug = loom_core::fused_optimizer::strip_debug_sections(&mut module);
+    if dropped_debug > 0 {
+        println!("  Dropped {} stale .debug_* section(s)", dropped_debug);
+    }
+
     stats.optimization_time_ms = start_opt.elapsed().as_millis();
     println!("✓ Optimized in {} ms", stats.optimization_time_ms);
 
@@ -730,6 +840,17 @@ fn optimize_command(
             "output.wasm".to_string()
         }
     });
+    // Behavioral differential gate (#238): on HARD FAIL this writes the original
+    // to output_path and returns Err (non-zero exit) before the optimized write.
+    if run_differential {
+        let opt_wasm = if output_wat {
+            loom_core::encode::encode_wasm(&module)
+                .context("Failed to encode optimized module for differential gate")?
+        } else {
+            output_bytes.clone()
+        };
+        maybe_differential_gate(original_wasm.as_deref(), &opt_wasm, &output_path)?;
+    }
     fs::write(&output_path, &output_bytes).context("Failed to write output file")?;
     println!("✓ Written to: {}", output_path);
 
@@ -860,11 +981,17 @@ fn main() -> Result<()> {
             attestation,
             passes,
             islands,
+            #[cfg(feature = "differential")]
+            differential,
         }) => {
             #[cfg(feature = "attestation")]
             let add_attestation = attestation;
             #[cfg(not(feature = "attestation"))]
             let add_attestation = false;
+            #[cfg(feature = "differential")]
+            let run_differential = differential;
+            #[cfg(not(feature = "differential"))]
+            let run_differential = false;
             optimize_command(
                 input,
                 output,
@@ -874,6 +1001,7 @@ fn main() -> Result<()> {
                 add_attestation,
                 passes,
                 islands,
+                run_differential,
             )?;
         }
 
@@ -948,7 +1076,8 @@ mod tests {
             false,
             false, // attestation
             None,
-            1, // islands: serial path
+            1,     // islands: serial path
+            false, // run_differential
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -985,7 +1114,8 @@ mod tests {
             false,
             false, // attestation
             None,
-            1, // islands: serial path
+            1,     // islands: serial path
+            false, // run_differential
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -1019,7 +1149,8 @@ mod tests {
             true,  // Enable verification
             false, // attestation
             None,
-            1, // islands: serial path
+            1,     // islands: serial path
+            false, // run_differential
         );
 
         assert!(
@@ -1056,7 +1187,8 @@ mod tests {
             false,
             false, // attestation (disabled for WAT)
             None,
-            1, // islands: serial path
+            1,     // islands: serial path
+            false, // run_differential
         );
 
         assert!(

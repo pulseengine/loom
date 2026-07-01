@@ -5,6 +5,94 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - 2026-07-01
+
+Debug-info correctness and a behavioral-differential safety gate, plus a
+dependency pin to keep the toolchain buildable on stable.
+
+### Added
+
+- **Behavioral differential gate (#238).** `loom optimize --differential`
+  (opt-in `differential` cargo feature; pulls wasmtime, off by default) executes
+  the original and optimized modules through wasmtime and compares outputs.
+  **Hard fail**: on any output divergence — or if execution is inconclusive
+  (could not instantiate, no runnable exports) — the optimization is rejected,
+  the original is written to the output path, and the process exits non-zero.
+  This makes instruction-level transforms that Z3 translation validation cannot
+  certify (e.g. the #219 seam carrier-forward) self-certifying against observed
+  behavior instead of relying on external silicon. A new CI job runs it over the
+  core-module corpus (all fixtures certify).
+
+### Fixed
+
+- **Stale debug info after function renumbering (#242).** `dce-functions`
+  removes/renumbers functions but the `name` and `.debug_*` custom sections were
+  emitted byte-identical over the changed index space, misattributing surviving
+  functions (e.g. labeling `gamma` as `dead`) and leaving dangling indices —
+  silent debug-info corruption that Z3 and `wasm-tools validate` do not catch.
+  The `name` section's function/local/label subsections are now remapped through
+  the function-index remap (dead entries dropped, survivors renumbered; the
+  section is dropped if it cannot be parsed). `.debug_*` (DWARF) sections are
+  dropped whenever loom transforms the code, since their line tables reference
+  instruction offsets optimization has changed and cannot be safely remapped.
+
+### Changed
+
+- **Pinned `cranelift-isle` to 0.132 (#236 follow-up).** 0.133.x raised its MSRV
+  to rustc 1.94.0, which is not yet stable (1.93.1), breaking the wasm32-wasip2
+  build and main CI. Pinned back to the 0.132 line that v1.1.13–v1.1.16 shipped
+  on; revisit when rustc 1.94 is stable or the lockfile is committed (#142).
+
+## [1.1.16] - 2026-06-22
+
+Inliner code-quality release (the #228 secondary finding). Z3-gated, no behavior
+change beyond cleaner inlined code.
+
+### Changed
+
+- **Inline argument forwarding (#228).** Inlining spilled every callee parameter
+  to a fresh temp, so a bare `local.get K` argument became a `local.set TEMP; …;
+  local.get TEMP` round-trip. `simplify_locals` cleans that in straight-line
+  callers but bails on any control flow, so in control-flow callers (the gust hot
+  path) the copy survived. The inliner now forwards a trailing `local.get K`
+  argument directly into the inlined body when the callee does **not** write that
+  parameter — no spill, no reload. Sound (K is not rewritten before the inlined
+  body, and the body never writes K); the Z3 translation validator remains the
+  backstop. Forwardable arguments form a value-stack top-suffix; a written
+  parameter (`callee_param_writes`) is never forwarded.
+
+## [1.1.15] - 2026-06-22
+
+Inliner release: the dissolve pipeline now inlines two real seam shapes it
+previously left as opaque `call`s, both gated by the Z3 translation validator
+(verify-or-revert). Found by gale's `gust` codegen bench. The #219 seam-teardown
+(carrier forwarding) is intentionally NOT in this release — it stays on its branch
+until the G474RE silicon dual-flash confirms it.
+
+### Added
+
+- **Acyclic control-flow inlining (#226).** The inline-modelability gate was
+  straight-line only, so a `#[inline]` leaf whose body is `if oob { call
+  panic_bounds_check; unreachable }` + a load + arithmetic (gale's `mix`) stayed
+  an opaque `call`. A precise acyclic-CF symbolic executor (PR-C) + a matching
+  candidate gate (Regime B) now admit acyclic CF + by-body calls + divergent
+  (no-return) calls, all proven by the validator. `mix` now inlines.
+- **Whole-function dead-code elimination in `loom optimize` (#228).** New
+  `dce-functions` CLI pass (default-on, after `inline`) exposes
+  `eliminate_dead_functions`: multi-site inlining duplicates a body and orphans
+  the original, which the intra-function `dce` could never remove. Keeps exports,
+  the start function, and element-table (indirect-call) targets live —
+  conservative on a parse failure (#196-safe).
+
+### Fixed
+
+- **Small multi-call-site leaves are inlined again (#228).** The candidate
+  predicate `(call_count == 1 || size < 10) && size < limit` made
+  `MULTI_CALL_SITE_LIMIT` (50) dead code — a multi-site callee only passed when
+  `size < 10`, so nothing in `[10, 50)` ever inlined (gale's 23-instruction,
+  2-site `gust_mix`). Now governed purely by the site-count-dependent budget
+  (`size < limit`); the per-inline Z3 verify-or-revert stays the correctness gate.
+
 ## [1.1.14] - 2026-06-15
 
 Correctness + release-engineering release. One optimizer correctness fix (#220);

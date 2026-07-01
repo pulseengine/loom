@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.14"
+version = "1.1.17"
 authors = ["PulseEngine <https://github.com/pulseengine>"]
 edition = "2024"
 license = "Apache-2.0"
@@ -24,7 +24,11 @@ wasmprinter = "0.252"
 wat = "1.241"
 wit-component = "0.252"
 
-# ISLE compiler and runtime
+# ISLE compiler and runtime.
+# Pinned to 0.132: cranelift-isle 0.133.x raised its MSRV to rustc 1.94.0, which
+# is not yet stable (stable is 1.93.1), breaking the wasm32-wasip2 build and
+# main CI (#236 bump). 0.132.x is the known-good line v1.1.13–v1.1.16 shipped on.
+# Revisit once rustc 1.94 is stable (or when the lockfile is committed, #142).
 cranelift-isle = "0.132"
 
 # CLI

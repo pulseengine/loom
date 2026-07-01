@@ -26,7 +26,7 @@ jobs:
       # z3-sys feature provides the library statically.
       Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -236,9 +236,56 @@ impl DifferentialTestResult {
         )
     }
 
-    /// Check if the test passed (semantics preserved and output valid)
+    /// Check if the test passed (semantics preserved and output valid).
+    ///
+    /// Lenient: a module that could not be instantiated or had no testable
+    /// exports still "passes" (nothing was observed to diverge). Suitable for a
+    /// best-effort tool, NOT for a certifying gate — use [`Self::passed_strict`].
     pub fn passed(&self) -> bool {
         self.semantics_preserved && self.optimized_valid
+    }
+
+    /// Strict gate verdict (#238): certify ONLY when the differential actually
+    /// executed and observed agreement on every tested export.
+    ///
+    /// HARD FAIL on "inconclusive": if nothing could be executed
+    /// (`functions_tested == 0`) or any export was skipped, this returns
+    /// `false`. The gate refuses to certify behavior it never observed — it does
+    /// not assume "couldn't test ⇒ preserved". This is the certifier semantics
+    /// for `loom optimize --differential`; lenient `passed()` is for the tool.
+    pub fn passed_strict(&self) -> bool {
+        self.optimized_valid
+            && self.semantics_preserved
+            && self.functions_diverged == 0
+            && self.functions_skipped == 0
+            && self.functions_tested > 0
+    }
+
+    /// Human-readable reason this result is not strictly certifiable, or `None`
+    /// if [`Self::passed_strict`] holds. Used by the gate to explain a rejection.
+    pub fn strict_failure_reason(&self) -> Option<String> {
+        if self.passed_strict() {
+            return None;
+        }
+        if !self.optimized_valid {
+            return Some("optimized module is not valid WebAssembly".to_string());
+        }
+        if !self.semantics_preserved || self.functions_diverged > 0 {
+            return Some(format!(
+                "{} function(s) diverged between original and optimized",
+                self.functions_diverged.max(1)
+            ));
+        }
+        if self.functions_tested == 0 {
+            return Some(
+                "inconclusive: no exported function could be executed (missing host imports / no runnable exports) — gate refuses to certify unobserved behavior"
+                    .to_string(),
+            );
+        }
+        Some(format!(
+            "inconclusive: {} function(s) skipped (untestable signature/imports) — gate refuses to certify unobserved behavior",
+            self.functions_skipped
+        ))
     }
 }
 
@@ -270,17 +317,28 @@ impl DifferentialExecutor {
     /// 3. Validates the output is valid WebAssembly
     /// 4. Compares execution on all exported functions
     pub fn test_optimization(&self, wasm_bytes: &[u8]) -> Result<DifferentialTestResult> {
-        let original_size = wasm_bytes.len();
-
-        // Validate input
-        wasmparser::validate(wasm_bytes).context("Input is not valid WebAssembly")?;
-
-        // Optimize with LOOM
         let optimized_bytes = self.optimize_with_loom(wasm_bytes)?;
+        self.test_pair(wasm_bytes, &optimized_bytes)
+    }
+
+    /// Differentially test an ALREADY-PRODUCED `(original, optimized)` pair
+    /// (#238). Unlike [`Self::test_optimization`], this does NOT re-optimize —
+    /// it compares the exact bytes the caller emitted, so it can gate the real
+    /// output of `loom optimize`. Validates the optimized module, then compares
+    /// execution of every exported function via wasmtime.
+    pub fn test_pair(
+        &self,
+        original_bytes: &[u8],
+        optimized_bytes: &[u8],
+    ) -> Result<DifferentialTestResult> {
+        let original_size = original_bytes.len();
         let optimized_size = optimized_bytes.len();
 
+        // Validate input
+        wasmparser::validate(original_bytes).context("Original is not valid WebAssembly")?;
+
         // Validate output
-        let optimized_valid = wasmparser::validate(&optimized_bytes).is_ok();
+        let optimized_valid = wasmparser::validate(optimized_bytes).is_ok();
         if !optimized_valid {
             return Ok(DifferentialTestResult {
                 semantics_preserved: false,
@@ -297,7 +355,12 @@ impl DifferentialExecutor {
         }
 
         // Compare execution
-        self.compare_execution(wasm_bytes, &optimized_bytes, original_size, optimized_size)
+        self.compare_execution(
+            original_bytes,
+            optimized_bytes,
+            original_size,
+            optimized_size,
+        )
     }
 
     /// Optimize WebAssembly bytes using LOOM library directly
@@ -321,13 +384,26 @@ impl DifferentialExecutor {
         let mut optimized_store = Store::new(&self.engine, ());
 
         // Create linker with common imports
-        let linker = self.create_linker()?;
+        let mut linker = self.create_linker()?;
 
         // Load modules
         let original_module = Module::new(&self.engine, original_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to compile original module: {e}"))?;
         let optimized_module = Module::new(&self.engine, optimized_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to compile optimized module: {e}"))?;
+
+        // #238 host-import stubbing: define every still-unresolved import as a
+        // trap, so modules with arbitrary host imports (WASI variants, env, custom)
+        // can be instantiated rather than hard-failing as inconclusive. Optimization
+        // never ADDS imports, so the original's import set ⊇ the optimized's — one
+        // pass over the original covers both. A function that actually calls such an
+        // import traps IDENTICALLY in original and optimized (same name → same trap
+        // string), so `ExecutionResult::Trap` compares equal ⇒ still a match, not a
+        // divergence. The explicit stubs in `create_linker` (which return real
+        // values) take precedence for the names they cover.
+        linker
+            .define_unknown_imports_as_traps(&original_module)
+            .map_err(|e| anyhow::anyhow!("Failed to stub unknown imports: {e}"))?;
 
         // Try to instantiate
         let (original_instance, optimized_instance) = match (
@@ -661,7 +737,20 @@ impl DifferentialExecutor {
                     .collect();
                 ExecutionResult::Success(result_strs)
             }
-            Err(e) => ExecutionResult::Trap(e.to_string()),
+            Err(e) => {
+                // Normalize traps to their offset-INDEPENDENT code. A WebAssembly
+                // trap is semantically "this input traps with reason R"; the code
+                // offset in the backtrace (e.g. `0x289`) is not observable program
+                // behavior and optimization legitimately shifts it. Comparing the
+                // full backtrace string would flag two identical-outcome traps as a
+                // divergence (false positive on every optimized module, #238). So
+                // compare the trap CODE: both-trap-same-reason ⇒ equivalent; one
+                // trapping while the other returns a value ⇒ a real divergence.
+                match e.downcast_ref::<wasmtime::Trap>() {
+                    Some(trap) => ExecutionResult::Trap(format!("trap:{trap:?}")),
+                    None => ExecutionResult::Trap("error:non-trap".to_string()),
+                }
+            }
         }
     }
 }
@@ -877,6 +966,137 @@ impl ValidationResult {
 #[cfg(all(test, feature = "runtime"))]
 mod tests {
     use super::*;
+
+    /// Build a result with the given execution accounting (other fields fixed).
+    fn result(
+        tested: usize,
+        matched: usize,
+        diverged: usize,
+        skipped: usize,
+    ) -> DifferentialTestResult {
+        DifferentialTestResult {
+            semantics_preserved: diverged == 0,
+            original_size: 100,
+            optimized_size: 80,
+            optimized_valid: true,
+            functions_tested: tested,
+            functions_matched: matched,
+            functions_diverged: diverged,
+            functions_skipped: skipped,
+            function_results: vec![],
+            issues: vec![],
+        }
+    }
+
+    #[test]
+    fn strict_gate_certifies_only_observed_agreement() {
+        // Clean: every tested export matched, none skipped/diverged → certify.
+        let clean = result(3, 3, 0, 0);
+        assert!(clean.passed_strict(), "clean run must certify");
+        assert!(clean.strict_failure_reason().is_none());
+
+        // Divergence → reject (and lenient passed() also false here).
+        let diverged = result(3, 2, 1, 0);
+        assert!(!diverged.passed_strict());
+        assert!(!diverged.passed());
+        assert!(
+            diverged
+                .strict_failure_reason()
+                .unwrap()
+                .contains("diverged")
+        );
+    }
+
+    #[test]
+    fn strict_gate_hard_fails_on_inconclusive() {
+        // Could not instantiate / no runnable exports: tested == 0.
+        // Lenient passed() is TRUE (nothing observed to break) but the gate
+        // must HARD FAIL — it never observed the behavior (#238).
+        let uninstantiable = DifferentialTestResult {
+            semantics_preserved: true, // matches compare_execution's lenient default
+            functions_tested: 0,
+            functions_skipped: 1,
+            ..result(0, 0, 0, 1)
+        };
+        assert!(uninstantiable.passed(), "lenient tool view");
+        assert!(
+            !uninstantiable.passed_strict(),
+            "gate must refuse to certify unobserved behavior"
+        );
+        assert!(
+            uninstantiable
+                .strict_failure_reason()
+                .unwrap()
+                .contains("no exported function could be executed")
+        );
+
+        // Some exports ran, but others were skipped → still inconclusive → reject.
+        let partial = result(2, 2, 0, 1);
+        assert!(!partial.passed_strict());
+        assert!(partial.strict_failure_reason().unwrap().contains("skipped"));
+    }
+
+    #[test]
+    fn corpus_module_behavior_is_preserved_and_harness_is_sound() {
+        // Regression guard (#238) on a real corpus module:
+        //  1. SELF: identical bytes MUST NOT diverge — guards against an unsound
+        //     harness (e.g. trap-backtrace offsets leaking into the comparison,
+        //     which previously produced false divergences).
+        //  2. OPT: loom's optimization MUST NOT change observed behavior.
+        // Uses the `thorough` profile so wide exports (state_machine's 5-param
+        // `pack`) are actually exercised, not skipped.
+        let path = "../tests/corpus/state_machine.wasm";
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return, // corpus not present in this checkout — skip
+        };
+        let exec = DifferentialExecutor::with_config(ExecutionConfig::thorough()).unwrap();
+
+        let self_r = exec.test_pair(&bytes, &bytes).unwrap();
+        assert_eq!(
+            self_r.functions_diverged, 0,
+            "identical bytes diverged — differential HARNESS is unsound (not loom)"
+        );
+
+        let opt_r = exec.test_optimization(&bytes).unwrap();
+        assert!(opt_r.functions_tested > 0, "no exports were executed");
+        assert_eq!(
+            opt_r.functions_diverged, 0,
+            "loom optimization changed observed behavior on a real corpus module"
+        );
+        assert!(
+            opt_r.passed_strict(),
+            "corpus module should certify under the gate: {:?}",
+            opt_r.strict_failure_reason()
+        );
+    }
+
+    #[test]
+    fn unknown_imports_are_stubbed_so_module_runs() {
+        // A module importing an unknown host fn but whose tested export is pure:
+        // with trap-stubbing (#238 (b)) it instantiates and the export executes,
+        // so the gate can actually certify it instead of hard-failing inconclusive.
+        let wat = r#"
+            (module
+              (import "host" "mystery" (func $m (param i32) (result i32)))
+              (func (export "pure") (param i32) (result i32)
+                local.get 0 i32.const 3 i32.mul))
+        "#;
+        let wasm = wat::parse_str(wat).expect("wat");
+        let exec = DifferentialExecutor::new().expect("exec");
+        // Identical bytes ⇒ must certify; the point is instantiation now succeeds.
+        let r = exec.test_pair(&wasm, &wasm).expect("test_pair");
+        assert!(
+            r.functions_tested >= 1,
+            "pure export should execute despite the unknown import; tested={}",
+            r.functions_tested
+        );
+        assert!(
+            r.passed_strict(),
+            "module with a stubbed unknown import must certify: {:?}",
+            r.strict_failure_reason()
+        );
+    }
 
     #[test]
     fn test_simple_function_equivalence() {
