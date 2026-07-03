@@ -8530,6 +8530,17 @@ pub mod optimize {
             .map(|f| (f.signature.params.len(), f.signature.results.len()))
             .collect();
 
+        // loom#254 — whole-module structural snapshot BEFORE vacuum. Like
+        // `inline_functions`, vacuum's per-function `verify_or_revert` is
+        // *lenient*: a Z3 proof SKIPPED because the function contains float
+        // load/store is treated as "verified" and the folded body is kept
+        // UNCHECKED. LOOM's per-function stack validator is shallow (it does
+        // not descend into block bodies), so an intra-block underflow the fold
+        // introduces slips through and is emitted as invalid wasm. We consult
+        // the authoritative spec validator after the loop and roll back to
+        // this snapshot if it rejects.
+        let functions_before = module.functions.clone();
+
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
@@ -8551,6 +8562,25 @@ pub mod optimize {
 
             // Z3 translation validation: prove semantic equivalence
             translator.verify_or_revert(func);
+        }
+
+        // loom#254 — AUTHORITATIVE STRUCTURAL SAFETY NET (see snapshot above).
+        // Encode the vacuumed module and run the WebAssembly spec validator.
+        // If it rejects (or the module cannot be encoded), roll the ENTIRE
+        // vacuum pass back to the pre-pass snapshot: a skipped proof must mean
+        // "don't transform", never "transform unchecked" (REQ-5).
+        let structurally_valid = match crate::encode::encode_wasm(module) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        if !structurally_valid {
+            eprintln!(
+                "vacuum: reverting pass (post-vacuum module failed WebAssembly \
+                 validation — a skipped-Z3 unchecked fold over unverifiable float \
+                 load/store would emit invalid wasm; #254)"
+            );
+            crate::stats::record_revert("vacuum:structural-invalid");
+            module.functions = functions_before;
         }
         Ok(())
     }
@@ -14114,6 +14144,12 @@ pub mod optimize {
             // everything must not loop again (loom#147 livelock guard).
             let mut kept_any = false;
 
+            // loom#254 — whole-module structural snapshot BEFORE this
+            // iteration's inlines. If the inlined result fails the
+            // authoritative WebAssembly spec validator (below), we roll the
+            // ENTIRE iteration back to this snapshot. See the post-loop check.
+            let functions_before_iter = module.functions.clone();
+
             for func in &mut module.functions {
                 // Skip functions with unsupported instructions (can't verify)
                 if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
@@ -14144,8 +14180,58 @@ pub mod optimize {
                 // After verify_or_revert, func.instructions is either the
                 // inlined body (kept) or restored to `before` (reverted).
                 // A difference means a verified inline landed → progress.
+                //
+                // NOTE (loom#254): "kept" here does NOT yet mean "structurally
+                // valid". `verify_or_revert` is *lenient* — a Z3 proof that is
+                // SKIPPED (caller/callee contains float load/store, which the
+                // translation validator cannot model) is treated as "verified"
+                // and the inlined body is kept UNCHECKED. A shallow per-function
+                // stack check cannot catch an underflow that occurs *inside* a
+                // nested block. The authoritative spec validator
+                // (`wasmparser::validate`) is applied to the whole module below,
+                // and the entire iteration's inlines are reverted if it rejects.
                 if func.instructions != before {
                     kept_any = true;
+                }
+            }
+
+            // loom#254 — AUTHORITATIVE STRUCTURAL SAFETY NET.
+            //
+            // The per-function `verify_or_revert` above is *lenient*: a Z3
+            // proof that is SKIPPED (the caller/callee contains float
+            // load/store, which the translation validator cannot model) is
+            // treated as "verified" and the inlined body is KEPT UNCHECKED.
+            // That let inline emit structurally invalid wasm — a function that
+            // pops from an empty stack inside a nested block (gale #254:
+            // "func N failed to validate ... expected i32 but nothing on
+            // stack"). LOOM's own stack validators are shallow (they do not
+            // descend into block bodies) and cannot catch an intra-block
+            // underflow, so we consult the AUTHORITATIVE WebAssembly spec
+            // validator: encode the module this iteration produced and run
+            // `wasmparser::validate`. If it rejects (or the module cannot even
+            // be encoded), roll the ENTIRE iteration back to the pre-iteration
+            // snapshot. A skipped proof therefore means "don't transform",
+            // never "transform unchecked": worst case inline is a no-op for
+            // this module and we keep the valid input. This is intentionally
+            // conservative-over-fast (REQ-5) and never regresses the valid
+            // inlines proven in earlier iterations (they are in the snapshot).
+            if kept_any {
+                let structurally_valid = match crate::encode::encode_wasm(module) {
+                    Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+                    Err(_) => false,
+                };
+                if !structurally_valid {
+                    eprintln!(
+                        "inline_functions: reverting iteration (post-inline module \
+                         failed WebAssembly validation — a skipped-Z3 unchecked inline \
+                         over unverifiable float load/store would emit invalid wasm; \
+                         #254)"
+                    );
+                    crate::stats::record_revert("inline_functions:structural-invalid");
+                    module.functions = functions_before_iter;
+                    // No net progress this iteration → stop rather than spin
+                    // re-attempting the same unprovable inlines.
+                    break;
                 }
             }
 
@@ -21279,5 +21365,40 @@ mod tests {
 
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    /// loom#254 regression: `loom optimize` must NEVER emit structurally
+    /// invalid wasm (stack underflow) from a pass that keeps an UNCHECKED
+    /// transform because Z3 verification was SKIPPED over unverifiable float
+    /// load/store.
+    ///
+    /// Fixture `issue254-records-fused.wasm` is a meld-fused component core
+    /// (from `tests/wit_bindgen/fixtures/records.wasm`) that is VALID on
+    /// input. Before the fix, the inline pass (and, on this same fixture, the
+    /// vacuum pass) folded a float-bearing function into a body that pops from
+    /// an empty stack inside a nested block — `wasm-tools validate` rejected
+    /// the output with "expected i32 but nothing on stack". A skipped proof
+    /// must mean "don't transform", never "transform unchecked": each pass now
+    /// consults the authoritative WebAssembly spec validator on its result and
+    /// reverts if it would emit invalid wasm.
+    ///
+    /// This test runs the FULL optimization pipeline and asserts the encoded
+    /// output passes the spec validator. Worst case a pass reverts and the
+    /// input round-trips unchanged — never invalid output.
+    #[test]
+    fn test_issue254_inline_never_emits_stack_invalid_wasm() {
+        let wasm = include_bytes!("../tests/fixtures/issue254-records-fused.wasm");
+
+        // Sanity: the input fixture itself is valid wasm.
+        wasmparser::validate(wasm).expect("issue254 fixture must be valid on input");
+
+        let mut module = parse::parse_wasm(wasm).expect("parse issue254 fixture");
+        optimize::optimize_module(&mut module).expect("optimize issue254 fixture");
+
+        let out = encode::encode_wasm(&module).expect("encode optimized issue254 module");
+        wasmparser::validate(&out).expect(
+            "loom#254: optimized output must be structurally valid wasm — no pass may \
+             emit a stack underflow by keeping an unchecked (skipped-Z3) inline/fold",
+        );
     }
 }
