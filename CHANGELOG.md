@@ -5,6 +5,20 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.18] - 2026-07-03
+
+Critical correctness fix: `loom optimize` could emit structurally invalid wasm.
+
+### Fixed
+
+- **`loom optimize` emitted structurally invalid wasm (stack underflow) via the
+  `inline` and `vacuum` passes (#254).** A skipped Z3 verification was treated as
+  "verified" instead of "revert", so an inline/vacuum result that Z3 could not
+  certify was accepted unchecked and could reach the encoder stack-invalid. Every
+  inline/vacuum result is now gated by the authoritative `wasmparser::validate`
+  and reverted on rejection — Z3-independent, so a skipped proof can never be
+  mistaken for a passing one. Follow-up hardening tracked in #257.
+
 ## [1.1.17] - 2026-07-01
 
 Debug-info correctness and a behavioral-differential safety gate, plus a
