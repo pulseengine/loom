@@ -3165,3 +3165,129 @@ fn test_early_return_guard_prevents_store_hoist() {
          to flag any nested Return/Br as an early-exit pattern."
     );
 }
+
+// ============================================================================
+// #240 algebraic mid-end — end-to-end pipeline tests.
+//
+// optimize_module runs the FULL pipeline INCLUDING the per-function Z3
+// translation validator (verify_or_revert / verify). If a #240 rule were
+// unsound, Z3 would reject and the pass would REVERT to the original
+// instructions — so these assertions (that the fold actually happened AND the
+// re-encoded module validates) double as confirmation that Z3 ACCEPTED each
+// rewrite. A revert would leave the original op in place and fail the assert.
+// ============================================================================
+
+/// (x << 8) >>u 8  -->  x & 0x00FF_FFFF  (unconditional masking fold). This is
+/// the structural form of synth's `256*(x-c) >> 8` wasted-instruction shape.
+#[test]
+fn test_240_shl_shru_masks_and_verifies() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                local.get 0
+                i32.const 8
+                i32.shl
+                i32.const 8
+                i32.shr_u
+            )
+        )
+    "#;
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instrs = format!("{:?}", module.functions[0].instructions);
+    // Fold happened (Z3 did NOT revert): a mask replaced the shift pair.
+    assert!(
+        instrs.contains("And"),
+        "expected (x & mask) after (x<<8)>>u8 fold, got: {instrs}"
+    );
+    assert!(
+        !instrs.contains("Shl"),
+        "the left shift should be gone after the fold, got: {instrs}"
+    );
+    // Re-encode: the optimized module must still be valid wasm.
+    encode::encode_wasm(&module).expect("optimized module must re-encode");
+}
+
+/// (x << a) << b  -->  x << (a+b)  when a+b < 32; Z3 must accept.
+#[test]
+fn test_240_double_shl_collapses_and_verifies() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                local.get 0
+                i32.const 3
+                i32.shl
+                i32.const 4
+                i32.shl
+            )
+        )
+    "#;
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instrs = &module.functions[0].instructions;
+    let shl_count = format!("{instrs:?}").matches("Shl").count();
+    assert_eq!(
+        shl_count, 1,
+        "two shifts should fuse into one, got: {instrs:?}"
+    );
+    assert!(
+        format!("{instrs:?}").contains('7'),
+        "fused shift amount should be 7, got: {instrs:?}"
+    );
+    encode::encode_wasm(&module).expect("optimized module must re-encode");
+}
+
+/// (x >>u a) >>u b  -->  x >>u (a+b)  when a+b < 32; Z3 must accept.
+#[test]
+fn test_240_double_shru_collapses_and_verifies() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                local.get 0
+                i32.const 5
+                i32.shr_u
+                i32.const 6
+                i32.shr_u
+            )
+        )
+    "#;
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instrs = &module.functions[0].instructions;
+    let shr_count = format!("{instrs:?}").matches("ShrU").count();
+    assert_eq!(shr_count, 1, "two shr_u should fuse, got: {instrs:?}");
+    encode::encode_wasm(&module).expect("optimized module must re-encode");
+}
+
+/// (x & c1) & c2  -->  x & (c1 & c2); Z3 must accept.
+#[test]
+fn test_240_and_mask_collapses_and_verifies() {
+    let input = r#"
+        (module
+            (func (param i32) (result i32)
+                local.get 0
+                i32.const 16711935
+                i32.and
+                i32.const 65535
+                i32.and
+            )
+        )
+    "#;
+    let mut module = parse::parse_wat(input).unwrap();
+    optimize::optimize_module(&mut module).unwrap();
+
+    let instrs = &module.functions[0].instructions;
+    let and_count = format!("{instrs:?}").matches("And").count();
+    assert_eq!(
+        and_count, 1,
+        "two masks should fuse into one, got: {instrs:?}"
+    );
+    assert!(
+        format!("{instrs:?}").contains("255"),
+        "fused mask should be 0xFF (255), got: {instrs:?}"
+    );
+    encode::encode_wasm(&module).expect("optimized module must re-encode");
+}

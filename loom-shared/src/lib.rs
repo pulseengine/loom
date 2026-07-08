@@ -2724,6 +2724,20 @@ pub struct OptimizationEnv {
     /// (reaching-defs guard), so a forwarded expression always carries its
     /// def-time inputs. `local.get` of such a local forwards to this expression.
     pub pinned: std::collections::HashMap<u32, Value>,
+    /// #240 Tier-2 range-premise hook: an INCLUSIVE unsigned upper bound on the
+    /// value of an expression (`(value as unsigned) <= bound`).
+    ///
+    /// This is the minimal IR premise representation the range-gated algebraic
+    /// rules consult. A premise is a *fact* — `assume value <= bound` — that must
+    /// be discharged by a machine-checked source (a Verus/Rocq value-range proof
+    /// on the dissolved function). Loom does NOT invent these bounds: the map is
+    /// empty unless a fact-source populates it, so with no premises the gated
+    /// rules never fire and behavior is byte-identical to plain dataflow.
+    ///
+    /// DEFERRED (#240 part 2 / #231): wiring the real fact-source that fills this
+    /// map from synth/gale-emitted proof-carrying annotations. Tests inject
+    /// bounds directly via [`Self::assume_max`].
+    pub value_max: std::collections::HashMap<Value, u64>,
 }
 
 impl Default for OptimizationEnv {
@@ -2739,12 +2753,40 @@ impl OptimizationEnv {
             memory: std::collections::HashMap::new(),
             single_assign: std::collections::HashSet::new(),
             pinned: std::collections::HashMap::new(),
+            value_max: std::collections::HashMap::new(),
         }
     }
 
     /// Invalidate all memory state (conservative, on unknown stores/calls)
     pub fn invalidate_memory(&mut self) {
         self.memory.clear();
+    }
+
+    /// #240 Tier-2: record a machine-checked value-range premise `expr <= bound`
+    /// (bound is an inclusive unsigned upper bound). Intended to be called by the
+    /// fact-source wiring (deferred); tests call it directly to inject a premise.
+    pub fn assume_max(&mut self, expr: Value, bound: u64) {
+        // Keep the tightest bound if one already exists.
+        self.value_max
+            .entry(expr)
+            .and_modify(|b| *b = (*b).min(bound))
+            .or_insert(bound);
+    }
+
+    /// #240 Tier-2: does a recorded premise prove every set bit of `expr` lies
+    /// strictly below bit `k` — i.e. `(expr as unsigned) < 2^k`? This is the
+    /// side condition that makes `(expr << (W-?)) >>u ...` masks a no-op and,
+    /// specifically, licenses `(expr << k) >>u k -> expr` for a 32-bit value:
+    /// there the surviving mask is `2^(32-k)-1`, a no-op exactly when
+    /// `expr < 2^(32-k)`. Returns false (conservative) when no premise is known.
+    pub fn fits_below_bit(&self, expr: &Value, k: u32) -> bool {
+        if k >= 64 {
+            return true;
+        }
+        match self.value_max.get(expr) {
+            Some(&bound) => bound < (1u64 << k),
+            None => false,
+        }
     }
 }
 
@@ -3507,6 +3549,42 @@ pub fn rewrite_with_dataflow(val: Value, env: &mut OptimizationEnv) -> Value {
             }))
         }
 
+        // #240 Tier-2 range-gated flagship: (x << k) >>u k -> x when a premise
+        // proves x < 2^(32-k). Env-aware because it consults `env.value_max`;
+        // the unconditional version (mask to 2^(32-k)-1) lives in
+        // rewrite_pure_impl and still fires when no premise is present.
+        //
+        // Soundness (Z3, UNDER the premise): (x<<k)>>u k == x & (2^(32-k)-1) for
+        // 0<k<32; when x < 2^(32-k) every set bit of x is below bit (32-k) so
+        // the mask is the identity and the whole expression equals x. The
+        // motivating shape `256*(ch-1024) >> 8` (== `(x<<8)>>u8`, x < 2^24)
+        // folds to `x` — LLVM's fold, now available to loom BUT only with the
+        // machine-checked bound.
+        ValueData::I32ShrU { lhs, rhs } => {
+            let lhs_s = rewrite_with_dataflow(lhs.clone(), env);
+            let rhs_s = rewrite_with_dataflow(rhs.clone(), env);
+            if let (
+                ValueData::I32Shl {
+                    lhs: inner,
+                    rhs: shl_amt,
+                },
+                ValueData::I32Const { val: k },
+            ) = (lhs_s.data(), rhs_s.data())
+            {
+                if i32_shr_undoes_shl(shl_amt, k) {
+                    let kk = (k.value() as u32) & 0x1F;
+                    // surviving mask is 2^(32-kk)-1; the premise must prove
+                    // inner < 2^(32-kk) for the mask to be a no-op.
+                    if env.fits_below_bit(inner, 32 - kk) {
+                        return inner.clone();
+                    }
+                }
+            }
+            // No premise (or shape mismatch): reconstruct and apply the
+            // unconditional structural rules (incl. the masking fold).
+            rewrite_pure_impl(ishru32(lhs_s, rhs_s))
+        }
+
         // All other optimizations follow...
         _ => rewrite_pure_impl(val),
     }
@@ -3590,6 +3668,55 @@ fn i64_shr_undoes_shl(shl_amt: &Value, shr_amt: &Imm64) -> bool {
         return k == k2.value() && k > 0 && k < 64;
     }
     false
+}
+
+/// #240 algebraic mid-end helper: true if `shl_amt` is a constant `k2` equal to
+/// the enclosing `shr_u`'s amount `k`, with `0 < k < 32`. In that case
+/// `(x << k) >>u k == x & (2^(32-k)-1)` exactly (no wasm shift-mod-32 wrap). The
+/// i32 mirror of `i64_shr_undoes_shl`.
+fn i32_shr_undoes_shl(shl_amt: &Value, shr_amt: &Imm32) -> bool {
+    if let ValueData::I32Const { val: k2 } = shl_amt.data() {
+        let k = shr_amt.value() & 0x1F;
+        return k == (k2.value() & 0x1F) && k > 0 && k < 32;
+    }
+    false
+}
+
+/// #240 helper: the effective i32 shift amount `k & 0x1F` if `v` is an
+/// `(i32.const k)`, else `None`. Used to fuse double shifts.
+fn i32_shift_amount(v: &Value) -> Option<u32> {
+    if let ValueData::I32Const { val } = v.data() {
+        Some((val.value() as u32) & 0x1F)
+    } else {
+        None
+    }
+}
+
+/// #240 helper: true if `a` is `(i32.const)` and `(a&0x1F)+(b&0x1F) < 32`. The
+/// double-shift collapse `(x<<a)<<b → x<<(a+b)` (and the shr_u analogue) is only
+/// sound while the fused amount stays below the wasm shift-mod-32 wrap.
+fn i32_shift_sum_lt_width(a: &Value, b: &Imm32) -> bool {
+    match i32_shift_amount(a) {
+        Some(av) => av + ((b.value() as u32) & 0x1F) < 32,
+        None => false,
+    }
+}
+
+/// #240 helper: effective i64 shift amount `k & 0x3F` for an `(i64.const k)`.
+fn i64_shift_amount(v: &Value) -> Option<u64> {
+    if let ValueData::I64Const { val } = v.data() {
+        Some((val.value() as u64) & 0x3F)
+    } else {
+        None
+    }
+}
+
+/// #240 helper: true if `a` is `(i64.const)` and `(a&0x3F)+(b&0x3F) < 64`.
+fn i64_shift_sum_lt_width(a: &Value, b: &Imm64) -> bool {
+    match i64_shift_amount(a) {
+        Some(av) => av + ((b.value() as u64) & 0x3F) < 64,
+        None => false,
+    }
 }
 
 /// #219 seam-SROA helper: true if `op` is `(i64.shl _ (i64.const amt))` with
@@ -3856,6 +3983,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // Algebraic: x & -1 = x (all bits set)
                 (_, ValueData::I32Const { val }) if val.value() == -1 => lhs_simplified,
                 (ValueData::I32Const { val }, _) if val.value() == -1 => rhs_simplified,
+
+                // #240: (x & c1) & c2 → x & (c1 & c2). AND is associative and its
+                // constant operand collapses, so two masks fuse into one.
+                // Unconditionally sound. Recurse so the fused mask can trip the
+                // -1/0 identities above (e.g. redundant re-mask after a narrowing).
+                (ValueData::I32And { lhs: x, rhs: c1 }, ValueData::I32Const { val: c2 }) => {
+                    if let ValueData::I32Const { val: c1v } = c1.data() {
+                        rewrite_pure(iand32(x.clone(), iconst32(imm32_and(*c1v, *c2))))
+                    } else {
+                        iand32(lhs_simplified, rhs_simplified)
+                    }
+                }
                 _ => iand32(lhs_simplified, rhs_simplified),
             }
         }
@@ -3919,6 +4058,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 }
                 // Algebraic: x << 0 = x
                 (_, ValueData::I32Const { val }) if (val.value() & 0x1F) == 0 => lhs_simplified,
+
+                // #240: (x << a) << b → x << (a+b) when a+b < 32. Left shift by a
+                // then b equals a single shift by a+b because wrap32 commutes with
+                // <<; gated to a+b<32 so the fused amount stays below the wasm
+                // shift-mod-32 wrap (for a+b>=32 the single shl would use a
+                // smaller effective amount and differ).
+                (ValueData::I32Shl { lhs: z, rhs: a }, ValueData::I32Const { val: b })
+                    if i32_shift_sum_lt_width(a, b) =>
+                {
+                    let sum = i32_shift_amount(a).unwrap() + ((b.value() as u32) & 0x1F);
+                    rewrite_pure(ishl32(z.clone(), iconst32(Imm32(sum as i32))))
+                }
                 _ => ishl32(lhs_simplified, rhs_simplified),
             }
         }
@@ -3951,6 +4102,33 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 }
                 // Algebraic: x >> 0 = x
                 (_, ValueData::I32Const { val }) if (val.value() & 0x1F) == 0 => lhs_simplified,
+
+                // #240 algebraic mid-end: (x << k) >>u k → x & (0xFFFFFFFF >>u k).
+                // Shifting an i32 left by k clears the low k bits and pushes x's
+                // low (32-k) bits up to [k,32); the matching logical right shift
+                // brings them back to [0,32-k), which is exactly x masked to its
+                // low (32-k) bits. Unconditionally sound for 0<k<32 (Z3:
+                // (x<<k)>>u k == x & (2^(32-k)-1)); the k restriction avoids the
+                // wasm shift-amount-mod-32 wrap. This folds synth's literal
+                // `256*(x-c) >> 8` shape (== `(x'<<8) >>u 8`) to a single mask,
+                // and when the caller already knows x < 2^(32-k) the mask is a
+                // no-op the Tier-2 range gate removes entirely.
+                (ValueData::I32Shl { lhs: z, rhs: shamt }, ValueData::I32Const { val: k })
+                    if i32_shr_undoes_shl(shamt, k) =>
+                {
+                    let kk = (k.value() as u32) & 0x1F;
+                    let mask = (u32::MAX >> kk) as i32;
+                    rewrite_pure(iand32(z.clone(), iconst32(Imm32(mask))))
+                }
+                // #240: (x >>u a) >>u b → x >>u (a+b) when a+b < 32. Logical
+                // right shifts compose exactly (no value wrap); gated to a+b<32
+                // so the fused amount doesn't cross the wasm shift-mod-32 wrap.
+                (ValueData::I32ShrU { lhs: z, rhs: a }, ValueData::I32Const { val: b })
+                    if i32_shift_sum_lt_width(a, b) =>
+                {
+                    let sum = i32_shift_amount(a).unwrap() + ((b.value() as u32) & 0x1F);
+                    rewrite_pure(ishru32(z.clone(), iconst32(Imm32(sum as i32))))
+                }
                 _ => ishru32(lhs_simplified, rhs_simplified),
             }
         }
@@ -4022,6 +4200,15 @@ fn rewrite_pure_impl(val: Value) -> Value {
                     let survivor = if i64_shl_cleared_by_mask(a, m) { b } else { a };
                     rewrite_pure(iand64(survivor.clone(), iconst64(*m)))
                 }
+                // #240: (x & c1) & c2 → x & (c1 & c2) (see i32 note). Associative
+                // AND with a constant fold; recurse for the -1/0 identities.
+                (ValueData::I64And { lhs: x, rhs: c1 }, ValueData::I64Const { val: c2 }) => {
+                    if let ValueData::I64Const { val: c1v } = c1.data() {
+                        rewrite_pure(iand64(x.clone(), iconst64(imm64_and(*c1v, *c2))))
+                    } else {
+                        iand64(lhs_simplified, rhs_simplified)
+                    }
+                }
                 _ => iand64(lhs_simplified, rhs_simplified),
             }
         }
@@ -4085,6 +4272,14 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 }
                 // Algebraic: x << 0 = x
                 (_, ValueData::I64Const { val }) if (val.value() & 0x3F) == 0 => lhs_simplified,
+
+                // #240: (x << a) << b → x << (a+b) when a+b < 64 (see i32 note).
+                (ValueData::I64Shl { lhs: z, rhs: a }, ValueData::I64Const { val: b })
+                    if i64_shift_sum_lt_width(a, b) =>
+                {
+                    let sum = i64_shift_amount(a).unwrap() + ((b.value() as u64) & 0x3F);
+                    rewrite_pure(ishl64(z.clone(), iconst64(Imm64(sum as i64))))
+                }
                 _ => ishl64(lhs_simplified, rhs_simplified),
             }
         }
@@ -4141,6 +4336,13 @@ fn rewrite_pure_impl(val: Value) -> Value {
                         ishru64(p.clone(), iconst64(*k)),
                         ishru64(q.clone(), iconst64(*k)),
                     ))
+                }
+                // #240: (x >>u a) >>u b → x >>u (a+b) when a+b < 64 (see i32 note).
+                (ValueData::I64ShrU { lhs: z, rhs: a }, ValueData::I64Const { val: b })
+                    if i64_shift_sum_lt_width(a, b) =>
+                {
+                    let sum = i64_shift_amount(a).unwrap() + ((b.value() as u64) & 0x3F);
+                    rewrite_pure(ishru64(z.clone(), iconst64(Imm64(sum as i64))))
                 }
                 _ => ishru64(lhs_simplified, rhs_simplified),
             }
@@ -6308,5 +6510,194 @@ mod tests {
                 result.data()
             ),
         }
+    }
+
+    // ========================================================================
+    // #240 algebraic mid-end — Tier 1 (unconditional, Z3-verified) rules
+    // ========================================================================
+
+    /// (x << 8) >>u 8 -> x & 0x00FF_FFFF  (unconditional masking fold).
+    /// This is the structural form of synth's `256*(x-c) >> 8` shape.
+    #[test]
+    fn test_240_i32_shl_shru_masks() {
+        let x = local_get(0);
+        let expr = ishru32(
+            ishl32(x.clone(), iconst32(Imm32::from(8))),
+            iconst32(Imm32::from(8)),
+        );
+        let out = rewrite_pure(expr);
+        match out.data() {
+            ValueData::I32And { lhs, rhs } => {
+                assert_eq!(lhs.data(), x.data(), "masked operand should be x");
+                match rhs.data() {
+                    ValueData::I32Const { val } => {
+                        assert_eq!(val.value() as u32, 0x00FF_FFFF, "mask = 2^(32-8)-1")
+                    }
+                    _ => panic!("expected const mask, got {:?}", rhs.data()),
+                }
+            }
+            other => panic!("expected (x & 0xFFFFFF), got {:?}", other),
+        }
+    }
+
+    /// (x << a) << b -> x << (a+b) when a+b < 32.
+    #[test]
+    fn test_240_i32_double_shl_collapses() {
+        let x = local_get(0);
+        let expr = ishl32(
+            ishl32(x.clone(), iconst32(Imm32::from(3))),
+            iconst32(Imm32::from(4)),
+        );
+        let out = rewrite_pure(expr);
+        match out.data() {
+            ValueData::I32Shl { lhs, rhs } => {
+                assert_eq!(lhs.data(), x.data());
+                match rhs.data() {
+                    ValueData::I32Const { val } => assert_eq!(val.value(), 7),
+                    _ => panic!("expected const 7"),
+                }
+            }
+            other => panic!("expected x << 7, got {:?}", other),
+        }
+    }
+
+    /// (x << a) << b does NOT collapse when a+b >= 32 (wasm shift-mod-32 wrap).
+    #[test]
+    fn test_240_i32_double_shl_no_collapse_across_width() {
+        let x = local_get(0);
+        let expr = ishl32(
+            ishl32(x.clone(), iconst32(Imm32::from(20))),
+            iconst32(Imm32::from(20)),
+        );
+        let out = rewrite_pure(expr);
+        // Must remain a nested shift (not fused to << 40 which would mask to << 8).
+        match out.data() {
+            ValueData::I32Shl { lhs, .. } => {
+                assert!(matches!(lhs.data(), ValueData::I32Shl { .. }));
+            }
+            other => panic!("expected preserved nested shift, got {:?}", other),
+        }
+    }
+
+    /// (x >>u a) >>u b -> x >>u (a+b) when a+b < 32.
+    #[test]
+    fn test_240_i32_double_shru_collapses() {
+        let x = local_get(0);
+        let expr = ishru32(
+            ishru32(x.clone(), iconst32(Imm32::from(5))),
+            iconst32(Imm32::from(6)),
+        );
+        let out = rewrite_pure(expr);
+        match out.data() {
+            ValueData::I32ShrU { lhs, rhs } => {
+                assert_eq!(lhs.data(), x.data());
+                match rhs.data() {
+                    ValueData::I32Const { val } => assert_eq!(val.value(), 11),
+                    _ => panic!("expected const 11"),
+                }
+            }
+            other => panic!("expected x >>u 11, got {:?}", other),
+        }
+    }
+
+    /// (x & c1) & c2 -> x & (c1 & c2); and a redundant re-mask folds to identity.
+    #[test]
+    fn test_240_i32_and_mask_collapses() {
+        let x = local_get(0);
+        let expr = iand32(
+            iand32(x.clone(), iconst32(Imm32::from(0x00FF_00FF))),
+            iconst32(Imm32::from(0x0000_FFFF)),
+        );
+        let out = rewrite_pure(expr);
+        match out.data() {
+            ValueData::I32And { lhs, rhs } => {
+                assert_eq!(lhs.data(), x.data());
+                match rhs.data() {
+                    ValueData::I32Const { val } => {
+                        assert_eq!(val.value() as u32, 0x0000_00FF)
+                    }
+                    _ => panic!("expected fused mask"),
+                }
+            }
+            other => panic!("expected x & 0xFF, got {:?}", other),
+        }
+    }
+
+    /// i64: (x << a) << b -> x << (a+b) when a+b < 64.
+    #[test]
+    fn test_240_i64_double_shl_collapses() {
+        let x = local_get(0);
+        let expr = ishl64(
+            ishl64(x.clone(), iconst64(Imm64::from(10))),
+            iconst64(Imm64::from(20)),
+        );
+        let out = rewrite_pure(expr);
+        match out.data() {
+            ValueData::I64Shl { rhs, .. } => match rhs.data() {
+                ValueData::I64Const { val } => assert_eq!(val.value(), 30),
+                _ => panic!("expected const 30"),
+            },
+            other => panic!("expected x << 30, got {:?}", other),
+        }
+    }
+
+    // ========================================================================
+    // #240 Tier-2 range-premise hook — GATED flagship (x<<k)>>u k -> x
+    // ========================================================================
+
+    /// WITHOUT a premise: falls back to the unconditional mask (no `-> x`).
+    #[test]
+    fn test_240_gated_no_premise_keeps_mask() {
+        let mut env = OptimizationEnv::new();
+        let x = local_get(0);
+        let expr = ishru32(
+            ishl32(x.clone(), iconst32(Imm32::from(8))),
+            iconst32(Imm32::from(8)),
+        );
+        let out = rewrite_with_dataflow(expr, &mut env);
+        // No premise -> must NOT be bare x; must stay the safe masked form.
+        assert!(
+            matches!(out.data(), ValueData::I32And { .. }),
+            "without a premise the fold must keep the mask, got {:?}",
+            out.data()
+        );
+    }
+
+    /// WITH a premise (x < 2^24): (x << 8) >>u 8 -> x. The flagship fold.
+    #[test]
+    fn test_240_gated_with_premise_folds_to_x() {
+        let mut env = OptimizationEnv::new();
+        let x = local_get(0);
+        // Machine-checked fact injected directly (deferred fact-source stands in):
+        // x <= 2^24 - 1  ==>  x < 2^24  ==>  high 8 bits are zero.
+        env.assume_max(x.clone(), (1u64 << 24) - 1);
+        let expr = ishru32(
+            ishl32(x.clone(), iconst32(Imm32::from(8))),
+            iconst32(Imm32::from(8)),
+        );
+        let out = rewrite_with_dataflow(expr, &mut env);
+        assert_eq!(
+            out.data(),
+            x.data(),
+            "with x < 2^24 the (x<<8)>>u8 round-trip must fold to x"
+        );
+    }
+
+    /// A too-weak premise (x < 2^25, but 8 high bits needed) must NOT fold to x.
+    #[test]
+    fn test_240_gated_weak_premise_does_not_fold() {
+        let mut env = OptimizationEnv::new();
+        let x = local_get(0);
+        env.assume_max(x.clone(), (1u64 << 25) - 1); // only proves top 7 bits zero
+        let expr = ishru32(
+            ishl32(x.clone(), iconst32(Imm32::from(8))),
+            iconst32(Imm32::from(8)),
+        );
+        let out = rewrite_with_dataflow(expr, &mut env);
+        assert!(
+            !matches!(out.data(), ValueData::LocalGet { .. }),
+            "an insufficient bound must not license the fold, got {:?}",
+            out.data()
+        );
     }
 }
