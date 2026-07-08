@@ -22,7 +22,7 @@ wasmparser = { version = "0.252", features = ["component-model"] }
 wasm-encoder = { version = "0.253", features = ["component-model"] }
 wasmprinter = "0.252"
 wat = "1.241"
-wit-component = "0.252"
+wit-component = "0.253"
 
 # ISLE compiler and runtime.
 # Pinned to 0.132: cranelift-isle 0.133.x raised its MSRV to rustc 1.94.0, which
