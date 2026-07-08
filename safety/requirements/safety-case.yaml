@@ -12,7 +12,7 @@ artifacts:
         For every WebAssembly module M that LOOM accepts for optimization,
         the output module M' is semantically equivalent to M — identical
         observable behavior for all valid inputs.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-1
@@ -45,7 +45,7 @@ artifacts:
       claim: >
         Every output module passes wasm-tools validate and maintains
         correct stack discipline, section ordering, and LEB128 encoding.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-4
@@ -61,7 +61,7 @@ artifacts:
         The Z3 SMT encoding and Rocq proof models accurately represent
         WebAssembly operational semantics, ensuring verification results
         are trustworthy.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-12
@@ -75,7 +75,7 @@ artifacts:
         Identical inputs produce identical outputs across runs, platforms,
         and compiler versions. No HashMap iteration order or floating-point
         host arithmetic introduces non-determinism.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-18
@@ -93,7 +93,7 @@ artifacts:
         Optimization of meld-fused component modules preserves all
         component external interfaces, adapter semantics, and Meld/Kiln
         ABI compatibility.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-13
@@ -106,7 +106,7 @@ artifacts:
       claim: >
         Functions containing unsupported instructions or control flow
         patterns beyond the verified boundary are passed through unchanged.
-      goal-type: top-level
+      goal-type: system-level
     links:
       - type: goal-addresses-hazard
         target: H-11
@@ -182,7 +182,7 @@ artifacts:
     title: Self-optimization test (dogfooding)
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
     description: >
       LOOM optimizes its own WebAssembly binary. The optimized LOOM
       must produce valid WASM and (when behavioral equivalence is
@@ -196,7 +196,7 @@ artifacts:
     title: Differential testing vs wasm-opt
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
     description: >
       Every CI run compares LOOM output against Binaryen wasm-opt -O3.
       Both must produce valid WASM. Size and validity are compared.
@@ -209,7 +209,7 @@ artifacts:
     title: wasm-tools validate on all CI fixtures
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
     description: >
       Every optimized fixture is validated with wasm-tools validate in
       CI. Any invalid output fails the build.
@@ -329,7 +329,7 @@ artifacts:
     title: Per-pass revert counter + --stats surfacing
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
       description: >
         Every optimization pass that runs the Z3 translation validator
         wraps the transform in verify_or_revert. On rejection, the
@@ -347,7 +347,7 @@ artifacts:
     title: Byte-identical output regression test on canonical fixtures
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
       description: >
         TEST-DETERMINISTIC-OUTPUT in verification.yaml asserts that
         running `loom optimize` twice on a fixed input produces
@@ -363,7 +363,7 @@ artifacts:
     title: Component-Model pass-through validation post-optimization
     status: approved
     fields:
-      evidence-type: test
+      evidence-type: test-report
       description: >
         The component_optimizer.rs pipeline runs wasm-tools validate
         (component variant) on the optimized component before emitting
