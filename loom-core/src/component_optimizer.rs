@@ -46,7 +46,7 @@ use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload, Validator};
 
 /// Configuration for component optimization (#239 Phase A).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ComponentOptimizeConfig {
     /// Strip the `component-type` metadata custom section.
     ///
@@ -57,14 +57,6 @@ pub struct ComponentOptimizeConfig {
     /// opt-in because removing it degrades tooling. Enable via
     /// `--strip-component-type`.
     pub strip_component_type: bool,
-}
-
-impl Default for ComponentOptimizeConfig {
-    fn default() -> Self {
-        Self {
-            strip_component_type: false,
-        }
-    }
 }
 
 /// Per-category byte breakdown of a component (#239 acceptance criteria).
