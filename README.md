@@ -2,14 +2,14 @@
 
 # Loom
 
-<sup>Formally verified WebAssembly optimizer</sup>
+<sup>Translation-validated WebAssembly optimizer</sup>
 
 &nbsp;
 
 [![CI](https://github.com/pulseengine/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/loom/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
-![Formally Verified](https://img.shields.io/badge/Formally_Verified-00C853?style=flat-square&logoColor=white&labelColor=1a1b27)
+![Translation-Validated](https://img.shields.io/badge/Translation--Validated_(Z3)-00C853?style=flat-square&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
 
 &nbsp;
@@ -32,7 +32,7 @@
 
 Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
 
-WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination — each pass proven correct through Z3 SMT translation validation. Includes a fused mode purpose-built for Meld output.
+WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination — each pass **translation-validated** by Z3 SMT: semantic equivalence is proved per function, per run (this validates each output, not a once-and-for-all proof of the optimizer itself). Includes a fused mode purpose-built for Meld output.
 
 Loom consistently achieves 80-95% binary size reduction with 10-30 microsecond optimization times. The entire pipeline is pure Rust with minimal dependencies.
 
@@ -129,6 +129,6 @@ Apache-2.0
 
 <div align="center">
 
-<sub>Part of <a href="https://github.com/pulseengine">PulseEngine</a> &mdash; formally verified WebAssembly toolchain for safety-critical systems</sub>
+<sub>Part of <a href="https://github.com/pulseengine">PulseEngine</a> &mdash; WebAssembly verification toolchain for safety-critical systems</sub>
 
 </div>
