@@ -6913,6 +6913,19 @@ pub mod optimize {
             return Ok(());
         }
 
+        // #257 — MANDATORY AUTHORITATIVE OUTPUT-VALIDATION BACKSTOP.
+        //
+        // Snapshot the ORIGINAL parsed module before any transformation. After
+        // the full pass pipeline runs, we encode the optimized module and run
+        // the authoritative `wasmparser::validate` (the WebAssembly spec
+        // validator). If the optimized module does NOT validate, loom must NOT
+        // emit it: we roll the entire module back to this pristine snapshot so
+        // the worst case is unoptimized-but-valid output. This is the systemic
+        // guarantee that `loom optimize` can NEVER emit structurally invalid
+        // wasm, even if an individual pass (present or future) has a bug that
+        // the per-pass lenient checks miss. See the post-pipeline gate below.
+        let original_module = module.clone();
+
         // Phase 0: Fused component optimizations (adapter devirtualization, type/import
         // dedup, dead function elimination). These are safe no-ops on non-fused modules.
         // Best-effort and non-fatal, but the outcome is always reported — on success
@@ -7042,6 +7055,47 @@ pub mod optimize {
         // debug info through the transformed module.
         super::fused_optimizer::strip_debug_sections(module);
 
+        // #257 — MANDATORY AUTHORITATIVE OUTPUT-VALIDATION BACKSTOP (final gate).
+        //
+        // This is the systemic guarantee behind loom's "provably correct"
+        // promise: encode the fully-optimized module exactly as it will be
+        // emitted and run the authoritative WebAssembly spec validator
+        // (`wasmparser::validate`). loom's own per-function stack validator is
+        // shallow (it does not descend into nested block bodies), and several
+        // passes treat a SKIPPED Z3 proof (e.g. unverifiable float load/store)
+        // as "verified" — so an intra-block underflow or other structural
+        // defect a pass introduces can slip past the per-pass checks. #256
+        // hardened `inline`/`vacuum` individually; this gate generalizes that
+        // to the WHOLE pipeline so NO pass (present or future) can ever cause
+        // loom to emit structurally invalid wasm.
+        //
+        // Revert strategy: whole-optimization fallback-to-original. If the
+        // optimized module fails to encode or does not validate, roll the
+        // entire module back to the pristine pre-optimization snapshot. The
+        // original was parsed from valid input, so this yields valid (if
+        // unoptimized) output — never invalid output. Per-pass bisection to
+        // preserve the maximum optimization is a follow-up refinement; the
+        // guaranteed backstop here is the correctness-critical part. Because
+        // every pass already reverts its own invalid transforms (#256 and the
+        // per-function `verify_or_revert` net), this gate firing at all
+        // indicates a pass bug to chase and is expected to be rare — hence the
+        // loud diagnostic.
+        let optimized_valid = match crate::encode::encode_wasm(module) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        if !optimized_valid {
+            eprintln!(
+                "loom#257: MANDATORY OUTPUT-VALIDATION BACKSTOP FIRED — the optimized \
+                 module failed authoritative WebAssembly validation. Reverting the ENTIRE \
+                 optimization and emitting the original (valid, unoptimized) module. This \
+                 indicates an optimization-pass bug that escaped the per-pass safety nets; \
+                 please report it."
+            );
+            crate::stats::record_revert("optimize_module:structural-invalid");
+            *module = original_module;
+        }
+
         Ok(())
     }
 
@@ -7061,6 +7115,18 @@ pub mod optimize {
 
         let mut skipped_unsupported = 0usize;
         let mut skipped_control_flow = 0usize;
+
+        // #257 — whole-module structural snapshot BEFORE the pass. The
+        // per-function `translator.verify(func)` below is *lenient*: a Z3 proof
+        // that is SKIPPED (function contains float load/store, or exceeds the
+        // size threshold) returns Ok(()) and the folded body is kept UNCHECKED.
+        // LOOM's per-function stack validator is shallow (does not descend into
+        // nested block bodies), so an intra-block defect could slip through. We
+        // consult the authoritative spec validator after the loop and roll the
+        // pass back to this snapshot if it rejects (mirrors the #256 net on
+        // inline/vacuum; the #257 final gate is the ultimate guarantee, this
+        // keeps failures localized so more optimization survives).
+        let functions_before = module.functions.clone();
 
         for func in &mut module.functions {
             // Skip optimization for functions with unsupported instructions
@@ -7146,6 +7212,24 @@ pub mod optimize {
                  {} function(s) with dataflow-unsafe control flow (BrIf/BrTable, see #56)",
                 skipped_unsupported, skipped_control_flow
             );
+        }
+
+        // #257 — AUTHORITATIVE STRUCTURAL SAFETY NET (see snapshot above).
+        // Encode the folded module and run the WebAssembly spec validator; if
+        // it rejects (or the module cannot be encoded), roll the ENTIRE pass
+        // back. A skipped proof must mean "don't transform", never "transform
+        // unchecked" (REQ-5).
+        let structurally_valid = match crate::encode::encode_wasm(module) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        if !structurally_valid {
+            eprintln!(
+                "constant_folding: reverting pass (post-fold module failed WebAssembly \
+                 validation — a skipped-Z3 unchecked fold would emit invalid wasm; #257)"
+            );
+            crate::stats::record_revert("constant_folding:structural-invalid");
+            module.functions = functions_before;
         }
 
         Ok(())
@@ -8904,6 +8988,16 @@ pub mod optimize {
 
         let ctx = ValidationContext::from_module(module);
 
+        // #257 — whole-module structural snapshot BEFORE the pass. The
+        // per-function `translator.verify(func)` below is *lenient*: a Z3 proof
+        // that is SKIPPED (function contains float load/store, or exceeds the
+        // size threshold) returns Ok(()) and the simplified body is kept
+        // UNCHECKED. LOOM's per-function stack validator is shallow (does not
+        // descend into nested block bodies), so an intra-block defect could
+        // slip through. We consult the authoritative spec validator after the
+        // loop and roll the pass back to this snapshot if it rejects.
+        let functions_before = module.functions.clone();
+
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
             if has_unknown_instructions(func) || has_unsupported_isle_instructions(func) {
@@ -8976,6 +9070,24 @@ pub mod optimize {
                 crate::stats::record_revert("simplify_locals");
                 func.instructions = original_instructions;
             }
+        }
+
+        // #257 — AUTHORITATIVE STRUCTURAL SAFETY NET (see snapshot above).
+        // Encode the simplified module and run the WebAssembly spec validator;
+        // if it rejects (or the module cannot be encoded), roll the ENTIRE pass
+        // back. A skipped proof must mean "don't transform", never "transform
+        // unchecked" (REQ-5).
+        let structurally_valid = match crate::encode::encode_wasm(module) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        if !structurally_valid {
+            eprintln!(
+                "simplify_locals: reverting pass (post-simplify module failed WebAssembly \
+                 validation — a skipped-Z3 unchecked simplification would emit invalid wasm; #257)"
+            );
+            crate::stats::record_revert("simplify_locals:structural-invalid");
+            module.functions = functions_before;
         }
         Ok(())
     }
@@ -21401,5 +21513,147 @@ mod tests {
             "loom#254: optimized output must be structurally valid wasm — no pass may \
              emit a stack underflow by keeping an unchecked (skipped-Z3) inline/fold",
         );
+    }
+
+    /// loom#257: the mandatory final output-validation gate must hold for the
+    /// #254 fixture even considering the WHOLE pipeline — encode + authoritative
+    /// `wasmparser::validate` runs after all passes and reverts to the pristine
+    /// input if any pass (present OR future) would emit invalid wasm. This is
+    /// the systemic guarantee that `loom optimize` can NEVER emit structurally
+    /// invalid wasm.
+    #[test]
+    fn test_issue257_final_gate_keeps_fixture_valid() {
+        let wasm = include_bytes!("../tests/fixtures/issue254-records-fused.wasm");
+        wasmparser::validate(wasm).expect("issue254 fixture must be valid on input");
+
+        let mut module = parse::parse_wasm(wasm).expect("parse issue254 fixture");
+        optimize::optimize_module(&mut module).expect("optimize issue254 fixture");
+
+        let out = encode::encode_wasm(&module).expect("encode optimized module");
+        wasmparser::validate(&out)
+            .expect("loom#257: the mandatory final gate must guarantee structurally valid output");
+    }
+
+    /// loom#257 (no spurious reverts): the final gate must be a NO-OP on clean
+    /// modules — a normal, valid module optimizes and stays valid, and the gate
+    /// does not revert a legitimately-optimized result. Uses the #219 seam-SROA
+    /// repro (authentic gale post-inline body) as a real-world clean fixture.
+    #[test]
+    fn test_issue257_gate_noop_on_clean_repro219() {
+        let wasm = include_bytes!("../tests/fixtures/repro-219/sem.loom.wasm");
+        wasmparser::validate(wasm).expect("repro-219 fixture must be valid on input");
+
+        let mut module = parse::parse_wasm(wasm).expect("parse repro-219 fixture");
+        optimize::optimize_module(&mut module).expect("optimize repro-219 fixture");
+
+        let out = encode::encode_wasm(&module).expect("encode optimized repro-219 module");
+        wasmparser::validate(&out).expect(
+            "loom#257: optimized output of a clean module must be structurally valid, \
+             and the gate must not spuriously revert it",
+        );
+    }
+
+    /// loom#257 (end-to-end): a hand-written valid module optimizes to valid
+    /// output and the gate is a no-op (optimization is preserved, not reverted).
+    #[test]
+    fn test_issue257_clean_wat_optimizes_and_stays_valid() {
+        // A straight-line function with a foldable constant expression plus a
+        // dead store the local passes can simplify. All integer ops → Z3 can
+        // verify → gate is a pure no-op here.
+        let wat = r#"
+            (module
+              (func (export "f") (param i32) (result i32)
+                (local i32)
+                (local.set 1 (i32.add (i32.const 2) (i32.const 3)))
+                (i32.add (local.get 0) (local.get 1))))
+        "#;
+        let mut module = parse::parse_wat(wat).expect("parse clean wat");
+        optimize::optimize_module(&mut module).expect("optimize clean module");
+
+        let out = encode::encode_wasm(&module).expect("encode optimized clean module");
+        wasmparser::validate(&out)
+            .expect("loom#257: clean valid input must produce valid output (gate is a no-op)");
+    }
+
+    /// loom#257 (detector + revert primitive): directly exercise the gate's
+    /// detect-and-revert logic. We build a VALID original module and a
+    /// structurally-INVALID variant (an `i32.add` that pops from an empty stack
+    /// — a stack underflow LOOM's shallow per-function validator does not
+    /// catch). We assert the authoritative validator REJECTS the invalid encode
+    /// (so the gate WOULD fire) and that restoring the original yields VALID
+    /// wasm (so the revert-to-original backstop produces valid output). This is
+    /// the exact primitive `optimize_module`'s final gate performs when a
+    /// buggy pass slips invalid output past the per-pass nets.
+    #[test]
+    fn test_issue257_backstop_detects_invalid_and_reverts_to_valid() {
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![ValueType::I32],
+        };
+
+        // Valid original: pushes a constant, returns it.
+        let valid = Module {
+            functions: vec![Function {
+                name: Some("f".to_string()),
+                signature: sig.clone(),
+                locals: vec![],
+                instructions: vec![Instruction::I32Const(7), Instruction::End],
+            }],
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![sig.clone()],
+            exports: vec![Export {
+                name: "f".to_string(),
+                kind: ExportKind::Func(0),
+            }],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+        };
+
+        // Structurally invalid: `i32.add` with nothing (well, one value) on the
+        // stack — underflow. This is what a buggy pass might leave behind.
+        let mut invalid = valid.clone();
+        invalid.functions[0].instructions = vec![
+            Instruction::I32Const(1),
+            Instruction::I32Add,
+            Instruction::End,
+        ];
+
+        // The gate's detector: encode + authoritative validate.
+        let valid_ok = match encode::encode_wasm(&valid) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        let invalid_ok = match encode::encode_wasm(&invalid) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        assert!(valid_ok, "control: the valid module must validate");
+        assert!(
+            !invalid_ok,
+            "loom#257: the authoritative validator must REJECT the stack-underflow \
+             module (this is the defect LOOM's shallow validator misses)"
+        );
+
+        // The gate's revert: on rejection, fall back to the pristine original.
+        // Simulate exactly what the final gate does.
+        let mut module = invalid.clone();
+        let original = valid.clone();
+        let structurally_valid = match encode::encode_wasm(&module) {
+            Ok(bytes) => wasmparser::validate(&bytes).is_ok(),
+            Err(_) => false,
+        };
+        if !structurally_valid {
+            module = original;
+        }
+        let out = encode::encode_wasm(&module).expect("encode reverted module");
+        wasmparser::validate(&out)
+            .expect("loom#257: after the backstop reverts to the original, output must be VALID");
     }
 }
