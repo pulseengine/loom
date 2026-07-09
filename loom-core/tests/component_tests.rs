@@ -80,6 +80,7 @@ fn test_component_stats_calculations() {
         modules_optimized: 2,
         original_module_size: 800,
         optimized_module_size: 100,
+        size_breakdown: Default::default(),
         message: "Test".to_string(),
     };
 
