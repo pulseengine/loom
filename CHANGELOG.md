@@ -5,6 +5,40 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-09
+
+Correctness backstop + algebraic mid-end.
+
+### Added
+
+- **Algebraic mid-end (#240): Z3-verified strength-reductions** in the term
+  simplifier, each proven by loom's translation validator. New unconditional
+  folds: `(x<<k) >>u k → x & mask` (i32; collapses the common `256*(x-c)>>8`
+  arithmetic shape into a single mask), `(x<<a)<<b → x<<(a+b)`,
+  `(x>>u a)>>u b → x>>u (a+b)`, and `(x&c1)&c2 → x&(c1&c2)` — all width-gated.
+  Also adds a **value-range premise hook** (`OptimizationEnv.value_max`) and a
+  premise-gated `(x<<k) >>u k → x` rewrite (verified under an assumed bound). The
+  premise *source* (machine-checked Verus/Rocq value-range facts) is the deferred
+  fact-passing contract tracked in #231 / #240 part 2 — so the mask-dropping win
+  does not yet fire on real output until that lands.
+
+### Fixed / Hardened
+
+- **Mandatory authoritative output-validation backstop (#257).** `loom optimize`
+  now runs the authoritative `wasmparser::validate` on the fully-optimized module
+  before emit and reverts the entire optimization to the (valid) original on any
+  rejection — so loom **cannot emit structurally invalid wasm, by construction**.
+  Additionally hardens `constant_folding` and `simplify_locals`, whose lenient
+  handling of a *skipped* Z3 proof previously kept transforms unchecked (the
+  #254/#255 bug class). Generalizes the reactive v1.1.18 fix into a guarantee.
+
+### Optimized
+
+- **Component custom-section GC (#239 Phase A).** Strips semantically-inert
+  component-level custom sections (`producers`, `name`, `.debug_*`) with an opt-in
+  `--strip-component-type`; adds a size breakdown to the CLI. First slice of the
+  "make components small" work (Phase B reachability GC is the larger byte win).
+
 ## [1.1.18] - 2026-07-03
 
 Critical correctness fix: `loom optimize` could emit structurally invalid wasm.
