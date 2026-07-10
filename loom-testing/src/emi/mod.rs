@@ -121,9 +121,9 @@ pub fn emi_test(wasm_bytes: &[u8], config: EmiConfig) -> Result<EmiTestResult> {
     let engine = Engine::default();
 
     // Set up RNG
-    let mut rng: Box<dyn RngCore> = match config.seed {
+    let mut rng: Box<dyn Rng> = match config.seed {
         Some(seed) => Box::new(rand::rngs::StdRng::seed_from_u64(seed)),
-        None => Box::new(rand::thread_rng()),
+        None => Box::new(rand::rng()),
     };
 
     // 1. Analyze for dead code regions
@@ -147,10 +147,10 @@ pub fn emi_test(wasm_bytes: &[u8], config: EmiConfig) -> Result<EmiTestResult> {
 
     for i in 0..config.iterations {
         // Pick random dead region and mutation strategy
-        let region_idx = rng.gen_range(0..dead_regions.len());
+        let region_idx = rng.random_range(0..dead_regions.len());
         let region = &dead_regions[region_idx];
 
-        let strategy_idx = rng.gen_range(0..config.strategies.len());
+        let strategy_idx = rng.random_range(0..config.strategies.len());
         let strategy = config.strategies[strategy_idx];
 
         // Apply mutation to create variant
@@ -272,9 +272,9 @@ pub fn emi_test(wasm_bytes: &[u8], config: EmiConfig) -> Result<EmiTestResult> {
 #[cfg(not(feature = "runtime"))]
 pub fn emi_test(wasm_bytes: &[u8], config: EmiConfig) -> Result<EmiTestResult> {
     // Set up RNG
-    let mut rng: Box<dyn RngCore> = match config.seed {
+    let mut rng: Box<dyn Rng> = match config.seed {
         Some(seed) => Box::new(rand::rngs::StdRng::seed_from_u64(seed)),
-        None => Box::new(rand::thread_rng()),
+        None => Box::new(rand::rng()),
     };
 
     // 1. Analyze for dead code regions
@@ -295,10 +295,10 @@ pub fn emi_test(wasm_bytes: &[u8], config: EmiConfig) -> Result<EmiTestResult> {
 
     for i in 0..config.iterations {
         // Pick random dead region and mutation strategy
-        let region_idx = rng.gen_range(0..dead_regions.len());
+        let region_idx = rng.random_range(0..dead_regions.len());
         let region = &dead_regions[region_idx];
 
-        let strategy_idx = rng.gen_range(0..config.strategies.len());
+        let strategy_idx = rng.random_range(0..config.strategies.len());
         let strategy = config.strategies[strategy_idx];
 
         // Apply mutation to create variant
