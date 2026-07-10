@@ -14,7 +14,7 @@
 //! ```
 
 use loom_testing::emi::{EmiConfig, MutationStrategy, analyze_dead_code, emi_test};
-use rand::Rng;
+use rand::prelude::*;
 use std::time::Instant;
 
 /// Default iteration count for the per-fixture EMI stress test.
@@ -401,8 +401,6 @@ fn test_generated_wasm_fuzzing() {
     println!("║     Generated WASM Fuzzing (100 random modules)                  ║");
     println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
-    use rand::prelude::*;
-
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let mut passed = 0;
     let mut failed = 0;
@@ -443,12 +441,12 @@ fn test_generated_wasm_fuzzing() {
 
 /// Generate a random but syntactically valid WAT module
 fn generate_random_wat<R: Rng>(rng: &mut R, _seed: usize) -> String {
-    let num_funcs = rng.gen_range(1..=3);
+    let num_funcs = rng.random_range(1..=3);
     let mut funcs = String::new();
 
     for f in 0..num_funcs {
-        let num_locals = rng.gen_range(0..=3);
-        let num_instrs = rng.gen_range(1..=10);
+        let num_locals = rng.random_range(0..=3);
+        let num_instrs = rng.random_range(1..=10);
 
         let mut locals = String::new();
         for l in 0..num_locals {
@@ -502,10 +500,10 @@ fn generate_random_instr<R: Rng>(rng: &mut R, num_locals: usize) -> String {
     ];
 
     // Add local operations if we have locals
-    if num_locals > 0 && rng.gen_bool(0.3) {
-        let local_idx = rng.gen_range(0..num_locals);
+    if num_locals > 0 && rng.random_bool(0.3) {
+        let local_idx = rng.random_range(0..num_locals);
         return format!("    i32.const 0\n    local.set $l{}\n", local_idx);
     }
 
-    choices[rng.gen_range(0..choices.len())].to_string()
+    choices[rng.random_range(0..choices.len())].to_string()
 }
