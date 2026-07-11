@@ -2867,6 +2867,26 @@ fn is_forwardable_expr(v: &Value) -> bool {
     }
 }
 
+/// #278: is `v` provably TRAP-FREE, so that DISCARDING it (dropping the operand
+/// entirely) preserves observable semantics? A trapping operand — an
+/// out-of-bounds memory load/store, an integer div/rem (traps on 0 / INT_MIN÷-1),
+/// an `unreachable`, a call (callees can trap), a trapping float→int truncate,
+/// etc. — must NOT be discarded, or the optimized module would return a value
+/// where the original TRAPS.
+///
+/// Zero-annihilation / absorption identities (`x*0→0`, `0*x→0`, `x&0→0`,
+/// `x|-1→-1`, a `select`'s untaken arm, …) throw away a whole operand subtree.
+/// LOOM's value-equivalence / Z3 checking does not model traps (#273/#274/#276),
+/// so these folds are only sound when the discarded operand cannot trap. This is
+/// exactly the `is_forwardable_expr` whitelist: constants, locals, globals, and
+/// total pure integer arithmetic / bitwise / shift / rotate / compare /
+/// width-convert / select over trap-free operands. Loads/stores, div/rem, calls,
+/// unreachable, floats, and every unknown/impure variant are NOT on the whitelist
+/// and are conservatively treated as MAY-trap (→ do not discard).
+fn is_no_trap_expr(v: &Value) -> bool {
+    is_forwardable_expr(v)
+}
+
 /// #219: does `v` (a forwardable expr — same whitelist as `is_forwardable_expr`)
 /// reference `local.get local_idx`? Used to INVALIDATE a pinned forwarding when
 /// one of its input locals is reassigned (reaching-defs guard), so a forwarded
@@ -3801,10 +3821,19 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
                     iconst32(imm32_mul(*lhs_val, *rhs_val))
                 }
-                // Algebraic: x * 0 = 0
-                (_, ValueData::I32Const { val }) if val.value() == 0 => iconst32(Imm32(0)),
-                // Algebraic: 0 * x = 0
-                (ValueData::I32Const { val }, _) if val.value() == 0 => iconst32(Imm32(0)),
+                // Algebraic: x * 0 = 0 — only when the DISCARDED `x` cannot trap
+                // (#278: a trapping load/div in x must still fault).
+                (_, ValueData::I32Const { val })
+                    if val.value() == 0 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst32(Imm32(0))
+                }
+                // Algebraic: 0 * x = 0 — only when the DISCARDED `x` cannot trap.
+                (ValueData::I32Const { val }, _)
+                    if val.value() == 0 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst32(Imm32(0))
+                }
                 // Algebraic: x * 1 = x
                 (_, ValueData::I32Const { val }) if val.value() == 1 => lhs_simplified,
                 // Algebraic: 1 * x = x
@@ -3893,8 +3922,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
                     iconst64(imm64_mul(*lhs_val, *rhs_val))
                 }
-                (_, ValueData::I64Const { val }) if val.value() == 0 => iconst64(Imm64(0)),
-                (ValueData::I64Const { val }, _) if val.value() == 0 => iconst64(Imm64(0)),
+                // Algebraic: x * 0 = 0 / 0 * x = 0 — only when the DISCARDED
+                // operand cannot trap (#278).
+                (_, ValueData::I64Const { val })
+                    if val.value() == 0 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst64(Imm64(0))
+                }
+                (ValueData::I64Const { val }, _)
+                    if val.value() == 0 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst64(Imm64(0))
+                }
                 (_, ValueData::I64Const { val }) if val.value() == 1 => lhs_simplified,
                 (ValueData::I64Const { val }, _) if val.value() == 1 => rhs_simplified,
                 // Algebraic: x * -1 = 0 - x (negate)
@@ -3977,9 +4016,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 (ValueData::I32Const { val: lhs_val }, ValueData::I32Const { val: rhs_val }) => {
                     iconst32(imm32_and(*lhs_val, *rhs_val))
                 }
-                // Algebraic: x & 0 = 0
-                (_, ValueData::I32Const { val }) if val.value() == 0 => iconst32(Imm32(0)),
-                (ValueData::I32Const { val }, _) if val.value() == 0 => iconst32(Imm32(0)),
+                // Algebraic: x & 0 = 0 — only when the DISCARDED operand cannot
+                // trap (#278).
+                (_, ValueData::I32Const { val })
+                    if val.value() == 0 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst32(Imm32(0))
+                }
+                (ValueData::I32Const { val }, _)
+                    if val.value() == 0 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst32(Imm32(0))
+                }
                 // Algebraic: x & -1 = x (all bits set)
                 (_, ValueData::I32Const { val }) if val.value() == -1 => lhs_simplified,
                 (ValueData::I32Const { val }, _) if val.value() == -1 => rhs_simplified,
@@ -4017,9 +4065,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // Algebraic: x | 0 = x
                 (_, ValueData::I32Const { val }) if val.value() == 0 => lhs_simplified,
                 (ValueData::I32Const { val }, _) if val.value() == 0 => rhs_simplified,
-                // Algebraic: x | -1 = -1 (all bits set)
-                (_, ValueData::I32Const { val }) if val.value() == -1 => iconst32(Imm32(-1)),
-                (ValueData::I32Const { val }, _) if val.value() == -1 => iconst32(Imm32(-1)),
+                // Algebraic: x | -1 = -1 (all bits set) — only when the DISCARDED
+                // operand cannot trap (#278).
+                (_, ValueData::I32Const { val })
+                    if val.value() == -1 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst32(Imm32(-1))
+                }
+                (ValueData::I32Const { val }, _)
+                    if val.value() == -1 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst32(Imm32(-1))
+                }
                 _ => ior32(lhs_simplified, rhs_simplified),
             }
         }
@@ -4148,9 +4205,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 (ValueData::I64Const { val: lhs_val }, ValueData::I64Const { val: rhs_val }) => {
                     iconst64(imm64_and(*lhs_val, *rhs_val))
                 }
-                // Algebraic: x & 0 = 0
-                (_, ValueData::I64Const { val }) if val.value() == 0 => iconst64(Imm64(0)),
-                (ValueData::I64Const { val }, _) if val.value() == 0 => iconst64(Imm64(0)),
+                // Algebraic: x & 0 = 0 — only when the DISCARDED operand cannot
+                // trap (#278).
+                (_, ValueData::I64Const { val })
+                    if val.value() == 0 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst64(Imm64(0))
+                }
+                (ValueData::I64Const { val }, _)
+                    if val.value() == 0 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst64(Imm64(0))
+                }
                 // Algebraic: x & -1 = x (all bits set)
                 (_, ValueData::I64Const { val }) if val.value() == -1 => lhs_simplified,
                 (ValueData::I64Const { val }, _) if val.value() == -1 => rhs_simplified,
@@ -4160,13 +4226,17 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // bits [k,64), so nothing survives. Unconditionally sound for
                 // any Z (Z3: (Z<<k) & M == 0 when M >> k == 0). Dissolves the
                 // high half of a u64 pack under a low-byte unpack mask.
+                // #278: the whole `(shl Z k)` operand is DISCARDED, so only fire
+                // when Z (and thus the shl) cannot trap.
                 (ValueData::I64Shl { .. }, ValueData::I64Const { val: m })
-                    if i64_shl_cleared_by_mask(&lhs_simplified, m) =>
+                    if i64_shl_cleared_by_mask(&lhs_simplified, m)
+                        && is_no_trap_expr(&lhs_simplified) =>
                 {
                     iconst64(Imm64(0))
                 }
                 (ValueData::I64Const { val: m }, ValueData::I64Shl { .. })
-                    if i64_shl_cleared_by_mask(&rhs_simplified, m) =>
+                    if i64_shl_cleared_by_mask(&rhs_simplified, m)
+                        && is_no_trap_expr(&rhs_simplified) =>
                 {
                     iconst64(Imm64(0))
                 }
@@ -4188,16 +4258,22 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // #219 seam-SROA: (or A B) & M → (survivor & M) when one OR
                 // operand is a left shift the mask clears. Recurse so the
                 // survivor (and a both-shifted case) simplifies further.
+                // #278: the CLEARED operand is DISCARDED, so only fire when it
+                // cannot trap.
                 (ValueData::I64Or { lhs: a, rhs: b }, ValueData::I64Const { val: m })
-                    if i64_shl_cleared_by_mask(a, m) || i64_shl_cleared_by_mask(b, m) =>
+                    if (i64_shl_cleared_by_mask(a, m) && is_no_trap_expr(a))
+                        || (i64_shl_cleared_by_mask(b, m) && is_no_trap_expr(b)) =>
                 {
-                    let survivor = if i64_shl_cleared_by_mask(a, m) { b } else { a };
+                    let cleared_a = i64_shl_cleared_by_mask(a, m) && is_no_trap_expr(a);
+                    let survivor = if cleared_a { b } else { a };
                     rewrite_pure(iand64(survivor.clone(), iconst64(*m)))
                 }
                 (ValueData::I64Const { val: m }, ValueData::I64Or { lhs: a, rhs: b })
-                    if i64_shl_cleared_by_mask(a, m) || i64_shl_cleared_by_mask(b, m) =>
+                    if (i64_shl_cleared_by_mask(a, m) && is_no_trap_expr(a))
+                        || (i64_shl_cleared_by_mask(b, m) && is_no_trap_expr(b)) =>
                 {
-                    let survivor = if i64_shl_cleared_by_mask(a, m) { b } else { a };
+                    let cleared_a = i64_shl_cleared_by_mask(a, m) && is_no_trap_expr(a);
+                    let survivor = if cleared_a { b } else { a };
                     rewrite_pure(iand64(survivor.clone(), iconst64(*m)))
                 }
                 // #240: (x & c1) & c2 → x & (c1 & c2) (see i32 note). Associative
@@ -4231,9 +4307,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
                 // Algebraic: x | 0 = x
                 (_, ValueData::I64Const { val }) if val.value() == 0 => lhs_simplified,
                 (ValueData::I64Const { val }, _) if val.value() == 0 => rhs_simplified,
-                // Algebraic: x | -1 = -1 (all bits set)
-                (_, ValueData::I64Const { val }) if val.value() == -1 => iconst64(Imm64(-1)),
-                (ValueData::I64Const { val }, _) if val.value() == -1 => iconst64(Imm64(-1)),
+                // Algebraic: x | -1 = -1 (all bits set) — only when the DISCARDED
+                // operand cannot trap (#278).
+                (_, ValueData::I64Const { val })
+                    if val.value() == -1 && is_no_trap_expr(&lhs_simplified) =>
+                {
+                    iconst64(Imm64(-1))
+                }
+                (ValueData::I64Const { val }, _)
+                    if val.value() == -1 && is_no_trap_expr(&rhs_simplified) =>
+                {
+                    iconst64(Imm64(-1))
+                }
                 _ => ior64(lhs_simplified, rhs_simplified),
             }
         }
@@ -4938,16 +5023,28 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let true_simplified = rewrite_pure(true_val.clone());
             let false_simplified = rewrite_pure(false_val.clone());
 
-            // Algebraic: select(c, x, x) → x (both branches same)
-            if are_values_equal(&true_simplified, &false_simplified) {
+            // Algebraic: select(c, x, x) → x (both branches same).
+            // #278: WASM `select` evaluates ALL three operands, so the DISCARDED
+            // condition `c` must be trap-free to drop it.
+            if are_values_equal(&true_simplified, &false_simplified)
+                && is_no_trap_expr(&cond_simplified)
+            {
                 return true_simplified;
             }
 
             match cond_simplified.data() {
-                // Constant folding: (select (i32.const 0) true false) → false
-                ValueData::I32Const { val } if val.value() == 0 => false_simplified,
-                // Constant folding: (select (i32.const N) true false) → true (N != 0)
-                ValueData::I32Const { .. } => true_simplified,
+                // Constant folding: (select (i32.const 0) true false) → false.
+                // #278: the untaken `true` arm is DISCARDED but WASM still
+                // evaluates it, so it must be trap-free to drop it.
+                ValueData::I32Const { val }
+                    if val.value() == 0 && is_no_trap_expr(&true_simplified) =>
+                {
+                    false_simplified
+                }
+                // Constant folding: (select (i32.const N) true false) → true
+                // (N != 0). #278: the untaken `false` arm is DISCARDED but still
+                // evaluated by WASM, so it must be trap-free to drop it.
+                ValueData::I32Const { .. } if is_no_trap_expr(&false_simplified) => true_simplified,
                 _ => select_instr(cond_simplified, true_simplified, false_simplified),
             }
         }
@@ -6721,6 +6818,285 @@ mod tests {
             !matches!(out.data(), ValueData::LocalGet { .. }),
             "an insufficient bound must not license the fold, got {:?}",
             out.data()
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // #278: zero-annihilation / absorption folds must NOT discard a TRAPPING
+    // operand. A discarded out-of-bounds load / div-by-zero would silently
+    // eliminate a mandatory WASM trap, returning a value where the original
+    // module traps. Below, an OOB `i32.load`/`i64.load` and a `div` stand in for
+    // "may-trap"; a `local.get` stands in for "provably trap-free".
+    // -------------------------------------------------------------------------
+
+    /// A load anywhere in the tree that stands for an OOB access.
+    fn tree_contains_load(v: &Value) -> bool {
+        match v.data() {
+            ValueData::I32Load { .. }
+            | ValueData::I64Load { .. }
+            | ValueData::I32DivS { .. }
+            | ValueData::I32DivU { .. }
+            | ValueData::I64DivS { .. }
+            | ValueData::I64DivU { .. } => true,
+            ValueData::I32Mul { lhs, rhs }
+            | ValueData::I32And { lhs, rhs }
+            | ValueData::I32Or { lhs, rhs }
+            | ValueData::I64Mul { lhs, rhs }
+            | ValueData::I64And { lhs, rhs }
+            | ValueData::I64Or { lhs, rhs }
+            | ValueData::I64Shl { lhs, rhs } => tree_contains_load(lhs) || tree_contains_load(rhs),
+            ValueData::Select {
+                cond,
+                true_val,
+                false_val,
+            } => {
+                tree_contains_load(cond)
+                    || tree_contains_load(true_val)
+                    || tree_contains_load(false_val)
+            }
+            _ => false,
+        }
+    }
+
+    fn oob_i32_load() -> Value {
+        // i32.load at a huge constant address — OOB in any small memory.
+        i32_load(iconst32(Imm32::from(1_000_000)), 0, 2, 0)
+    }
+    fn oob_i64_load() -> Value {
+        i64_load(iconst64(Imm64::from(1_000_000)), 0, 3, 0)
+    }
+    fn trapping_div() -> Value {
+        // (i32.div_u (i32.const 1) (i32.const 0)) — div-by-zero trap.
+        idivu32(iconst32(Imm32::from(1)), iconst32(Imm32::from(0)))
+    }
+
+    #[test]
+    fn test_278_i32_mul_by_zero_keeps_trapping_load() {
+        // (i32.mul (i32.load OOB) (i32.const 0)) must NOT fold to 0.
+        let a = rewrite_pure(imul32(oob_i32_load(), iconst32(Imm32::from(0))));
+        assert!(
+            tree_contains_load(&a),
+            "x*0 dropped a trapping load: {:?}",
+            a.data()
+        );
+        // Reversed operand order: (i32.mul (i32.const 0) (i32.load OOB)).
+        let b = rewrite_pure(imul32(iconst32(Imm32::from(0)), oob_i32_load()));
+        assert!(
+            tree_contains_load(&b),
+            "0*x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i32_mul_by_zero_keeps_trapping_div() {
+        let a = rewrite_pure(imul32(trapping_div(), iconst32(Imm32::from(0))));
+        assert!(
+            tree_contains_load(&a),
+            "x*0 dropped a trapping div: {:?}",
+            a.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i64_mul_by_zero_keeps_trapping_load() {
+        let a = rewrite_pure(imul64(oob_i64_load(), iconst64(Imm64::from(0))));
+        assert!(
+            tree_contains_load(&a),
+            "i64 x*0 dropped a trapping load: {:?}",
+            a.data()
+        );
+        let b = rewrite_pure(imul64(iconst64(Imm64::from(0)), oob_i64_load()));
+        assert!(
+            tree_contains_load(&b),
+            "i64 0*x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i32_and_zero_keeps_trapping_load() {
+        let a = rewrite_pure(iand32(oob_i32_load(), iconst32(Imm32::from(0))));
+        assert!(
+            tree_contains_load(&a),
+            "x&0 dropped a trapping load: {:?}",
+            a.data()
+        );
+        let b = rewrite_pure(iand32(iconst32(Imm32::from(0)), oob_i32_load()));
+        assert!(
+            tree_contains_load(&b),
+            "0&x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i64_and_zero_keeps_trapping_load() {
+        let a = rewrite_pure(iand64(oob_i64_load(), iconst64(Imm64::from(0))));
+        assert!(
+            tree_contains_load(&a),
+            "i64 x&0 dropped a trapping load: {:?}",
+            a.data()
+        );
+        let b = rewrite_pure(iand64(iconst64(Imm64::from(0)), oob_i64_load()));
+        assert!(
+            tree_contains_load(&b),
+            "i64 0&x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i32_or_allones_keeps_trapping_load() {
+        // (i32.or (i32.load OOB) (i32.const -1)) must NOT fold to -1.
+        let a = rewrite_pure(ior32(oob_i32_load(), iconst32(Imm32::from(-1))));
+        assert!(
+            tree_contains_load(&a),
+            "x|-1 dropped a trapping load: {:?}",
+            a.data()
+        );
+        let b = rewrite_pure(ior32(iconst32(Imm32::from(-1)), oob_i32_load()));
+        assert!(
+            tree_contains_load(&b),
+            "-1|x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_i64_or_allones_keeps_trapping_load() {
+        let a = rewrite_pure(ior64(oob_i64_load(), iconst64(Imm64::from(-1))));
+        assert!(
+            tree_contains_load(&a),
+            "i64 x|-1 dropped a trapping load: {:?}",
+            a.data()
+        );
+        let b = rewrite_pure(ior64(iconst64(Imm64::from(-1)), oob_i64_load()));
+        assert!(
+            tree_contains_load(&b),
+            "i64 -1|x dropped a trapping load: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_select_const_cond_keeps_trapping_untaken_arm() {
+        // select(0, trap, safe) → safe would DROP the trapping `true` arm.
+        let a = rewrite_pure(select_instr(
+            iconst32(Imm32::from(0)),
+            oob_i32_load(),
+            iconst32(Imm32::from(7)),
+        ));
+        assert!(
+            tree_contains_load(&a),
+            "select(0,..) dropped trapping true arm: {:?}",
+            a.data()
+        );
+        // select(1, safe, trap) → safe would DROP the trapping `false` arm.
+        let b = rewrite_pure(select_instr(
+            iconst32(Imm32::from(1)),
+            iconst32(Imm32::from(7)),
+            oob_i32_load(),
+        ));
+        assert!(
+            tree_contains_load(&b),
+            "select(1,..) dropped trapping false arm: {:?}",
+            b.data()
+        );
+    }
+
+    #[test]
+    fn test_278_select_same_arms_keeps_trapping_cond() {
+        // select(trap_cond, x, x) → x would DROP the trapping condition.
+        let out = rewrite_pure(select_instr(
+            oob_i32_load(),
+            iconst32(Imm32::from(5)),
+            iconst32(Imm32::from(5)),
+        ));
+        assert!(
+            tree_contains_load(&out),
+            "select(c,x,x) dropped trapping cond: {:?}",
+            out.data()
+        );
+    }
+
+    // ---- No over-suppression: trap-FREE operands STILL fold ------------------
+
+    #[test]
+    fn test_278_trap_free_mul_by_zero_still_folds() {
+        // (local.get 0) * 0 → 0 (local.get cannot trap).
+        let out = rewrite_pure(imul32(local_get(0), iconst32(Imm32::from(0))));
+        assert!(
+            matches!(out.data(), ValueData::I32Const { val } if val.value() == 0),
+            "trap-free x*0 must still fold to 0, got {:?}",
+            out.data()
+        );
+        let out2 = rewrite_pure(imul32(iconst32(Imm32::from(0)), local_get(0)));
+        assert!(
+            matches!(out2.data(), ValueData::I32Const { val } if val.value() == 0),
+            "trap-free 0*x must still fold to 0, got {:?}",
+            out2.data()
+        );
+    }
+
+    #[test]
+    fn test_278_trap_free_and_zero_still_folds() {
+        let out = rewrite_pure(iand32(local_get(0), iconst32(Imm32::from(0))));
+        assert!(
+            matches!(out.data(), ValueData::I32Const { val } if val.value() == 0),
+            "trap-free x&0 must still fold to 0, got {:?}",
+            out.data()
+        );
+    }
+
+    #[test]
+    fn test_278_trap_free_or_allones_still_folds() {
+        let out = rewrite_pure(ior32(local_get(0), iconst32(Imm32::from(-1))));
+        assert!(
+            matches!(out.data(), ValueData::I32Const { val } if val.value() == -1),
+            "trap-free x|-1 must still fold to -1, got {:?}",
+            out.data()
+        );
+    }
+
+    #[test]
+    fn test_278_trap_free_i64_still_folds() {
+        let m = rewrite_pure(imul64(local_get(0), iconst64(Imm64::from(0))));
+        assert!(
+            matches!(m.data(), ValueData::I64Const { val } if val.value() == 0),
+            "trap-free i64 x*0 must still fold, got {:?}",
+            m.data()
+        );
+        let a = rewrite_pure(iand64(local_get(0), iconst64(Imm64::from(0))));
+        assert!(
+            matches!(a.data(), ValueData::I64Const { val } if val.value() == 0),
+            "trap-free i64 x&0 must still fold, got {:?}",
+            a.data()
+        );
+    }
+
+    #[test]
+    fn test_278_trap_free_select_still_folds() {
+        // Both arms trap-free constants; select(0,7,9) → 9, select(1,7,9) → 7.
+        let f = rewrite_pure(select_instr(
+            iconst32(Imm32::from(0)),
+            iconst32(Imm32::from(7)),
+            iconst32(Imm32::from(9)),
+        ));
+        assert!(
+            matches!(f.data(), ValueData::I32Const { val } if val.value() == 9),
+            "trap-free select(0,..) must fold to false arm, got {:?}",
+            f.data()
+        );
+        let t = rewrite_pure(select_instr(
+            iconst32(Imm32::from(1)),
+            iconst32(Imm32::from(7)),
+            iconst32(Imm32::from(9)),
+        ));
+        assert!(
+            matches!(t.data(), ValueData::I32Const { val } if val.value() == 7),
+            "trap-free select(1,..) must fold to true arm, got {:?}",
+            t.data()
         );
     }
 }
