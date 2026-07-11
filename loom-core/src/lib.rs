@@ -9220,6 +9220,16 @@ pub mod optimize {
     /// structural rewriter (`rewrite_pure`) to such a "window". We restrict to the
     /// integer domain (no floats — avoids NaN-bit canonicalization questions) and
     /// exclude memory access, calls, control flow, and local/global writes.
+    ///
+    /// #274 — TRAP SAFETY: this predicate also gates `extract_carrier_rhs` /
+    /// `forward_carrier_in_body`, and the dead-carrier path there DELETES the RHS
+    /// run outright. So an instruction admitted here must be *dead-eliminable*, not
+    /// merely deterministic. `i32`/`i64` `div_s`/`div_u`/`rem_s`/`rem_u` can TRAP
+    /// (divide-by-zero; signed overflow `INT_MIN / -1`) and are therefore NOT
+    /// side-effect-free: deleting an unused div/rem would silently drop a mandatory
+    /// wasm trap. They are deliberately EXCLUDED here. (This costs at most the
+    /// forwarding/SROA of a div/rem-defined carrier — a conservative, sound
+    /// trade-off; the #219 seam carrier is extend/shift/or/and, never div/rem.)
     fn is_simple_pure_instr(instr: &Instruction) -> bool {
         use Instruction::*;
         matches!(
@@ -9228,11 +9238,11 @@ pub mod optimize {
             I32Const(_) | I64Const(_)
             // Reads (no side effects, no writes)
             | LocalGet(_) | GlobalGet(_)
-            // Integer binary ops (consume 2, produce 1)
-            | I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU
+            // Integer binary ops (consume 2, produce 1) — div/rem EXCLUDED (may trap, #274)
+            | I32Add | I32Sub | I32Mul
             | I32And | I32Or | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr
             | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU
-            | I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU
+            | I64Add | I64Sub | I64Mul
             | I64And | I64Or | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr
             | I64Eq | I64Ne | I64LtS | I64LtU | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU
             // Integer unary ops (consume 1, produce 1)
@@ -19745,6 +19755,230 @@ mod tests {
         // Validates: stack effect is preserved by removal.
         let wasm_bytes = encode::encode_wasm(&module).expect("encode");
         wasmparser::validate(&wasm_bytes).expect("output validates");
+    }
+
+    // ---------------------------------------------------------------------
+    // #273 / #274 — div/rem trap preservation
+    //
+    // Integer div_s/div_u/rem_s/rem_u can TRAP: (a) divide-by-zero for any
+    // op, and (b) signed overflow INT_MIN / -1 for div_s. Per the wasm spec
+    // these traps are mandatory. No optimization may eliminate them.
+    //   #273: constant folding must NOT fold i32/i64 div_s(INT_MIN,-1) to a
+    //         constant (it would drop the `integer overflow` trap).
+    //   #274: the carrier-forwarding / dead-value path must NOT delete a
+    //         div/rem whose result is unused (it can still trap at runtime).
+    // ---------------------------------------------------------------------
+
+    /// Count div/rem ops (all four, i32+i64) anywhere in a function tree.
+    fn count_div_rem(instrs: &[Instruction]) -> usize {
+        let mut n = 0;
+        for i in instrs {
+            match i {
+                Instruction::I32DivS
+                | Instruction::I32DivU
+                | Instruction::I32RemS
+                | Instruction::I32RemU
+                | Instruction::I64DivS
+                | Instruction::I64DivU
+                | Instruction::I64RemS
+                | Instruction::I64RemU => n += 1,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    n += count_div_rem(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    n += count_div_rem(then_body) + count_div_rem(else_body);
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn test_273_div_s_int_min_neg1_not_folded_i32() {
+        // i32.div_s(INT_MIN, -1) traps (integer overflow). Constant folding
+        // must leave the div_s in place, NOT fold it to i32.const INT_MIN.
+        let wat = r#"(module
+            (func (export "f") (result i32)
+                (i32.div_s (i32.const -2147483648) (i32.const -1))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::constant_folding(&mut module).expect("fold");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            1,
+            "#273: div_s(INT_MIN,-1) must NOT be constant-folded (trap dropped)"
+        );
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("validates");
+    }
+
+    #[test]
+    fn test_273_div_s_int_min_neg1_not_folded_i64() {
+        let wat = r#"(module
+            (func (export "f") (result i64)
+                (i64.div_s (i64.const -9223372036854775808) (i64.const -1))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::constant_folding(&mut module).expect("fold");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            1,
+            "#273: i64 div_s(INT_MIN,-1) must NOT be constant-folded"
+        );
+    }
+
+    #[test]
+    fn test_273_normal_div_still_folds() {
+        // Regression guard: non-trapping constant div_s MUST still fold.
+        let wat = r#"(module
+            (func (export "f") (result i32)
+                (i32.div_s (i32.const 20) (i32.const 4))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::constant_folding(&mut module).expect("fold");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            0,
+            "non-trapping const div_s must still fold to a constant"
+        );
+        // And the folded constant must be 5.
+        let has_five = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Const(5)));
+        assert!(has_five, "20/4 must fold to 5");
+    }
+
+    #[test]
+    fn test_273_rem_s_int_min_neg1_folds_to_zero() {
+        // i32.rem_s(INT_MIN,-1) does NOT trap in wasm — the result is 0.
+        // Folding to i32.const 0 is sound and correct (must not panic or
+        // fold to a wrong value).
+        let wat = r#"(module
+            (func (export "f") (result i32)
+                (i32.rem_s (i32.const -2147483648) (i32.const -1))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::constant_folding(&mut module).expect("fold");
+        let has_zero = module.functions[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I32Const(0)));
+        assert!(
+            has_zero,
+            "rem_s(INT_MIN,-1) is 0 (no trap) — may fold to i32.const 0"
+        );
+    }
+
+    /// A dead-result div/rem (result stored into a never-read local) must
+    /// survive the full optimization pipeline — it can still trap at runtime.
+    fn assert_dead_div_rem_survives(wat: &str, label: &str) {
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::optimize_module(&mut module).expect("optimize");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            1,
+            "#274: dead-result {label} must NOT be eliminated (trap dropped)"
+        );
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("optimized module must validate");
+    }
+
+    #[test]
+    fn test_274_dead_div_s_i32_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i32 i32) (local i32)
+                (local.set 2 (i32.div_s (local.get 0) (local.get 1)))))"#,
+            "i32.div_s",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_div_u_i32_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i32 i32) (local i32)
+                (local.set 2 (i32.div_u (local.get 0) (local.get 1)))))"#,
+            "i32.div_u",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_rem_s_i32_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i32 i32) (local i32)
+                (local.set 2 (i32.rem_s (local.get 0) (local.get 1)))))"#,
+            "i32.rem_s",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_rem_u_i32_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i32 i32) (local i32)
+                (local.set 2 (i32.rem_u (local.get 0) (local.get 1)))))"#,
+            "i32.rem_u",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_div_s_i64_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i64 i64) (local i64)
+                (local.set 2 (i64.div_s (local.get 0) (local.get 1)))))"#,
+            "i64.div_s",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_rem_u_i64_not_eliminated() {
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i64 i64) (local i64)
+                (local.set 2 (i64.rem_u (local.get 0) (local.get 1)))))"#,
+            "i64.rem_u",
+        );
+    }
+
+    #[test]
+    fn test_274_dead_div_via_drop_not_eliminated() {
+        // The explicit-drop form of the same bug.
+        assert_dead_div_rem_survives(
+            r#"(module (func (export "f") (param i32 i32)
+                (drop (i32.div_s (local.get 0) (local.get 1)))))"#,
+            "i32.div_s (drop)",
+        );
+    }
+
+    #[test]
+    fn test_274_forward_carrier_keeps_trapping_div() {
+        // Direct test of the pass that root-caused #274: a single-assignment
+        // carrier defined by a trapping div, with the carrier never read, must
+        // NOT have its defining div deleted by carrier forwarding.
+        let wat = r#"(module (func (export "f") (param i32 i32) (local i32)
+            (local.set 2 (i32.div_s (local.get 0) (local.get 1)))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::forward_carrier_locals(&mut module).expect("forward");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            1,
+            "#274: forward_carrier_locals must not delete a dead trapping div"
+        );
+    }
+
+    #[test]
+    fn test_274_dead_add_still_eliminated() {
+        // Regression guard: a genuinely pure dead op (i32.add) SHOULD still be
+        // eliminable — the fix must not over-suppress non-trapping ops.
+        let wat = r#"(module (func (export "f") (param i32 i32) (local i32)
+            (local.set 2 (i32.add (local.get 0) (local.get 1)))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::optimize_module(&mut module).expect("optimize");
+        let adds = module.functions[0]
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::I32Add))
+            .count();
+        assert_eq!(adds, 0, "dead pure i32.add must still be eliminated");
     }
 
     // vacuum const+drop peephole tests (PR-B/PR-C follow-up)

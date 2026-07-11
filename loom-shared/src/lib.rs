@@ -4705,11 +4705,14 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let lhs_simplified = rewrite_pure(lhs.clone());
             let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // #273: only fold when it CANNOT trap. div_s traps on divisor 0
+                // (guarded) AND on signed overflow INT_MIN / -1 — folding that to a
+                // constant would silently drop the mandatory `integer overflow` trap,
+                // so we DO NOT fold it; the op stays and traps correctly at runtime.
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
-                    if r.value() != 0 =>
+                    if r.value() != 0 && !(l.value() == i32::MIN && r.value() == -1) =>
                 {
-                    // Signed division with wrapping for overflow case (INT_MIN / -1)
-                    iconst32(Imm32(l.value().wrapping_div(r.value())))
+                    iconst32(Imm32(l.value() / r.value()))
                 }
                 _ => idivs32(lhs_simplified, rhs_simplified),
             }
@@ -4742,10 +4745,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let lhs_simplified = rewrite_pure(lhs.clone());
             let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // #273: rem_s traps on divisor 0 (guarded). INT_MIN % -1 does NOT
+                // trap in wasm (result 0), but we still avoid `wrapping_rem`'s panic
+                // path and keep the fold sound for that case explicitly.
                 (ValueData::I32Const { val: l }, ValueData::I32Const { val: r })
                     if r.value() != 0 =>
                 {
-                    iconst32(Imm32(l.value().wrapping_rem(r.value())))
+                    let folded = if l.value() == i32::MIN && r.value() == -1 {
+                        0
+                    } else {
+                        l.value() % r.value()
+                    };
+                    iconst32(Imm32(folded))
                 }
                 _ => irems32(lhs_simplified, rhs_simplified),
             }
@@ -4777,10 +4788,14 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let lhs_simplified = rewrite_pure(lhs.clone());
             let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // #273: only fold when it CANNOT trap. div_s traps on divisor 0
+                // (guarded) AND on signed overflow INT_MIN / -1 — folding that to a
+                // constant would silently drop the mandatory `integer overflow` trap,
+                // so we DO NOT fold it; the op stays and traps correctly at runtime.
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
-                    if r.value() != 0 =>
+                    if r.value() != 0 && !(l.value() == i64::MIN && r.value() == -1) =>
                 {
-                    iconst64(Imm64(l.value().wrapping_div(r.value())))
+                    iconst64(Imm64(l.value() / r.value()))
                 }
                 _ => idivs64(lhs_simplified, rhs_simplified),
             }
@@ -4790,10 +4805,18 @@ fn rewrite_pure_impl(val: Value) -> Value {
             let lhs_simplified = rewrite_pure(lhs.clone());
             let rhs_simplified = rewrite_pure(rhs.clone());
             match (lhs_simplified.data(), rhs_simplified.data()) {
+                // #273: rem_s traps on divisor 0 (guarded). INT_MIN % -1 does NOT
+                // trap in wasm (result 0), but we still avoid `wrapping_rem`'s panic
+                // path and keep the fold sound for that case explicitly.
                 (ValueData::I64Const { val: l }, ValueData::I64Const { val: r })
                     if r.value() != 0 =>
                 {
-                    iconst64(Imm64(l.value().wrapping_rem(r.value())))
+                    let folded = if l.value() == i64::MIN && r.value() == -1 {
+                        0
+                    } else {
+                        l.value() % r.value()
+                    };
+                    iconst64(Imm64(folded))
                 }
                 _ => irems64(lhs_simplified, rhs_simplified),
             }
