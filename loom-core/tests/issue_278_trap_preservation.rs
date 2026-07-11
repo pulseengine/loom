@@ -13,7 +13,7 @@
 //! TRAP-EQUIVALENT: the original traps (OOB / div-by-zero), so the optimized one
 //! must trap too — not return 0 / -1.
 
-use loom_core::{encode, optimize_fused_module, parse};
+use loom_core::{encode, optimize, parse};
 use wasmtime::{Engine, Instance, Module as WtModule, Store, Val, ValType};
 
 /// Outcome of running exported `f` with no args.
@@ -48,8 +48,13 @@ fn run(wasm: &[u8]) -> Outcome {
 }
 
 fn optimize(wasm: &[u8]) -> Vec<u8> {
+    // The zero-annihilation / absorption / constant-condition-`select` folds
+    // gated by #278 live in the algebraic simplifier that `constant_folding`
+    // drives (ISLE `rewrite_pure` over the term IR). The component-fusion
+    // pipeline (`optimize_fused_module`) does adapter devirt / dedup / DCE only
+    // and never touches this arithmetic, so it could not exercise the gate.
     let mut module = parse::parse_wasm(wasm).expect("parse failed");
-    optimize_fused_module(&mut module).expect("optimize failed");
+    optimize::constant_folding(&mut module).expect("optimize failed");
     encode::encode_wasm(&module).expect("encode failed")
 }
 
