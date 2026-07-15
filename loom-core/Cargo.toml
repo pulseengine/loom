@@ -47,13 +47,24 @@ wasmtime = "46.0"
 [features]
 # Default features - verification enabled for safety
 default = ["verification"]
-# Verification support with Z3 SMT solver
-verification = ["z3"]
+# Verification support: Z3 SMT solver (value equivalence) + ordeal trap
+# semantics (certificate-checked trap-equivalence gate, issue #279).
+verification = ["z3", "ordeal"]
 
 [dependencies.z3]
 version = "0.19"
 optional = true
 features = ["bundled"]
+
+# ordeal trap-semantics library (issue #279). Pure-Rust, certificate-checked
+# QF_BV decision procedure; supplies the trap-condition predicates + VC
+# assembly for the systemic trap-equivalence gate. loom supplies the value
+# terms (signed div/rem etc.), ordeal supplies the trap clause; they meet in
+# `ordeal::trap::DefineOrTrap`. Gated behind `verification` so the default
+# build carries it and the no-verification build stays lean.
+[dependencies.ordeal]
+version = "0.9.1"
+optional = true
 
 [lib]
 path = "src/lib.rs"
