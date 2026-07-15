@@ -15413,6 +15413,17 @@ pub mod optimize {
 /// preserve program semantics. Only available with the "verification" feature.
 pub mod verify;
 
+/// Systemic trap-equivalence gate (issue #279).
+///
+/// The authoritative check that an optimization over a partial op (div/rem,
+/// load/store, `select` with a trapping discarded arm) preserves **traps** as
+/// well as values — superseding the ad-hoc `is_no_trap` static guards from
+/// #273/#274/#276/#278/#281. Built on the `ordeal` certificate-checked
+/// trap-semantics library: loom supplies the value terms, ordeal supplies the
+/// trap clause. Also houses the reusable "prove a transform under an asserted
+/// hypothesis" machinery that #231 (proof-carrying facts) will reuse.
+pub mod trap_gate;
+
 /// Optimization rule verification using Z3
 ///
 /// This module provides formal proofs that individual optimization rules are
