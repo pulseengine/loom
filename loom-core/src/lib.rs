@@ -15424,6 +15424,15 @@ pub mod verify;
 /// hypothesis" machinery that #231 (proof-carrying facts) will reuse.
 pub mod trap_gate;
 
+/// Swappable solver backend for algebraic rule verification (issue #277).
+///
+/// Defines the backend-neutral term DSL and the `RuleSolver` trait that
+/// `verify_rules` discharges its proof obligations through, with Z3 and
+/// `ordeal` (certificate-checked QF_BV) implementations selected via
+/// `LOOM_VERIFY_BACKEND`. This is the migration boundary for moving rule
+/// verification off Z3 onto ordeal; Tier-2 (`verify`) grows the same seam later.
+pub mod rule_solver;
+
 /// Optimization rule verification using Z3
 ///
 /// This module provides formal proofs that individual optimization rules are

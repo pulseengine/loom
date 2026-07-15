@@ -2,26 +2,33 @@
 #![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::unnecessary_cast)]
 
-//! Z3-Based Optimization Rule Verification
+//! Optimization Rule Verification (swappable SMT backend)
 //!
-//! This module provides formal verification for LOOM's optimization rules using Z3.
-//! Each optimization rule gets a corresponding SMT proof that demonstrates correctness
-//! for ALL possible inputs, providing stronger guarantees than even years of fuzzing.
+//! This module provides formal verification for LOOM's optimization rules.
+//! Each optimization rule gets a corresponding SMT proof that demonstrates
+//! correctness for ALL possible inputs, providing stronger guarantees than even
+//! years of fuzzing.
+//!
+//! Proofs are discharged through the [`crate::rule_solver`] boundary, which can
+//! run Z3, the pure-Rust certificate-checked `ordeal` solver, or both in a
+//! differential burn-in — selected by `LOOM_VERIFY_BACKEND` (issue #277). This
+//! module only builds the backend-neutral proof obligations; the choice of
+//! decision procedure lives in `rule_solver`.
 //!
 //! # Philosophy
 //!
-//! Binaryen has ~8 years of accumulated tests and fuzzing infrastructure. However,
-//! testing can only check specific inputs. Z3 proofs cover ALL inputs simultaneously:
+//! Testing can only check specific inputs. SMT proofs cover ALL inputs
+//! simultaneously:
 //!
 //! - A test `assert_eq!(42 * 2, 42 << 1)` checks ONE case
-//! - A Z3 proof `∀x: i32. x * 2 = x << 1` covers 2^32 cases INSTANTLY
+//! - A proof `∀x: i32. x * 2 = x << 1` covers 2^32 cases INSTANTLY
 //!
 //! # Architecture
 //!
 //! 1. **Rule Specifications**: Each optimization rule has an SMT specification
 //! 2. **Proof Obligations**: Rules generate proof obligations (theorems)
-//! 3. **Z3 Verification**: Obligations are discharged using Z3
-//! 4. **Counterexample Generation**: If invalid, Z3 produces counterexamples
+//! 3. **Verification**: Obligations are discharged via the active backend
+//! 4. **Counterexample Generation**: If invalid, a counterexample is produced
 //!
 //! # Example
 //!
@@ -31,14 +38,72 @@
 //! assert!(proof.is_proven());
 //! ```
 
+// Rule proofs are discharged through the swappable solver boundary
+// (`rule_solver`): terms are built in the backend-neutral `RuleTerm` DSL and
+// proven via the backend selected by `LOOM_VERIFY_BACKEND` (z3 / ordeal / both).
+// See `rule_solver.rs` for the migration rationale (issue #277).
 #[cfg(feature = "verification")]
-use z3::ast::BV;
-#[cfg(feature = "verification")]
-use z3::{SatResult, Solver};
+use crate::rule_solver::{RuleTerm, RuleVerdict, active_solver};
 
 #[allow(unused_imports)]
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
+
+/// Shorthand for a 32-bit bitvector constant in the rule DSL.
+#[cfg(feature = "verification")]
+fn bv_u(value: u64, width: u32) -> RuleTerm {
+    RuleTerm::from_u64(value, width)
+}
+
+/// Shorthand for a signed bitvector constant in the rule DSL.
+#[cfg(feature = "verification")]
+fn bv_i(value: i64, width: u32) -> RuleTerm {
+    RuleTerm::from_i64(value, width)
+}
+
+/// Discharge a rule proof obligation `lhs == rhs` (for all inputs) through the
+/// active solver backend, converting the verdict into a [`RuleProof`].
+#[cfg(feature = "verification")]
+fn prove_rule(rule_name: &str, lhs: &RuleTerm, rhs: &RuleTerm, details: &str) -> RuleProof {
+    let start = std::time::Instant::now();
+    let verdict = active_solver().prove_rule_equiv(lhs, rhs);
+    let time_ms = start.elapsed().as_millis() as u64;
+    match verdict {
+        RuleVerdict::Proven => RuleProof::proven(rule_name, time_ms, details),
+        RuleVerdict::Disproven(ce) => RuleProof::disproven(rule_name, ce, time_ms),
+        RuleVerdict::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
+    }
+}
+
+/// Discharge a NEGATIVE proof obligation: prove that `lhs == rhs` does NOT hold
+/// for all inputs (i.e. a counterexample exists). Used to demonstrate that an
+/// unsound optimization is genuinely unsound.
+#[cfg(feature = "verification")]
+fn prove_rule_not_equiv(
+    rule_name: &str,
+    lhs: &RuleTerm,
+    rhs: &RuleTerm,
+    details: &str,
+) -> RuleProof {
+    let start = std::time::Instant::now();
+    let verdict = active_solver().prove_rule_equiv(lhs, rhs);
+    let time_ms = start.elapsed().as_millis() as u64;
+    match verdict {
+        // A counterexample means the equivalence fails — which is exactly what
+        // this negative proof is asserting, so the NEGATIVE proof is PROVEN.
+        RuleVerdict::Disproven(ce) => RuleProof::proven(
+            rule_name,
+            time_ms,
+            &format!("{} (counterexample: {}) ✓", details, ce),
+        ),
+        RuleVerdict::Proven => RuleProof::disproven(
+            rule_name,
+            "unexpectedly no counterexample found".to_string(),
+            time_ms,
+        ),
+        RuleVerdict::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
+    }
+}
 
 // ============================================================================
 // Optimization Rule Specification Framework
@@ -159,45 +224,17 @@ impl VerifiedRuleSet {
 /// The proof covers ALL 2^32 possible values of x simultaneously.
 #[cfg(feature = "verification")]
 pub fn verify_strength_reduction_mul_power2_i32(power: u32) -> RuleProof {
-    let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_mul_pow2_i32({})", 1u32 << power);
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    // Create symbolic variable x
-    let x = BV::new_const("x", 32);
-
-    // Left side: x * (2^power)
-    let multiplier = BV::from_u64((1u64 << power) as u64, 32);
-    let mul_result = x.bvmul(&multiplier);
-
-    // Right side: x << power
-    let shift_amt = BV::from_u64(power as u64, 32);
-    let shift_result = x.bvshl(&shift_amt);
-
-    // Assert they are NOT equal (looking for counterexample)
-    solver.assert(&mul_result.eq(&shift_result).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => {
-            // No counterexample exists - rule is PROVEN correct
-            RuleProof::proven(
-                &rule_name,
-                time_ms,
-                &format!("∀x: i32. x * {} = x << {} ✓", 1u32 << power, power),
-            )
-        }
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            let ce = format!("{}", model);
-            RuleProof::disproven(&rule_name, ce, time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(&rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    // Left side: x * (2^power); Right side: x << power
+    let lhs = x.mul(&bv_u(1u64 << power, 32));
+    let rhs = x.shl(&bv_u(power as u64, 32));
+    prove_rule(
+        &rule_name,
+        &lhs,
+        &rhs,
+        &format!("∀x: i32. x * {} = x << {} ✓", 1u32 << power, power),
+    )
 }
 
 /// Verify: x / (2^n) == x >> n for unsigned i32
@@ -205,39 +242,17 @@ pub fn verify_strength_reduction_mul_power2_i32(power: u32) -> RuleProof {
 /// Note: This is only valid for UNSIGNED division. Signed division has different semantics.
 #[cfg(feature = "verification")]
 pub fn verify_strength_reduction_div_power2_u32(power: u32) -> RuleProof {
-    let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_div_pow2_u32({})", 1u32 << power);
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-
-    // Left side: x /u (2^power)
-    let divisor = BV::from_u64((1u64 << power) as u64, 32);
-    let div_result = x.bvudiv(&divisor);
-
-    // Right side: x >>u power
-    let shift_amt = BV::from_u64(power as u64, 32);
-    let shift_result = x.bvlshr(&shift_amt);
-
-    solver.assert(&div_result.eq(&shift_result).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            &rule_name,
-            time_ms,
-            &format!("∀x: u32. x /u {} = x >>u {} ✓", 1u32 << power, power),
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(&rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(&rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    // Left side: x /u (2^power); Right side: x >>u power
+    let lhs = x.udiv(&bv_u(1u64 << power, 32));
+    let rhs = x.lshr(&bv_u(power as u64, 32));
+    prove_rule(
+        &rule_name,
+        &lhs,
+        &rhs,
+        &format!("∀x: u32. x /u {} = x >>u {} ✓", 1u32 << power, power),
+    )
 }
 
 /// Verify: x % (2^n) == x & (2^n - 1) for unsigned i32
@@ -245,41 +260,19 @@ pub fn verify_strength_reduction_div_power2_u32(power: u32) -> RuleProof {
 /// Modulo by power of 2 can be replaced by AND with mask.
 #[cfg(feature = "verification")]
 pub fn verify_strength_reduction_rem_power2_u32(power: u32) -> RuleProof {
-    let start = std::time::Instant::now();
     let divisor = 1u32 << power;
     let mask = divisor - 1;
     let rule_name = format!("strength_reduction_rem_pow2_u32({})", divisor);
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-
-    // Left side: x %u (2^power)
-    let divisor_bv = BV::from_u64(divisor as u64, 32);
-    let rem_result = x.bvurem(&divisor_bv);
-
-    // Right side: x & (2^power - 1)
-    let mask_bv = BV::from_u64(mask as u64, 32);
-    let and_result = x.bvand(&mask_bv);
-
-    solver.assert(&rem_result.eq(&and_result).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            &rule_name,
-            time_ms,
-            &format!("∀x: u32. x %u {} = x & {} ✓", divisor, mask),
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(&rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(&rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    // Left side: x %u (2^power); Right side: x & (2^power - 1)
+    let lhs = x.urem(&bv_u(divisor as u64, 32));
+    let rhs = x.and(&bv_u(mask as u64, 32));
+    prove_rule(
+        &rule_name,
+        &lhs,
+        &rhs,
+        &format!("∀x: u32. x %u {} = x & {} ✓", divisor, mask),
+    )
 }
 
 // ============================================================================
@@ -289,117 +282,34 @@ pub fn verify_strength_reduction_rem_power2_u32(power: u32) -> RuleProof {
 /// Verify: x + 0 == x (additive identity)
 #[cfg(feature = "verification")]
 pub fn verify_add_zero_identity_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "add_zero_identity_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let add_result = x.bvadd(&zero);
-
-    solver.assert(&add_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x + 0 = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.add(&bv_u(0, 32));
+    prove_rule("add_zero_identity_i32", &lhs, &x, "∀x: i32. x + 0 = x ✓")
 }
 
 /// Verify: x * 0 == 0 (multiplicative annihilator)
 #[cfg(feature = "verification")]
 pub fn verify_mul_zero_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "mul_zero_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let mul_result = x.bvmul(&zero);
-
-    solver.assert(&mul_result.eq(&zero).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x * 0 = 0 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let zero = bv_u(0, 32);
+    let lhs = x.mul(&zero);
+    prove_rule("mul_zero_i32", &lhs, &zero, "∀x: i32. x * 0 = 0 ✓")
 }
 
 /// Verify: x * 1 == x (multiplicative identity)
 #[cfg(feature = "verification")]
 pub fn verify_mul_one_identity_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "mul_one_identity_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let one = BV::from_u64(1, 32);
-
-    let mul_result = x.bvmul(&one);
-
-    solver.assert(&mul_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x * 1 = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.mul(&bv_u(1, 32));
+    prove_rule("mul_one_identity_i32", &lhs, &x, "∀x: i32. x * 1 = x ✓")
 }
 
 /// Verify: x - x == 0 (self-subtraction)
 #[cfg(feature = "verification")]
 pub fn verify_sub_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "sub_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let sub_result = x.bvsub(&x);
-
-    solver.assert(&sub_result.eq(&zero).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x - x = 0 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.sub(&x);
+    prove_rule("sub_self_i32", &lhs, &bv_u(0, 32), "∀x: i32. x - x = 0 ✓")
 }
 
 // ============================================================================
@@ -409,177 +319,56 @@ pub fn verify_sub_self_i32() -> RuleProof {
 /// Verify: x XOR x == 0
 #[cfg(feature = "verification")]
 pub fn verify_xor_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "xor_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let xor_result = x.bvxor(&x);
-
-    solver.assert(&xor_result.eq(&zero).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x XOR x = 0 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.xor(&x);
+    prove_rule("xor_self_i32", &lhs, &bv_u(0, 32), "∀x: i32. x XOR x = 0 ✓")
 }
 
 /// Verify: x AND x == x (idempotent)
 #[cfg(feature = "verification")]
 pub fn verify_and_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "and_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-
-    let and_result = x.bvand(&x);
-
-    solver.assert(&and_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x AND x = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.and(&x);
+    prove_rule("and_self_i32", &lhs, &x, "∀x: i32. x AND x = x ✓")
 }
 
 /// Verify: x OR x == x (idempotent)
 #[cfg(feature = "verification")]
 pub fn verify_or_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "or_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-
-    let or_result = x.bvor(&x);
-
-    solver.assert(&or_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x OR x = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.or(&x);
+    prove_rule("or_self_i32", &lhs, &x, "∀x: i32. x OR x = x ✓")
 }
 
 /// Verify: x AND 0 == 0
 #[cfg(feature = "verification")]
 pub fn verify_and_zero_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "and_zero_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let and_result = x.bvand(&zero);
-
-    solver.assert(&and_result.eq(&zero).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x AND 0 = 0 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let zero = bv_u(0, 32);
+    let lhs = x.and(&zero);
+    prove_rule("and_zero_i32", &lhs, &zero, "∀x: i32. x AND 0 = 0 ✓")
 }
 
 /// Verify: x OR (-1) == -1 (all bits set)
 #[cfg(feature = "verification")]
 pub fn verify_or_all_ones_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "or_all_ones_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let all_ones = BV::from_i64(-1, 32); // 0xFFFFFFFF
-
-    let or_result = x.bvor(&all_ones);
-
-    solver.assert(&or_result.eq(&all_ones).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            rule_name,
-            time_ms,
-            "∀x: i32. x OR 0xFFFFFFFF = 0xFFFFFFFF ✓",
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let all_ones = bv_i(-1, 32); // 0xFFFFFFFF
+    let lhs = x.or(&all_ones);
+    prove_rule(
+        "or_all_ones_i32",
+        &lhs,
+        &all_ones,
+        "∀x: i32. x OR 0xFFFFFFFF = 0xFFFFFFFF ✓",
+    )
 }
 
 /// Verify: x XOR 0 == x (XOR with zero is identity)
 #[cfg(feature = "verification")]
 pub fn verify_xor_zero_identity_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "xor_zero_identity_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let xor_result = x.bvxor(&zero);
-
-    solver.assert(&xor_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. x XOR 0 = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let lhs = x.xor(&bv_u(0, 32));
+    prove_rule("xor_zero_identity_i32", &lhs, &x, "∀x: i32. x XOR 0 = x ✓")
 }
 
 // ============================================================================
@@ -589,62 +378,22 @@ pub fn verify_xor_zero_identity_i32() -> RuleProof {
 /// Verify: x == x is always true (returns 1)
 #[cfg(feature = "verification")]
 pub fn verify_eq_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "eq_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let one = BV::from_u64(1, 32);
-
+    let x = RuleTerm::new_const("x", 32);
+    let one = bv_u(1, 32);
     // (x == x) ? 1 : 0 should always be 1
-    let eq_result = x.eq(&x).ite(&one, &BV::from_u64(0, 32));
-
-    solver.assert(&eq_result.eq(&one).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. (x == x) = 1 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = x.eq_bool(&x).ite(&one, &bv_u(0, 32));
+    prove_rule("eq_self_i32", &lhs, &one, "∀x: i32. (x == x) = 1 ✓")
 }
 
 /// Verify: x != x is always false (returns 0)
 #[cfg(feature = "verification")]
 pub fn verify_ne_self_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "ne_self_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-    let one = BV::from_u64(1, 32);
-
+    let x = RuleTerm::new_const("x", 32);
+    let zero = bv_u(0, 32);
+    let one = bv_u(1, 32);
     // (x != x) ? 1 : 0 should always be 0
-    let ne_result = x.eq(&x).not().ite(&one, &zero);
-
-    solver.assert(&ne_result.eq(&zero).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i32. (x != x) = 0 ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = x.eq_bool(&x).not().ite(&one, &zero);
+    prove_rule("ne_self_i32", &lhs, &zero, "∀x: i32. (x != x) = 0 ✓")
 }
 
 // ============================================================================
@@ -655,37 +404,17 @@ pub fn verify_ne_self_i32() -> RuleProof {
 /// This proves: eval(i32.add(i32.const(a), i32.const(b))) == eval(i32.const(a +_wrap b))
 #[cfg(feature = "verification")]
 pub fn verify_constant_folding_add_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "constant_folding_add_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
     // For any two constants a, b, adding them at runtime equals the pre-computed sum
-    let a = BV::new_const("a", 32);
-    let b = BV::new_const("b", 32);
-
-    let runtime_add = a.bvadd(&b);
-    // The pre-computed result would be the same operation - this is trivially true
-    // but demonstrates the framework
-
-    solver.assert(&runtime_add.eq(&a.bvadd(&b)).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            rule_name,
-            time_ms,
-            "∀a,b: i32. i32.add(a, b) = a +_wrap b ✓",
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let a = RuleTerm::new_const("a", 32);
+    let b = RuleTerm::new_const("b", 32);
+    let lhs = a.add(&b);
+    let rhs = a.add(&b);
+    prove_rule(
+        "constant_folding_add_i32",
+        &lhs,
+        &rhs,
+        "∀a,b: i32. i32.add(a, b) = a +_wrap b ✓",
+    )
 }
 
 // ============================================================================
@@ -696,36 +425,17 @@ pub fn verify_constant_folding_add_i32() -> RuleProof {
 /// This is a meta-proof that our verification uses the correct semantics
 #[cfg(feature = "verification")]
 pub fn verify_wrapping_add_semantics_i32() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "wrapping_add_semantics_i32";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
     // Test case: i32::MAX + 1 should wrap to i32::MIN
-    let max_val = BV::from_i64(i32::MAX as i64, 32);
-    let one = BV::from_u64(1, 32);
-    let min_val = BV::from_i64(i32::MIN as i64, 32);
-
-    let wrapped_result = max_val.bvadd(&one);
-
-    solver.assert(&wrapped_result.eq(&min_val).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            rule_name,
-            time_ms,
-            "i32::MAX + 1 = i32::MIN (wrapping semantics verified) ✓",
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let max_val = bv_i(i32::MAX as i64, 32);
+    let one = bv_u(1, 32);
+    let min_val = bv_i(i32::MIN as i64, 32);
+    let lhs = max_val.add(&one);
+    prove_rule(
+        "wrapping_add_semantics_i32",
+        &lhs,
+        &min_val,
+        "i32::MAX + 1 = i32::MIN (wrapping semantics verified) ✓",
+    )
 }
 
 // ============================================================================
@@ -735,66 +445,24 @@ pub fn verify_wrapping_add_semantics_i32() -> RuleProof {
 /// Verify: x + 0 == x for i64
 #[cfg(feature = "verification")]
 pub fn verify_add_zero_identity_i64() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "add_zero_identity_i64";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 64);
-    let zero = BV::from_u64(0, 64);
-
-    let add_result = x.bvadd(&zero);
-
-    solver.assert(&add_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x: i64. x + 0 = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 64);
+    let lhs = x.add(&bv_u(0, 64));
+    prove_rule("add_zero_identity_i64", &lhs, &x, "∀x: i64. x + 0 = x ✓")
 }
 
 /// Verify: x * (2^n) == x << n for i64
 #[cfg(feature = "verification")]
 pub fn verify_strength_reduction_mul_power2_i64(power: u32) -> RuleProof {
-    let start = std::time::Instant::now();
     let rule_name = format!("strength_reduction_mul_pow2_i64({})", 1u64 << power);
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 64);
-
-    let multiplier = BV::from_u64(1u64 << power, 64);
-    let mul_result = x.bvmul(&multiplier);
-
-    let shift_amt = BV::from_u64(power as u64, 64);
-    let shift_result = x.bvshl(&shift_amt);
-
-    solver.assert(&mul_result.eq(&shift_result).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            &rule_name,
-            time_ms,
-            &format!("∀x: i64. x * {} = x << {} ✓", 1u64 << power, power),
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(&rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(&rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 64);
+    let lhs = x.mul(&bv_u(1u64 << power, 64));
+    let rhs = x.shl(&bv_u(power as u64, 64));
+    prove_rule(
+        &rule_name,
+        &lhs,
+        &rhs,
+        &format!("∀x: i64. x * {} = x << {} ✓", 1u64 << power, power),
+    )
 }
 
 // ============================================================================
@@ -805,51 +473,26 @@ pub fn verify_strength_reduction_mul_power2_i64(power: u32) -> RuleProof {
 /// This is a NEGATIVE proof - showing when an optimization is INVALID
 #[cfg(feature = "verification")]
 pub fn verify_shift_left_right_not_identity_i32(n: u32) -> RuleProof {
-    let start = std::time::Instant::now();
     let rule_name = format!("shift_left_right_NOT_identity_i32({})", n);
 
     if n == 0 || n >= 32 {
         return RuleProof::error(&rule_name, "shift amount must be 1-31", 0);
     }
 
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let shift_amt = BV::from_u64(n as u64, 32);
-
+    let x = RuleTerm::new_const("x", 32);
+    let shift_amt = bv_u(n as u64, 32);
     // (x << n) >> n
-    let shifted = x.bvshl(&shift_amt).bvlshr(&shift_amt);
+    let shifted = x.shl(&shift_amt).lshr(&shift_amt);
 
-    // Try to find x where (x << n) >> n != x
-    solver.assert(&shifted.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Sat => {
-            // Found counterexample - this proves the optimization is INVALID
-            let model = solver.get_model().unwrap();
-            RuleProof::proven(
-                &rule_name,
-                time_ms,
-                &format!(
-                    "∃x: i32. (x << {}) >> {} ≠ x (found counterexample: {}) ✓",
-                    n, n, model
-                ),
-            )
-        }
-        SatResult::Unsat => {
-            // No counterexample - this would be unexpected
-            RuleProof::disproven(
-                &rule_name,
-                "unexpectedly no counterexample found".to_string(),
-                time_ms,
-            )
-        }
-        SatResult::Unknown => RuleProof::error(&rule_name, "solver returned unknown", time_ms),
-    }
+    // NEGATIVE proof: (x << n) >> n == x must NOT hold for all x. A
+    // counterexample from the solver is exactly what proves the optimization
+    // is invalid.
+    prove_rule_not_equiv(
+        &rule_name,
+        &shifted,
+        &x,
+        &format!("∃x: i32. (x << {}) >> {} ≠ x", n, n),
+    )
 }
 
 // ============================================================================
@@ -1138,170 +781,68 @@ pub fn verify_pipeline_composition() -> Vec<RuleProof> {
 /// Verify: if (const 1) then A else B → A (dead else branch)
 #[cfg(feature = "verification")]
 pub fn verify_constant_if_true_elimination() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "constant_if_true_elimination";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    // Model: if (1) then x else y
-    // After optimization: x
-    //
-    // For any x, y: if(1, x, y) = x
-    let x = BV::new_const("x", 32);
-    let y = BV::new_const("y", 32);
-    let one = BV::from_u64(1, 32);
-    let zero = BV::from_u64(0, 32);
-
+    // Model: if (1) then x else y  → x. For any x, y: if(1, x, y) = x
+    let x = RuleTerm::new_const("x", 32);
+    let y = RuleTerm::new_const("y", 32);
+    let one = bv_u(1, 32);
+    let zero = bv_u(0, 32);
     // if (1 != 0) then x else y
-    let if_result = one.eq(&zero).not().ite(&x, &y);
-
-    // Should equal x
-    solver.assert(&if_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            rule_name,
-            time_ms,
-            "∀x,y. if(1, x, y) = x (dead else elimination) ✓",
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = one.eq_bool(&zero).not().ite(&x, &y);
+    prove_rule(
+        "constant_if_true_elimination",
+        &lhs,
+        &x,
+        "∀x,y. if(1, x, y) = x (dead else elimination) ✓",
+    )
 }
 
 /// Verify: if (const 0) then A else B → B (dead then branch)
 #[cfg(feature = "verification")]
 pub fn verify_constant_if_false_elimination() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "constant_if_false_elimination";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let y = BV::new_const("y", 32);
-    let zero = BV::from_u64(0, 32);
-
+    let x = RuleTerm::new_const("x", 32);
+    let y = RuleTerm::new_const("y", 32);
+    let zero = bv_u(0, 32);
     // if (0 != 0) then x else y = y
-    let if_result = zero.eq(&zero).not().ite(&x, &y);
-
-    solver.assert(&if_result.eq(&y).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(
-            rule_name,
-            time_ms,
-            "∀x,y. if(0, x, y) = y (dead then elimination) ✓",
-        ),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = zero.eq_bool(&zero).not().ite(&x, &y);
+    prove_rule(
+        "constant_if_false_elimination",
+        &lhs,
+        &y,
+        "∀x,y. if(0, x, y) = y (dead then elimination) ✓",
+    )
 }
 
 /// Verify: select(1, x, y) → x
 #[cfg(feature = "verification")]
 pub fn verify_select_true() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "select_true";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let y = BV::new_const("y", 32);
-    let one = BV::from_u64(1, 32);
-    let zero = BV::from_u64(0, 32);
-
+    let x = RuleTerm::new_const("x", 32);
+    let y = RuleTerm::new_const("y", 32);
+    let one = bv_u(1, 32);
+    let zero = bv_u(0, 32);
     // select(cond, x, y) = if cond != 0 then x else y
-    let select_result = one.eq(&zero).not().ite(&x, &y);
-
-    solver.assert(&select_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x,y. select(1, x, y) = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = one.eq_bool(&zero).not().ite(&x, &y);
+    prove_rule("select_true", &lhs, &x, "∀x,y. select(1, x, y) = x ✓")
 }
 
 /// Verify: select(0, x, y) → y
 #[cfg(feature = "verification")]
 pub fn verify_select_false() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "select_false";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let x = BV::new_const("x", 32);
-    let y = BV::new_const("y", 32);
-    let zero = BV::from_u64(0, 32);
-
-    let select_result = zero.eq(&zero).not().ite(&x, &y);
-
-    solver.assert(&select_result.eq(&y).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀x,y. select(0, x, y) = y ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let x = RuleTerm::new_const("x", 32);
+    let y = RuleTerm::new_const("y", 32);
+    let zero = bv_u(0, 32);
+    let lhs = zero.eq_bool(&zero).not().ite(&x, &y);
+    prove_rule("select_false", &lhs, &y, "∀x,y. select(0, x, y) = y ✓")
 }
 
 /// Verify: select(c, x, x) → x (both branches same)
 #[cfg(feature = "verification")]
 pub fn verify_select_same() -> RuleProof {
-    let start = std::time::Instant::now();
-    let rule_name = "select_same";
-
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
-    let solver = Solver::new();
-
-    let c = BV::new_const("c", 32);
-    let x = BV::new_const("x", 32);
-    let zero = BV::from_u64(0, 32);
-
+    let c = RuleTerm::new_const("c", 32);
+    let x = RuleTerm::new_const("x", 32);
+    let zero = bv_u(0, 32);
     // select(c, x, x) should always equal x regardless of c
-    let select_result = c.eq(&zero).not().ite(&x, &x);
-
-    solver.assert(&select_result.eq(&x).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => RuleProof::proven(rule_name, time_ms, "∀c,x. select(c, x, x) = x ✓"),
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let lhs = c.eq_bool(&zero).not().ite(&x, &x);
+    prove_rule("select_same", &lhs, &x, "∀c,x. select(c, x, x) = x ✓")
 }
 
 /// Verify all control flow optimizations
@@ -1426,11 +967,17 @@ fn generate_wat_for_rule(rule_name: &str, inputs: &[(String, i64)]) -> String {
     }
 }
 
-/// Probe for edge cases by asking Z3 to find inputs that produce specific outputs
+/// Probe for edge cases by asking Z3 to find inputs that produce specific outputs.
+///
+/// NOTE: this is a *satisfiability* probe (find some `x` meeting a constraint),
+/// not a rule-equivalence proof, so it sits OUTSIDE the `RuleSolver` migration
+/// boundary and stays on Z3 directly (issue #277). ordeal's `prove_equiv` API is
+/// specifically for the all-inputs equivalence obligation the rules use.
 #[cfg(feature = "verification")]
 pub fn find_edge_case_inputs(target_output: i32, operation: &str) -> Option<GeneratedTestCase> {
-    // Default config used via thread-local context
-    // Context is thread-local in z3 0.19
+    use z3::ast::BV;
+    use z3::{SatResult, Solver};
+
     let solver = Solver::new();
 
     let x = BV::new_const("x", 32);
@@ -1785,23 +1332,27 @@ pub fn generate_isle_proof_obligations(rules: &[IsleRule]) -> Vec<RuleProof> {
 /// then the ISLE rule is proven correct for all 2^N * 2^N input combinations.
 #[cfg(feature = "verification")]
 fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str, bit_width: u32) -> RuleProof {
-    let start = std::time::Instant::now();
-
-    let solver = Solver::new();
-
     // Create symbolic constants at the native bit width
-    let a = BV::new_const("a", bit_width);
-    let b = BV::new_const("b", bit_width);
+    let a = RuleTerm::new_const("a", bit_width);
+    let b = RuleTerm::new_const("b", bit_width);
+
+    // Helper: apply a binary operation to two operands in the rule DSL.
+    let apply = |op: &str, x: &RuleTerm, y: &RuleTerm| -> Option<RuleTerm> {
+        Some(match op {
+            "iadd32" | "iadd64" => x.add(y),
+            "isub32" | "isub64" => x.sub(y),
+            "imul32" | "imul64" => x.mul(y),
+            "iand32" | "iand64" => x.and(y),
+            "ior32" | "ior64" => x.or(y),
+            "ixor32" | "ixor64" => x.xor(y),
+            _ => return None,
+        })
+    };
 
     // LHS: the WebAssembly runtime operation (direct bitvector arithmetic)
-    let wasm_result = match operation {
-        "iadd32" | "iadd64" => a.bvadd(&b),
-        "isub32" | "isub64" => a.bvsub(&b),
-        "imul32" | "imul64" => a.bvmul(&b),
-        "iand32" | "iand64" => a.bvand(&b),
-        "ior32" | "ior64" => a.bvor(&b),
-        "ixor32" | "ixor64" => a.bvxor(&b),
-        _ => {
+    let wasm_result = match apply(operation, &a, &b) {
+        Some(t) => t,
+        None => {
             return RuleProof::error(
                 rule_name,
                 &format!("Unsupported operation: {}", operation),
@@ -1820,53 +1371,29 @@ fn verify_isle_constant_fold_rule(operation: &str, rule_name: &str, bit_width: u
     // (which are defined as modular arithmetic on N-bit values).
     let a_wide = a.sign_ext(bit_width); // sign-extend to 2*N bits
     let b_wide = b.sign_ext(bit_width);
-
-    let wide_result = match operation {
-        "iadd32" | "iadd64" => a_wide.bvadd(&b_wide),
-        "isub32" | "isub64" => a_wide.bvsub(&b_wide),
-        "imul32" | "imul64" => a_wide.bvmul(&b_wide),
-        "iand32" | "iand64" => a_wide.bvand(&b_wide),
-        "ior32" | "ior64" => a_wide.bvor(&b_wide),
-        "ixor32" | "ixor64" => a_wide.bvxor(&b_wide),
-        _ => unreachable!(),
-    };
-
+    let wide_result = apply(operation, &a_wide, &b_wide).expect("operation validated above");
     // Truncate back to N bits (extract bits [N-1:0])
     let rust_helper_result = wide_result.extract(bit_width - 1, 0);
 
-    // Proof obligation: wasm_result != rust_helper_result
-    // If UNSAT, then they are equal for ALL inputs -> rule is correct
-    solver.assert(&wasm_result.eq(&rust_helper_result).not());
-
-    let time_ms = start.elapsed().as_millis() as u64;
-
-    match solver.check() {
-        SatResult::Unsat => {
-            let op_symbol = match operation {
-                "iadd32" | "iadd64" => "+",
-                "isub32" | "isub64" => "-",
-                "imul32" | "imul64" => "*",
-                "iand32" | "iand64" => "&",
-                "ior32" | "ior64" => "|",
-                "ixor32" | "ixor64" => "^",
-                _ => "?",
-            };
-            let ty = if bit_width == 64 { "i64" } else { "i32" };
-            RuleProof::proven(
-                rule_name,
-                time_ms,
-                &format!(
-                    "ISLE constant fold {}: ∀a,b: {}. wasm_{}(a, b) = rust_wrapping_{}(a, b) ✓",
-                    operation, ty, op_symbol, op_symbol
-                ),
-            )
-        }
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            RuleProof::disproven(rule_name, format!("{}", model), time_ms)
-        }
-        SatResult::Unknown => RuleProof::error(rule_name, "solver returned unknown", time_ms),
-    }
+    let op_symbol = match operation {
+        "iadd32" | "iadd64" => "+",
+        "isub32" | "isub64" => "-",
+        "imul32" | "imul64" => "*",
+        "iand32" | "iand64" => "&",
+        "ior32" | "ior64" => "|",
+        "ixor32" | "ixor64" => "^",
+        _ => "?",
+    };
+    let ty = if bit_width == 64 { "i64" } else { "i32" };
+    prove_rule(
+        rule_name,
+        &wasm_result,
+        &rust_helper_result,
+        &format!(
+            "ISLE constant fold {}: ∀a,b: {}. wasm_{}(a, b) = rust_wrapping_{}(a, b) ✓",
+            operation, ty, op_symbol, op_symbol
+        ),
+    )
 }
 
 // ============================================================================
