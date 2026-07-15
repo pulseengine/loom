@@ -5,6 +5,42 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-14
+
+Correctness backstop + trap preservation + algebraic mid-end.
+
+### Fixed / Hardened
+
+- **Mandatory authoritative output-validation backstop (#257).** `loom optimize`
+  runs the authoritative `wasmparser::validate` on the fully-optimized module
+  before emit and reverts to the (valid) original on any rejection — loom
+  **cannot emit structurally invalid wasm, by construction**. Also hardens
+  `constant_folding`/`simplify_locals` (the lenient skipped-proof path).
+- **Trap preservation (#273, #274, #278, #281).** Optimizations no longer drop
+  mandatory WASM traps: constant-folding keeps `div_s(INT_MIN,-1)` and
+  divide-by-zero trapping; div/rem are not dead-eliminated; operand-discarding
+  folds (`x*0`, `x&0`) and constant-condition `select` preserve a trapping
+  discarded operand/arm. (The systemic trap-equivalence gate — loom#279 on
+  ordeal — supersedes these per-identity guards in a follow-up.)
+
+### Added
+
+- **Z3-verified algebraic mid-end (#240)** — strength-reduction folds in the term
+  simplifier (`(x<<k)>>u k → x&mask`, shift/mask fusions), each proven by the
+  translation validator, plus a value-range premise hook (the mask-dropping
+  parity win is gated on the deferred #231 fact contract).
+
+### Optimized
+
+- **Component custom-section GC (#239 Phase A)** — strips inert component-level
+  `producers`/`name`/`.debug_*` sections (opt-in `--strip-component-type`) + a
+  CLI size breakdown.
+
+### Build / CI
+
+- Migrate `loom-testing` to the `rand` 0.10 API; unblocks CI (Refs #142 — commit
+  the lockfile to stop dep-float breakage).
+
 ## [1.1.18] - 2026-07-03
 
 Critical correctness fix: `loom optimize` could emit structurally invalid wasm.
