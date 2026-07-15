@@ -2914,6 +2914,22 @@ pub mod encode {
                 continue;
             }
 
+            // TRUST BOUNDARY (#231): the `wsc.*` namespace is loom-owned,
+            // proof-carrying metadata. loom must NEVER re-emit a `wsc.*` section
+            // that came from the INPUT wasm — those facts were not discharged by
+            // THIS run's verifier, and the consumer trusts `wsc.facts` to
+            // optimize *under* the asserted invariants (first-such-section wins).
+            // Passing an upstream/stale/forged `wsc.facts` through would let it
+            // preempt (or masquerade as) facts loom actually proved — a
+            // trust-boundary inversion. So we strip the whole namespace on
+            // re-emit, UNCONDITIONALLY (independent of `emit_facts`): the only
+            // `wsc.*` sections in loom's output are the ones loom authored below,
+            // this run. Byte-identity for the common case is preserved — inputs
+            // without a `wsc.*` section are unaffected.
+            if name.starts_with("wsc.") {
+                continue;
+            }
+
             wasm_module.section(&CustomSection {
                 name: name.into(),
                 data: bytes.into(),
@@ -2921,8 +2937,10 @@ pub mod encode {
         }
 
         // #231 proof-carrying facts (P1): emit the `wsc.facts` custom section
-        // LAST (a sibling of `wsc.transformation.attestation`). Gated on
-        // `emit_facts` so facts-absent output is byte-identical to today.
+        // (a sibling of `wsc.transformation.attestation`). Any input `wsc.facts`
+        // was already stripped in the passthrough loop above, so loom's is the
+        // sole such section — the consumer's first-wins rule resolves to it.
+        // Gated on `emit_facts` so facts-absent output is byte-identical.
         if emit_facts {
             if let Some(payload) = build_wsc_facts_payload(module) {
                 wasm_module.section(&CustomSection {
@@ -22257,6 +22275,99 @@ mod wsc_facts_emitter_tests {
         assert_eq!(
             payload, expected,
             "only the single in-range fact must be emitted; the rest dropped, none mis-keyed"
+        );
+    }
+
+    /// Count every `wsc.facts` custom section in a wasm binary (not just the
+    /// first) — the trust-boundary tests need to prove there is EXACTLY ONE,
+    /// loom's own, and no inherited sibling that a first-wins consumer could
+    /// pick up instead.
+    fn count_wsc_facts_sections(wasm: &[u8]) -> usize {
+        let parser = wasmparser::Parser::new(0);
+        parser
+            .parse_all(wasm)
+            .filter_map(Result::ok)
+            .filter(|p| {
+                matches!(
+                    p,
+                    wasmparser::Payload::CustomSection(r) if r.name() == encode::WSC_FACTS_SECTION
+                )
+            })
+            .count()
+    }
+
+    /// TRUST BOUNDARY (#231): an input `wsc.facts` (stale/forged/upstream) must
+    /// NEVER survive re-encode — those facts were not discharged by this run.
+    /// This holds even on the default path (`emit_facts = false`), because a
+    /// passed-through section would still be trusted by a first-wins consumer.
+    #[test]
+    fn input_wsc_facts_is_stripped_even_with_facts_off() {
+        let mut module = module_with_two_imports(); // no loom facts injected
+        // A forged upstream facts section: claims func 2 / value_id 0 ∈ [7, 7]
+        // — an invariant THIS loom never proved.
+        let forged: Vec<u8> = vec![0x01, 0x01, 0x01, 0x02, 0x00, 0x02, 0x07, 0x07];
+        module
+            .custom_sections
+            .push((encode::WSC_FACTS_SECTION.to_string(), forged.clone()));
+
+        // Default encode (emit_facts = false) must DROP the forged section.
+        let via_default = encode::encode_wasm(&module).expect("encode");
+        assert_eq!(
+            count_wsc_facts_sections(&via_default),
+            0,
+            "an input wsc.facts must not be re-emitted on the default path"
+        );
+        assert!(
+            !via_default
+                .windows(forged.len())
+                .any(|w| w == forged.as_slice()),
+            "forged facts bytes must not appear anywhere in the output"
+        );
+
+        // Non-wsc custom sections still round-trip (namespace strip is precise).
+        let mut m2 = module_with_two_imports();
+        m2.custom_sections
+            .push(("name".to_string(), vec![0x00, 0x01, 0x41]));
+        let with_name = encode::encode_wasm(&m2).expect("encode");
+        assert!(
+            wasmparser::Parser::new(0)
+                .parse_all(&with_name)
+                .filter_map(Result::ok)
+                .any(|p| matches!(p, wasmparser::Payload::CustomSection(r) if r.name() == "name")),
+            "a non-wsc custom section must still pass through unchanged"
+        );
+    }
+
+    /// When loom DOES author facts, its section is the sole `wsc.facts` in the
+    /// output — the forged input is stripped, loom's is emitted, first-wins
+    /// resolves to loom's (no ordering hazard).
+    #[test]
+    fn loom_facts_replace_not_append_to_input_wsc_facts() {
+        let mut module = module_with_two_imports();
+        // Forged upstream section (would-be first-wins winner if it survived).
+        module.custom_sections.push((
+            encode::WSC_FACTS_SECTION.to_string(),
+            vec![0x01, 0x01, 0x01, 0x02, 0x00, 0x02, 0x07, 0x07],
+        ));
+        // loom's own, proved-this-run fact: func 2 / value_id 0 ∈ [0, 10].
+        module.facts.push(ModuleFact {
+            func_index: 2,
+            value_id: 0,
+            kind: ModuleFactKind::ValueRange { lo: 0, hi: 10 },
+        });
+
+        let wasm = encode::encode_wasm_with_facts(&module, true).expect("encode");
+        assert_eq!(
+            count_wsc_facts_sections(&wasm),
+            1,
+            "output must carry exactly ONE wsc.facts — loom's own, not two"
+        );
+        // And it is loom's [0,10] fact, not the forged [7,7] one.
+        let payload = extract_wsc_facts(&wasm).expect("loom's section present");
+        let expected: &[u8] = &[0x01, 0x01, 0x01, 0x02, 0x00, 0x02, 0x00, 0x0a];
+        assert_eq!(
+            payload, expected,
+            "the surviving wsc.facts must be loom's proved fact, never the forged input"
         );
     }
 }
