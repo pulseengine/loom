@@ -1482,6 +1482,7 @@ mod async_adapter_tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         }
     }
 
@@ -1735,6 +1736,7 @@ mod async_adapter_tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         }
     }
 
@@ -1838,6 +1840,7 @@ mod adapter_spec_tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         }
     }
 

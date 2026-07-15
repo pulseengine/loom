@@ -75,6 +75,44 @@ pub struct Module {
     pub type_section_bytes: Option<Vec<u8>>,
     /// Global section raw bytes (passed through for reference types, etc.)
     pub global_section_bytes: Option<Vec<u8>>,
+    /// #231 proof-carrying facts (P1): value-attached premises resolved to the
+    /// FINAL operator sequence, ready for `wsc.facts` emission during encode.
+    /// Each entry keys a fact to `(func_index, value_id)` where `value_id` is
+    /// the 0-based index of the producing operator in that function's FINAL
+    /// `instructions` (the same walk the encoder uses — single source of
+    /// truth). Empty by default → no `wsc.facts` section, byte-identical to
+    /// today. Populated only by a fact-source (deferred) or a test injector.
+    pub facts: Vec<ModuleFact>,
+}
+
+/// #231 proof-carrying facts (P1): a single fact resolved to the final
+/// operator sequence, as it will be written into the `wsc.facts` custom
+/// section (schema v1, see [`crate::encode`] emitter). `value_id` is keyed to
+/// the FINAL `Function::instructions` index — never a pre-optimization index —
+/// so it always names the operator the encoder actually emits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleFact {
+    /// Full wasm function index (imported functions first, then locally
+    /// defined) — the space synth decodes into `FunctionOps::index`.
+    pub func_index: u32,
+    /// 0-based index of the producing operator within the function's FINAL
+    /// operator sequence (`Function::instructions`).
+    pub value_id: u32,
+    /// The premise this fact carries.
+    pub kind: ModuleFactKind,
+}
+
+/// #231 fact kinds emitted by loom (P1 ships only the value-range kind; the
+/// other schema-v1 kinds are reserved for later phases).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleFactKind {
+    /// Schema-v1 kind `0x01`: the (signed) value ∈ `[lo, hi]`, inclusive.
+    ValueRange {
+        /// Inclusive signed lower bound.
+        lo: i64,
+        /// Inclusive signed upper bound.
+        hi: i64,
+    },
 }
 
 /// Export definition
@@ -1181,6 +1219,7 @@ pub mod parse {
             custom_sections,       // Preserve custom sections as raw bytes
             type_section_bytes,    // Preserve type section as raw bytes
             global_section_bytes,  // Preserve global section as raw bytes
+            facts: Vec::new(),     // #231: no facts until a source injects them
         })
     }
 
@@ -1795,8 +1834,8 @@ pub mod parse {
 pub mod encode {
 
     use super::{
-        BlockType, ExportKind, FunctionSignature, ImportKind, Instruction, Module, RefType,
-        ValueType,
+        BlockType, ExportKind, FunctionSignature, ImportKind, Instruction, Module, ModuleFact,
+        ModuleFactKind, RefType, ValueType,
     };
     use anyhow::{Context, Result, anyhow};
     use wasm_encoder::{
@@ -1847,8 +1886,30 @@ pub mod encode {
         }
     }
 
-    /// Encode to WebAssembly binary module
+    /// Encode to WebAssembly binary module.
+    ///
+    /// Facts-absent by construction: this is the default encoder and it NEVER
+    /// emits a `wsc.facts` section, so its output is byte-identical to prior
+    /// releases. To emit proof-carrying facts (#231), use
+    /// [`encode_wasm_with_facts`] with `emit_facts = true`.
     pub fn encode_wasm(module: &Module) -> Result<Vec<u8>> {
+        encode_wasm_with_facts(module, false)
+    }
+
+    /// Encode to WebAssembly binary, optionally emitting the #231 `wsc.facts`
+    /// custom section (schema v1) from `module.facts`.
+    ///
+    /// SINGLE SOURCE OF TRUTH for `value_id`: the `wsc.facts` section is built
+    /// in [`build_wsc_facts_section`] from the SAME `module.functions` /
+    /// `Function::instructions` walk the code section below encodes. A fact's
+    /// `value_id` is the 0-based index of the producing operator in that final
+    /// operator sequence; a fact naming an operator that does not exist in the
+    /// final sequence is simply not emitted (a deleted operator forgoes its
+    /// optimization on the consumer side — never a miscompile).
+    ///
+    /// When `emit_facts` is `false` (default), no section is written and the
+    /// output is byte-identical to [`encode_wasm`].
+    pub fn encode_wasm_with_facts(module: &Module, emit_facts: bool) -> Result<Vec<u8>> {
         let mut wasm_module = wasm_encoder::Module::new();
 
         // FIXED: Ensure all function signatures are in the types array
@@ -2859,7 +2920,114 @@ pub mod encode {
             });
         }
 
+        // #231 proof-carrying facts (P1): emit the `wsc.facts` custom section
+        // LAST (a sibling of `wsc.transformation.attestation`). Gated on
+        // `emit_facts` so facts-absent output is byte-identical to today.
+        if emit_facts {
+            if let Some(payload) = build_wsc_facts_payload(module) {
+                wasm_module.section(&CustomSection {
+                    name: WSC_FACTS_SECTION.into(),
+                    data: (&payload).into(),
+                });
+            }
+        }
+
         Ok(wasm_module.finish())
+    }
+
+    /// #231: the custom-section name loom emits proof-carrying facts under —
+    /// a sibling of `wsc.transformation.attestation`. synth honors the FIRST
+    /// such section (one prover, one section).
+    pub const WSC_FACTS_SECTION: &str = "wsc.facts";
+    /// #231 schema version emitted by this loom (see synth's
+    /// `wsc-facts-encoding.md`). A layout-incompatible change bumps this byte.
+    pub const WSC_FACTS_VERSION: u8 = 0x01;
+    /// #231 schema-v1 fact kind: value-range (`lo:s64 hi:s64`).
+    const WSC_FACT_KIND_VALUE_RANGE: u8 = 0x01;
+
+    /// #231 P1 EMITTER (the deliverable). Build the `wsc.facts` custom-section
+    /// PAYLOAD (schema v1) for `module.facts`, or `None` if there are no
+    /// emittable facts (in which case no section is written — byte-identical to
+    /// facts-off).
+    ///
+    /// Wire format (schema v1, `wsc-facts-encoding.md`):
+    /// ```text
+    /// payload := version:byte(=0x01) count:u32 fact[count]
+    /// fact    := kind:byte func_index:u32 value_id:u32 body_len:u32 body[body_len]
+    /// ```
+    /// with `value-range` (kind `0x01`) body = `lo:s64 hi:s64`. All integers
+    /// are LEB128 (`u32` unsigned, `s64` signed), exactly as the wasm core spec.
+    ///
+    /// VALUE-ID KEYING (the footgun this guards against): `value_id` is the
+    /// 0-based index of the producing operator in the FINAL operator sequence.
+    /// We resolve `func_index` (full index, imports first) to its function and
+    /// verify `value_id` is in range for that function's FINAL
+    /// `instructions` — the same sequence [`encode_wasm_with_facts`] encodes
+    /// into the code section. A fact whose operator does not exist in the final
+    /// sequence (deleted by DCE, out of range) is DROPPED here: it names
+    /// nothing the encoder emits, so emitting it would mis-key. Dropping only
+    /// forgoes an optimization on the consumer; it never miscompiles.
+    fn build_wsc_facts_payload(module: &Module) -> Option<Vec<u8>> {
+        if module.facts.is_empty() {
+            return None;
+        }
+
+        // Number of imported functions — the base of the local-function index
+        // space. `func_index` is the FULL index (imports first).
+        let imported_funcs = module
+            .imports
+            .iter()
+            .filter(|i| matches!(i.kind, ImportKind::Func(_)))
+            .count() as u32;
+
+        // Only emit facts that name a real operator in the FINAL sequence.
+        let mut emittable: Vec<&ModuleFact> = Vec::new();
+        for fact in &module.facts {
+            // Resolve the full func_index to a local function.
+            if fact.func_index < imported_funcs {
+                // Imported functions have no body to key an operator against.
+                continue;
+            }
+            let local = (fact.func_index - imported_funcs) as usize;
+            let Some(func) = module.functions.get(local) else {
+                continue; // func_index out of range → names nothing.
+            };
+            if (fact.value_id as usize) < func.instructions.len() {
+                emittable.push(fact);
+            }
+            // else: value_id out of range for the final body → drop (footgun
+            // guard: never emit a value_id the encoder won't produce).
+        }
+
+        if emittable.is_empty() {
+            return None;
+        }
+
+        let mut payload = Vec::new();
+        payload.push(WSC_FACTS_VERSION);
+        leb128::write::unsigned(&mut payload, emittable.len() as u64)
+            .expect("write to Vec is infallible");
+
+        for fact in emittable {
+            match &fact.kind {
+                ModuleFactKind::ValueRange { lo, hi } => {
+                    // body = lo:s64 hi:s64
+                    let mut body = Vec::new();
+                    leb128::write::signed(&mut body, *lo).expect("infallible");
+                    leb128::write::signed(&mut body, *hi).expect("infallible");
+
+                    payload.push(WSC_FACT_KIND_VALUE_RANGE);
+                    leb128::write::unsigned(&mut payload, fact.func_index as u64)
+                        .expect("infallible");
+                    leb128::write::unsigned(&mut payload, fact.value_id as u64)
+                        .expect("infallible");
+                    leb128::write::unsigned(&mut payload, body.len() as u64).expect("infallible");
+                    payload.extend_from_slice(&body);
+                }
+            }
+        }
+
+        Some(payload)
     }
 
     /// Helper function to encode offset expressions for data/element segments
@@ -15287,6 +15455,7 @@ pub mod optimize {
                 custom_sections: vec![],
                 type_section_bytes: None,
                 global_section_bytes: None,
+                facts: Vec::new(),
             }
         }
 
@@ -18621,6 +18790,7 @@ mod tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         let wasm_bytes =
@@ -21859,6 +22029,7 @@ mod tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         // Structurally invalid: `i32.add` with nothing (well, one value) on the
@@ -21900,5 +22071,285 @@ mod tests {
         let out = encode::encode_wasm(&module).expect("encode reverted module");
         wasmparser::validate(&out)
             .expect("loom#257: after the backstop reverts to the original, output must be VALID");
+    }
+}
+
+/// #231 proof-carrying facts (P1) — `wsc.facts` value-range EMITTER tests.
+///
+/// Golden-bytes: assert loom's emitter produces the schema-v1 wire format
+/// byte-for-byte (co-designed against synth's `wsc-facts-encoding.md` /
+/// `wsc_facts_ingestion_494.rs` fixture). Facts-stripped identity: the
+/// facts-absent encode is byte-identical to `encode_wasm`.
+#[cfg(test)]
+mod wsc_facts_emitter_tests {
+    use super::*;
+
+    fn sig() -> FunctionSignature {
+        FunctionSignature {
+            params: vec![],
+            results: vec![],
+        }
+    }
+
+    fn func(instrs: Vec<Instruction>) -> Function {
+        Function {
+            name: None,
+            signature: sig(),
+            locals: vec![],
+            instructions: instrs,
+        }
+    }
+
+    /// A module with TWO imported functions and TWO local functions, so the
+    /// first local function has FULL func_index 2 (imports first). This
+    /// exercises the imports-first index resolution in the emitter.
+    fn module_with_two_imports() -> Module {
+        Module {
+            functions: vec![
+                func(vec![
+                    Instruction::I32Const(524),
+                    Instruction::I32Const(1),
+                    Instruction::I32Add,
+                    Instruction::Drop,
+                    Instruction::End,
+                ]),
+                func(vec![Instruction::End]),
+            ],
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![sig()],
+            exports: vec![],
+            imports: vec![
+                Import {
+                    module: "env".to_string(),
+                    name: "a".to_string(),
+                    kind: ImportKind::Func(0),
+                },
+                Import {
+                    module: "env".to_string(),
+                    name: "b".to_string(),
+                    kind: ImportKind::Func(0),
+                },
+            ],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+            facts: Vec::new(),
+        }
+    }
+
+    /// Extract the raw payload of the FIRST `wsc.facts` custom section.
+    fn extract_wsc_facts(wasm: &[u8]) -> Option<Vec<u8>> {
+        let parser = wasmparser::Parser::new(0);
+        for payload in parser.parse_all(wasm) {
+            if let Ok(wasmparser::Payload::CustomSection(reader)) = payload {
+                if reader.name() == encode::WSC_FACTS_SECTION {
+                    return Some(reader.data().to_vec());
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn golden_value_range_bytes_match_schema_v1() {
+        // Inject the gust_mix-shaped premise `v ∈ [524, 1524]` on the FIRST
+        // local function (full func_index 2), value_id 1 (the second operator,
+        // `i32.const 1`, which is in range for the final body).
+        let mut module = module_with_two_imports();
+        module.facts.push(ModuleFact {
+            func_index: 2,
+            value_id: 1,
+            kind: ModuleFactKind::ValueRange { lo: 524, hi: 1524 },
+        });
+
+        let wasm =
+            encode::encode_wasm_with_facts(&module, true).expect("encode with facts must succeed");
+
+        // Round-trip validity.
+        wasmparser::validate(&wasm).expect("facts-carrying module must be valid wasm");
+
+        let payload = extract_wsc_facts(&wasm).expect("wsc.facts section must be present");
+
+        // Hand-computed schema-v1 golden (matches synth's worked example
+        // encoding: 524 -> 8c 04, 1524 -> f4 0b as signed LEB128):
+        //   01            version 1
+        //   01            count = 1
+        //   01            kind = value-range
+        //   02            func_index = 2 (imports-first: local func 0)
+        //   01            value_id = 1
+        //   04            body_len = 4
+        //   8c 04         lo = 524  (signed LEB128)
+        //   f4 0b         hi = 1524 (signed LEB128)
+        let expected: &[u8] = &[0x01, 0x01, 0x01, 0x02, 0x01, 0x04, 0x8c, 0x04, 0xf4, 0x0b];
+        assert_eq!(
+            payload, expected,
+            "wsc.facts payload must match schema-v1 byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn facts_absent_output_is_byte_identical() {
+        let module = module_with_two_imports(); // no facts injected
+        let via_default = encode::encode_wasm(&module).expect("encode");
+        let via_with_facts_off =
+            encode::encode_wasm_with_facts(&module, false).expect("encode facts-off");
+        assert_eq!(
+            via_default, via_with_facts_off,
+            "facts-off must equal the default encoder"
+        );
+        // And even with emit_facts=true but NO facts in the module, no section
+        // is written → still byte-identical to the default.
+        let via_with_facts_on_empty =
+            encode::encode_wasm_with_facts(&module, true).expect("encode facts-on empty");
+        assert_eq!(
+            via_default, via_with_facts_on_empty,
+            "emit_facts with an empty fact set must add no bytes"
+        );
+        // The default output carries NO wsc.facts section.
+        assert!(
+            extract_wsc_facts(&via_default).is_none(),
+            "default encode must not emit a wsc.facts section"
+        );
+    }
+
+    #[test]
+    fn out_of_range_and_imported_facts_are_dropped_not_miskeyed() {
+        // A fact whose value_id is out of range for the FINAL body, and a fact
+        // naming an IMPORTED function (no body), must both be DROPPED — never
+        // emitted against a different operator. Only the in-range fact survives.
+        let mut module = module_with_two_imports();
+        // In-range: func 2, value_id 0 (the `i32.const 524`).
+        module.facts.push(ModuleFact {
+            func_index: 2,
+            value_id: 0,
+            kind: ModuleFactKind::ValueRange { lo: 0, hi: 10 },
+        });
+        // Out of range: func 2 has 5 operators; value_id 99 names nothing.
+        module.facts.push(ModuleFact {
+            func_index: 2,
+            value_id: 99,
+            kind: ModuleFactKind::ValueRange { lo: 0, hi: 1 },
+        });
+        // Imported function (index 0) has no body → drop.
+        module.facts.push(ModuleFact {
+            func_index: 0,
+            value_id: 0,
+            kind: ModuleFactKind::ValueRange { lo: 0, hi: 1 },
+        });
+        // Out-of-range function index → drop.
+        module.facts.push(ModuleFact {
+            func_index: 42,
+            value_id: 0,
+            kind: ModuleFactKind::ValueRange { lo: 0, hi: 1 },
+        });
+
+        let wasm = encode::encode_wasm_with_facts(&module, true).expect("encode");
+        let payload = extract_wsc_facts(&wasm).expect("section present (one fact survives)");
+
+        // Exactly ONE fact: kind=0x01, func=2, value_id=0, body_len=2,
+        // lo=0 (00), hi=10 (0a).
+        let expected: &[u8] = &[0x01, 0x01, 0x01, 0x02, 0x00, 0x02, 0x00, 0x0a];
+        assert_eq!(
+            payload, expected,
+            "only the single in-range fact must be emitted; the rest dropped, none mis-keyed"
+        );
+    }
+}
+
+/// #231 proof-carrying facts (P1) — value-attached FactSet + under-P discharge.
+#[cfg(test)]
+mod wsc_facts_factset_tests {
+    use loom_shared::{FactSet, OptimizationEnv, local_get};
+
+    #[test]
+    fn value_range_is_a_superset_of_value_max_view() {
+        // A non-negative range keeps the unsigned `value_max` view working so
+        // #240's `fits_below_bit` gate is untouched.
+        let mut env = OptimizationEnv::new();
+        let x = local_get(0);
+        env.assume_range(x.clone(), 0, (1u64 << 24) as i64 - 1);
+        // Top 8 bits of a 32-bit value are provably zero.
+        assert!(
+            env.fits_below_bit(&x, 24),
+            "range [0, 2^24-1] must license fits_below_bit(24) via the unsigned view"
+        );
+        assert!(!env.fits_below_bit(&x, 23));
+    }
+
+    #[test]
+    fn negative_low_bound_yields_no_unsigned_view() {
+        // A range that dips negative is a sound signed fact but gives NO
+        // unsigned bound (conservative): the #240 gate must NOT fire.
+        let mut env = OptimizationEnv::new();
+        let x = local_get(1);
+        env.assume_range(x.clone(), -5, 100);
+        assert!(
+            !env.fits_below_bit(&x, 31),
+            "a negative-low range must not license an unsigned bit bound"
+        );
+        assert_eq!(FactSet::range(-5, 100).unsigned_max(), None);
+        assert_eq!(FactSet::range(0, 100).unsigned_max(), Some(100));
+    }
+
+    #[test]
+    fn assume_range_intersects_tightest_premise_wins() {
+        let mut env = OptimizationEnv::new();
+        let x = local_get(2);
+        env.assume_range(x.clone(), 0, 1000);
+        env.assume_range(x.clone(), 10, 500);
+        assert_eq!(env.facts.get(&x).unwrap().value_range, Some((10, 500)));
+    }
+}
+
+/// #231 under-P discharge: a fact-driven rewrite is accepted ONLY when the
+/// obligation is proven Unsat UNDER the asserted premise (via #279's
+/// `trap_gate::prove_under_premises`). This locks the "fact without its
+/// under-P discharge is a bug" law from the plan.
+#[cfg(all(test, feature = "verification"))]
+mod wsc_facts_under_p_tests {
+    use crate::trap_gate::{constant, prove_under_premises, var};
+    use ordeal::term::{BoolTerm, BvTerm};
+
+    fn bx(t: BvTerm) -> Box<BvTerm> {
+        Box::new(t)
+    }
+
+    /// Premise `x <= 1000` (unsigned, 32-bit) discharges the obligation
+    /// `x < 2^24` (the #240 `fits_below_bit(24)` side condition): under the
+    /// premise it is valid, so `prove_under_premises` returns Accept (Unsat).
+    #[test]
+    fn range_premise_discharges_fits_below_bit_obligation() {
+        let x = var("x", 32);
+        // premise: x <=u 1000
+        let premise = BoolTerm::Ule(bx(x.clone()), bx(constant(1000, 32)));
+        // obligation: x <u 2^24
+        let obligation = BoolTerm::Ult(bx(x.clone()), bx(constant(1 << 24, 32)));
+        let verdict = prove_under_premises(&[premise], &obligation);
+        assert!(
+            verdict.is_accepted(),
+            "under premise x<=1000, x<2^24 must be proven (Unsat); got {:?}",
+            verdict
+        );
+    }
+
+    /// WITHOUT a tight enough premise the SAME obligation must NOT be accepted
+    /// — the fact is load-bearing, not decorative. Premise `x <= 2^30` does
+    /// not imply `x < 2^24`, so the discharge fails (Sat: a counterexample
+    /// exists) and the rewrite must be rejected.
+    #[test]
+    fn insufficient_premise_does_not_discharge() {
+        let x = var("x", 32);
+        let premise = BoolTerm::Ule(bx(x.clone()), bx(constant(1 << 30, 32)));
+        let obligation = BoolTerm::Ult(bx(x.clone()), bx(constant(1 << 24, 32)));
+        let verdict = prove_under_premises(&[premise], &obligation);
+        assert!(
+            !verdict.is_accepted(),
+            "x<=2^30 must NOT discharge x<2^24 — the fact must be load-bearing"
+        );
     }
 }
