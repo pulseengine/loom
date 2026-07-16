@@ -1,18 +1,28 @@
-//! Demonstration of Z3-based optimization rule verification
+//! Demonstration of optimization rule verification.
 //!
-//! This shows how LOOM uses Z3 to PROVE optimization rules are correct
-//! for ALL possible inputs, rather than just testing specific cases.
+//! This shows how LOOM PROVES optimization rules are correct for ALL possible
+//! inputs, rather than just testing specific cases.
+//!
+//! The proof backend is swappable (issue #277) via `LOOM_VERIFY_BACKEND`:
+//!   * `z3`     — Z3 (default)
+//!   * `ordeal` — the pure-Rust, certificate-checked QF_BV solver
+//!   * `both`   — run both and assert the verdicts AGREE (differential burn-in)
 //!
 //! Run with: cargo run --example verify_rules_demo --features verification
+//!       or: LOOM_VERIFY_BACKEND=both cargo run --example verify_rules_demo --features verification
 
+use loom_core::rule_solver::active_solver;
 use loom_core::verify_rules::*;
 
 fn main() {
+    let backend = active_solver().backend_name();
+
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║       LOOM Z3 Optimization Rule Verification                     ║");
+    println!("║       LOOM Optimization Rule Verification                        ║");
     println!("║       Proving Correctness for ALL Inputs                         ║");
     println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
+    println!("Proof backend: {backend}  (set LOOM_VERIFY_BACKEND=z3|ordeal|both)");
     println!("Each proof below covers ALL possible values (2³² for i32, 2⁶⁴ for i64)");
     println!("This is equivalent to running billions of test cases instantly.\n");
 
