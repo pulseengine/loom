@@ -180,7 +180,7 @@ pub fn signed_rem_value(a: &BvTerm, b: &BvTerm, width: u32) -> BvTerm {
 
 /// The signedness/kind of a div/rem op, mapping loom instructions onto ordeal's
 /// [`DivOp`] plus the correct **value** builder.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DivKind {
     /// `iN.div_u`.
     DivU,
@@ -283,6 +283,24 @@ pub fn check_mem_transform(
 /// `⇔`). WASM's page size is fixed at 64 KiB.
 pub fn mem_bound_from_pages(pages: &BvTerm, width: u32) -> BvTerm {
     BvTerm::Mul(bx(pages.clone()), bx(constant(65536, width)))
+}
+
+/// **Div-is-trap-free** gate for a div/rem → **constant** fold (issue #279 —
+/// #273 class). Constant-folding `div_s/div_u/rem_s/rem_u` replaces the op with a
+/// literal that carries NO trap, so the fold is sound **only** when the op
+/// provably CANNOT trap for these operands. This proves exactly that obligation:
+/// `orig.may_trap ⇔ false` — the `÷0` disjunct (all four kinds) and the
+/// `INT_MIN / -1` overflow disjunct (signed kinds) are both unsatisfiable.
+///
+/// `a`/`b` are the operand `BvTerm`s at the fold site. At a const-fold site they
+/// are [`constant`] terms, so ordeal decides the trap condition exactly (no
+/// symbolic slack). A folded `div_s(INT_MIN, -1)` (which the #273 static guard
+/// already refuses) is caught here as `Sat` (the overflow disjunct holds); a
+/// fold of `20 / 4` proves `Unsat` and is accepted.
+pub fn check_div_discard(kind: DivKind, a: &BvTerm, b: &BvTerm, width: u32) -> TrapVerdict {
+    let orig_trap = trap::trap_div(kind.ordeal_op(), a, b, width);
+    let no_trap = BoolTerm::Ne(bx(constant(0, 8)), bx(constant(0, 8))); // false
+    verdict_of(prove_trap_condition_equivalence(&orig_trap, &no_trap))
 }
 
 /// **Select-with-trapping-arm** gate (issue #279 — #281 class). WASM `select` is
@@ -470,6 +488,84 @@ mod tests {
             }
             other => panic!("dead div elimination must be rejected, got {other:?}"),
         }
+    }
+
+    // ---- div → constant fold: check_div_discard (trap-free obligation, #273) ----
+
+    /// A non-trapping constant div (`20 / 4`) proves trap-free ⇒ the const-fold
+    /// is accepted. This is the ACCEPT half of the #273 backstop.
+    #[test]
+    fn div_discard_trap_free_const_is_accepted() {
+        let a = c(20, 32);
+        let b = c(4, 32);
+        let verdict = check_div_discard(DivKind::DivS, &a, &b, 32);
+        assert!(
+            verdict.is_accepted(),
+            "trap-free const div_s(20,4) fold must be accepted, got {verdict:?}"
+        );
+    }
+
+    /// #273: `div_s(INT_MIN, -1)` overflows — the trap is real, so folding it to
+    /// a constant drops a mandatory trap. `check_div_discard` must REJECT.
+    #[test]
+    fn div_discard_int_min_overflow_is_rejected() {
+        let int_min = c(0x8000_0000, 32);
+        let neg_one = c(0xFFFF_FFFF, 32);
+        let verdict = check_div_discard(DivKind::DivS, &int_min, &neg_one, 32);
+        assert!(
+            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
+            "div_s(INT_MIN,-1) const-fold must be rejected (overflow trap), got {verdict:?}"
+        );
+    }
+
+    /// A ÷0 constant div traps — folding it to a constant drops the trap.
+    /// `check_div_discard` must REJECT.
+    #[test]
+    fn div_discard_div_by_zero_is_rejected() {
+        let a = c(7, 32);
+        let zero = c(0, 32);
+        let verdict = check_div_discard(DivKind::DivU, &a, &zero, 32);
+        assert!(
+            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
+            "div_u(7,0) const-fold must be rejected (÷0 trap), got {verdict:?}"
+        );
+    }
+
+    /// `rem_u(7, 0)` traps (÷0) — folding it to a constant drops the trap, so it
+    /// must be REJECTED. `rem_u` is unsigned so ordeal's `trap_div` models it
+    /// exactly (÷0 only, no overflow disjunct).
+    #[test]
+    fn rem_u_div_by_zero_is_rejected() {
+        let a = c(7, 32);
+        let zero = c(0, 32);
+        let verdict = check_div_discard(DivKind::RemU, &a, &zero, 32);
+        assert!(
+            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
+            "rem_u(7,0) const-fold must be rejected (÷0 trap), got {verdict:?}"
+        );
+    }
+
+    /// KNOWN OVER-APPROXIMATION (documented gap). Per the WASM spec,
+    /// `rem_s(INT_MIN, -1)` does NOT trap — the result is 0. But ordeal's
+    /// `trap_div(RemS, …)` shares the signed-overflow disjunct with `div_s`, so
+    /// it reports this case as TRAPPING. `check_div_discard(RemS, …)` therefore
+    /// (conservatively, but imprecisely) REJECTS a genuinely-safe `rem_s`
+    /// overflow fold. Because a REJECT here would revert a valid optimization
+    /// (a capability regression, not a soundness bug), the #288 backstop
+    /// deliberately does NOT route `RemS` folds — they stay on their exact
+    /// static #273 guard. This test PINS that over-approximation so a future
+    /// ordeal fix (dropping the overflow disjunct for `RemS`) is noticed here
+    /// and the backstop can then be extended to cover `RemS`.
+    #[test]
+    fn rem_s_int_min_is_over_approximated_rejected() {
+        let int_min = c(0x8000_0000, 32);
+        let neg_one = c(0xFFFF_FFFF, 32);
+        let verdict = check_div_discard(DivKind::RemS, &int_min, &neg_one, 32);
+        assert!(
+            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
+            "ordeal over-approximates rem_s(INT_MIN,-1) as trapping (documented \
+             gap; backstop must not route RemS), got {verdict:?}"
+        );
     }
 
     // ---- REJECT: OOB load discard (zero-annihilation, #278) ----

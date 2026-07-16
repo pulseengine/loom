@@ -7382,6 +7382,32 @@ pub mod optimize {
                 }
             }
 
+            // #288 — TRAP BACKSTOP (additive; requires the `verification` feature).
+            // The Z3 translation validator below proves *value* equivalence over a
+            // TOTAL model — traps are unmodeled, so a div/rem → constant fold that
+            // dropped a mandatory ÷0 / signed-overflow trap looks value-equal and
+            // is waved through. The #273 static guard in `rewrite_pure` prevents
+            // that fold, but this backstop is the independent, certificate-checked
+            // authority: for every div/rem-on-constants fold that FIRED, ordeal
+            // must PROVE the op was trap-free. A non-accepted verdict reverts this
+            // function. This does NOT relax any static guard (behavior is
+            // unchanged when the guard holds); it only catches a fold the guard
+            // would have let slip. With `verification` off this block is absent.
+            #[cfg(feature = "verification")]
+            {
+                if !crate::trap_backstop::accept_div_const_folds(
+                    &original_instructions,
+                    &func.instructions,
+                ) {
+                    eprintln!(
+                        "constant_folding: reverting function (trap backstop rejected a \
+                         div/rem const-fold — mandatory trap would be dropped; #288/#273)"
+                    );
+                    crate::stats::record_revert("constant_folding:trap-backstop");
+                    func.instructions = original_instructions.clone();
+                }
+            }
+
             // Z3 translation validation: prove semantic equivalence.
             // If verification fails for this function, revert to original
             // instructions and continue optimizing other functions.
@@ -15611,6 +15637,15 @@ pub mod verify;
 /// hypothesis" machinery that #231 (proof-carrying facts) will reuse.
 pub mod trap_gate;
 
+/// Runtime wiring of the [`trap_gate`] onto the optimization passes (issue #288).
+///
+/// [`trap_gate`]'s transform-checking entry points had zero callers — this
+/// module invokes the gate as an additive proof BACKSTOP at each trap-relevant
+/// fold site (currently the div/rem → constant fold, #273 class). It sits
+/// alongside, never replaces, the per-fold static guards. Compiled out entirely
+/// with the `verification` feature off.
+pub mod trap_backstop;
+
 /// Swappable solver backend for algebraic rule verification (issue #277).
 ///
 /// Defines the backend-neutral term DSL and the `RuleSolver` trait that
@@ -20057,6 +20092,99 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::I32Const(5)));
         assert!(has_five, "20/4 must fold to 5");
+    }
+
+    // ---------------------------------------------------------------------
+    // #288 — the trap gate must be ON THE RUNTIME PATH.
+    //
+    // These tests FAIL if `trap_backstop` is not wired into a pass:
+    //  1. A known-safe fold (20/4) still applies BECAUSE the gate ACCEPTS —
+    //     and the gate observably saw exactly one fired fold.
+    //  2. A constructed trapping fold is BLOCKED by the gate — with the static
+    //     guard bypassed here (we hand the backstop an "optimized" stream where
+    //     the trapping div was folded away), proving the gate, not the static
+    //     guard, is the authority on the runtime path.
+    // ---------------------------------------------------------------------
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_288_backstop_observes_and_accepts_safe_div_fold() {
+        // The #273 safe-fold fixture: 20 / 4 → 5. The backstop must SEE the fold
+        // fire (observability) and ACCEPT it (trap-free), so the fold survives.
+        let original = vec![
+            Instruction::I32Const(20),
+            Instruction::I32Const(4),
+            Instruction::I32DivS,
+        ];
+        let optimized = vec![Instruction::I32Const(5)];
+
+        // Observability: the backstop actually saw a fold fire (not vacuous).
+        assert_eq!(
+            crate::trap_backstop::fired_div_const_fold_count(&original, &optimized),
+            1,
+            "backstop must observe the 20/4 div fold firing"
+        );
+        // And it ACCEPTS it, because ordeal proves 20/4 cannot trap.
+        assert!(
+            crate::trap_backstop::accept_div_const_folds(&original, &optimized),
+            "backstop must accept the trap-free 20/4 fold"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_288_backstop_blocks_trapping_div_fold() {
+        // Construct the miscompile the static #273 guard is supposed to prevent:
+        // div_s(INT_MIN, -1) folded to a constant, dropping the overflow trap.
+        // We hand the backstop an "optimized" stream where the fold DID fire
+        // (bypassing the static guard, which lives upstream in rewrite_pure).
+        // The gate — the runtime authority — must REJECT it.
+        let original = vec![
+            Instruction::I32Const(i32::MIN),
+            Instruction::I32Const(-1),
+            Instruction::I32DivS,
+        ];
+        let optimized = vec![Instruction::I32Const(i32::MIN)]; // trap dropped!
+
+        assert_eq!(
+            crate::trap_backstop::fired_div_const_fold_count(&original, &optimized),
+            1,
+            "backstop must observe the trapping fold firing"
+        );
+        assert!(
+            !crate::trap_backstop::accept_div_const_folds(&original, &optimized),
+            "backstop MUST block a div_s(INT_MIN,-1) → const fold (overflow trap dropped)"
+        );
+
+        // The ÷0 variant must be blocked too.
+        let div0_orig = vec![
+            Instruction::I32Const(7),
+            Instruction::I32Const(0),
+            Instruction::I32DivU,
+        ];
+        let div0_opt = vec![Instruction::I32Const(0)];
+        assert!(
+            !crate::trap_backstop::accept_div_const_folds(&div0_orig, &div0_opt),
+            "backstop MUST block a div_u(7,0) → const fold (÷0 trap dropped)"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn test_288_constant_folding_pass_keeps_safe_fold() {
+        // End-to-end: the whole `constant_folding` pass, with the backstop on
+        // its runtime path, still folds a trap-free const div. This is the
+        // regression guard that the backstop did not over-block.
+        let wat = r#"(module
+            (func (export "f") (result i32)
+                (i32.div_s (i32.const 20) (i32.const 4))))"#;
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::constant_folding(&mut module).expect("fold");
+        assert_eq!(
+            count_div_rem(&module.functions[0].instructions),
+            0,
+            "trap-free const div must still fold with the #288 backstop live"
+        );
     }
 
     #[test]
