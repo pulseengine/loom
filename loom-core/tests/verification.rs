@@ -121,6 +121,7 @@ fn prop_optimization_produces_valid_wasm() {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         // Apply optimization
@@ -542,6 +543,7 @@ fn test_compute_verification_coverage() {
         custom_sections: vec![],
         type_section_bytes: None,
         global_section_bytes: None,
+        facts: Vec::new(),
     };
 
     // Optimized version
@@ -667,6 +669,7 @@ fn test_memory_load_store_verification() {
         custom_sections: vec![],
         type_section_bytes: None,
         global_section_bytes: None,
+        facts: Vec::new(),
     };
 
     let coverage = compute_verification_coverage(&module, &module, "memory_module_test");
@@ -986,6 +989,7 @@ fn test_build_function_summaries() {
         custom_sections: vec![],
         type_section_bytes: None,
         global_section_bytes: None,
+        facts: Vec::new(),
     };
 
     let summaries = build_function_summaries(&module);

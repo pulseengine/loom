@@ -2705,6 +2705,48 @@ pub struct MemoryLocation {
     mem: u32,
 }
 
+/// #231 proof-carrying facts (P1): a set of premises attached to a single
+/// loom [`Value`] (term). Facts are carried on the **Value**, never on an
+/// operator index — a `Value` is stable across renumbering/DCE, an index is
+/// not. This is the load-bearing subtlety of the fact model: the same `Value`
+/// keeps its facts through any value-preserving rewrite, and a pass that
+/// cannot re-establish a fact simply drops it (a dropped fact forgoes an
+/// optimization; it never miscompiles).
+///
+/// P1 carries exactly one fact kind — a signed value-range `[lo, hi]`
+/// (inclusive) — which is a strict superset of the existing unsigned
+/// [`OptimizationEnv::value_max`] premise. `value_max`/`fits_below_bit` remain
+/// available as an unsigned VIEW over the range so #240's range-gated rewrites
+/// are untouched.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct FactSet {
+    /// Signed value-range premise: the value ∈ `[lo, hi]` (inclusive both
+    /// ends), interpreted as a signed i32/i64. `None` until established.
+    pub value_range: Option<(i64, i64)>,
+}
+
+impl FactSet {
+    /// A `FactSet` carrying a single signed value-range fact.
+    pub fn range(lo: i64, hi: i64) -> Self {
+        FactSet {
+            value_range: Some((lo, hi)),
+        }
+    }
+
+    /// The unsigned inclusive upper bound this range implies, if any. Only a
+    /// range whose whole span is non-negative (`lo >= 0`) yields a sound
+    /// unsigned `value_max` view: a negative `lo` means the value could be a
+    /// large unsigned quantity (two's-complement), so no unsigned upper bound
+    /// is derivable and this returns `None` (conservative — the #240 gate then
+    /// declines to fire, never misfires).
+    pub fn unsigned_max(&self) -> Option<u64> {
+        match self.value_range {
+            Some((lo, hi)) if lo >= 0 && hi >= 0 => Some(hi as u64),
+            _ => None,
+        }
+    }
+}
+
 /// Environment for dataflow analysis
 #[derive(Clone)]
 pub struct OptimizationEnv {
@@ -2738,6 +2780,13 @@ pub struct OptimizationEnv {
     /// map from synth/gale-emitted proof-carrying annotations. Tests inject
     /// bounds directly via [`Self::assume_max`].
     pub value_max: std::collections::HashMap<Value, u64>,
+    /// #231 proof-carrying facts (P1): the value-attached [`FactSet`] carrier,
+    /// keyed by the loom [`Value`] the fact constrains. This is the superset of
+    /// `value_max` — the unsigned bound in `value_max` is kept as a VIEW
+    /// maintained by [`Self::assume_range`], so #240's range-gated rewrites are
+    /// untouched. Empty unless a fact-source (deferred: meld cross-component
+    /// metadata) or a test injects one via [`Self::assume_range`].
+    pub facts: std::collections::HashMap<Value, FactSet>,
 }
 
 impl Default for OptimizationEnv {
@@ -2754,6 +2803,7 @@ impl OptimizationEnv {
             single_assign: std::collections::HashSet::new(),
             pinned: std::collections::HashMap::new(),
             value_max: std::collections::HashMap::new(),
+            facts: std::collections::HashMap::new(),
         }
     }
 
@@ -2768,9 +2818,52 @@ impl OptimizationEnv {
     pub fn assume_max(&mut self, expr: Value, bound: u64) {
         // Keep the tightest bound if one already exists.
         self.value_max
-            .entry(expr)
+            .entry(expr.clone())
             .and_modify(|b| *b = (*b).min(bound))
             .or_insert(bound);
+        // Reflect into the FactSet superset so both views agree. `assume_max`
+        // asserts `0 <= expr <= bound` (unsigned), i.e. the signed range
+        // `[0, bound]` whenever `bound` fits in an i64 (always true for any
+        // bound < 2^63; for larger bounds the exact signed range is not
+        // representable and we leave the range untouched — the unsigned
+        // `value_max` view still serves #240).
+        if bound <= i64::MAX as u64 {
+            self.assume_range(expr, 0, bound as i64);
+        }
+    }
+
+    /// #231 proof-carrying facts (P1): record a machine-checked SIGNED
+    /// value-range premise `lo <= expr <= hi` (inclusive) on `expr`. This is
+    /// the superset premise; it also maintains the unsigned [`Self::value_max`]
+    /// VIEW so #240's range-gated rewrites keep working unchanged.
+    ///
+    /// The value-attached invariant: the fact is keyed by the [`Value`] itself.
+    /// A value-preserving rewrite that reproduces the same `Value` inherits the
+    /// fact for free; a pass that cannot re-establish it simply never copies it
+    /// to the new value (drop-safe — see [`crate`] module docs on facts).
+    ///
+    /// Intended to be called by the fact-source wiring (deferred: meld
+    /// cross-component metadata). Tests call it directly to inject a premise.
+    pub fn assume_range(&mut self, expr: Value, lo: i64, hi: i64) {
+        if lo > hi {
+            // An empty/contradictory range names nothing usable; ignore it
+            // rather than record an unsatisfiable premise.
+            return;
+        }
+        // Intersect with any existing range (tightest wins — both premises
+        // hold simultaneously).
+        let entry = self.facts.entry(expr.clone()).or_default();
+        entry.value_range = Some(match entry.value_range {
+            Some((elo, ehi)) => (elo.max(lo), ehi.min(hi)),
+            None => (lo, hi),
+        });
+        // Maintain the unsigned `value_max` VIEW.
+        if let Some(m) = entry.unsigned_max() {
+            self.value_max
+                .entry(expr)
+                .and_modify(|b| *b = (*b).min(m))
+                .or_insert(m);
+        }
     }
 
     /// #240 Tier-2: does a recorded premise prove every set bit of `expr` lies

@@ -80,6 +80,15 @@ enum Commands {
         /// (the section is inert to execution) but degrades tooling.
         #[arg(long)]
         strip_component_type: bool,
+
+        /// (#231) Emit a `wsc.facts` custom section (schema v1) carrying the
+        /// proof-carrying value-range facts loom established, keyed to the
+        /// FINAL operator sequence. Default OFF — facts-absent output is
+        /// byte-identical to prior releases. Facts are optional accelerators
+        /// for a downstream verified compiler (synth); they never change wasm
+        /// execution semantics.
+        #[arg(long)]
+        facts: bool,
     },
 
     /// Verify ISLE optimization rules
@@ -336,6 +345,7 @@ fn optimize_command(
     islands: usize,
     run_differential: bool,
     strip_component_type: bool,
+    emit_facts: bool,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -538,7 +548,10 @@ fn optimize_command(
                 .into_bytes()
         } else {
             println!("📦 Encoding to WASM binary...");
-            loom_core::encode::encode_wasm(&module).context("Failed to encode to WASM")?
+            // #231: the island winner carries its own module.facts (empty in
+            // P1 unless a fact-source injected them before island dispatch).
+            loom_core::encode::encode_wasm_with_facts(&module, emit_facts)
+                .context("Failed to encode to WASM")?
         };
         stats.bytes_after = output_bytes.len();
 
@@ -868,7 +881,14 @@ fn optimize_command(
             .into_bytes()
     } else {
         println!("📦 Encoding to WASM binary...");
-        loom_core::encode::encode_wasm(&module).context("Failed to encode to WASM")?
+        if emit_facts {
+            // #231: emit the wsc.facts custom section from module.facts, keyed
+            // to the FINAL operator sequence this same call encodes.
+            loom_core::encode::encode_wasm_with_facts(&module, true)
+                .context("Failed to encode to WASM (with facts)")?
+        } else {
+            loom_core::encode::encode_wasm(&module).context("Failed to encode to WASM")?
+        }
     };
     stats.bytes_after = output_bytes.len();
 
@@ -1024,6 +1044,7 @@ fn main() -> Result<()> {
             #[cfg(feature = "differential")]
             differential,
             strip_component_type,
+            facts,
         }) => {
             #[cfg(feature = "attestation")]
             let add_attestation = attestation;
@@ -1044,6 +1065,7 @@ fn main() -> Result<()> {
                 islands,
                 run_differential,
                 strip_component_type,
+                facts,
             )?;
         }
 
@@ -1121,6 +1143,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // emit_facts
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -1160,6 +1183,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // emit_facts
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -1196,6 +1220,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // emit_facts
         );
 
         assert!(
@@ -1235,6 +1260,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // emit_facts
         );
 
         assert!(
@@ -1285,6 +1311,7 @@ mod tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         let count = count_instructions(&module);
@@ -1325,6 +1352,7 @@ mod tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         let count = count_constant_folds(&module);

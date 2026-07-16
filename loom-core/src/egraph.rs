@@ -1317,6 +1317,7 @@ mod tests {
             custom_sections: vec![],
             type_section_bytes: None,
             global_section_bytes: None,
+            facts: Vec::new(),
         };
 
         let bytes = encode_wasm(&module).expect("encode should succeed");
