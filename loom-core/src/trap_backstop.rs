@@ -25,18 +25,23 @@
 //!
 //! # Scope (honest coverage)
 //!
-//! Wired: the `div_s` / `div_u` / `rem_u` → **constant** fold (#273 class), which
-//! is soundly and exactly modelable because the fold's operands are literal
-//! constants — ordeal decides the trap condition with no symbolic slack. The gate
-//! proves the folded op could not have trapped
+//! Wired: the `div_s` / `div_u` / `rem_u` / `rem_s` → **constant** fold (#273
+//! class), which is soundly and exactly modelable because the fold's operands are
+//! literal constants — ordeal decides the trap condition with no symbolic slack.
+//! The gate proves the folded op could not have trapped
 //! ([`crate::trap_gate::check_div_discard`]).
 //!
+//! `rem_s` joined the routed set with ordeal 0.14.0 (ordeal#84 / loom#288):
+//! ordeal < 0.10.0's `trap_div(RemS)` over-approximated `rem_s(INT_MIN, -1)` as
+//! trapping (it shared the `INT_MIN / -1` overflow disjunct with `div_s`, but
+//! WASM defines `rem_s(INT_MIN, -1) = 0`, no trap), so routing it would have
+//! falsely REJECTED that sound fold and reverted a valid optimization. ordeal
+//! 0.14.0 drops the disjunct for remainder, so `rem_s` is now modeled exactly and
+//! routed like the other three kinds. See `div_meta` and the un-pinning tests
+//! `trap_gate::tests::rem_s_int_min_neg1_fold_is_accepted` (+ its wrong-value
+//! dual).
+//!
 //! Documented remaining gaps (static guard is sole authority, see PR #288):
-//! - `rem_s` is NOT routed: ordeal's `trap_div` over-approximates it (it shares
-//!   the `INT_MIN / -1` overflow disjunct with `div_s`, but WASM `rem_s(INT_MIN,
-//!   -1)` does not trap). Routing it would falsely REJECT a safe fold and revert
-//!   a valid optimization. Its exact static #273 guard remains sole authority.
-//!   See `div_meta` and the pinning test in `trap_gate`.
 //! - The vacuum `load; drop` discard (#278) already never fires — `is_pure_pusher`
 //!   excludes loads — so there is no fired fold to back-check at that site; the
 //!   [`crate::trap_gate::check_mem_transform`] API is exercised by its own unit
@@ -56,24 +61,24 @@ use crate::trap_gate::{DivKind, TrapVerdict, check_div_discard, constant};
 
 /// Width + kind of a div/rem instruction, for the trap-gate query.
 ///
-/// `rem_s` is deliberately EXCLUDED (returns `None`): ordeal's `trap_div` shares
-/// the `INT_MIN / -1` signed-overflow disjunct between `div_s` and `rem_s`, but
-/// WASM `rem_s(INT_MIN, -1)` does NOT trap (result 0). Routing `rem_s` through
-/// the gate would REJECT that genuinely-safe fold and revert a valid
-/// optimization — a capability regression. So `rem_s` folds stay on their exact
-/// static #273 guard (which folds `rem_s(INT_MIN,-1)` to 0). `div_s`, `div_u`,
-/// and `rem_u` ARE modeled exactly by ordeal and are routed. See
-/// `trap_gate::tests::rem_s_int_min_is_over_approximated_rejected`.
+/// All four div/rem kinds are routed. `rem_s` was previously EXCLUDED because
+/// ordeal < 0.10.0's `trap_div` shared the `INT_MIN / -1` signed-overflow
+/// disjunct between `div_s` and `rem_s`, but WASM `rem_s(INT_MIN, -1)` does NOT
+/// trap (result 0) — so routing it would have REJECTED a genuinely-safe fold and
+/// reverted a valid optimization. ordeal 0.14.0 (ordeal#84 / loom#288) drops that
+/// disjunct for remainder, so `rem_s` is now modeled exactly and joins the routed
+/// set. See `trap_gate::tests::rem_s_int_min_neg1_fold_is_accepted`.
 fn div_meta(instr: &Instruction) -> Option<(DivKind, u32)> {
     use Instruction::*;
     Some(match instr {
         I32DivS => (DivKind::DivS, 32),
         I32DivU => (DivKind::DivU, 32),
         I32RemU => (DivKind::RemU, 32),
+        I32RemS => (DivKind::RemS, 32),
         I64DivS => (DivKind::DivS, 64),
         I64DivU => (DivKind::DivU, 64),
         I64RemU => (DivKind::RemU, 64),
-        // I32RemS / I64RemS excluded — see doc comment (ordeal over-approximates).
+        I64RemS => (DivKind::RemS, 64),
         _ => return None,
     })
 }

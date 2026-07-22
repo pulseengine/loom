@@ -593,28 +593,18 @@ mod tests {
         );
     }
 
-    /// KNOWN OVER-APPROXIMATION (documented gap). Per the WASM spec,
-    /// `rem_s(INT_MIN, -1)` does NOT trap — the result is 0. But ordeal's
-    /// `trap_div(RemS, …)` shares the signed-overflow disjunct with `div_s`, so
-    /// it reports this case as TRAPPING. `check_div_discard(RemS, …)` therefore
-    /// (conservatively, but imprecisely) REJECTS a genuinely-safe `rem_s`
-    /// overflow fold. Because a REJECT here would revert a valid optimization
-    /// (a capability regression, not a soundness bug), the #288 backstop
-    /// deliberately does NOT route `RemS` folds — they stay on their exact
-    /// static #273 guard. This test PINS that over-approximation so a future
-    /// ordeal fix (dropping the overflow disjunct for `RemS`) is noticed here
-    /// and the backstop can then be extended to cover `RemS`.
-    #[test]
-    fn rem_s_int_min_is_over_approximated_rejected() {
-        let int_min = c(0x8000_0000, 32);
-        let neg_one = c(0xFFFF_FFFF, 32);
-        let verdict = check_div_discard(DivKind::RemS, &int_min, &neg_one, 32);
-        assert!(
-            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
-            "ordeal over-approximates rem_s(INT_MIN,-1) as trapping (documented \
-             gap; backstop must not route RemS), got {verdict:?}"
-        );
-    }
+    /// RESOLVED (ordeal#84 / loom#288, ordeal >= 0.10.0). The former
+    /// over-approximation pin `rem_s_int_min_is_over_approximated_rejected`
+    /// lived here: ordeal < 0.10.0's `trap_div(RemS, …)` shared the
+    /// signed-overflow disjunct with `div_s`, so `check_div_discard(RemS, …)`
+    /// falsely REJECTED the sound `rem_s(INT_MIN, -1) -> 0` fold and `RemS`
+    /// stayed on its static #273 guard. ordeal 0.14.0 drops that disjunct for
+    /// remainder; `check_div_discard(RemS, …)` now ACCEPTS the sound fold and
+    /// `RemS` is routed through the backstop like the other three kinds. The
+    /// un-pinning is now asserted positively by
+    /// `rem_s_int_min_neg1_fold_is_accepted` (and its dual,
+    /// `rem_s_wrong_value_fold_is_still_rejected`), so the stale REJECT pin is
+    /// removed rather than inverted.
 
     // ---- REJECT: OOB load discard (zero-annihilation, #278) ----
 
