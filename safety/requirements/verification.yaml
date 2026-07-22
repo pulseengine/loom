@@ -402,3 +402,55 @@ artifacts:
     links:
       - type: verifies
         target: REQ-18
+
+  # ============================================================================
+  # REQ-1 / REQ-6 — trap_gate must be ON THE RUNTIME PATH (issue #288)
+  #
+  # The systemic trap-equivalence gate (trap_gate, issue #279/#284) had ZERO
+  # callers — its transform-checking entry points were dead code, so trap
+  # soundness rested entirely on the per-fold STATIC guards. UCA-5 (ISLE folds
+  # a trapping op to a constant, suppressing the trap; mitigated by CC-4) and
+  # UCA-21 (Z3 encoding omits the trap condition; mitigated by CC-20) both
+  # describe exactly the failure the dead gate was meant to catch. #288 wires
+  # the gate onto the constant_folding runtime path as an additive proof
+  # BACKSTOP: for every div/rem-on-constants fold that FIRES, ordeal must prove
+  # the op was trap-free (certificate re-checked) or the fold is reverted. This
+  # test fails if the gate is not on the runtime path (observability +
+  # accept/block assertions), which is the whole point of #288.
+  # ============================================================================
+
+  - id: TEST-TRAP-GATE-RUNTIME-PATH
+    type: feature
+    title: trap_gate wired onto the constant-folding runtime path (#288 backstop)
+    description: >
+      Verifies that the trap-equivalence gate (trap_gate) is actually
+      INVOKED by the constant_folding pass — not dead code (#288). The
+      backstop (loom_core::trap_backstop) is consulted for every div/rem →
+      constant fold that fires: a known-safe fold (20/4) is observed AND
+      accepted by ordeal; a constructed trapping fold (div_s(INT_MIN,-1),
+      div_u(x,0)) is BLOCKED, with the static guard bypassed in-test so the
+      gate — not the static guard — is proven to be the runtime authority.
+      Additive only: no static guard is relaxed. Mitigates UCA-5 (CC-4) and
+      UCA-21 (CC-20). rem_s is a documented gap (ordeal over-approximates its
+      overflow trap); it stays on its exact static #273 guard. Runs under the
+      `verification` feature (default), which pulls in ordeal + Z3.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- test_288_ trap_gate::tests::div_discard trap_gate::tests::rem
+    status: verified
+    tags: [v122, verification, trap-gate, safety]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-6
+      - type: mitigates
+        target: UCA-5
+      - type: mitigates
+        target: UCA-21
+      - type: verifies
+        target: CC-4
+      - type: verifies
+        target: CC-20
