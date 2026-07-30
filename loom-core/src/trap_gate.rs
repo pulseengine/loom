@@ -219,7 +219,9 @@ impl DivKind {
 }
 
 /// Build the [`DefineOrTrap`] for a div/rem op: loom's value term + ordeal's
-/// trap clause (`÷0` for all four; `INT_MIN / -1` overflow for the signed ops).
+/// trap clause (`÷0` for all four; `INT_MIN / -1` overflow for **`div_s`
+/// only** — WASM defines `rem_s(INT_MIN, -1) = 0`, no trap; ordeal < 0.10.0
+/// wrongly included the overflow clause for `rem_s` too, ordeal#72/#84).
 pub fn div_define(kind: DivKind, a: &BvTerm, b: &BvTerm, width: u32) -> DefineOrTrap {
     DefineOrTrap {
         value: kind.value(a, b, width),
@@ -449,6 +451,52 @@ mod tests {
 
     // ---- REJECT: div overflow / ÷0 trap-dropping folds are caught ----
 
+    /// ordeal#84 / loom#288: the fold ordeal < 0.10.0 made IMPOSSIBLE to
+    /// route through this gate. WASM defines `rem_s(INT_MIN, -1) = 0` — no
+    /// trap — so const-folding it to `0` is sound and must be ACCEPTED.
+    /// ordeal 0.9.1's `trap_div(RemS)` wrongly included the `INT_MIN/-1`
+    /// overflow clause, so this exact check proved `Sat` (phantom trap
+    /// mismatch) and falsely rejected the correct fold; rem_s stayed on the
+    /// per-pass static guard. With ordeal >= 0.10.0 the gate accepts it —
+    /// this test is the un-pinning, and it FAILS on 0.9.1.
+    #[test]
+    fn rem_s_int_min_neg1_fold_is_accepted() {
+        let int_min = c(0x8000_0000, 32);
+        let neg_one = c(0xFFFF_FFFF, 32);
+        // orig: rem_s(INT_MIN, -1) — defined, value 0, traps only on ÷0
+        // (divisor is -1, so it does not trap). opt: the folded constant 0.
+        let orig = div_define(DivKind::RemS, &int_min, &neg_one, 32);
+        let opt = DefineOrTrap {
+            value: c(0, 32),
+            may_trap: BoolTerm::Ne(bx(c(0, 8)), bx(c(0, 8))), // false
+        };
+        let verdict = check_trap_equivalence_under(&[], &orig, &opt);
+        assert!(
+            verdict.is_accepted(),
+            "rem_s(INT_MIN,-1) -> 0 is a sound fold and must be ACCEPTED \
+             (ordeal < 0.10.0 falsely rejected it), got {verdict:?}"
+        );
+    }
+
+    /// The dual guard: accepting the sound rem_s fold must NOT mean rem_s
+    /// folds are waved through. Folding `rem_s(INT_MIN, -1)` to the WRONG
+    /// constant is a value mismatch and must still be rejected.
+    #[test]
+    fn rem_s_wrong_value_fold_is_still_rejected() {
+        let int_min = c(0x8000_0000, 32);
+        let neg_one = c(0xFFFF_FFFF, 32);
+        let orig = div_define(DivKind::RemS, &int_min, &neg_one, 32);
+        let opt = DefineOrTrap {
+            value: c(1, 32), // wrong: rem_s(INT_MIN,-1) is 0, not 1
+            may_trap: BoolTerm::Ne(bx(c(0, 8)), bx(c(0, 8))),
+        };
+        let verdict = check_trap_equivalence_under(&[], &orig, &opt);
+        assert!(
+            !verdict.is_accepted(),
+            "a wrong-value rem_s fold must be rejected, got {verdict:?}"
+        );
+    }
+
     /// #273: constant-folding `div_s(INT_MIN, -1)` to a constant drops the
     /// signed-overflow trap. The optimized side is `INT_MIN` with no trap; the
     /// gate must REJECT with a counterexample.
@@ -545,28 +593,18 @@ mod tests {
         );
     }
 
-    /// KNOWN OVER-APPROXIMATION (documented gap). Per the WASM spec,
-    /// `rem_s(INT_MIN, -1)` does NOT trap — the result is 0. But ordeal's
-    /// `trap_div(RemS, …)` shares the signed-overflow disjunct with `div_s`, so
-    /// it reports this case as TRAPPING. `check_div_discard(RemS, …)` therefore
-    /// (conservatively, but imprecisely) REJECTS a genuinely-safe `rem_s`
-    /// overflow fold. Because a REJECT here would revert a valid optimization
-    /// (a capability regression, not a soundness bug), the #288 backstop
-    /// deliberately does NOT route `RemS` folds — they stay on their exact
-    /// static #273 guard. This test PINS that over-approximation so a future
-    /// ordeal fix (dropping the overflow disjunct for `RemS`) is noticed here
-    /// and the backstop can then be extended to cover `RemS`.
-    #[test]
-    fn rem_s_int_min_is_over_approximated_rejected() {
-        let int_min = c(0x8000_0000, 32);
-        let neg_one = c(0xFFFF_FFFF, 32);
-        let verdict = check_div_discard(DivKind::RemS, &int_min, &neg_one, 32);
-        assert!(
-            matches!(verdict, TrapVerdict::RejectCounterexample(_)),
-            "ordeal over-approximates rem_s(INT_MIN,-1) as trapping (documented \
-             gap; backstop must not route RemS), got {verdict:?}"
-        );
-    }
+    /// RESOLVED (ordeal#84 / loom#288, ordeal >= 0.10.0). The former
+    /// over-approximation pin `rem_s_int_min_is_over_approximated_rejected`
+    /// lived here: ordeal < 0.10.0's `trap_div(RemS, …)` shared the
+    /// signed-overflow disjunct with `div_s`, so `check_div_discard(RemS, …)`
+    /// falsely REJECTED the sound `rem_s(INT_MIN, -1) -> 0` fold and `RemS`
+    /// stayed on its static #273 guard. ordeal 0.14.0 drops that disjunct for
+    /// remainder; `check_div_discard(RemS, …)` now ACCEPTS the sound fold and
+    /// `RemS` is routed through the backstop like the other three kinds. The
+    /// un-pinning is now asserted positively by
+    /// `rem_s_int_min_neg1_fold_is_accepted` (and its dual,
+    /// `rem_s_wrong_value_fold_is_still_rejected`), so the stale REJECT pin is
+    /// removed rather than inverted.
 
     // ---- REJECT: OOB load discard (zero-annihilation, #278) ----
 
