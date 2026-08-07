@@ -440,6 +440,7 @@ artifacts:
         - run: |
             cargo test --release --lib -p loom-core --features verification -- test_288_ trap_gate::tests::div_discard trap_gate::tests::rem
     status: verified
+    release: v1.3.0
     tags: [v122, verification, trap-gate, safety]
     links:
       - type: verifies
@@ -454,3 +455,86 @@ artifacts:
         target: CC-4
       - type: verifies
         target: CC-20
+
+  # ============================================================================
+  # #231 — proof-carrying facts. loom does not discard the invariants its
+  # validator discharges: it emits them for the downstream AOT compiler, which
+  # re-proves its own specialization UNDER the fact rather than trusting it.
+  # Two properties are load-bearing and both are asserted here: facts are
+  # attached to VALUES (an index-keyed fact is silently re-pointed by the next
+  # renumbering pass), and loom OWNS the `wsc.*` namespace on input (an
+  # inherited or forged section must never be re-emitted as though loom had
+  # proved it).
+  # ============================================================================
+
+  - id: TEST-WSC-FACTS-EMITTER
+    type: feature
+    title: proof-carrying wsc.facts emitter + wsc.* trust boundary (#231 P1)
+    description: >
+      Verifies the producer side of the wsc.facts channel. Golden-bytes: the
+      schema-v1 value-range encoding is asserted byte-for-byte against the
+      consumer's frozen wire format, so producer and consumer cannot drift.
+      Drop-safety: a fact whose value_id is out of range for the final body, or
+      which names an imported/nonexistent function, is DROPPED — never emitted
+      against a different operator (a mis-keyed fact is a correctness bug, an
+      absent one only costs performance). Identity: with facts absent the
+      encoder output is byte-identical to the default path. Trust boundary: an
+      input `wsc.facts` is stripped UNCONDITIONALLY on re-emit — including on
+      the facts-off default path — so an inherited or forged section can never
+      preempt (first-wins) or masquerade as facts loom proved this run;
+      non-`wsc.*` custom sections still round-trip. Under-P discharge: a range
+      premise licenses a fits-below-bit obligation, and an insufficient premise
+      does not.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- wsc_facts
+    status: verified
+    release: v1.3.0
+    tags: [v130, verification, proof-carrying-facts]
+    links:
+      - type: verifies
+        target: REQ-12
+      - type: verifies
+        target: REQ-14
+      - type: verifies
+        target: REQ-5
+
+  # ============================================================================
+  # #277 — Tier-1 of the solver migration. The algebraic rule verifier runs on
+  # our own certificate-checked QF_BV engine, with the incumbent kept as a
+  # differential oracle. The evidence is not a summary line: in `both` mode the
+  # harness runs BOTH engines on every obligation and PANICS on any divergence,
+  # so a green run is the assertion.
+  # ============================================================================
+
+  - id: TEST-RULE-SOLVER-DIFFERENTIAL
+    type: feature
+    title: algebraic rule verifier on a certificate-checked solver, differentially cross-checked (#277 Tier-1)
+    description: >
+      Verifies that loom's algebraic rewrite rules are discharged by a swappable
+      solver backend (LOOM_VERIFY_BACKEND = z3 | ordeal | both) and that the two
+      engines agree. The rule verifier reports 38/38 rules proven (100.0%) under
+      the incumbent AND under our own engine, which additionally re-checks each
+      UNSAT certificate (LRAT) before the verdict is believed. In `both` mode the
+      differential solver runs both engines per obligation and panics on any
+      disagreement; the suite passing IS the no-divergence assertion. Scope: this
+      is the rule verifier only — the core translation validator has not been
+      migrated, and that gap is stated in the release notes rather than implied
+      to be closed.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification -- test_verify_all_rules
+    status: verified
+    release: v1.3.0
+    tags: [v130, verification, solver-migration]
+    links:
+      - type: verifies
+        target: REQ-6
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4

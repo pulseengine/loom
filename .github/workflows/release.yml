@@ -46,8 +46,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # #311: pinned, NOT `ubuntu-latest`. The runner image sets the glibc
+          # floor of the shipped binary, and `ubuntu-latest` silently follows
+          # GitHub's newest image — which is how v1.2.0 shipped requiring GLIBC
+          # 2.38 and failed to load on ubuntu-22.04 (2.35) with an
+          # unresolved-symbol dump rather than a usable message. A comment alone
+          # is not enough: the cranelift-isle pin was re-floated by a dependency
+          # bump for exactly this reason, so the floor is ASSERTED after the
+          # build below. Raising this image is a deliberate act that must also
+          # raise the asserted ceiling.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             archive: tar.gz
             binary: loom
           # x86_64-apple-darwin cross-compiles on the arm64 macos-14
@@ -79,6 +88,70 @@ jobs:
 
       - name: Build loom (native)
         run: cargo build --release --target ${{ matrix.target }} -p loom-cli
+
+      # #311: assert the runtime floor instead of trusting the pin above.
+      # The ceiling is what ubuntu-22.04 provides; if the image is raised, or a
+      # dependency starts requiring newer symbols, this fails the RELEASE rather
+      # than shipping a binary that dies in the dynamic linker at the consumer.
+      # The libstdc++ requirement exists only because loom links Z3 (C++) — it
+      # disappears with the ordeal migration, and so does this whole step.
+      - name: Assert glibc / libstdc++ floor
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        env:
+          BIN_PATH: target/x86_64-unknown-linux-gnu/release/loom
+          MAX_GLIBC: "2.35"
+          MAX_GLIBCXX: "3.4.30"
+        run: |
+          set -euo pipefail
+          # FAIL-CLOSED. An earlier draft of this step guarded each comparison
+          # with `[ -n "$need" ]`, so a readelf that produced no match — missing
+          # tool, changed output, wrong path — skipped the comparison and the
+          # step went green having tested nothing. That is the same vacuous-check
+          # defect this repo keeps finding (a gate that cannot fail looks exactly
+          # like a gate that passed), so: if the floor cannot be DETERMINED, that
+          # is an error, not a pass.
+          command -v readelf >/dev/null || { echo "::error::readelf missing — cannot determine floor"; exit 1; }
+          test -f "$BIN_PATH" || { echo "::error::binary not found at $BIN_PATH"; exit 1; }
+          vers=$(readelf -V "$BIN_PATH")
+          need_glibc=$(printf '%s' "$vers" | grep -oE 'GLIBC_2\.[0-9]+' | sed 's/GLIBC_//' | sort -V | tail -1 || true)
+          need_cxx=$(printf '%s' "$vers" | grep -oE 'GLIBCXX_3\.4\.[0-9]+' | sed 's/GLIBCXX_//' | sort -V | tail -1 || true)
+          # A dynamically linked gnu binary always requires some GLIBC version.
+          # Finding none means the probe broke, not that the binary is portable.
+          if [ -z "${need_glibc:-}" ]; then
+            echo "::error::could not determine the GLIBC requirement — probe broken, refusing to pass vacuously"
+            exit 1
+          fi
+          echo "requires GLIBC ${need_glibc} / GLIBCXX ${need_cxx:-none}"
+          echo "ceiling  GLIBC ${MAX_GLIBC} / GLIBCXX ${MAX_GLIBCXX} (ubuntu-22.04)"
+          fail=0
+          if [ "$(printf '%s\n%s\n' "$MAX_GLIBC" "$need_glibc" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "::error::binary requires GLIBC $need_glibc > $MAX_GLIBC — will not load on ubuntu-22.04 (#311)"
+            fail=1
+          fi
+          if [ -n "${need_cxx:-}" ] && \
+             [ "$(printf '%s\n%s\n' "$MAX_GLIBCXX" "$need_cxx" | sort -V | tail -1)" != "$MAX_GLIBCXX" ]; then
+            echo "::error::binary requires GLIBCXX $need_cxx > $MAX_GLIBCXX — will not load on ubuntu-22.04 (#311)"
+            fail=1
+          fi
+          exit "$fail"
+
+      # #311: the symbol check above is static reasoning about the binary. This
+      # actually LOADS it. The consumer who reported #311 only tests released
+      # artifacts in CI, so they cannot catch a bad build before we publish —
+      # which makes executing it here the last chance to see the dynamic-linker
+      # failure ourselves instead of shipping it. The runner is ubuntu-22.04, so
+      # a successful run here is direct evidence for the case that failed.
+      - name: Smoke-run the binary (proves it loads on ubuntu-22.04)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        env:
+          BIN_PATH: target/x86_64-unknown-linux-gnu/release/loom
+        run: |
+          set -euo pipefail
+          echo "runner glibc: $(ldd --version | head -1)"
+          "$BIN_PATH" --version
+          "$BIN_PATH" --help >/dev/null
 
       - name: Strip binary
         if: runner.os != 'Windows'
