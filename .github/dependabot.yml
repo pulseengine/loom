@@ -12,6 +12,22 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # cranelift-isle is PINNED to the 0.132.x line: 0.133+ raises its MSRV to
+      # rustc 1.94.0, which is not yet stable, so a wider constraint breaks the
+      # wasm32-wasip2 build and reddens main.
+      #
+      # This entry exists because the pin was re-floated TWICE by automation
+      # (#298 → fixed in #304, then #310 again) — both times past a comment in
+      # Cargo.toml that explained precisely why not to. Dependabot does not read
+      # comments, and these PRs auto-merge, so no human saw the warning either
+      # time. A pin defended only by prose is not defended; this makes it
+      # mechanical.
+      #
+      # Remove this ignore ONLY when rustc 1.94 is stable on the CI image, or
+      # when the lockfile is committed (#142) — and raise the release workflow's
+      # asserted glibc ceiling in the same change if the runner image moves.
+      - dependency-name: cranelift-isle
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:

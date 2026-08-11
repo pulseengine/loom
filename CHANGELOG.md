@@ -5,6 +5,88 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-04
+
+Proof-carrying output, a trap gate that is actually on the runtime path, and the
+first tier of the solver migration.
+
+Every figure below was measured on this tree, not quoted from a prior report.
+
+### Added
+
+- **Proof-carrying `wsc.facts` output (#231, P1).** loom no longer discards the
+  invariants its validator discharges — it emits them as a custom section for the
+  downstream ahead-of-time compiler, which re-proves its own specialization
+  *under* the fact rather than trusting it. Two properties are load-bearing and
+  both are asserted by tests: facts are attached to **values** (an index-keyed
+  fact is silently re-pointed by the next renumbering pass, which is a
+  correctness bug — a dropped fact only costs performance), and the schema-v1
+  wire format is asserted **byte-for-byte** against the consumer's frozen
+  encoding so producer and consumer cannot drift. With no facts present the
+  output is byte-identical to the previous encoder.
+- **`wsc.*` namespace trust boundary (#231).** loom now strips the loom-owned
+  `wsc.*` namespace from input on re-emit, **unconditionally** — including on the
+  facts-off default path. Previously an inherited, stale or forged `wsc.facts`
+  in the input survived re-encode and, under the consumer's first-wins rule,
+  could preempt or masquerade as facts loom had actually proved. A tool that
+  emits trusted metadata into a namespace has to own that namespace on input.
+
+### Changed
+
+- **Trap-equivalence gate wired onto the runtime path (#288, closing #279).**
+  The systemic gate added in 1.2.x shipped with passing unit tests, green CI and
+  **zero callers** — it provided no runtime protection, while the per-pass static
+  guards it was described as superseding were still the only thing standing.
+  `trap_backstop::accept_div_const_folds` is now invoked by the `constant_folding`
+  pass and reverts any div/rem constant-fold whose trap-freedom cannot be proven.
+  The regression test bypasses the static guard in-test and asserts that the
+  **gate** blocks a trapping fold, so it fails if the gate ever leaves the runtime
+  path again.
+- **All four integer div/rem forms are now gated (#290).** `div_s`, `div_u`,
+  `rem_u` and — once the upstream solver stopped over-approximating its overflow
+  trap — `rem_s`. The static guards are retained as a feature-independent floor;
+  the gate is additive, so behaviour with the `verification` feature off is
+  unchanged.
+- **Algebraic rule verifier migrated to a certificate-checked solver (#277,
+  Tier-1).** The rule verifier now runs behind a swappable backend
+  (`LOOM_VERIFY_BACKEND=z3|ordeal|both`) on a pure-Rust QF_BV engine that
+  re-checks each `Unsat` certificate before the verdict is believed. Measured:
+  **38/38 rules proven (100.0%)**, reported identically by both engines; in
+  `both` mode the harness runs both per obligation and panics on any divergence
+  — it did not.
+
+### Fixed
+
+- **Linux release binary loads on ubuntu-22.04 again (#311).** v1.2.0's
+  `x86_64-unknown-linux-gnu` artifact required **GLIBC 2.38** and **GLIBCXX
+  3.4.31** and died in the dynamic linker on ubuntu-22.04 (GLIBC 2.35) — an
+  unresolved-symbol dump for a binary the consumer had just downloaded and
+  checksummed, with nothing pointing at the real cause. The build ran on
+  `ubuntu-latest`, so the floor silently tracked GitHub's newest image. Pinned
+  to `ubuntu-22.04`, and the floor is now **asserted after the build** (the
+  release fails rather than shipping an unloadable binary) because a pin plus a
+  comment is exactly what a later "modernize the runners" edit undoes. The
+  libstdc++ coupling comes from linking Z3; it goes away with the solver
+  migration.
+- **`wasm32-wasip2` build restored (#304).** A dependency bump had re-floated the
+  `cranelift-isle` constraint past the pin documented directly above it, pulling a
+  version whose MSRV exceeds the toolchain CI runs; the wasm build had been red
+  since. Re-pinned to the known-good line.
+
+### Not done — stated so it is not implied
+
+- The core translation validator still proves **value equivalence over a total
+  operation model**; trap preservation is a gate beside it plus static guards,
+  not the encoding. Refinement with traps as first-class state (#300) is
+  specified, not implemented — until it lands, a newly added rewrite is
+  trap-unsafe by default.
+- The trap gate covers division and remainder. The memory-discard and
+  select-arm-discard fold sites remain on their static guards.
+- The `wsc.facts` **emitter** is complete and byte-verified; the fact *source*
+  that would populate it at volume is not yet wired.
+- Only the rule verifier has been migrated. The core verifier is still on the
+  incumbent solver.
+
 ## [1.2.0] - 2026-07-14
 
 Correctness backstop + trap preservation + algebraic mid-end.
