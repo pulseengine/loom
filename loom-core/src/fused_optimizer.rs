@@ -1920,7 +1920,59 @@ fn remap_type_refs_in_block(instructions: &mut [Instruction], old_to_new: &[u32]
 /// - It is referenced in an element segment (indirect call table)
 ///
 /// Returns the number of functions eliminated.
+///
+/// NOTE (#326): the bullet above claiming `ref.func` is a liveness root has
+/// been aspirational — `collect_function_refs_recursive` matches `Call` only.
+/// Until that is implemented, modules that could carry a `ref.func` in the raw
+/// global section are declined outright by the gate at the top of the function.
 pub fn eliminate_dead_functions(module: &mut Module) -> Result<usize> {
+    if let Some(ref global_bytes) = module.global_section_bytes {
+        // Unparseable counts as "hazard present": guessing is the thing this guards.
+        if global_section_has_func_refs(global_bytes).unwrap_or(true) {
+            return Ok(0);
+        }
+    }
+    eliminate_dead_functions_inner(module)
+}
+
+/// #326: does the raw global section initialize anything with `ref.func`?
+///
+/// The global section is re-emitted **verbatim** by the encoder (it is carried
+/// as `global_section_bytes`; only numeric globals are lifted into
+/// `module.globals`). So a `ref.func N` frozen in those bytes is NOT renumbered
+/// when the function index space changes — exactly the hazard #196 shipped as a
+/// silent miscompile through the *element* section. Element segments are now
+/// remapped; globals never were, and `ref.func` was never a liveness root
+/// either, so a funcref global could be left pointing at a different function.
+///
+/// Returns `Err` when the section cannot be parsed — the caller treats that as
+/// "assume the hazard is present", because guessing is what this guards against.
+fn global_section_has_func_refs(global_bytes: &[u8]) -> Result<bool> {
+    use wasmparser::{BinaryReader, GlobalSectionReader, Operator};
+    let reader = GlobalSectionReader::new(BinaryReader::new(global_bytes, 0))
+        .map_err(|e| anyhow::anyhow!("global section unparseable: {e}"))?;
+    for global in reader {
+        let global = global.map_err(|e| anyhow::anyhow!("global entry unparseable: {e}"))?;
+        for op in global.init_expr.get_operators_reader() {
+            let op = op.map_err(|e| anyhow::anyhow!("global init expr unparseable: {e}"))?;
+            if matches!(op, Operator::RefFunc { .. }) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The sweep proper. Only reached once the #326 gate has cleared the module —
+/// see [`eliminate_dead_functions`], which is the entry point callers use.
+///
+/// The hazard the gate exists for: the global section is re-emitted as raw
+/// bytes without remapping, so a `ref.func N` frozen there would be silently
+/// re-pointed at whichever function inherited index N after this renumbers.
+/// Valid wasm, wrong behaviour, invisible to structural validation — the #196
+/// class, which cost a flight-control miscompile. Skipping an optimization
+/// costs bytes; getting this wrong costs correctness.
+fn eliminate_dead_functions_inner(module: &mut Module) -> Result<usize> {
     let num_imported_funcs = count_imported_functions(module);
     let total_funcs = num_imported_funcs + module.functions.len();
 
@@ -3201,6 +3253,88 @@ mod tests {
             module.functions[0]
                 .instructions
                 .contains(&Instruction::Call(0))
+        );
+    }
+
+    /// #326: a funcref global holding `ref.func N` must stop the sweep.
+    ///
+    /// `ref.func` is not in this pass's liveness closure and the global section
+    /// is re-emitted verbatim, so sweeping `N` would leave the frozen
+    /// `ref.func N` pointing at whichever function inherited index N — valid
+    /// wasm, wrong behaviour (the #196 class). The pass must decline.
+    #[test]
+    fn t326_funcref_global_blocks_the_dead_function_sweep() {
+        let mut module = empty_module();
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![],
+        };
+        module.types.push(sig.clone());
+
+        // f0 exported (live). f1 referenced ONLY by a funcref global.
+        for name in ["live", "only_ref_func_target"] {
+            module.functions.push(Function {
+                name: Some(name.to_string()),
+                signature: sig.clone(),
+                locals: vec![],
+                instructions: vec![Instruction::End],
+            });
+        }
+        module.exports.push(Export {
+            name: "live".to_string(),
+            kind: ExportKind::Func(0),
+        });
+
+        // Raw global section: one `(global funcref (ref.func 1))`.
+        //   count=1 | valtype 0x70 (funcref) | mut=0 | ref.func(0xD2) 1 | end(0x0B)
+        module.global_section_bytes = Some(vec![0x01, 0x70, 0x00, 0xD2, 0x01, 0x0B]);
+
+        let before = module.functions.len();
+        let eliminated = eliminate_dead_functions(&mut module).unwrap();
+
+        assert_eq!(
+            eliminated, 0,
+            "#326: the sweep must DECLINE when a funcref global may hold ref.func"
+        );
+        assert_eq!(
+            module.functions.len(),
+            before,
+            "#326: no function may be removed — index N is frozen in the raw global section"
+        );
+    }
+
+    /// The control that keeps the #326 guard from being a blanket disable: a
+    /// module whose globals are numeric-only must still be swept. Without this,
+    /// a guard that always bails would pass the test above.
+    #[test]
+    fn t326_numeric_only_globals_do_not_block_the_sweep() {
+        let mut module = empty_module();
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![],
+        };
+        module.types.push(sig.clone());
+        for name in ["live", "dead"] {
+            module.functions.push(Function {
+                name: Some(name.to_string()),
+                signature: sig.clone(),
+                locals: vec![],
+                instructions: vec![Instruction::End],
+            });
+        }
+        module.exports.push(Export {
+            name: "live".to_string(),
+            kind: ExportKind::Func(0),
+        });
+
+        // Raw global section: one `(global i32 (i32.const 0))` — no ref.func.
+        //   count=1 | valtype 0x7F (i32) | mut=0 | i32.const(0x41) 0 | end(0x0B)
+        module.global_section_bytes = Some(vec![0x01, 0x7F, 0x00, 0x41, 0x00, 0x0B]);
+
+        let eliminated = eliminate_dead_functions(&mut module).unwrap();
+        assert_eq!(
+            eliminated, 1,
+            "numeric-only globals carry no function index; the sweep must still run"
         );
     }
 
