@@ -372,6 +372,15 @@ fn optimize_command(
         if &input_bytes[0..4] == b"\0asm" && input_bytes[4] == 0x0d && input_bytes[5] == 0x00 {
             println!("🧩 Detected WebAssembly Component!");
             println!("📦 Attempting component optimization...");
+            if emit_facts {
+                // #231: the component pipeline encodes its core modules
+                // internally and the fact source is not wired into it. Say so
+                // rather than let --facts look like it did something.
+                println!(
+                    "⚠️  --facts is not wired into the component pipeline yet — \
+                     no wsc.facts section will be emitted for this input (#231)."
+                );
+            }
 
             // Use component optimization
             let component_config = loom_core::ComponentOptimizeConfig {
@@ -548,8 +557,13 @@ fn optimize_command(
                 .into_bytes()
         } else {
             println!("📦 Encoding to WASM binary...");
-            // #231: the island winner carries its own module.facts (empty in
-            // P1 unless a fact-source injected them before island dispatch).
+            // #231 fact SOURCE: derive the facts from the island WINNER, here,
+            // immediately before the encode that consumes them — the operator
+            // keying is only valid against the body being encoded.
+            if emit_facts {
+                module.facts = loom_core::facts::collect_module_facts(&module);
+                println!("🔖 {} proof-carrying fact(s) collected", module.facts.len());
+            }
             loom_core::encode::encode_wasm_with_facts(&module, emit_facts)
                 .context("Failed to encode to WASM")?
         };
@@ -882,6 +896,12 @@ fn optimize_command(
     } else {
         println!("📦 Encoding to WASM binary...");
         if emit_facts {
+            // #231 fact SOURCE: derive the facts from the FINAL module, here,
+            // immediately before the encode that consumes them — no pass runs
+            // in between, so no fact can be renumbered out from under its
+            // operator.
+            module.facts = loom_core::facts::collect_module_facts(&module);
+            println!("🔖 {} proof-carrying fact(s) collected", module.facts.len());
             // #231: emit the wsc.facts custom section from module.facts, keyed
             // to the FINAL operator sequence this same call encodes.
             loom_core::encode::encode_wasm_with_facts(&module, true)

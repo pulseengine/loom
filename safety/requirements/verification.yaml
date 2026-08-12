@@ -501,6 +501,48 @@ artifacts:
       - type: verifies
         target: REQ-5
 
+  - id: TEST-WSC-FACTS-SOURCE
+    type: feature
+    title: proof-carrying wsc.facts value-range SOURCE (#231)
+    description: >
+      Verifies the producer's fact SOURCE — the half that populates the
+      channel the emitter ships. Every derived range is STRUCTURAL (a property
+      of the value's own term shape, not of the program point), which is what
+      makes value-keying sound: non-negative constants yield [c, c], `x & K`
+      for a non-negative constant K yields [0, K] because the result's set
+      bits are a subset of K's, and the integer comparisons and `eqz` yield
+      [0, 1] by definition. Silence over guessing: a value the source cannot
+      justify — an unconstrained local, a sum of unknowns, a mask whose sign
+      bit is free, a shift by an unknown amount — carries NO fact. Operator
+      keying: the walk models only operators that encode 1:1 and stops at the
+      first one outside that set (all structured control flow included), so a
+      fact's value_id is the operator ordinal a consumer decodes; each test
+      re-decodes the emitted binary and asserts the operator at value_id is
+      the one the fact claims. Renumbering safety: collection runs on the
+      FINAL body, so a fact-bearing value deleted by a later pass yields no
+      fact and the survivors are re-keyed to the post-pass indices rather than
+      left pointing at operators that moved. Determinism: the same module
+      yields an identical fact vector. Identity: a module with no derivable
+      fact encodes byte-identically to the default path.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- mask_yields_zero_to_mask_range_fact constant_folded_value_yields_point_range_fact unjustifiable_values_yield_no_fact walk_stops_at_structured_control_flow value_deleted_by_a_later_pass_is_dropped_not_miskeyed facts_use_the_full_function_index_and_bool_range fact_collection_is_deterministic no_derivable_fact_means_no_section
+    status: verified
+    tags: [verification, proof-carrying-facts]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-12
+      - type: verifies
+        target: REQ-14
+
   # ============================================================================
   # #277 — Tier-1 of the solver migration. The algebraic rule verifier runs on
   # our own certificate-checked QF_BV engine, with the incumbent kept as a
