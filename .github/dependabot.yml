@@ -34,24 +34,48 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # See the root (/) cargo entry for the full rationale. Repeated here
+      # because scoping the ignore to one ecosystem is NOT enough: #318 was
+      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
+      # cargo ecosystem needs the entry or the bot finds the open door.
+      - dependency-name: cranelift-isle
   - package-ecosystem: cargo
     directory: /loom-cli
     schedule:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # See the root (/) cargo entry for the full rationale. Repeated here
+      # because scoping the ignore to one ecosystem is NOT enough: #318 was
+      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
+      # cargo ecosystem needs the entry or the bot finds the open door.
+      - dependency-name: cranelift-isle
   - package-ecosystem: cargo
     directory: /loom-core
     schedule:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # See the root (/) cargo entry for the full rationale. Repeated here
+      # because scoping the ignore to one ecosystem is NOT enough: #318 was
+      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
+      # cargo ecosystem needs the entry or the bot finds the open door.
+      - dependency-name: cranelift-isle
   - package-ecosystem: cargo
     directory: /loom-isle
     schedule:
       interval: weekly
     labels:
       - dependencies
+    ignore:
+      # See the root (/) cargo entry for the full rationale. Repeated here
+      # because scoping the ignore to one ecosystem is NOT enough: #318 was
+      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
+      # cargo ecosystem needs the entry or the bot finds the open door.
+      - dependency-name: cranelift-isle
   - package-ecosystem: docker
     directory: /fuzz/oss-fuzz/projects/loom
     schedule:
