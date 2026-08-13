@@ -38,6 +38,11 @@ pub mod stats;
 /// to follow-up PRs.
 pub mod egraph;
 
+/// #231 proof-carrying facts (P1) — the fact SOURCE that populates
+/// [`Module::facts`] with the value-range invariants loom can justify
+/// structurally, resolved to the FINAL operator sequence for `wsc.facts`.
+pub mod facts;
+
 /// Island-model parallel optimization — v1.0.4 PR-islands (issue #71).
 ///
 /// Runs N independent pass orderings concurrently, each on a cloned copy of
