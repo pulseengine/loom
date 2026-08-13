@@ -25,7 +25,7 @@ updates:
       # mechanical.
       #
       # Remove this ignore ONLY when rustc 1.94 is stable on the CI image, or
-      # when the lockfile is committed (#142) — and raise the release workflow's
+      # when the lockfile is committed (#320) — and raise the release workflow's
       # asserted glibc ceiling in the same change if the runner image moves.
       - dependency-name: cranelift-isle
   - package-ecosystem: cargo

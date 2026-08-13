@@ -1,6 +1,8 @@
 # Rust
 target/
-Cargo.lock
+# Cargo.lock IS committed (#320): loom ships binaries, so the lock is part of
+# the build's reproducibility story and dependency changes must arrive as
+# reviewable diffs rather than as ambient resolution at CI time.
 **/*.rs.bk
 *.pdb
 
