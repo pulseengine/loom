@@ -81,6 +81,15 @@ enum Commands {
         #[arg(long)]
         strip_component_type: bool,
 
+        /// (#239 Phase B) For COMPONENTS: disable the component-level
+        /// reachability GC. By default loom drops nested-core-module functions
+        /// that the component provably never references (e.g. an unreachable
+        /// `cabi_realloc` on an all-scalar interface, #303). The pass is
+        /// removal-only and already reverts itself if the result does not
+        /// validate; this switch exists so an integrator can bisect against it.
+        #[arg(long)]
+        no_reachability_gc: bool,
+
         /// (#231) Emit a `wsc.facts` custom section (schema v1) carrying the
         /// proof-carrying value-range facts loom established, keyed to the
         /// FINAL operator sequence. Default OFF — facts-absent output is
@@ -345,6 +354,7 @@ fn optimize_command(
     islands: usize,
     run_differential: bool,
     strip_component_type: bool,
+    no_reachability_gc: bool,
     emit_facts: bool,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
@@ -385,6 +395,7 @@ fn optimize_command(
             // Use component optimization
             let component_config = loom_core::ComponentOptimizeConfig {
                 strip_component_type,
+                reachability_gc: !no_reachability_gc,
             };
             match loom_core::optimize_component_with_config(&input_bytes, component_config) {
                 Ok((optimized_bytes, stats)) => {
@@ -445,6 +456,19 @@ fn optimize_command(
                         println!(
                             "                      [{}]",
                             bd.stripped_section_names.join(", ")
+                        );
+                    }
+                    // #239 Phase B — component-level reachability GC.
+                    if bd.reachability_gc_applied {
+                        println!(
+                            "  Reachability GC:    {} unreferenced core export(s), \
+                             {} unreachable function(s) removed",
+                            bd.core_exports_pruned, bd.core_functions_removed
+                        );
+                    } else {
+                        println!(
+                            "  Reachability GC:    not applied (disabled, or the component \
+                             graph could not be bounded)"
                         );
                     }
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -1064,6 +1088,7 @@ fn main() -> Result<()> {
             #[cfg(feature = "differential")]
             differential,
             strip_component_type,
+            no_reachability_gc,
             facts,
         }) => {
             #[cfg(feature = "attestation")]
@@ -1085,6 +1110,7 @@ fn main() -> Result<()> {
                 islands,
                 run_differential,
                 strip_component_type,
+                no_reachability_gc,
                 facts,
             )?;
         }
@@ -1163,6 +1189,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // no_reachability_gc
             false, // emit_facts
         );
 
@@ -1203,6 +1230,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // no_reachability_gc
             false, // emit_facts
         );
 
@@ -1240,6 +1268,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // no_reachability_gc
             false, // emit_facts
         );
 
@@ -1280,6 +1309,7 @@ mod tests {
             1,     // islands: serial path
             false, // run_differential
             false, // strip_component_type
+            false, // no_reachability_gc
             false, // emit_facts
         );
 

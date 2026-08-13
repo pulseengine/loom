@@ -580,3 +580,67 @@ artifacts:
         target: REQ-1
       - type: verifies
         target: REQ-4
+
+  # ============================================================================
+  # #239 Phase B / #303 — component-level reachability GC.
+  #
+  # A component whose whole interface is scalar still ships `cabi_realloc`: the
+  # core module exports it, so core-module DCE keeps it, and nothing at the
+  # component level ever names it. Downstream that is three permanently
+  # unreached branches in an MC/DC report — a coverage row a safety argument can
+  # never close, once per fused component. Phase B removes it, and the evidence
+  # has to argue BOTH directions: that the dead one goes, and that the live one
+  # stays. A GC that removed everything would pass the first assertion alone.
+  # The #196 guard (a function reachable only through an element / indirect-call
+  # table must never be touched) and the conservative-on-failure behaviour are
+  # asserted explicitly, as is the authoritative validate-and-revert backstop —
+  # exercised with a deliberately WRONG liveness map, because an untested revert
+  # path is not a safety net.
+  # ============================================================================
+
+  - id: TEST-239B-COMPONENT-REACHABILITY-GC
+    type: feature
+    title: component-level reachability GC removes only provably-unreachable core functions (#239 Phase B, #303)
+    description: >
+      Verifies the #239 Phase B mark-and-sweep over a component's
+      export → instance → alias → canon lift/lower → core-func graph. Removal
+      only: no adapter or canonical-ABI behaviour is altered, so the component's
+      external interface and its lifting/lowering contract are identical before
+      and after.
+      Asserted, on components assembled in-tree from the component text format:
+      (1) an unreachable `cabi_realloc` on an all-scalar interface is REMOVED —
+      export and body — and the output still validates; (2) the same function is
+      PRESERVED when a canon lift names it via its `(realloc ...)` option, which
+      is what makes (1) a real assertion rather than a vacuous one; (3) a
+      function reachable only through an element segment / indirect-call table
+      is preserved and its module comes through byte-identical (#196); (4) the
+      analysis BAILS — the pass becomes a no-op rather than erroring or mangling
+      — on unparseable input, on a core module presented as a component, on a
+      truncated component, on a nested component, and on a canonical entry the
+      analysis does not model; (5) the authoritative post-pass
+      validate-and-revert restores a byte-identical Phase-B-free result when fed
+      a liveness map that lies. Two unit guards cover the eligibility gates: a
+      reference-typed global is refused (the encoder re-emits the global section
+      verbatim while dead-function elimination renumbers, so a frozen `ref.func`
+      would silently re-point — the #196 failure class), and so is a module with
+      a function-referencing element table. Scope stated plainly: only core
+      functions behind unreferenced core-module exports are removed; unreachable
+      canon lifts, aliases and component type definitions are NOT pruned, and
+      there is no behavioral differential — that rides #238.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- test_239b_
+    status: verified
+    release: v1.3.0
+    tags: [v130, component-model, reachability-gc, safety]
+    links:
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-11
+      - type: verifies
+        target: REQ-12
+      - type: verifies
+        target: REQ-3

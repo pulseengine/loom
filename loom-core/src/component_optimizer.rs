@@ -45,8 +45,8 @@ use crate::{BlockType, Instruction, Module};
 use anyhow::{Context, Result, anyhow};
 use wasmparser::{Encoding, Parser, Payload, Validator};
 
-/// Configuration for component optimization (#239 Phase A).
-#[derive(Debug, Clone, Copy, Default)]
+/// Configuration for component optimization (#239 Phase A / Phase B).
+#[derive(Debug, Clone, Copy)]
 pub struct ComponentOptimizeConfig {
     /// Strip the `component-type` metadata custom section.
     ///
@@ -57,6 +57,27 @@ pub struct ComponentOptimizeConfig {
     /// opt-in because removing it degrades tooling. Enable via
     /// `--strip-component-type`.
     pub strip_component_type: bool,
+
+    /// Run the #239 Phase B component-level reachability GC.
+    ///
+    /// **Default: `true`.** Drops nested-core-module functions that the
+    /// enclosing component provably never references (the motivating case is an
+    /// unreachable `cabi_realloc` on an all-scalar interface — see #303).
+    /// Removal only: no adapter or canonical-ABI behaviour is altered. The pass
+    /// is conservative by construction (see [`analyze_core_export_liveness`])
+    /// and is additionally covered by an authoritative post-pass
+    /// validate-and-revert, so disabling it should never be necessary — the
+    /// switch exists so an integrator can bisect against it.
+    pub reachability_gc: bool,
+}
+
+impl Default for ComponentOptimizeConfig {
+    fn default() -> Self {
+        Self {
+            strip_component_type: false,
+            reachability_gc: true,
+        }
+    }
 }
 
 /// Per-category byte breakdown of a component (#239 acceptance criteria).
@@ -82,6 +103,17 @@ pub struct ComponentSizeBreakdown {
     pub custom_sections_stripped: usize,
     /// Names of the component-level custom sections that were stripped.
     pub stripped_section_names: Vec<String>,
+    /// #239 Phase B: whether the component reachability analysis produced a
+    /// usable graph. `false` means the pass was a NO-OP for this component
+    /// (either disabled, or the analysis bailed — see
+    /// [`analyze_core_export_liveness`]).
+    pub reachability_gc_applied: bool,
+    /// #239 Phase B: nested-core-module FUNCTION exports pruned because the
+    /// enclosing component never references them.
+    pub core_exports_pruned: usize,
+    /// #239 Phase B: nested-core-module functions removed as unreachable once
+    /// those exports were pruned.
+    pub core_functions_removed: usize,
 }
 
 /// Statistics about component optimization
@@ -140,9 +172,54 @@ pub fn optimize_component(component_bytes: &[u8]) -> Result<(Vec<u8>, ComponentS
 ///
 /// Identical to [`optimize_component`], but lets the caller opt in to stripping
 /// the `component-type` metadata section.
+///
+/// **#239 Phase B revert gate.** When the reachability GC is enabled we first
+/// build the component's core-export liveness map. If the resulting component
+/// fails `wasmparser` validation for ANY reason, the whole optimization is
+/// re-run with the GC switched off and that Phase-B-free result is returned.
+/// This is the authoritative backstop required by CLAUDE.md: a mistake in the
+/// liveness graph can only cost us the optimization, never correctness.
 pub fn optimize_component_with_config(
     component_bytes: &[u8],
     config: ComponentOptimizeConfig,
+) -> Result<(Vec<u8>, ComponentStats)> {
+    let liveness = if config.reachability_gc {
+        analyze_core_export_liveness(component_bytes)
+    } else {
+        None
+    };
+    optimize_component_with_liveness(component_bytes, config, liveness)
+}
+
+/// Shared implementation behind [`optimize_component_with_config`], with the
+/// Phase B liveness map supplied explicitly.
+///
+/// Exposed to the crate so the revert path can be tested directly with a
+/// deliberately WRONG liveness map (see `test_239b_revert_on_bad_liveness`);
+/// production callers go through [`optimize_component_with_config`].
+pub(crate) fn optimize_component_with_liveness(
+    component_bytes: &[u8],
+    config: ComponentOptimizeConfig,
+    liveness: Option<CoreExportLiveness>,
+) -> Result<(Vec<u8>, ComponentStats)> {
+    match optimize_component_inner(component_bytes, config, liveness.as_ref()) {
+        Ok(result) => Ok(result),
+        Err(e) if liveness.is_some() => {
+            eprintln!(
+                "⚠  #239 Phase B: component rejected after reachability GC ({e}); \
+                 reverting to a Phase-B-free optimization"
+            );
+            crate::stats::record_revert("component:reachability_gc/invalid");
+            optimize_component_inner(component_bytes, config, None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn optimize_component_inner(
+    component_bytes: &[u8],
+    config: ComponentOptimizeConfig,
+    liveness: Option<&CoreExportLiveness>,
 ) -> Result<(Vec<u8>, ComponentStats)> {
     // Step 1: Parse component and extract core modules
     let parser = Parser::new(0);
@@ -203,10 +280,15 @@ pub fn optimize_component_with_config(
 
     // Step 2: Optimize each core module
     let mut optimized_count = 0;
+    let mut phase_b = PhaseBOutcome::default();
     for (idx, core_module) in core_modules.iter_mut().enumerate() {
-        match optimize_core_module(&core_module.original_bytes) {
-            Ok(optimized_bytes) => {
+        // #239 Phase B: the set of this module's export names that the enclosing
+        // component actually references. `None` ⇒ every export stays live.
+        let live_names = liveness.and_then(|l| l.live_names(idx));
+        match optimize_core_module(&core_module.original_bytes, live_names) {
+            Ok((optimized_bytes, module_phase_b)) => {
                 core_module.optimized_bytes = Some(optimized_bytes);
+                phase_b.merge(&module_phase_b);
                 optimized_count += 1;
                 eprintln!("✓ Module {}: Optimized successfully", idx);
             }
@@ -264,6 +346,9 @@ pub fn optimize_component_with_config(
         component_type_stripped,
         custom_sections_stripped,
         stripped_section_names,
+        reachability_gc_applied: liveness.is_some(),
+        core_exports_pruned: phase_b.exports_pruned,
+        core_functions_removed: phase_b.functions_removed,
     };
 
     let stats = ComponentStats {
@@ -321,9 +406,17 @@ struct CoreModule {
 /// Optimize a single core module
 ///
 /// Applies the full optimization pipeline:
+/// 0. #239 Phase B component reachability GC (when `live_names` is supplied)
 /// 1. Fused component optimizations (adapter devirtualization, type/import dedup, DCE)
 /// 2. Standard 12-phase pipeline (constant folding, strength reduction, DCE, etc.)
-fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
+///
+/// `live_names` is the set of this module's export names that the enclosing
+/// component references. `None` means "keep every export" (Phase B disabled or
+/// the analysis bailed).
+fn optimize_core_module(
+    module_bytes: &[u8],
+    live_names: Option<&std::collections::HashSet<String>>,
+) -> Result<(Vec<u8>, PhaseBOutcome)> {
     // First validate the input module
     Validator::new_with_features(wasm_features_with_async())
         .validate_all(module_bytes)
@@ -350,7 +443,65 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
             "  Skipped optimization: module has a function-referencing element table \
              (indirect-call dispatch); keeping original bytes pending a behavioral gate (#196)"
         );
-        return Ok(module_bytes.to_vec());
+        return Ok((module_bytes.to_vec(), PhaseBOutcome::default()));
+    }
+
+    // Phase B (#239 / #303): component-level reachability GC. Drop the function
+    // exports the enclosing component provably never references, then sweep the
+    // bodies that become unreachable. Runs FIRST so the rest of the pipeline
+    // works on the already-shrunk module. Save-and-revert on any encode or
+    // validation failure, exactly like the phases below.
+    let mut phase_b = PhaseBOutcome::default();
+    if let Some(live_names) = live_names {
+        match core_module_gc_eligibility(&module) {
+            Err(reason) => {
+                eprintln!("  #239 Phase B: not eligible ({reason}); all exports kept live");
+            }
+            Ok(()) => {
+                let saved = module.clone();
+                match gc_unreferenced_core_functions(&mut module, live_names) {
+                    Ok(outcome) if outcome.exports_pruned > 0 => {
+                        match crate::encode::encode_wasm(&module) {
+                            Ok(bytes) => {
+                                match Validator::new_with_features(wasm_features_with_async())
+                                    .validate_all(&bytes)
+                                {
+                                    Ok(_) => {
+                                        eprintln!(
+                                            "  #239 Phase B: pruned {} unreferenced core export(s), \
+                                             removed {} unreachable function(s)",
+                                            outcome.exports_pruned, outcome.functions_removed
+                                        );
+                                        phase_b = outcome;
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "  Module invalid after '#239 Phase B' (reverting): {e}"
+                                        );
+                                        crate::stats::record_revert(
+                                            "component:reachability_gc/module-invalid",
+                                        );
+                                        module = saved;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  Encode failed after '#239 Phase B' (reverting): {e}");
+                                crate::stats::record_revert(
+                                    "component:reachability_gc/encode-failed",
+                                );
+                                module = saved;
+                            }
+                        }
+                    }
+                    Ok(_) => { /* nothing pruned — module untouched */ }
+                    Err(e) => {
+                        eprintln!("  #239 Phase B skipped (reverting): {e:?}");
+                        module = saved;
+                    }
+                }
+            }
+        }
     }
 
     // Phase 0: Fused component optimizations (runs before standard pipeline)
@@ -596,7 +747,7 @@ fn optimize_core_module(module_bytes: &[u8]) -> Result<Vec<u8>> {
         return Err(anyhow!("Module roundtrip validation failed: {}", e));
     }
 
-    Ok(optimized_bytes)
+    Ok((optimized_bytes, phase_b))
 }
 
 /// Reconstruct a component with optimized core modules
@@ -758,6 +909,591 @@ fn section_header_start(bytes: &[u8], content_start: usize) -> usize {
     }
     // `pos` is the first byte of the LEB128 size; the section id is one before.
     pos - 1
+}
+
+// ============================================================================
+// #239 Phase B — component-level reachability GC
+// ============================================================================
+//
+// Motivation (#303). A component whose whole interface is scalar (`u32`/`bool`
+// in and out — nothing lifted or lowered can allocate) still ships
+// `cabi_realloc`: the core module exports it, so core-module DCE keeps it, and
+// nothing at the component level ever names it. Downstream it becomes three
+// permanently-unreached branches in an MC/DC report — a coverage row that can
+// never be closed in a safety argument. One dead copy per fused component, so
+// the cost scales with composition.
+//
+// What this pass does
+// -------------------
+// A mark-and-sweep over the component's reachability graph
+// (`exports → instances → aliases → canon lift/lower → core funcs`) that answers
+// exactly one question per nested core module:
+//
+//     which of its FUNCTION exports does the enclosing component reference?
+//
+// Everything else is delegated: the unreferenced exports are removed from the
+// core module and `fused_optimizer::eliminate_dead_functions` performs the
+// actual sweep, so the bodies that disappear are precisely those unreachable
+// from the module's remaining exports, its start function, and its element
+// segments.
+//
+// What this pass does NOT do
+// --------------------------
+// * It never alters, folds, or "simplifies" adapter or canonical-ABI behaviour
+//   (hazards H-13 / SC-12). Removal only, and only where unreachability is
+//   proven structurally.
+// * It does not rewrite the component's own index spaces, so unreachable canon
+//   lifts, aliases, and component type definitions are NOT pruned. Doing so
+//   requires re-encoding every component section with index remapping, which
+//   is incompatible with the byte-splicing reconstruction in
+//   `reconstruct_component` and would put the #196 class of index-scrambling
+//   bug back on the table. #239's Phase B acceptance line is therefore only
+//   partially met — core funcs yes, canon/alias/type no.
+//
+// Precision
+// ---------
+// The mark phase treats EVERY component-level reference to a core-instance
+// export as a root, rather than only those reachable from the component's
+// exports. That is a deliberate over-approximation of export-rooted
+// reachability: it can only keep MORE alive, never less. It costs nothing in
+// practice — `wit-component` emits an alias only in order to feed a canon
+// lift/lower, and every canon lift it emits is exported — while removing the
+// need to model the component function/instance index spaces.
+//
+// Soundness argument
+// ------------------
+// A core function removed by this pass cannot be called, because:
+//   1. Nothing inside the core module reaches it. `eliminate_dead_functions`
+//      computes that closure from the surviving exports, the start function and
+//      the element segments; `collect_function_refs` covers `call`.
+//   2. Nothing outside the core module can name it. A nested core module's
+//      exports are visible ONLY through the enclosing component's alias /
+//      instantiation-argument graph, which is what the mark phase enumerates.
+//      A module that escapes that graph (exported from the component, or handed
+//      to a component instantiation) is marked `All` and never pruned.
+//   3. It cannot be reached indirectly. Modules with a function-referencing
+//      element segment are refused outright (#196), `ref.func` in a function
+//      body is a hard parse error in loom's parser, and reference-typed globals
+//      are refused (see `core_module_gc_eligibility`).
+// Anything the analysis cannot bound is a bail: the pass becomes a NO-OP for
+// that component and says so.
+
+/// Which of a nested core module's exports Phase B is allowed to touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreModuleLiveness {
+    /// Every export must be treated as live. Either the module escapes the
+    /// component's own graph (it is exported, or passed to a component
+    /// instantiation, or never instantiated at all), or the analysis could not
+    /// bound its uses. Nothing is pruned.
+    All,
+    /// Only these export names are referenced from the enclosing component.
+    Names(std::collections::HashSet<String>),
+}
+
+/// The result of the #239 Phase B component reachability analysis: one entry
+/// per core module DEFINED by the component, in declaration order (which is the
+/// order [`optimize_component_with_config`] collects `ModuleSection` payloads).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoreExportLiveness {
+    per_module: Vec<CoreModuleLiveness>,
+}
+
+impl CoreExportLiveness {
+    /// Build a liveness map directly from per-module entries.
+    ///
+    /// Production code obtains this from [`analyze_core_export_liveness`]; the
+    /// constructor exists so the revert path can be exercised with a
+    /// deliberately wrong map.
+    pub fn from_entries(per_module: Vec<CoreModuleLiveness>) -> Self {
+        Self { per_module }
+    }
+
+    /// The export names that are live for the `defined_ordinal`-th core module,
+    /// or `None` when every export of that module must be preserved.
+    pub fn live_names(&self, defined_ordinal: usize) -> Option<&std::collections::HashSet<String>> {
+        match self.per_module.get(defined_ordinal) {
+            Some(CoreModuleLiveness::Names(names)) => Some(names),
+            // `All`, or an ordinal we never analyzed: prune nothing.
+            _ => None,
+        }
+    }
+
+    /// Number of core modules covered by this analysis.
+    pub fn len(&self) -> usize {
+        self.per_module.len()
+    }
+
+    /// Whether the analysis covered no modules at all.
+    pub fn is_empty(&self) -> bool {
+        self.per_module.is_empty()
+    }
+}
+
+/// What Phase B achieved on one core module (or, merged, on a whole component).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PhaseBOutcome {
+    /// Function exports removed because the component never references them.
+    pub exports_pruned: usize,
+    /// Function bodies removed as unreachable once those exports were gone.
+    pub functions_removed: usize,
+}
+
+impl PhaseBOutcome {
+    fn merge(&mut self, other: &PhaseBOutcome) {
+        self.exports_pruned += other.exports_pruned;
+        self.functions_removed += other.functions_removed;
+    }
+}
+
+/// Mark phase: which export names of each nested core module does the component
+/// reference?
+///
+/// Returns `None` — meaning "the pass is a NO-OP for this component" — whenever
+/// the graph cannot be built with confidence. That includes:
+/// * the bytes are not a parseable WebAssembly **component**;
+/// * a nested component is present (its index spaces are separate and its outer
+///   aliases can reach into ours);
+/// * an `alias outer` of any sort;
+/// * a canonical-section entry other than `lift`/`lower`, or a canonical option
+///   we do not recognize — either could name a core function;
+/// * an index that does not resolve in the space we tracked, which would mean
+///   we mis-modelled the index spaces.
+///
+/// Bailing loudly is deliberate: a mis-tracked index space would mark the wrong
+/// name dead, and although the post-pass validator would catch that and revert,
+/// a silent near-miss is not something a safety-critical optimizer should rely
+/// on. This also means a future `wasmparser` gains a variant → we bail, not
+/// guess.
+pub fn analyze_core_export_liveness(component_bytes: &[u8]) -> Option<CoreExportLiveness> {
+    use std::collections::{HashMap, HashSet};
+    use wasmparser::{
+        CanonicalFunction, ComponentAlias, ComponentExternalKind, ComponentInstance,
+        ComponentTypeRef, ExternalKind, Instance, InstantiationArgKind,
+    };
+
+    // --- index spaces we model -------------------------------------------
+    // Core module index space: `Some(n)` ⇒ the n-th module DEFINED here,
+    // `None` ⇒ imported (not ours to prune).
+    let mut core_modules: Vec<Option<usize>> = Vec::new();
+    let mut defined_modules = 0usize;
+    // Core instance index space: `Some(m)` ⇒ produced by instantiating core
+    // module index `m`, `None` ⇒ synthetic (`FromExports`).
+    let mut core_instances: Vec<Option<u32>> = Vec::new();
+    // Core function index space: `Some((instance, name))` ⇒ an alias of that
+    // core instance export, `None` ⇒ synthetic (e.g. `canon lower`).
+    let mut core_funcs: Vec<Option<(u32, String)>> = Vec::new();
+
+    // --- marks ------------------------------------------------------------
+    // (core instance index, export name) pairs referenced by the component.
+    let mut used: HashSet<(u32, String)> = HashSet::new();
+    // Core instances handed wholesale to a core instantiation: every export
+    // may be matched by name against the importing module's imports.
+    let mut opaque_instances: HashSet<u32> = HashSet::new();
+    // Core modules that escape the component's own graph.
+    let mut opaque_modules: HashSet<u32> = HashSet::new();
+
+    /// Mark the core-instance export behind core function `idx`. Returns
+    /// `false` if the index does not resolve (⇒ caller bails).
+    fn mark_core_func(
+        core_funcs: &[Option<(u32, String)>],
+        used: &mut HashSet<(u32, String)>,
+        idx: u32,
+    ) -> bool {
+        match core_funcs.get(idx as usize) {
+            Some(Some((instance, name))) => {
+                used.insert((*instance, name.clone()));
+                true
+            }
+            // Synthetic core func (canon lower and friends): nothing in a core
+            // module needs to survive for it.
+            Some(None) => true,
+            None => false,
+        }
+    }
+
+    /// Mark every core function a canonical option names. Returns `false` on an
+    /// option we do not recognize (it could name a core function).
+    fn mark_canonical_options(
+        core_funcs: &[Option<(u32, String)>],
+        used: &mut HashSet<(u32, String)>,
+        options: &[wasmparser::CanonicalOption],
+    ) -> bool {
+        use wasmparser::CanonicalOption as O;
+        for option in options {
+            match option {
+                // These name a CORE FUNCTION.
+                O::Realloc(i) | O::PostReturn(i) | O::Callback(i) => {
+                    if !mark_core_func(core_funcs, used, *i) {
+                        return false;
+                    }
+                }
+                // These do not touch the core function index space.
+                O::Memory(_) | O::CoreType(_) => {}
+                O::UTF8 | O::UTF16 | O::CompactUTF16 | O::Async | O::Gc => {}
+                // Reachable only if `wasmparser` grows a variant. Bail rather
+                // than assume a new option cannot name a core function.
+                #[allow(unreachable_patterns)]
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    let mut seen_version = false;
+
+    for payload in Parser::new(0).parse_all(component_bytes) {
+        let payload = payload.ok()?;
+        match payload {
+            Payload::Version { encoding, .. } => {
+                // Nested CORE MODULES also emit a Version payload; only the
+                // outermost one decides whether this is a component at all.
+                if !seen_version {
+                    seen_version = true;
+                    if encoding != Encoding::Component {
+                        return None;
+                    }
+                }
+            }
+
+            // A nested component brings its own index spaces and can alias
+            // outward into ours. Out of scope — bail.
+            Payload::ComponentSection { .. } => return None,
+
+            Payload::ModuleSection { .. } => {
+                core_modules.push(Some(defined_modules));
+                defined_modules += 1;
+            }
+
+            Payload::ComponentImportSection(reader) => {
+                for import in reader {
+                    let import = import.ok()?;
+                    if let ComponentTypeRef::Module(_) = import.ty {
+                        // Imported module: occupies a slot in the core module
+                        // index space but is not ours to prune.
+                        core_modules.push(None);
+                    }
+                }
+            }
+
+            // Core instance section.
+            Payload::InstanceSection(reader) => {
+                for instance in reader {
+                    match instance.ok()? {
+                        Instance::Instantiate { module_index, args } => {
+                            core_instances.push(Some(module_index));
+                            for arg in args.iter() {
+                                match arg.kind {
+                                    // The whole instance is handed over; the
+                                    // importing module resolves its imports by
+                                    // NAME against every export.
+                                    InstantiationArgKind::Instance => {
+                                        opaque_instances.insert(arg.index);
+                                    }
+                                }
+                            }
+                        }
+                        Instance::FromExports(exports) => {
+                            core_instances.push(None);
+                            for export in exports.iter() {
+                                if export.kind == ExternalKind::Func
+                                    && !mark_core_func(&core_funcs, &mut used, export.index)
+                                {
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Payload::ComponentAliasSection(reader) => {
+                for alias in reader {
+                    match alias.ok()? {
+                        ComponentAlias::CoreInstanceExport {
+                            kind,
+                            instance_index,
+                            name,
+                        } => {
+                            if kind == ExternalKind::Func {
+                                core_funcs.push(Some((instance_index, name.to_string())));
+                                // The alias is itself a reference: the core
+                                // export has to survive for it to resolve.
+                                used.insert((instance_index, name.to_string()));
+                            }
+                            // Non-func core aliases extend the memory / table /
+                            // global / tag spaces, which Phase B never prunes.
+                        }
+                        // Component-level alias. It cannot produce a core FUNC,
+                        // but aliasing a `module` export of a component
+                        // instance DOES extend the core module index space —
+                        // and if we failed to count that slot, every later
+                        // module index would be off by one and we would
+                        // attribute the wrong live set to the wrong module.
+                        // The module itself is external, hence `None`.
+                        ComponentAlias::InstanceExport { kind, .. } => {
+                            if kind == ComponentExternalKind::Module {
+                                core_modules.push(None);
+                            }
+                        }
+                        // Cannot occur at the outermost level, and we do not
+                        // model enclosing scopes. Bail.
+                        ComponentAlias::Outer { .. } => return None,
+                    }
+                }
+            }
+
+            Payload::ComponentCanonicalSection(reader) => {
+                for canonical in reader {
+                    match canonical.ok()? {
+                        CanonicalFunction::Lift {
+                            core_func_index,
+                            options,
+                            ..
+                        } => {
+                            // Lifts extend the COMPONENT function space, not
+                            // the core one.
+                            if !mark_core_func(&core_funcs, &mut used, core_func_index) {
+                                return None;
+                            }
+                            if !mark_canonical_options(&core_funcs, &mut used, &options) {
+                                return None;
+                            }
+                        }
+                        CanonicalFunction::Lower { options, .. } => {
+                            // Options resolve against the funcs declared BEFORE
+                            // this one; mark first, then extend the space.
+                            if !mark_canonical_options(&core_funcs, &mut used, &options) {
+                                return None;
+                            }
+                            core_funcs.push(None);
+                        }
+                        // resource.*, thread.*, task.*, stream.*, future.*,
+                        // error-context.* … every one of these extends the core
+                        // function index space, and the list grows between
+                        // `wasmparser` releases. Refuse rather than mis-count.
+                        _ => return None,
+                    }
+                }
+            }
+
+            Payload::ComponentExportSection(reader) => {
+                for export in reader {
+                    let export = export.ok()?;
+                    if export.kind == ComponentExternalKind::Module {
+                        // The module itself leaves the component; a consumer may
+                        // instantiate it and call anything it exports.
+                        opaque_modules.insert(export.index);
+                    }
+                }
+            }
+
+            Payload::ComponentInstanceSection(reader) => {
+                for instance in reader {
+                    match instance.ok()? {
+                        ComponentInstance::Instantiate { args, .. } => {
+                            for arg in args.iter() {
+                                if arg.kind == ComponentExternalKind::Module {
+                                    opaque_modules.insert(arg.index);
+                                }
+                            }
+                        }
+                        ComponentInstance::FromExports(exports) => {
+                            for export in exports.iter() {
+                                if export.kind == ComponentExternalKind::Module {
+                                    opaque_modules.insert(export.index);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Everything else — component/core type sections, the component
+            // start section (it names a COMPONENT function, already covered via
+            // its canon lift), custom sections, and every payload belonging to a
+            // nested core module — cannot reference a core-instance export.
+            _ => {}
+        }
+    }
+
+    if !seen_version {
+        return None;
+    }
+
+    // --- sweep phase: fold the marks down to one verdict per defined module --
+    let mut escaped: HashSet<u32> = opaque_modules;
+    let mut instantiated: HashSet<u32> = HashSet::new();
+    for (instance_index, origin) in core_instances.iter().enumerate() {
+        let Some(module_index) = origin else { continue };
+        // An instantiation of a module index we never saw means the core module
+        // index space is not what we think it is — every subsequent index would
+        // be suspect. Bail rather than attribute a live set to the wrong module.
+        if *module_index as usize >= core_modules.len() {
+            return None;
+        }
+        instantiated.insert(*module_index);
+        if opaque_instances.contains(&(instance_index as u32)) {
+            escaped.insert(*module_index);
+        }
+    }
+
+    let mut names_by_module: HashMap<u32, HashSet<String>> = HashMap::new();
+    for (instance_index, name) in &used {
+        match core_instances.get(*instance_index as usize) {
+            Some(Some(module_index)) => {
+                names_by_module
+                    .entry(*module_index)
+                    .or_default()
+                    .insert(name.clone());
+            }
+            // Reference against a synthetic instance: nothing in a core module
+            // backs it.
+            Some(None) => {}
+            // Reference to an instance we never saw ⇒ we mis-tracked. Bail.
+            None => return None,
+        }
+    }
+
+    let mut per_module = vec![CoreModuleLiveness::All; defined_modules];
+    for (module_index, slot) in core_modules.iter().enumerate() {
+        let Some(defined_ordinal) = slot else {
+            continue;
+        };
+        let module_index = module_index as u32;
+        // A module that escapes, or that is never instantiated (so we have no
+        // instance through which to observe its uses), keeps every export.
+        if escaped.contains(&module_index) || !instantiated.contains(&module_index) {
+            continue;
+        }
+        per_module[*defined_ordinal] = CoreModuleLiveness::Names(
+            names_by_module
+                .get(&module_index)
+                .cloned()
+                .unwrap_or_default(),
+        );
+    }
+
+    Some(CoreExportLiveness { per_module })
+}
+
+/// Is this core module safe for Phase B to prune exports from?
+///
+/// Returns `Err(reason)` when it is not. Every gate here is POSITIVE: we prune
+/// only what we can prove, rather than pruning unless we spot a problem.
+fn core_module_gc_eligibility(module: &Module) -> std::result::Result<(), &'static str> {
+    // #196. A populated `call_indirect` table means functions are reachable
+    // through an index loom does not track behaviourally. `optimize_core_module`
+    // already refuses such modules outright; this is the same gate stated
+    // locally so the pass is safe wherever it is called from.
+    if crate::fused_optimizer::element_section_references_functions(module) {
+        return Err("module has a function-referencing element table (#196)");
+    }
+
+    // A reference-typed global is the ONE remaining way a function index can
+    // survive renumbering unnoticed: `encode_wasm` re-emits
+    // `global_section_bytes` VERBATIM as a raw section, while
+    // `eliminate_dead_functions` renumbers the function index space. A
+    // `ref.func N` frozen in those bytes would silently re-point at a DIFFERENT
+    // surviving function — valid wasm, wrong behaviour, i.e. exactly the #196
+    // failure class. Every other path is already closed: `ref.func` in a
+    // function body is a hard parse error in loom's parser, data-segment offsets
+    // are integer constant expressions, and element segments are gated above.
+    if !global_section_is_index_safe(module) {
+        return Err("module has a reference-typed or unparseable global section");
+    }
+
+    // `Instruction::Unknown` is opaque: we cannot see the function references it
+    // may carry. loom's parser rejects unsupported opcodes outright, so this is
+    // belt-and-braces, but the cost is a linear scan.
+    for func in &module.functions {
+        if has_unknown_instructions(&func.instructions) {
+            return Err("module contains opaque (Unknown) instructions");
+        }
+    }
+
+    Ok(())
+}
+
+/// Can the module's raw global section be renumbered around safely?
+///
+/// `true` only when every global has a NUMERIC content type and an initializer
+/// free of `ref.func`. An unparseable global section is `false`.
+fn global_section_is_index_safe(module: &Module) -> bool {
+    use wasmparser::{BinaryReader, FromReader, Global, Operator, ValType};
+
+    let Some(bytes) = &module.global_section_bytes else {
+        return true;
+    };
+    let mut reader = BinaryReader::new(bytes, 0);
+    let Ok(count) = reader.read_var_u32() else {
+        return false;
+    };
+    for _ in 0..count {
+        let Ok(global) = Global::from_reader(&mut reader) else {
+            return false;
+        };
+        match global.ty.content_type {
+            ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64 | ValType::V128 => {}
+            // A funcref/externref global can hold `ref.func`.
+            ValType::Ref(_) => return false,
+        }
+        // Belt and braces: a numeric global cannot legally hold `ref.func`, but
+        // we do not want that argument to be the only thing standing between us
+        // and a silent miscompile.
+        let mut ops = global.init_expr.get_operators_reader();
+        loop {
+            match ops.read() {
+                Ok(Operator::RefFunc { .. }) => return false,
+                Ok(Operator::End) => break,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+    true
+}
+
+/// Sweep phase: drop the function exports the component never references, then
+/// remove the bodies that become unreachable.
+///
+/// Only FUNCTION exports are considered. Memories, tables and globals are left
+/// exactly as they are — they are cheap, and dropping a memory export would
+/// interact with data segments and canonical options in ways this pass does not
+/// model.
+///
+/// The caller is responsible for the eligibility check and for the
+/// encode/validate/revert around this call.
+fn gc_unreferenced_core_functions(
+    module: &mut Module,
+    live_names: &std::collections::HashSet<String>,
+) -> Result<PhaseBOutcome> {
+    let mut exports_pruned = 0usize;
+    module.exports.retain(|export| match &export.kind {
+        crate::ExportKind::Func(_) => {
+            if live_names.contains(&export.name) {
+                true
+            } else {
+                exports_pruned += 1;
+                false
+            }
+        }
+        // Non-function exports are out of scope for Phase B.
+        _ => true,
+    });
+
+    if exports_pruned == 0 {
+        return Ok(PhaseBOutcome::default());
+    }
+
+    // The actual sweep. `eliminate_dead_functions` computes reachability from
+    // the SURVIVING exports, the start function and the element segments, and
+    // renumbers every reference it removes.
+    let functions_removed = crate::fused_optimizer::eliminate_dead_functions(module)?;
+
+    Ok(PhaseBOutcome {
+        exports_pruned,
+        functions_removed,
+    })
 }
 
 // ============================================================================
@@ -2231,6 +2967,7 @@ mod custom_section_gc_tests {
         // Opt-in: component-type STRIPPED.
         let cfg = ComponentOptimizeConfig {
             strip_component_type: true,
+            ..Default::default()
         };
         let (stripped_out, stripped_stats) =
             optimize_component_with_config(&injected, cfg).expect("opt-in optimize");
@@ -2296,5 +3033,692 @@ mod custom_section_gc_tests {
         // Opt-in: component-type also stripped.
         assert!(is_inert_component_custom("component-type", true));
         assert!(is_inert_component_custom("component-type:foo", true));
+    }
+}
+
+// ============================================================================
+// #239 Phase B — component-level reachability GC tests
+// ============================================================================
+//
+// Every test here is named `test_239b_*`; that prefix is the filter used by the
+// rivet verification artifact TEST-239B-COMPONENT-REACHABILITY-GC.
+//
+// The fixtures are built in-tree from the component text format via `wat` — no
+// binary blobs — so what each test asserts is readable next to the assertion.
+#[cfg(test)]
+mod phase_b_reachability_gc_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    // ------------------------------------------------------------------
+    // Fixtures
+    // ------------------------------------------------------------------
+
+    /// The #303 shape: an all-scalar interface (`s32` in, `s32` out — nothing
+    /// lifted or lowered can allocate) whose core module still exports
+    /// `cabi_realloc`. Nothing at the component level names it, so it can never
+    /// be called.
+    const UNREACHABLE_REALLOC: &str = r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (func (export "add") (param i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add
+              local.get 2
+              i32.add
+              local.get 3
+              i32.add)
+          )
+          (core instance $i (instantiate $m))
+          (alias core export $i "add" (core func $add))
+          (type $t (func (param "a" s32) (param "b" s32) (result s32)))
+          (func $lifted (type $t) (canon lift (core func $add)))
+          (export "add" (func $lifted))
+        )
+    "#;
+
+    /// The same module, but the interface takes a `string`, so the canon lift
+    /// carries `(realloc ...)` and `cabi_realloc` IS reachable. This is the test
+    /// that makes the previous one mean something: a GC that removed everything
+    /// would pass that one and fail this one.
+    const REACHABLE_REALLOC: &str = r#"
+        (component
+          (core module $m
+            (memory (export "memory") 1)
+            (func (export "greet") (param i32 i32) (result i32)
+              local.get 1)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add
+              local.get 2
+              i32.add
+              local.get 3
+              i32.add)
+          )
+          (core instance $i (instantiate $m))
+          (alias core export $i "greet" (core func $greet))
+          (alias core export $i "memory" (core memory $mem))
+          (alias core export $i "cabi_realloc" (core func $realloc))
+          (type $t (func (param "s" string) (result s32)))
+          (func $lifted (type $t)
+            (canon lift (core func $greet) (memory $mem) (realloc $realloc) string-encoding=utf8))
+          (export "greet" (func $lifted))
+        )
+    "#;
+
+    /// #196 guard. `helper` is exported by the core module, is NOT referenced
+    /// anywhere in the component, and is the target of an element segment — it
+    /// is reached only through `call_indirect`. Removing it (or renumbering
+    /// around it) is the v1.1.11 flight-control miscompile.
+    const INDIRECT_TABLE: &str = r#"
+        (component
+          (core module $m
+            (type $ft (func (param i32) (result i32)))
+            (table 1 1 funcref)
+            (elem (i32.const 0) $helper)
+            (func $helper (export "helper") (param i32) (result i32)
+              local.get 0
+              i32.const 1
+              i32.add)
+            (func (export "run") (param i32) (result i32)
+              local.get 0
+              i32.const 0
+              call_indirect (type $ft))
+          )
+          (core instance $i (instantiate $m))
+          (alias core export $i "run" (core func $run))
+          (type $t (func (param "x" s32) (result s32)))
+          (func $lifted (type $t) (canon lift (core func $run)))
+          (export "run" (func $lifted))
+        )
+    "#;
+
+    /// Structurally valid, but Phase B refuses to analyze it: `canon
+    /// resource.drop` extends the core function index space, and the set of
+    /// canonical entries that do so grows between `wasmparser` releases. Rather
+    /// than mis-count the space we bail, and the pass becomes a NO-OP.
+    const UNMODELLED_CANONICAL: &str = r#"
+        (component
+          (core module $m
+            (func (export "add") (param i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              i32.const 0)
+          )
+          (core instance $i (instantiate $m))
+          (alias core export $i "add" (core func $add))
+          (type $r (resource (rep i32)))
+          (core func $drop (canon resource.drop $r))
+          (type $t (func (param "a" s32) (param "b" s32) (result s32)))
+          (func $lifted (type $t) (canon lift (core func $add)))
+          (export "add" (func $lifted))
+        )
+    "#;
+
+    /// Also unanalyzable: a nested component has its own index spaces and can
+    /// alias outward into ours.
+    ///
+    /// NOTE (pre-existing, NOT Phase B): `reconstruct_component` cannot rebuild
+    /// a component that nests core modules inside a `ComponentSection` — it
+    /// rewrites the inner module section without updating the enclosing
+    /// component section's LEB128 size, and `optimize_component` then fails its
+    /// own post-pass validation with `Optimized component validation failed`.
+    /// That is a loud failure, not a silent one, and it is outside Phase B's
+    /// scope; this fixture is therefore only used to assert that the Phase B
+    /// MARK PHASE bails.
+    const NESTED_COMPONENT: &str = r#"
+        (component
+          (core module $m
+            (func (export "add") (param i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              i32.const 0)
+          )
+          (component $inner
+            (core module $im
+              (func (export "f") (result i32)
+                i32.const 1))
+            (core instance $ii (instantiate $im))
+          )
+          (core instance $i (instantiate $m))
+          (alias core export $i "add" (core func $add))
+          (type $t (func (param "a" s32) (param "b" s32) (result s32)))
+          (func $lifted (type $t) (canon lift (core func $add)))
+          (export "add" (func $lifted))
+        )
+    "#;
+
+    /// Index-space guard. Aliasing a `module` export of an imported component
+    /// instance occupies a slot in the CORE MODULE index space: here `$hm` is
+    /// core module 0 and the module we define is core module 1. Miscounting
+    /// that slot would attribute the wrong live set to the wrong module.
+    const ALIASED_CORE_MODULE: &str = r#"
+        (component
+          (import "host" (instance $h
+            (export "m" (core module))
+          ))
+          (alias export $h "m" (core module $hm))
+          (core module $mine
+            (func (export "add") (param i32 i32) (result i32)
+              local.get 0
+              local.get 1
+              i32.add)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              i32.const 0)
+          )
+          (core instance $i (instantiate $mine))
+          (alias core export $i "add" (core func $add))
+          (type $t (func (param "a" s32) (param "b" s32) (result s32)))
+          (func $lifted (type $t) (canon lift (core func $add)))
+          (export "add" (func $lifted))
+        )
+    "#;
+
+    fn component(wat: &str) -> Vec<u8> {
+        let bytes = wat::parse_str(wat).expect("fixture must assemble");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&bytes)
+            .expect("fixture must be a valid component");
+        bytes
+    }
+
+    // ------------------------------------------------------------------
+    // Inspection helpers — assert on STRUCTURE, never on byte size (Phase A
+    // also shrinks these components).
+    // ------------------------------------------------------------------
+
+    /// The raw bytes of every nested core module, in declaration order.
+    fn core_module_bytes(component_bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for payload in Parser::new(0).parse_all(component_bytes) {
+            if let Ok(Payload::ModuleSection {
+                unchecked_range, ..
+            }) = payload
+            {
+                out.push(component_bytes[unchecked_range.start..unchecked_range.end].to_vec());
+            }
+        }
+        out
+    }
+
+    /// Function export names of a core module, in declaration order.
+    fn core_func_exports(module_bytes: &[u8]) -> Vec<String> {
+        let mut names = Vec::new();
+        for payload in Parser::new(0).parse_all(module_bytes) {
+            if let Ok(Payload::ExportSection(reader)) = payload {
+                for export in reader {
+                    let export = export.expect("export must parse");
+                    if export.kind == wasmparser::ExternalKind::Func {
+                        names.push(export.name.to_string());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Number of functions DEFINED by a core module.
+    fn core_func_count(module_bytes: &[u8]) -> u32 {
+        let mut count = 0;
+        for payload in Parser::new(0).parse_all(module_bytes) {
+            if let Ok(Payload::FunctionSection(reader)) = payload {
+                count += reader.count();
+            }
+        }
+        count
+    }
+
+    // ==================================================================
+    // Test 1 — the deliverable: an unreachable `cabi_realloc` is REMOVED.
+    // ==================================================================
+    #[test]
+    fn test_239b_removes_unreachable_cabi_realloc() {
+        let input = component(UNREACHABLE_REALLOC);
+
+        // The fixture must actually contain what we claim to remove, otherwise
+        // this test is vacuous.
+        let before = core_module_bytes(&input);
+        assert_eq!(before.len(), 1, "fixture must have exactly one core module");
+        assert!(
+            core_func_exports(&before[0])
+                .iter()
+                .any(|n| n == "cabi_realloc"),
+            "fixture must export cabi_realloc before optimization"
+        );
+        assert_eq!(core_func_count(&before[0]), 2, "fixture has add + realloc");
+
+        let (output, stats) = optimize_component(&input).expect("optimize must succeed");
+
+        // Non-negotiable: the output is still a valid component.
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+
+        let after = core_module_bytes(&output);
+        assert_eq!(after.len(), 1);
+        let exports = core_func_exports(&after[0]);
+        assert!(
+            !exports.iter().any(|n| n == "cabi_realloc"),
+            "unreachable cabi_realloc export must be gone, got {exports:?}"
+        );
+        assert!(
+            exports.iter().any(|n| n == "add"),
+            "the live export must survive, got {exports:?}"
+        );
+        assert_eq!(
+            core_func_count(&after[0]),
+            1,
+            "the unreachable function BODY must be gone, not just its export"
+        );
+
+        // The win must be attributable.
+        let bd = &stats.size_breakdown;
+        assert!(bd.reachability_gc_applied, "Phase B must have run");
+        assert_eq!(bd.core_exports_pruned, 1);
+        assert_eq!(bd.core_functions_removed, 1);
+    }
+
+    // ==================================================================
+    // Test 2 — the test that makes test 1 meaningful: when the SAME function
+    // is genuinely reachable it is PRESERVED.
+    // ==================================================================
+    #[test]
+    fn test_239b_preserves_reachable_cabi_realloc() {
+        let input = component(REACHABLE_REALLOC);
+
+        let before = core_module_bytes(&input);
+        assert_eq!(core_func_count(&before[0]), 2);
+
+        let (output, stats) = optimize_component(&input).expect("optimize must succeed");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+
+        let after = core_module_bytes(&output);
+        let exports = core_func_exports(&after[0]);
+        assert!(
+            exports.iter().any(|n| n == "cabi_realloc"),
+            "cabi_realloc is named by the canon lift's (realloc ...) option — it must \
+             survive; got {exports:?}"
+        );
+        assert!(exports.iter().any(|n| n == "greet"));
+        assert_eq!(
+            core_func_count(&after[0]),
+            2,
+            "no function may be removed from a component that uses both"
+        );
+
+        let bd = &stats.size_breakdown;
+        assert!(bd.reachability_gc_applied, "Phase B must have run");
+        assert_eq!(
+            bd.core_exports_pruned, 0,
+            "nothing is unreferenced in this component"
+        );
+        assert_eq!(bd.core_functions_removed, 0);
+
+        // And the mark phase must agree, directly.
+        let liveness = analyze_core_export_liveness(&input).expect("analysis must succeed");
+        let names = liveness.live_names(0).expect("module 0 must be analyzable");
+        assert!(names.contains("cabi_realloc"), "got {names:?}");
+        assert!(names.contains("greet"), "got {names:?}");
+    }
+
+    // ==================================================================
+    // Test 3 — #196 guard: a function reachable only through an element
+    // segment / indirect-call table is NEVER removed.
+    // ==================================================================
+    #[test]
+    fn test_239b_preserves_indirect_element_target() {
+        let input = component(INDIRECT_TABLE);
+
+        let before = core_module_bytes(&input);
+        assert_eq!(before.len(), 1);
+        assert!(
+            core_func_exports(&before[0]).iter().any(|n| n == "helper"),
+            "fixture must export the indirect target"
+        );
+
+        let (output, _stats) = optimize_component(&input).expect("optimize must succeed");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+
+        let after = core_module_bytes(&output);
+        assert_eq!(after.len(), 1);
+
+        // `helper` is NOT referenced anywhere in the component, so a Phase B
+        // that ignored the element table would prune its export. It must not.
+        let exports = core_func_exports(&after[0]);
+        assert!(
+            exports.iter().any(|n| n == "helper"),
+            "indirectly-reachable function must be preserved, got {exports:?}"
+        );
+        assert_eq!(core_func_count(&after[0]), 2, "both functions must survive");
+
+        // Stronger: a module with a function-referencing element segment is not
+        // touched at all — the bytes come through verbatim (#196).
+        assert_eq!(
+            after[0], before[0],
+            "a module with an indirect-call table must be byte-identical (#196)"
+        );
+    }
+
+    // ==================================================================
+    // Test 4 — conservative on failure: the pass NO-OPs, it does not error and
+    // it does not mangle.
+    // ==================================================================
+    #[test]
+    fn test_239b_analysis_bails_on_unanalyzable_input() {
+        // (a) Inputs that are not analyzable components at all.
+        assert!(analyze_core_export_liveness(&[]).is_none(), "empty input");
+        assert!(
+            analyze_core_export_liveness(b"not a wasm file at all").is_none(),
+            "garbage input"
+        );
+        let module_not_component =
+            wat::parse_str("(module (func (export \"f\") (result i32) i32.const 1))")
+                .expect("core module fixture");
+        assert!(
+            analyze_core_export_liveness(&module_not_component).is_none(),
+            "a CORE MODULE is not a component — the pass must not claim to have \
+             analyzed it"
+        );
+
+        // (b) A truncated component: the parse fails mid-way, so we bail.
+        let full = component(UNREACHABLE_REALLOC);
+        let truncated = &full[..full.len() / 2];
+        assert!(
+            analyze_core_export_liveness(truncated).is_none(),
+            "a component that does not parse must bail"
+        );
+
+        // (c) A nested component must make the mark phase bail. (We stop at the
+        // analysis here: rebuilding a component with nested core modules is a
+        // pre-existing `reconstruct_component` limitation — see the fixture's
+        // doc comment — and is not Phase B's to fix.)
+        assert!(
+            analyze_core_export_liveness(&component(NESTED_COMPONENT)).is_none(),
+            "a nested component must make the analysis bail"
+        );
+
+        // (d) A structurally VALID, single-level component whose graph we refuse
+        // to bound (an unmodelled canonical entry). The pass must no-op end to
+        // end: optimization still succeeds, the output still validates, and
+        // nothing was removed.
+        let nested = component(UNMODELLED_CANONICAL);
+        assert!(
+            analyze_core_export_liveness(&nested).is_none(),
+            "an unmodelled canonical entry must make the analysis bail"
+        );
+
+        let before = core_module_bytes(&nested);
+        let (output, stats) = optimize_component(&nested).expect("optimize must still succeed");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+
+        let after = core_module_bytes(&output);
+        assert_eq!(after.len(), before.len());
+        for (idx, module) in after.iter().enumerate() {
+            assert_eq!(
+                core_func_count(module),
+                core_func_count(&before[idx]),
+                "no function may be removed when the analysis bailed (module {idx})"
+            );
+        }
+        assert!(
+            core_func_exports(&after[0])
+                .iter()
+                .any(|n| n == "cabi_realloc"),
+            "the unanalyzable component keeps everything, including cabi_realloc"
+        );
+        let bd = &stats.size_breakdown;
+        assert!(
+            !bd.reachability_gc_applied,
+            "Phase B must report NOT applied"
+        );
+        assert_eq!(bd.core_exports_pruned, 0);
+        assert_eq!(bd.core_functions_removed, 0);
+    }
+
+    // ==================================================================
+    // Test 5 — the revert path. Untested revert code is not a safety net.
+    // Feed the pass a liveness map that LIES (it marks a genuinely aliased
+    // export dead) and require the authoritative post-pass validation to catch
+    // it and hand back the Phase-B-free result.
+    // ==================================================================
+    #[test]
+    fn test_239b_revert_on_bad_liveness() {
+        let input = component(UNREACHABLE_REALLOC);
+        let config = ComponentOptimizeConfig::default();
+
+        // "add" IS aliased by the component; claiming it is dead must not be
+        // able to produce a broken component.
+        let mut lie = HashSet::new();
+        lie.insert("cabi_realloc".to_string());
+        let bad = CoreExportLiveness::from_entries(vec![CoreModuleLiveness::Names(lie)]);
+
+        let (reverted, reverted_stats) =
+            optimize_component_with_liveness(&input, config, Some(bad))
+                .expect("the revert path must still return a usable component");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&reverted)
+            .expect("the reverted component must validate");
+
+        let (baseline, _) = optimize_component_with_liveness(&input, config, None)
+            .expect("Phase-B-free optimization must succeed");
+        assert_eq!(
+            reverted, baseline,
+            "after reverting, the output must be byte-identical to a run with \
+             Phase B switched off"
+        );
+        assert_eq!(reverted_stats.size_breakdown.core_exports_pruned, 0);
+        assert_eq!(reverted_stats.size_breakdown.core_functions_removed, 0);
+
+        // And the live export really is still there.
+        let after = core_module_bytes(&reverted);
+        assert!(
+            core_func_exports(&after[0]).iter().any(|n| n == "add"),
+            "the aliased export must survive the bad map"
+        );
+    }
+
+    // ==================================================================
+    // Unit-level guards
+    // ==================================================================
+
+    /// The mark phase resolves the #303 shape exactly: `add` live,
+    /// `cabi_realloc` not.
+    #[test]
+    fn test_239b_mark_phase_resolves_scalar_interface() {
+        let input = component(UNREACHABLE_REALLOC);
+        let liveness = analyze_core_export_liveness(&input).expect("analysis must succeed");
+        assert_eq!(liveness.len(), 1);
+        let names = liveness.live_names(0).expect("module 0 must be analyzable");
+        assert!(names.contains("add"), "got {names:?}");
+        assert!(
+            !names.contains("cabi_realloc"),
+            "cabi_realloc is named nowhere in the component, got {names:?}"
+        );
+        // The memory export is not a FUNCTION export and is never pruned, so the
+        // mark phase does not need to mention it.
+        assert!(!names.contains("memory"), "got {names:?}");
+    }
+
+    /// The opt-out actually opts out. Test 1 covers the ON direction (it goes
+    /// through the default config), so an inverted flag would be caught there;
+    /// this covers the OFF direction, which is the switch a downstream
+    /// integrator would reach for.
+    #[test]
+    fn test_239b_config_can_disable_the_pass() {
+        let input = component(UNREACHABLE_REALLOC);
+        let config = ComponentOptimizeConfig {
+            reachability_gc: false,
+            ..Default::default()
+        };
+
+        let (output, stats) =
+            optimize_component_with_config(&input, config).expect("optimize must succeed");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+
+        let after = core_module_bytes(&output);
+        assert!(
+            core_func_exports(&after[0])
+                .iter()
+                .any(|n| n == "cabi_realloc"),
+            "with the GC disabled the unreachable function must survive"
+        );
+        assert_eq!(core_func_count(&after[0]), 2);
+        assert!(!stats.size_breakdown.reachability_gc_applied);
+        assert_eq!(stats.size_breakdown.core_exports_pruned, 0);
+        assert_eq!(stats.size_breakdown.core_functions_removed, 0);
+    }
+
+    /// The core MODULE index space is shared with modules aliased out of an
+    /// imported component instance. If those slots were not counted, the
+    /// instantiation's module index would resolve to the wrong module — so this
+    /// asserts the mark phase still lands on the module we define, and that the
+    /// end-to-end result is correct rather than merely a bail.
+    #[test]
+    fn test_239b_tracks_aliased_core_module_index_space() {
+        let input = component(ALIASED_CORE_MODULE);
+
+        let liveness = analyze_core_export_liveness(&input)
+            .expect("an aliased core module must not force a bail");
+        assert_eq!(liveness.len(), 1, "exactly one module is DEFINED here");
+        let names = liveness
+            .live_names(0)
+            .expect("the defined module must be analyzable");
+        assert!(names.contains("add"), "got {names:?}");
+        assert!(!names.contains("cabi_realloc"), "got {names:?}");
+
+        let (output, stats) = optimize_component(&input).expect("optimize must succeed");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&output)
+            .expect("optimized component must validate");
+        let after = core_module_bytes(&output);
+        assert_eq!(after.len(), 1);
+        assert!(
+            !core_func_exports(&after[0])
+                .iter()
+                .any(|n| n == "cabi_realloc")
+        );
+        assert_eq!(stats.size_breakdown.core_functions_removed, 1);
+    }
+
+    /// The funcref-global gate. This is the ONE remaining path by which a
+    /// removed function could go unnoticed: `encode_wasm` re-emits the global
+    /// section verbatim while `eliminate_dead_functions` renumbers the function
+    /// index space, so a `ref.func N` frozen in those bytes would silently
+    /// re-point at a different surviving function — valid wasm, wrong
+    /// behaviour. In this fixture `$f` is index 1; removing index 0 would leave
+    /// `ref.func 1` pointing at `used`.
+    #[test]
+    fn test_239b_rejects_reference_typed_globals() {
+        let unsafe_wat = r#"
+            (module
+              (func (export "unused") (result i32) i32.const 7)
+              (func $f (result i32) i32.const 1)
+              (func (export "used") (result i32) call $f)
+              (global funcref (ref.func $f))
+            )
+        "#;
+        let bytes = wat::parse_str(unsafe_wat).expect("fixture must assemble");
+        Validator::new_with_features(wasm_features_with_async())
+            .validate_all(&bytes)
+            .expect("fixture must be valid wasm");
+        let module = crate::parse::parse_wasm(&bytes).expect("must parse");
+        assert!(
+            !global_section_is_index_safe(&module),
+            "a funcref global must be rejected"
+        );
+        assert!(
+            core_module_gc_eligibility(&module).is_err(),
+            "a module with a funcref global must not be pruned"
+        );
+
+        // A numeric global is fine — the gate is not simply "any global".
+        let safe_wat = r#"
+            (module
+              (func (export "used") (result i32) global.get 0)
+              (global i32 (i32.const 7))
+            )
+        "#;
+        let bytes = wat::parse_str(safe_wat).expect("fixture must assemble");
+        let module = crate::parse::parse_wasm(&bytes).expect("must parse");
+        assert!(global_section_is_index_safe(&module));
+        assert!(core_module_gc_eligibility(&module).is_ok());
+    }
+
+    /// The eligibility gate refuses a module with a function-referencing
+    /// element segment even when it is called directly (i.e. independently of
+    /// the whole-module #196 skip in `optimize_core_module`).
+    #[test]
+    fn test_239b_eligibility_rejects_element_table() {
+        let bytes = wat::parse_str(
+            r#"
+            (module
+              (type $ft (func (param i32) (result i32)))
+              (table 1 1 funcref)
+              (elem (i32.const 0) $helper)
+              (func $helper (export "helper") (param i32) (result i32) local.get 0)
+              (func (export "run") (param i32) (result i32)
+                local.get 0
+                i32.const 0
+                call_indirect (type $ft))
+            )
+        "#,
+        )
+        .expect("fixture must assemble");
+        let module = crate::parse::parse_wasm(&bytes).expect("must parse");
+        assert!(
+            core_module_gc_eligibility(&module).is_err(),
+            "an element-table module must never be pruned (#196)"
+        );
+    }
+
+    /// Phase B must not disturb the components already in the tree.
+    #[test]
+    fn test_239b_existing_fixtures_unharmed() {
+        for path in [
+            "tests/component_fixtures/calc.component.wasm",
+            "tests/component_fixtures/simple.component.wasm",
+        ] {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue; // fixture unavailable — skip
+            };
+            let before: Vec<u32> = core_module_bytes(&bytes)
+                .iter()
+                .map(|m| core_func_count(m))
+                .collect();
+
+            let (output, _stats) = optimize_component(&bytes).expect("optimize must succeed");
+            Validator::new_with_features(wasm_features_with_async())
+                .validate_all(&output)
+                .expect("output must validate");
+
+            let after: Vec<u32> = core_module_bytes(&output)
+                .iter()
+                .map(|m| core_func_count(m))
+                .collect();
+            assert_eq!(
+                before, after,
+                "{path}: every function in these fixtures is lifted and exported; \
+                 Phase B must remove none"
+            );
+        }
     }
 }

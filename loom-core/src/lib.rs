@@ -15713,7 +15713,8 @@ pub use fused_optimizer::{FusedOptimizationStats, optimize_fused_module};
 /// Re-export component optimization API
 pub use component_optimizer::{
     ComponentAnalysis, ComponentOptimizeConfig, ComponentSizeBreakdown, ComponentStats,
-    analyze_component_structure, optimize_component, optimize_component_with_config,
+    CoreExportLiveness, CoreModuleLiveness, analyze_component_structure,
+    analyze_core_export_liveness, optimize_component, optimize_component_with_config,
 };
 
 /// Re-export component executor API
