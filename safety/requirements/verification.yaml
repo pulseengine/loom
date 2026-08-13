@@ -530,6 +530,7 @@ artifacts:
         - run: |
             cargo test --release --lib -p loom-core --features verification -- mask_yields_zero_to_mask_range_fact constant_folded_value_yields_point_range_fact unjustifiable_values_yield_no_fact walk_stops_at_structured_control_flow value_deleted_by_a_later_pass_is_dropped_not_miskeyed facts_use_the_full_function_index_and_bool_range fact_collection_is_deterministic no_derivable_fact_means_no_section
     status: verified
+    release: v1.4.0
     tags: [verification, proof-carrying-facts]
     links:
       - type: verifies
@@ -633,7 +634,7 @@ artifacts:
         - run: |
             cargo test --release --lib -p loom-core --features verification -- test_239b_
     status: verified
-    release: v1.3.0
+    release: v1.4.0
     tags: [v130, component-model, reachability-gc, safety]
     links:
       - type: verifies
@@ -644,3 +645,48 @@ artifacts:
         target: REQ-12
       - type: verifies
         target: REQ-3
+
+  # ============================================================================
+  # #326 — a latent silent miscompile of the #196 class, found while building
+  # #239 Phase B and fixed before it could be exercised. `ref.func` is not in
+  # the dead-function sweep's liveness closure and the global section is
+  # re-emitted verbatim, so a funcref global could be left pointing at a
+  # different function after renumbering. The sweep now declines such modules.
+  # The CONTROL test is the load-bearing half: without it, a guard that always
+  # bailed would satisfy the primary assertion.
+  # ============================================================================
+
+  - id: TEST-326-FUNCREF-GLOBAL-GUARD
+    type: feature
+    title: dead-function sweep declines modules whose globals may hold ref.func (#326)
+    description: >
+      Verifies that eliminate_dead_functions REFUSES to sweep a module whose
+      raw global section may contain a `ref.func` initializer. Two facts made
+      this a silent miscompile: `collect_function_refs_recursive` matches
+      `Instruction::Call` only, so `ref.func` is not a liveness root; and the
+      encoder re-emits `global_section_bytes` verbatim, so a `ref.func N` frozen
+      there is never renumbered. A function referenced only by a funcref global
+      was therefore swept while the frozen index kept designating whichever
+      function inherited it — valid wasm, wrong behaviour, invisible to
+      structural validation. This is the same hazard #196 shipped through the
+      element section (remapped since); the global section was never covered.
+      An unparseable global section is treated as hazard-present. Paired with a
+      control asserting numeric-only globals still permit the sweep, so the
+      guard cannot degrade into a blanket disable without failing a test.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- t326_funcref_global_blocks_the_dead_function_sweep t326_numeric_only_globals_do_not_block_the_sweep
+    status: verified
+    release: v1.4.0
+    tags: [v140, verification, safety, dead-code]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-12

@@ -5,6 +5,108 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-13
+
+A correctness fix that should not have waited, the second half of proof-carrying
+facts, component dead-code removal, and the end of the floating-dependency class.
+
+Every figure below was measured on this tree, not quoted from a prior report.
+
+### Fixed
+
+- **The dead-function sweep could silently re-point a funcref global (#326).** A
+  latent miscompile of the #196 class, present in v1.3.0 as shipped and reachable
+  by default: `optimize_fused_module` runs `eliminate_dead_functions` on every
+  core module. Two facts combined — `ref.func` is not in the pass's liveness
+  closure (`collect_function_refs_recursive` matches `Call` only), and the
+  encoder re-emits `global_section_bytes` **verbatim**, so a `ref.func N` frozen
+  there is never renumbered. A function referenced only by a funcref global was
+  therefore swept while the frozen index kept designating whichever function
+  inherited it: valid wasm, wrong behaviour, invisible to structural validation.
+  The sweep now **declines** such modules (unparseable global section counts as
+  hazard-present) until `ref.func` is a real root and the section is remapped.
+  Found while building #239 Phase B, and fixed before anything exercised it.
+
+  Worth recording: this is #196 with one variable changed. After that bug
+  scrambled a function-pointer table through the *element* section, the element
+  section was remapped — the identical hazard in the *global* section was never
+  covered. The lesson had been applied to the instance, not the class. The doc
+  comment had also claimed `ref.func` was a liveness root all along; the
+  documentation asserted a property the code never implemented, and nothing
+  compared the two.
+
+### Added
+
+- **`wsc.facts` now carries facts (#231).** v1.3.0 shipped the emitter and wire
+  format but nothing populated it. Three structurally-justified sources are
+  wired: constants, masks (`x & K` ⇒ `[0, K]` for any `x`, non-negative `K`),
+  and booleans (relops/`eqz` ⇒ `[0, 1]`). Facts remain value-keyed and
+  drop-safe; the default output is byte-identical (verified with `cmp` against a
+  binary built from the previous tag).
+
+  Point ranges on operators that **are** literal constants are deliberately not
+  emitted — they restate what the consumer reads off the instruction the fact is
+  keyed to. On a real component core that is 314 of 322 facts, in a section that
+  ships into images measured in kilobytes. Derived point ranges survive: `x & 0`
+  is `[0,0]` on an `i32.and`, which cannot be read off the operator.
+
+- **Component-level reachability GC (#239 Phase B).** Mark-and-sweep over
+  exports → instances → aliases → canon → core funcs; function exports the
+  component never references are removed and their bodies swept. Motivated by
+  #303: `cabi_realloc` surviving into a Cortex-M3 image on an all-scalar
+  interface, where it is provably uncallable — measured downstream as unreachable
+  branches that no test can ever close, i.e. permanently open rows in an MC/DC
+  argument. Removal only; no adapter or canon behaviour is altered. Refuses
+  element-table modules and reference-typed globals, and no-ops rather than
+  guessing on anything it cannot resolve.
+
+### Changed
+
+- **`Cargo.lock` is committed (#320).** loom ships binaries, so the lock belongs
+  in the repository: builds become reproducible and dependency changes arrive as
+  reviewable diffs instead of resolving ambiently at CI time. This does not
+  freeze upgrades — it gates them.
+
+  The bill that motivated it: four red-main incidents this cycle caused by
+  resolution rather than by any code change (`rand` 0.9→0.10, nightly fuzz deps,
+  an auto-merged `ordeal` bump that flipped a pin test, and `cranelift-isle`
+  re-floated **three times** past a comment in `Cargo.toml` explaining precisely
+  why not to). The third re-float arrived through a different Dependabot
+  ecosystem than the ignore meant to stop it. Per-pin ignores are whack-a-mole
+  against an automated player.
+
+  It also matters for the claims: this project publishes "N/N rules proven, N
+  tests pass, these are the trusted axioms". Those numbers are only meaningful
+  against a known dependency set.
+
+- Dependabot `ignore` for `cranelift-isle` now covers **every** cargo ecosystem,
+  not just the root one.
+
+### Traceability
+
+Release scope closed in rivet: `TEST-326-FUNCREF-GLOBAL-GUARD` (new),
+`TEST-239B-COMPONENT-REACHABILITY-GC`, `TEST-WSC-FACTS-SOURCE`.
+
+`TEST-239B-COMPONENT-REACHABILITY-GC` was corrected from `release: v1.3.0` to
+`v1.4.0` — Phase B merged after the v1.3.0 tag, so the artifact had been
+claiming membership in a release whose tree contains none of its code.
+
+### Not done — stated so it is not implied
+
+- Phase B prunes core funcs only. Unreachable canon lifts, aliases and component
+  types are not pruned; that needs component index-space rewriting, which would
+  reopen the #196 index-scrambling class.
+- Phase B's evidence is structural (validation, export names, function counts).
+  No behavioral differential; that rides #238.
+- The fact source covers the straight-line prefix of a function only — the walk
+  stops at the first structured control flow, because past that an
+  `instructions` index is no longer the emitted operator ordinal.
+- The core validator still proves value equivalence over a **total** operation
+  model. Trap preservation remains a gate beside it plus static guards, not the
+  encoding. Refinement (#300) and the solver migration (#313) are v1.5.0.
+- `#240`'s premise hook is inert (#323): `assume_max`/`assume_range` have no
+  non-test callers, so `fits_below_bit` cannot fire on real input.
+
 ## [1.3.0] - 2026-08-04
 
 Proof-carrying output, a trap gate that is actually on the runtime path, and the
