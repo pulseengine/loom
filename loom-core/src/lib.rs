@@ -15660,6 +15660,18 @@ pub mod trap_backstop;
 /// verification off Z3 onto ordeal; Tier-2 (`verify`) grows the same seam later.
 pub mod rule_solver;
 
+/// Tier-2 slice 1 of the solver migration (issue #313).
+///
+/// Routes the **translation validator's** pure bit-vector obligations through
+/// the same swappable seam [`rule_solver`] established for the algebraic rules,
+/// by reflecting the Z3 AST that `verify` already built back into the neutral
+/// term DSL — and refusing the obligation outright unless the reflection
+/// re-lowers to the *identical* Z3 AST node. Trapping operations, memory
+/// arrays, uninterpreted-function congruence and floats are deliberately
+/// refused: they need the trap-equivalence relation change of slice 2.
+#[cfg(feature = "verification")]
+pub mod verify_solver;
+
 /// Optimization rule verification using Z3
 ///
 /// This module provides formal proofs that individual optimization rules are
