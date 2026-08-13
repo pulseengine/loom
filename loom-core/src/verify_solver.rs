@@ -877,6 +877,35 @@ mod tests {
     }
 
     #[test]
+    fn variable_name_reuse_across_the_two_sides_is_refused() {
+        // The intra-side test above puts both widths in ONE term. THIS is the
+        // harder case: each side round-trips perfectly against its own
+        // original, so the per-side round-trip gate cannot see the conflict —
+        // only the reflector's shared name table can. `decide_bv_equivalence`
+        // therefore uses ONE reflector for both sides; if that ever became two,
+        // ordeal (which interns by name alone) could be handed a term where
+        // `x` means two different variables while Z3 saw two distinct
+        // constants. This test is what fails if that sharing is lost.
+        with_z3_config(&cfg(), || {
+            let narrow = BV::new_const("x", 32);
+            let wide = BV::new_const("x", 64);
+            let lhs = narrow.zero_ext(32);
+            // Each side alone reflects and round-trip fine...
+            assert!(reflect::round_trips(&reflect_ok(&lhs), &lhs));
+            assert!(reflect::round_trips(&reflect_ok(&wide), &wide));
+            // ...but the obligation that pairs them must be refused.
+            for backend in [VerifyBackend::Ordeal, VerifyBackend::Both] {
+                assert_eq!(
+                    decide_bv_equivalence(&lhs, &wide, backend),
+                    SeamOutcome::Deferred(DeferReason::VariableNameCollision),
+                    "cross-side name collision must be refused under {:?}",
+                    backend
+                );
+            }
+        });
+    }
+
+    #[test]
     fn default_backend_routes_nothing() {
         // The default path must be untouched by this module.
         with_z3_config(&cfg(), || {
