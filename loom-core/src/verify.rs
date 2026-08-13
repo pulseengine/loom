@@ -26,6 +26,14 @@ use z3::ast::{Array, BV, Bool};
 #[cfg(feature = "verification")]
 use z3::{Config, FuncDecl, SatResult, Solver, Sort, with_z3_config};
 
+// #313 Tier-2 slice 1: the swappable-solver seam. `verify_solver` decides only
+// obligations it can reflect into the closed pure-BV fragment AND re-lower to
+// the identical Z3 AST; everything else stays on the incumbent below.
+#[cfg(feature = "verification")]
+use crate::rule_solver::{RuleVerdict, VerifyBackend};
+#[cfg(feature = "verification")]
+use crate::verify_solver::{self, SeamOutcome};
+
 /// Feature flag for IEEE 754 float verification using Z3 FPA theory
 /// When enabled, float operations are verified with proper IEEE 754 semantics
 /// When disabled, floats are treated as symbolic bitvectors (bit-pattern equality only)
@@ -2232,6 +2240,8 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
     }
 
     // Create Z3 context and solver using thread-local context
+    // #313 Tier-2 slice 1: which engine decides a routable obligation.
+    let backend = VerifyBackend::from_env();
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
@@ -2261,6 +2271,27 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
                     if orig.get_size() != opt.get_size() {
                         solver.pop(1);
                         return Ok(false);
+                    }
+                    // #313 Tier-2 slice 1: offer the obligation to the neutral
+                    // seam. Under the default backend this ALWAYS defers, and
+                    // the incumbent path runs byte-identically to before.
+                    match verify_solver::decide_bv_equivalence(&orig, &opt, backend) {
+                        SeamOutcome::Decided(RuleVerdict::Proven) => {
+                            solver.pop(1);
+                            continue;
+                        }
+                        SeamOutcome::Decided(RuleVerdict::Disproven(model)) => {
+                            revert_note(format_args!("Counterexample found:"));
+                            revert_note(format_args!("{}", model));
+                            return Ok(false);
+                        }
+                        // Same outcome `SatResult::Unknown` produces here.
+                        SeamOutcome::Decided(RuleVerdict::Unknown) => {
+                            return Err(anyhow!(
+                                "SMT solver returned unknown (timeout or too complex)"
+                            ));
+                        }
+                        SeamOutcome::Deferred(_) => {}
                     }
                     solver.assert(orig.eq(&opt).not());
                 }
@@ -2320,6 +2351,28 @@ pub fn verify_function_equivalence(
     original: &Function,
     optimized: &Function,
     pass_name: &str,
+) -> Result<bool> {
+    verify_function_equivalence_with_backend(
+        original,
+        optimized,
+        pass_name,
+        VerifyBackend::from_env(),
+    )
+}
+
+/// [`verify_function_equivalence`] with the solver backend passed explicitly
+/// (issue #313, Tier-2 slice 1).
+///
+/// `verify_function_equivalence` reads `LOOM_VERIFY_BACKEND`; this variant
+/// takes the choice as an argument so tests can drive a specific engine
+/// **deterministically**, without mutating process-global environment state
+/// from a parallel test runner. The two are otherwise identical.
+#[cfg(feature = "verification")]
+pub fn verify_function_equivalence_with_backend(
+    original: &Function,
+    optimized: &Function,
+    pass_name: &str,
+    backend: VerifyBackend,
 ) -> Result<bool> {
     // Quick structural checks
     if original.signature.params != optimized.signature.params
@@ -2412,6 +2465,32 @@ pub fn verify_function_equivalence(
                 if orig.get_size() != opt.get_size() {
                     return Ok(false);
                 }
+
+                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // seam. Under the default backend this ALWAYS defers, and the
+                // incumbent path below runs byte-identically to before.
+                if let SeamOutcome::Decided(verdict) =
+                    verify_solver::decide_bv_equivalence(orig, opt, backend)
+                {
+                    return match verdict {
+                        RuleVerdict::Proven => Ok(true),
+                        RuleVerdict::Disproven(model) => {
+                            revert_note(format_args!(
+                                "{}: Verification failed! Found counterexample:",
+                                pass_name
+                            ));
+                            revert_note(format_args!("{}", model));
+                            Ok(false)
+                        }
+                        // Mapped to exactly what `SatResult::Unknown` does at
+                        // this site: an undecided obligation is never a proof.
+                        RuleVerdict::Unknown => Err(anyhow!(
+                            "{}: SMT solver returned unknown (timeout or too complex)",
+                            pass_name
+                        )),
+                    };
+                }
+
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
@@ -2528,6 +2607,8 @@ pub fn verify_function_equivalence_with_result(
     }
 
     // Create Z3 context and solver
+    // #313 Tier-2 slice 1: which engine decides a routable obligation.
+    let backend = VerifyBackend::from_env();
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
@@ -2545,6 +2626,28 @@ pub fn verify_function_equivalence_with_result(
                         "result width mismatch — cannot prove equivalence".to_string(),
                     );
                 }
+
+                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // seam. Under the default backend this ALWAYS defers, and the
+                // incumbent path below runs byte-identically to before.
+                if let SeamOutcome::Decided(verdict) =
+                    verify_solver::decide_bv_equivalence(orig, opt, backend)
+                {
+                    return match verdict {
+                        RuleVerdict::Proven => VerificationResult::Verified,
+                        RuleVerdict::Disproven(model) => VerificationResult::Failed(format!(
+                            "{}: Found counterexample: {}",
+                            pass_name, model
+                        )),
+                        // Same outcome `SatResult::Unknown` produces here —
+                        // an Error, which callers treat as "not verified".
+                        RuleVerdict::Unknown => VerificationResult::Error(format!(
+                            "{}: SMT solver returned unknown (timeout or too complex)",
+                            pass_name
+                        )),
+                    };
+                }
+
                 solver.assert(orig.eq(opt).not());
 
                 match solver.check() {
@@ -2726,6 +2829,8 @@ pub fn verify_function_equivalence_with_context(
     }
 
     // Create Z3 context and solver using thread-local context
+    // #313 Tier-2 slice 1: which engine decides a routable obligation.
+    let backend = VerifyBackend::from_env();
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
@@ -2752,6 +2857,32 @@ pub fn verify_function_equivalence_with_context(
                 if orig.get_size() != opt.get_size() {
                     return Ok(false);
                 }
+
+                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // seam. Under the default backend this ALWAYS defers, and the
+                // incumbent path below runs byte-identically to before.
+                if let SeamOutcome::Decided(verdict) =
+                    verify_solver::decide_bv_equivalence(orig, opt, backend)
+                {
+                    return match verdict {
+                        RuleVerdict::Proven => Ok(true),
+                        RuleVerdict::Disproven(model) => {
+                            revert_note(format_args!(
+                                "{}: Verification failed! Found counterexample:",
+                                pass_name
+                            ));
+                            revert_note(format_args!("{}", model));
+                            Ok(false)
+                        }
+                        // Mapped to exactly what `SatResult::Unknown` does at
+                        // this site: an undecided obligation is never a proof.
+                        RuleVerdict::Unknown => Err(anyhow!(
+                            "{}: SMT solver returned unknown (timeout or too complex)",
+                            pass_name
+                        )),
+                    };
+                }
+
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
@@ -8091,6 +8222,8 @@ pub(crate) fn verify_acyclic_equivalence(
         return Err(anyhow!("acyclic verify: not acyclic-modelable"));
     }
 
+    // #313 Tier-2 slice 1: which engine decides a routable obligation.
+    let backend = VerifyBackend::from_env();
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
@@ -8105,6 +8238,23 @@ pub(crate) fn verify_acyclic_equivalence(
                 if orig.get_size() != opt.get_size() {
                     return Err(anyhow!("acyclic verify: result width mismatch"));
                 }
+
+                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // seam. Under the default backend this ALWAYS defers, and the
+                // incumbent path below runs byte-identically to before.
+                if let SeamOutcome::Decided(verdict) =
+                    verify_solver::decide_bv_equivalence(orig, opt, backend)
+                {
+                    return match verdict {
+                        RuleVerdict::Proven => Ok(true),
+                        RuleVerdict::Disproven(_) => Ok(false),
+                        // Same outcome `SatResult::Unknown` produces here.
+                        RuleVerdict::Unknown => {
+                            Err(anyhow!("acyclic verify: solver unknown (timeout)"))
+                        }
+                    };
+                }
+
                 solver.assert(orig.eq(opt).not());
                 match solver.check() {
                     SatResult::Unsat => Ok(true),
@@ -9674,6 +9824,253 @@ mod tests {
         assert!(VerificationResult::SkippedUnknown.is_skip());
         assert!(!VerificationResult::Failed("cex".into()).is_skip());
         assert!(!VerificationResult::Error("err".into()).is_skip());
+    }
+
+    // ======================================================================
+    // #313 Tier-2 slice 1 — the translation validator's PURE BIT-VECTOR
+    // obligations on the swappable solver seam.
+    //
+    // These tests exist to make the seam's REACHABILITY an asserted property
+    // rather than an assumption. `verify_solver` is a filter: an obligation it
+    // cannot reflect silently falls back to the incumbent, so a suite that
+    // only checked verdicts would stay green if the seam stopped matching
+    // ANYTHING. Each test below therefore asserts the ROUTE COUNTS as well as
+    // the verdict — `routed == 1` fails the moment a real obligation stops
+    // flowing through ordeal (e.g. a Z3 upgrade changes an AST shape, or the
+    // encoder starts threading a non-BV term into straight-line code).
+    // ======================================================================
+
+    /// Two functions parsed from WAT, ready for the validator.
+    #[cfg(feature = "verification")]
+    fn func_pair(wat_a: &str, wat_b: &str) -> (Function, Function) {
+        let ma = parse::parse_wat(wat_a).unwrap();
+        let mb = parse::parse_wat(wat_b).unwrap();
+        (ma.functions[0].clone(), mb.functions[0].clone())
+    }
+
+    /// `x * 2` vs `x << 1` — pure bit-vector, genuinely equivalent.
+    #[cfg(feature = "verification")]
+    const MUL2: &str = "(module (func (param i32) (result i32) local.get 0 i32.const 2 i32.mul))";
+    #[cfg(feature = "verification")]
+    const SHL1: &str = "(module (func (param i32) (result i32) local.get 0 i32.const 1 i32.shl))";
+    /// `x << 2` — NOT equivalent to `x * 2`.
+    #[cfg(feature = "verification")]
+    const SHL2: &str = "(module (func (param i32) (result i32) local.get 0 i32.const 2 i32.shl))";
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_routes_a_real_validator_obligation_through_ordeal() {
+        // THE anti-inertness assertion: a real obligation, produced by the
+        // real encoder and taken through the real public entry point, must be
+        // DECIDED by ordeal — not merely offered to it.
+        let (a, b) = func_pair(MUL2, SHL1);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, deferred) = verify_solver::route_counts();
+        assert!(proved, "x * 2 == x << 1 must be proven");
+        assert_eq!(
+            (routed, deferred),
+            (1, 0),
+            "the pure-BV obligation MUST be decided by the neutral seam; if this \
+             fails the ordeal path has gone dark and every obligation is silently \
+             back on the incumbent"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_routes_branching_and_extending_obligations() {
+        // Widen the reachability assertion past a single binop: an if/else
+        // (Ite over a comparison) and an i64 sign-extension must route too.
+        let ifelse_a = "(module (func (param i32) (result i32) local.get 0 i32.eqz \
+                        if (result i32) i32.const 10 else i32.const 20 end))";
+        let ifelse_b = "(module (func (param i32) (result i32) local.get 0 i32.const 0 i32.eq \
+                        if (result i32) i32.const 10 else i32.const 20 end))";
+        let ext_a = "(module (func (param i32) (result i64) local.get 0 i64.extend_i32_s))";
+        let ext_b = "(module (func (param i32) (result i64) local.get 0 i64.extend_i32_s))";
+        for (wa, wb) in [(ifelse_a, ifelse_b), (ext_a, ext_b)] {
+            let (a, b) = func_pair(wa, wb);
+            verify_solver::reset_route_counts();
+            let proved =
+                verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                    .unwrap();
+            let (routed, deferred) = verify_solver::route_counts();
+            assert!(proved, "{} == {} must be proven", wa, wb);
+            assert_eq!((routed, deferred), (1, 0), "must route: {}", wa);
+        }
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_disproves_a_wrong_transform_through_ordeal() {
+        // A seam that only ever answers "Proven" would be worse than useless.
+        // `x * 2` vs `x << 2` is a real miscompile; ordeal must catch it, and
+        // must be the engine that did so.
+        let (a, b) = func_pair(MUL2, SHL2);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, _) = verify_solver::route_counts();
+        assert!(!proved, "x * 2 == x << 2 is FALSE and must be rejected");
+        assert_eq!(routed, 1, "the rejection must come from the neutral seam");
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_memory_obligations_stay_on_the_incumbent() {
+        // Slice 1 is pure BV only. A load threads a memory `select` into the
+        // term, which the reflection must refuse — and the validator must
+        // still reach the same verdict via Z3. This asserts the CONSERVATIVE
+        // half of the seam: partial coverage, honestly bounded.
+        let load = "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))";
+        let (a, b) = func_pair(load, load);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, deferred) = verify_solver::route_counts();
+        assert!(proved, "a function is equivalent to itself");
+        assert_eq!(
+            (routed, deferred),
+            (0, 1),
+            "a memory obligation must NOT be routed in slice 1"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_div_obligations_stay_on_the_incumbent() {
+        // Division is a PARTIAL op: it traps. Slice 1 does not change the
+        // correctness relation, so it must not decide such an obligation even
+        // though `bvudiv` is expressible in the neutral DSL. This is scope
+        // discipline, not incapacity.
+        let div = "(module (func (param i32) (param i32) (result i32) \
+                   local.get 0 local.get 1 i32.div_u))";
+        let (a, b) = func_pair(div, div);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, deferred) = verify_solver::route_counts();
+        assert!(proved, "a function is equivalent to itself");
+        assert_eq!(
+            (routed, deferred),
+            (0, 1),
+            "a trapping div obligation must NOT be routed in slice 1"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_default_backend_leaves_the_validator_untouched() {
+        // The default (`z3`) must route NOTHING: this PR does not change the
+        // behaviour of a build that has not opted in.
+        let (a, b) = func_pair(MUL2, SHL1);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Z3).unwrap();
+        let (routed, _) = verify_solver::route_counts();
+        assert!(proved);
+        assert_eq!(routed, 0, "default backend must route nothing");
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_routes_obligations_from_the_real_corpus() {
+        // Reachability asserted on REAL WebAssembly rather than hand-written
+        // fragments. Each function is offered against itself, which produces
+        // exactly the obligation the validator builds during a pass — same
+        // encoder, same term shapes. If a future Z3 or encoder change alters
+        // those shapes so the reflection stops matching, this goes red instead
+        // of silently leaving every obligation on the incumbent.
+        let corpus = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/corpus/httparse.wasm"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/json_lite.wasm"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/state_machine.wasm"
+            ),
+        ];
+        let (mut routed, mut deferred) = (0u64, 0u64);
+        for path in corpus {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            let m = crate::parse::parse_wasm(&bytes).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            for f in &m.functions {
+                verify_solver::reset_route_counts();
+                let _ =
+                    verify_function_equivalence_with_backend(f, f, "corpus", VerifyBackend::Ordeal);
+                let (r, d) = verify_solver::route_counts();
+                routed += r;
+                deferred += d;
+            }
+        }
+        // Measured at the time of writing: 13 of the 17 corpus functions
+        // reach the solver at all (the rest are void or skipped upstream),
+        // and all 13 route. The floor is deliberately below that so ordinary
+        // corpus churn does not fail the build, while a collapse to zero —
+        // the inert-seam failure mode — does.
+        assert!(
+            routed >= 8,
+            "expected the seam to decide real corpus obligations, got routed={} deferred={}",
+            routed,
+            deferred
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice1_both_mode_finds_no_divergence_on_real_obligations() {
+        // `both` runs Z3 and ordeal on every routed obligation and panics on
+        // disagreement. This test passing IS the no-divergence assertion for
+        // the obligations it covers.
+        let cases: &[(&str, &str, bool)] = &[
+            (MUL2, SHL1, true),
+            (MUL2, SHL2, false),
+            (MUL2, MUL2, true),
+            (
+                "(module (func (param i32) (param i32) (result i32) \
+                 local.get 0 local.get 1 i32.and))",
+                "(module (func (param i32) (param i32) (result i32) \
+                 local.get 1 local.get 0 i32.and))",
+                true,
+            ),
+            (
+                "(module (func (param i32) (result i32) local.get 0 i32.const -1 i32.xor))",
+                "(module (func (param i32) (result i32) i32.const -1 local.get 0 i32.sub \
+                 i32.const 1 i32.sub i32.const 1 i32.add))",
+                true,
+            ),
+            (
+                "(module (func (param i64) (param i64) (result i64) \
+                 local.get 0 local.get 1 i64.add))",
+                "(module (func (param i64) (param i64) (result i64) \
+                 local.get 1 local.get 0 i64.add))",
+                true,
+            ),
+        ];
+        let mut total_routed = 0u64;
+        for (wa, wb, expect) in cases {
+            let (a, b) = func_pair(wa, wb);
+            verify_solver::reset_route_counts();
+            let proved =
+                verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Both)
+                    .unwrap();
+            let (routed, _) = verify_solver::route_counts();
+            assert_eq!(proved, *expect, "verdict mismatch for {} vs {}", wa, wb);
+            assert_eq!(routed, 1, "must route under both: {}", wa);
+            total_routed += routed;
+        }
+        assert_eq!(
+            total_routed,
+            cases.len() as u64,
+            "every case must have been cross-checked by BOTH engines"
+        );
     }
 
     #[test]

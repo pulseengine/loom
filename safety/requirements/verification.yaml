@@ -583,6 +583,71 @@ artifacts:
         target: REQ-4
 
   # ============================================================================
+  # #313 — Tier-2 slice 1 of the solver migration. The TRANSLATION VALIDATOR —
+  # the component that decides whether an optimization preserved semantics —
+  # now discharges its PURE BIT-VECTOR obligations on the same seam. Two things
+  # have to be argued, not one: that real obligations actually flow through the
+  # new engine (a filter that silently matched nothing would leave the suite
+  # green), and that the obligations it refuses are refused CONSERVATIVELY.
+  # Scope is deliberately narrow: the correctness relation is unchanged, so
+  # every partial operation stays on the incumbent until slice 2 supplies
+  # trap-equivalence.
+  # ============================================================================
+
+  - id: TEST-313-TIER2-SLICE1-PURE-BV
+    type: feature
+    title: translation validator's pure bit-vector obligations on the certificate-checked solver (#313 Tier-2 slice 1)
+    description: >
+      Verifies that the whole-function translation validator can discharge its
+      pure bit-vector equivalence obligations on our own certificate-checked
+      QF_BV engine, cross-checked against the incumbent, without changing the
+      default build's behaviour.
+      The seam reflects the already-built solver term back into the neutral
+      DSL and REFUSES the obligation unless the reflection re-lowers to the
+      byte-identical term it came from, so a mis-reflection cannot silently
+      substitute an easier query for the real one.
+      Asserted: (1) real obligations produced by the real encoder — including
+      branch (if/else) and width-extension shapes, and obligations taken from
+      the in-tree binary corpus — are DECIDED by the new engine, not merely
+      offered to it, which is what makes the seam's reachability a checked
+      property rather than an assumption; (2) a genuinely wrong transform is
+      REJECTED by it, so the seam is not a rubber stamp; (3) obligations
+      carrying a memory array or a trapping division are left on the incumbent,
+      which bounds the claim honestly; (4) under `both` the two engines run on
+      every routed obligation and any disagreement panics — the run passing IS
+      the no-divergence assertion; (5) the default backend routes NOTHING, so a
+      build that has not opted in is unaffected.
+      Scope: pure bit-vector only. Traps, memory, uninterpreted-function
+      congruence and floats are NOT covered and are stated as open rather than
+      implied to be closed — they need the correctness-relation change that
+      slice 2 supplies.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification -- tier2_slice1_both_mode_finds_no_divergence_on_real_obligations
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice1_routes_obligations_from_the_real_corpus
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice1_disproves_a_wrong_transform_through_ordeal
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice1_memory_obligations_stay_on_the_incumbent
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice1_default_backend_leaves_the_validator_untouched
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- every_slice1_op_reflects_and_round_trips_identically
+    status: verified
+    release: v1.5.0
+    tags: [v150, verification, solver-migration]
+    links:
+      - type: verifies
+        target: REQ-6
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  # ============================================================================
   # #239 Phase B / #303 — component-level reachability GC.
   #
   # A component whose whole interface is scalar still ships `cabi_realloc`: the
