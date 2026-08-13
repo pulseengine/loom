@@ -32,7 +32,7 @@ use z3::{Config, FuncDecl, SatResult, Solver, Sort, with_z3_config};
 #[cfg(feature = "verification")]
 use crate::rule_solver::{RuleVerdict, VerifyBackend};
 #[cfg(feature = "verification")]
-use crate::verify_solver::{self, SeamOutcome};
+use crate::verify_solver::{self, PartialOpTally, SeamOutcome, TrapContext};
 
 /// Feature flag for IEEE 754 float verification using Z3 FPA theory
 /// When enabled, float operations are verified with proper IEEE 754 semantics
@@ -322,6 +322,122 @@ fn is_inline_modelable_instr(instr: &Instruction) -> bool {
         // width conversions (total)
         | I64ExtendI32S | I64ExtendI32U | I32WrapI64
     )
+}
+
+// ============================================================================
+// #313 Tier-2 slice 2: establishing the trap context for the neutral seam
+// ============================================================================
+
+/// The div/rem kind and operand width of a partial-op instruction, or `None`
+/// for anything that is not one.
+#[cfg(feature = "verification")]
+fn partial_op_of(instr: &Instruction) -> Option<(crate::trap_gate::DivKind, u32)> {
+    use crate::trap_gate::DivKind::*;
+    use Instruction::*;
+    Some(match instr {
+        I32DivU => (DivU, 32),
+        I32DivS => (DivS, 32),
+        I32RemU => (RemU, 32),
+        I32RemS => (RemS, 32),
+        I64DivU => (DivU, 64),
+        I64DivS => (DivS, 64),
+        I64RemU => (RemU, 64),
+        I64RemS => (RemS, 64),
+        _ => return None,
+    })
+}
+
+/// Instructions admitted in a body whose partial ops the seam may reason about.
+///
+/// Deliberately NARROWER than [`is_inline_modelable_instr`], on two axes that
+/// the trap clause depends on and inlining does not:
+///
+///   * **No control flow at all** (no `Block`/`Loop`/`If`/`Br*`/`Return`/
+///     `Unreachable`/`Call*`). With control flow, whether a div executes is not
+///     recoverable from the value expression: an `Ite` may come from an `if`
+///     (one arm runs) or a `select` (both run), and a path that traps is
+///     dropped from the encoding entirely rather than appearing as a guard.
+///   * **Nothing that discards a value** (no `Drop`, no `LocalSet`/`LocalTee`,
+///     no globals, no memory). A div whose result is dropped, or stored to a
+///     local that is never read, still EXECUTES and still traps — but does not
+///     appear in the encoded term, which would make the trap clause miss it.
+///     Without them, WASM's validation (the body must end with exactly the
+///     declared result on the stack) forces every computed value into the term.
+///
+/// `Select` IS admitted: WASM `select` is eager, both value arms are evaluated
+/// (WASM Core §4.4.1), so an unconditional trap disjunction is exactly right
+/// for it — and it is the #281 shape.
+///
+/// Everything admitted besides div/rem is **total**: it cannot trap, so it
+/// contributes nothing to the trap clause. The list can widen later, each
+/// addition carrying its own totality argument.
+#[cfg(feature = "verification")]
+fn is_trap_context_instr(instr: &Instruction) -> bool {
+    use Instruction::*;
+    if partial_op_of(instr).is_some() {
+        return true;
+    }
+    matches!(
+        instr,
+        // constants and local READS (no writes)
+        I32Const(_) | I64Const(_) | LocalGet(_)
+        // eager 3-operand select
+        | Select
+        // i32/i64 total arithmetic + bitwise + shifts/rotates
+        | I32Add | I32Sub | I32Mul | I32And | I32Or | I32Xor
+        | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr
+        | I64Add | I64Sub | I64Mul | I64And | I64Or | I64Xor
+        | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr
+        // comparisons (total; encoded as an ite over 0/1)
+        | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU
+        | I32LeS | I32LeU | I32GeS | I32GeU | I32Eqz
+        | I64Eq | I64Ne | I64LtS | I64LtU | I64GtS | I64GtU
+        | I64LeS | I64LeU | I64GeS | I64GeU | I64Eqz
+        // width conversions (total)
+        | I64ExtendI32S | I64ExtendI32U | I32WrapI64
+    )
+}
+
+/// The per-side tally of partial-op instructions, if this function's body is one
+/// the seam may reason about; `None` otherwise.
+#[cfg(feature = "verification")]
+fn partial_op_tally_of(func: &Function) -> Option<PartialOpTally> {
+    // A single result: the encoded BV is then the whole body's value, which is
+    // what the "every computed value reaches the term" argument needs.
+    if func.signature.results.len() != 1 {
+        return None;
+    }
+    let mut tally = PartialOpTally::new();
+    for instr in &func.instructions {
+        if !is_trap_context_instr(instr) {
+            return None;
+        }
+        if let Some((kind, width)) = partial_op_of(instr) {
+            tally.add(kind, width);
+        }
+    }
+    Some(tally)
+}
+
+/// Establish the [`TrapContext`] for a function pair, or [`TrapContext::Unestablished`].
+///
+/// Both sides must qualify: the relation is about the two trap conditions
+/// together, so one exact side and one unknown side buys nothing.
+///
+/// Note this is only sound for the sites that encode a WHOLE single-result body
+/// with the stack encoder (`encode_function_to_smt*`). The acyclic executor
+/// (`encode_acyclic_function`) drops trapping paths by design — its ⊥/diverge
+/// discipline is a different model of traps — so that site deliberately passes
+/// [`TrapContext::Unestablished`] and keeps slice-1 behaviour.
+#[cfg(feature = "verification")]
+fn trap_context_for(original: &Function, optimized: &Function) -> TrapContext {
+    match (
+        partial_op_tally_of(original),
+        partial_op_tally_of(optimized),
+    ) {
+        (Some(orig), Some(opt)) => TrapContext::Unconditional { orig, opt },
+        _ => TrapContext::Unestablished,
+    }
 }
 
 /// loom#151: symbolically execute an inlinable callee body on the given
@@ -2272,10 +2388,15 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
                         solver.pop(1);
                         return Ok(false);
                     }
-                    // #313 Tier-2 slice 1: offer the obligation to the neutral
+                    // #313 Tier-2 slice 1/2: offer the obligation to the neutral
                     // seam. Under the default backend this ALWAYS defers, and
                     // the incumbent path runs byte-identically to before.
-                    match verify_solver::decide_bv_equivalence(&orig, &opt, backend) {
+                    match verify_solver::decide_equivalence(
+                        &orig,
+                        &opt,
+                        backend,
+                        &trap_context_for(orig_func, opt_func),
+                    ) {
                         SeamOutcome::Decided(RuleVerdict::Proven) => {
                             solver.pop(1);
                             continue;
@@ -2466,12 +2587,15 @@ pub fn verify_function_equivalence_with_backend(
                     return Ok(false);
                 }
 
-                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // #313 Tier-2 slice 1/2: offer the obligation to the neutral
                 // seam. Under the default backend this ALWAYS defers, and the
                 // incumbent path below runs byte-identically to before.
-                if let SeamOutcome::Decided(verdict) =
-                    verify_solver::decide_bv_equivalence(orig, opt, backend)
-                {
+                if let SeamOutcome::Decided(verdict) = verify_solver::decide_equivalence(
+                    orig,
+                    opt,
+                    backend,
+                    &trap_context_for(original, optimized),
+                ) {
                     return match verdict {
                         RuleVerdict::Proven => Ok(true),
                         RuleVerdict::Disproven(model) => {
@@ -2627,12 +2751,15 @@ pub fn verify_function_equivalence_with_result(
                     );
                 }
 
-                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // #313 Tier-2 slice 1/2: offer the obligation to the neutral
                 // seam. Under the default backend this ALWAYS defers, and the
                 // incumbent path below runs byte-identically to before.
-                if let SeamOutcome::Decided(verdict) =
-                    verify_solver::decide_bv_equivalence(orig, opt, backend)
-                {
+                if let SeamOutcome::Decided(verdict) = verify_solver::decide_equivalence(
+                    orig,
+                    opt,
+                    backend,
+                    &trap_context_for(original, optimized),
+                ) {
                     return match verdict {
                         RuleVerdict::Proven => VerificationResult::Verified,
                         RuleVerdict::Disproven(model) => VerificationResult::Failed(format!(
@@ -2858,12 +2985,15 @@ pub fn verify_function_equivalence_with_context(
                     return Ok(false);
                 }
 
-                // #313 Tier-2 slice 1: offer the obligation to the neutral
+                // #313 Tier-2 slice 1/2: offer the obligation to the neutral
                 // seam. Under the default backend this ALWAYS defers, and the
                 // incumbent path below runs byte-identically to before.
-                if let SeamOutcome::Decided(verdict) =
-                    verify_solver::decide_bv_equivalence(orig, opt, backend)
-                {
+                if let SeamOutcome::Decided(verdict) = verify_solver::decide_equivalence(
+                    orig,
+                    opt,
+                    backend,
+                    &trap_context_for(original, optimized),
+                ) {
                     return match verdict {
                         RuleVerdict::Proven => Ok(true),
                         RuleVerdict::Disproven(model) => {
@@ -8242,6 +8372,15 @@ pub(crate) fn verify_acyclic_equivalence(
                 // #313 Tier-2 slice 1: offer the obligation to the neutral
                 // seam. Under the default backend this ALWAYS defers, and the
                 // incumbent path below runs byte-identically to before.
+                //
+                // Slice 2 deliberately does NOT establish a trap context here.
+                // This site encodes with `encode_acyclic_function`, whose model
+                // of a trapping path is ⊥ — the path is DROPPED from the result
+                // rather than guarded — so a div that survives into the term
+                // may still be conditional in the real program. The
+                // "unconditional, exactly once" property slice 2 needs has not
+                // been established for this encoder, so partial ops here stay
+                // on the incumbent.
                 if let SeamOutcome::Decided(verdict) =
                     verify_solver::decide_bv_equivalence(orig, opt, backend)
                 {

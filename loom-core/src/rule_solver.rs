@@ -41,6 +41,12 @@
 //! variable-amount rotates, and the full set of BV comparisons and boolean
 //! connectives). Every added variant is still a single well-defined operation
 //! in both backends, and each has a differential test below.
+//!
+//! Tier-2 slice 2 (#313) adds the two remaining SMT-LIB div/rem functions
+//! ([`RuleTerm::Sdiv`], [`RuleTerm::Srem`]) so the validator's *partial*
+//! operations can be carried through the same seam. The DSL stays a **total**
+//! value language: the trap dimension those WASM ops have is not modelled here
+//! but in the obligation [`crate::verify_solver`] assembles around these terms.
 
 use std::sync::Arc;
 
@@ -82,6 +88,21 @@ pub enum RuleTerm {
     Udiv(Box<RuleTerm>, Box<RuleTerm>),
     /// Unsigned remainder (`bvurem`).
     Urem(Box<RuleTerm>, Box<RuleTerm>),
+    /// Signed division (`bvsdiv`, truncating toward zero).
+    ///
+    /// Added by Tier-2 slice 2 (#313) so `iN.div_s` can be carried through the
+    /// neutral DSL. **This is the SMT-LIB total function**, not WASM's partial
+    /// `idiv_s`: its `÷0` and `INT_MIN / -1` results are SMT-LIB's, which WASM
+    /// makes traps. The trap dimension is carried separately, by the obligation
+    /// in [`crate::verify_solver`] — this variant only has to agree with WASM on
+    /// the non-trapping domain, which that obligation's `¬trap` guard enforces.
+    Sdiv(Box<RuleTerm>, Box<RuleTerm>),
+    /// Signed remainder (`bvsrem`, sign follows the dividend).
+    ///
+    /// Same total-vs-partial caveat as [`RuleTerm::Sdiv`]. Note that WASM's
+    /// `irem_s` is *defined* at `INT_MIN % -1` (the result is `0`, which SMT-LIB
+    /// `bvsrem` also gives) — only `idiv_s` traps there.
+    Srem(Box<RuleTerm>, Box<RuleTerm>),
 
     /// Two's-complement negation (`bvneg`).
     Neg(Box<RuleTerm>),
@@ -224,6 +245,8 @@ impl RuleTerm {
             | RuleTerm::Mul(a, _)
             | RuleTerm::Udiv(a, _)
             | RuleTerm::Urem(a, _)
+            | RuleTerm::Sdiv(a, _)
+            | RuleTerm::Srem(a, _)
             | RuleTerm::And(a, _)
             | RuleTerm::Or(a, _)
             | RuleTerm::Xor(a, _)
@@ -260,6 +283,14 @@ impl RuleTerm {
     /// `self %u rhs`
     pub fn urem(&self, rhs: &RuleTerm) -> RuleTerm {
         RuleTerm::Urem(Box::new(self.clone()), Box::new(rhs.clone()))
+    }
+    /// `self /s rhs` (SMT-LIB `bvsdiv`; see [`RuleTerm::Sdiv`])
+    pub fn sdiv(&self, rhs: &RuleTerm) -> RuleTerm {
+        RuleTerm::Sdiv(Box::new(self.clone()), Box::new(rhs.clone()))
+    }
+    /// `self %s rhs` (SMT-LIB `bvsrem`; see [`RuleTerm::Srem`])
+    pub fn srem(&self, rhs: &RuleTerm) -> RuleTerm {
+        RuleTerm::Srem(Box::new(self.clone()), Box::new(rhs.clone()))
     }
     /// `self & rhs`
     pub fn and(&self, rhs: &RuleTerm) -> RuleTerm {
@@ -493,6 +524,8 @@ pub(crate) mod z3_backend {
             RuleTerm::Mul(a, b) => lower(a).bvmul(&lower(b)),
             RuleTerm::Udiv(a, b) => lower(a).bvudiv(&lower(b)),
             RuleTerm::Urem(a, b) => lower(a).bvurem(&lower(b)),
+            RuleTerm::Sdiv(a, b) => lower(a).bvsdiv(&lower(b)),
+            RuleTerm::Srem(a, b) => lower(a).bvsrem(&lower(b)),
             RuleTerm::Neg(a) => lower(a).bvneg(),
             RuleTerm::And(a, b) => lower(a).bvand(&lower(b)),
             RuleTerm::Or(a, b) => lower(a).bvor(&lower(b)),
@@ -594,6 +627,14 @@ pub(crate) mod ordeal_backend {
             RuleTerm::Udiv(a, b) => BvTerm::Udiv(Box::new(lower(a)), Box::new(lower(b))),
             // bvurem is a blessed derived op in ordeal::lowering.
             RuleTerm::Urem(a, b) => lowering::bvurem(lower(a), lower(b), a.width()),
+            // `bvsdiv` / `bvsrem` are blessed derived ops in ordeal::lowering
+            // (the SMT-LIB sign-mask construction over `bvudiv`/`bvurem`).
+            // ordeal documents and tests them as reproducing SMT-LIB on EVERY
+            // input, including `÷0` and `INT_MIN / -1` — so they denote the same
+            // total function as Z3's native `bvsdiv`/`bvsrem`, which is what
+            // makes the two backends comparable on a term carrying them.
+            RuleTerm::Sdiv(a, b) => lowering::bvsdiv(lower(a), lower(b), a.width()),
+            RuleTerm::Srem(a, b) => lowering::bvsrem(lower(a), lower(b), a.width()),
             // bvneg / bvnot are blessed derived ops in ordeal::lowering
             // (`0 - x` and `x xor 1..1` respectively).
             RuleTerm::Neg(a) => lowering::bvneg(lower(a), a.width()),
@@ -841,6 +882,10 @@ mod tests {
             x.mul(&y),
             x.udiv(&y),
             x.urem(&y),
+            // #313 slice 2 additions — a variant missing from this list would
+            // have no width evidence at all.
+            x.sdiv(&y),
+            x.srem(&y),
             x.neg(),
             x.and(&y),
             x.or(&y),
@@ -1009,6 +1054,107 @@ mod tests {
 
     fn bx(t: &RuleTerm) -> Box<RuleTerm> {
         Box::new(t.clone())
+    }
+
+    // ------------------------------------------------------------------
+    // #313 Tier-2 slice 2 widened the DSL with `Sdiv`/`Srem`. Z3 lowers them
+    // to its NATIVE bvsdiv/bvsrem; ordeal lowers them to the derived sign-mask
+    // construction over bvudiv/bvurem. Those are two independent definitions of
+    // the same SMT-LIB function, so they need differential evidence — the
+    // round-trip gate in `verify_solver` pins only the Z3 reading.
+    // ------------------------------------------------------------------
+
+    /// Identities that hold for SMT-LIB `bvsdiv`/`bvsrem` and that a *wrong*
+    /// signed/unsigned or sign-of-remainder lowering would violate. Each is
+    /// proven on Z3, on ordeal, and differentially.
+    #[test]
+    fn signed_div_rem_agree_across_both_backends() {
+        let x = RuleTerm::new_const("x", 32);
+        let one = RuleTerm::from_u64(1, 32);
+        let neg_one = RuleTerm::from_i64(-1, 32);
+        let seven = RuleTerm::from_u64(7, 32);
+
+        // x /s 1 == x  (an unsigned division would agree here, so it is not
+        // enough on its own — see the negative-divisor case below).
+        proven_everywhere(&x.sdiv(&one), &x, "x /s 1 == x");
+        // x /s -1 == -x EXCEPT at INT_MIN, where SMT-LIB wraps to INT_MIN and
+        // -INT_MIN is also INT_MIN — so the identity is total.
+        proven_everywhere(&x.sdiv(&neg_one), &x.neg(), "x /s -1 == -x");
+        // The defining relation, which pins the TRUNCATION direction and the
+        // remainder's sign for every non-zero divisor. Guarded by an `Ite` on
+        // `d == 0` because SMT-LIB's ÷0 values are what they are and the
+        // relation `a = (a/d)*d + (a%d)` does not hold there.
+        let d = RuleTerm::new_const("d", 32);
+        let zero = RuleTerm::from_u64(0, 32);
+        let reconstructed = x.sdiv(&d).mul(&d).add(&x.srem(&d));
+        let guard = RuleBool::Eq(bx(&d), bx(&zero));
+        proven_everywhere(
+            &guard.ite(&x, &reconstructed),
+            &x,
+            "d != 0 ==> (x /s d) * d + (x %s d) == x",
+        );
+        // The remainder takes the sign of the DIVIDEND: -7 %s 2 == -1 (not +1,
+        // which a floor-style modulo would give).
+        proven_everywhere(
+            &seven.neg().srem(&RuleTerm::from_u64(2, 32)),
+            &neg_one,
+            "-7 %s 2 == -1",
+        );
+        // ...and 7 %s -2 == 1, which distinguishes "sign of dividend" from
+        // "sign of divisor".
+        proven_everywhere(
+            &seven.srem(&RuleTerm::from_i64(-2, 32)),
+            &one,
+            "7 %s -2 == 1",
+        );
+    }
+
+    /// Signed and unsigned division must NOT coincide, and `Sdiv` must not be
+    /// silently lowered as `Udiv` on either backend. Without this the
+    /// identities above could all pass on a wrong lowering.
+    #[test]
+    fn signed_division_is_not_unsigned_division() {
+        let x = RuleTerm::new_const("x", 32);
+        let two = RuleTerm::from_u64(2, 32);
+        for s in [
+            Box::new(Z3RuleSolver) as Box<dyn RuleSolver>,
+            Box::new(OrdealRuleSolver),
+        ] {
+            assert!(
+                s.prove_rule_equiv(&x.sdiv(&two), &x.udiv(&two))
+                    .counterexample()
+                    .is_some(),
+                "{}: /s and /u must differ",
+                s.backend_name()
+            );
+            assert!(
+                s.prove_rule_equiv(&x.srem(&two), &x.urem(&two))
+                    .counterexample()
+                    .is_some(),
+                "{}: %s and %u must differ",
+                s.backend_name()
+            );
+        }
+    }
+
+    /// `INT_MIN %s -1 == 0` on BOTH backends.
+    ///
+    /// This is the value half of the ordeal#84 / loom#288 story: WASM defines
+    /// `irem_s(INT_MIN, -1) = 0` (no trap), and SMT-LIB `bvsrem` agrees. If
+    /// either lowering wrapped this into the `div_s` overflow shape the two
+    /// engines would disagree here.
+    #[test]
+    fn srem_int_min_by_neg_one_is_zero_on_both_backends() {
+        let int_min = RuleTerm::from_u64(0x8000_0000, 32);
+        let neg_one = RuleTerm::from_i64(-1, 32);
+        proven_everywhere(
+            &int_min.srem(&neg_one),
+            &RuleTerm::from_u64(0, 32),
+            "INT_MIN %s -1 == 0",
+        );
+        // ...while INT_MIN /s -1 wraps to INT_MIN in SMT-LIB (WASM traps there
+        // instead — that difference is carried by the trap clause, not here).
+        proven_everywhere(&int_min.sdiv(&neg_one), &int_min, "INT_MIN /s -1 == INT_MIN");
     }
 
     #[test]
