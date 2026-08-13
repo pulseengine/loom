@@ -208,6 +208,23 @@ fn collect_function_facts(func: &Function, func_index: u32, out: &mut Vec<Module
         if lo < 0 || lo > hi {
             continue;
         }
+        // Do not restate what the operator already says. A point range on an
+        // operator that IS a literal constant carries no information the
+        // consumer cannot read directly off the instruction it is keyed to —
+        // and this section is shipped into images measured in kilobytes, so a
+        // payload dominated by restatements of literals is pure cost. Measured
+        // on a real component core: 322 facts, of which 314 were exactly this.
+        //
+        // A *derived* point range is still emitted: a value proven constant but
+        // not spelled as a constant is precisely the interesting case.
+        if lo == hi
+            && matches!(
+                func.instructions.get(idx as usize),
+                Some(Instruction::I32Const(_)) | Some(Instruction::I64Const(_))
+            )
+        {
+            continue;
+        }
         out.push(ModuleFact {
             func_index,
             value_id: idx,
@@ -509,16 +526,46 @@ mod wsc_facts_source_tests {
         );
 
         module.facts = collect_module_facts(&module);
-        assert_eq!(
-            module.facts,
-            vec![ModuleFact {
-                func_index: 0,
-                value_id: 0,
-                kind: ModuleFactKind::ValueRange { lo: 5, hi: 5 },
-            }],
-            "the folded constant must carry [5,5] at its FINAL operator index"
+        // The fold succeeded, and the result is now SPELLED as `i32.const 5`.
+        // A `[5,5]` fact keyed to that operator restates what the consumer can
+        // read directly off the instruction, so it is suppressed. How the value
+        // came to be a literal does not matter — what matters is that the
+        // emitted operator already states it.
+        assert!(
+            module.facts.is_empty(),
+            "a point range on a literal operator is redundant and must not be emitted, got {:?}",
+            module.facts
         );
-        assert_facts_key_expected_operators(&module, &[(0, "I32Const")]);
+    }
+
+    /// The control for the suppression above: a point range whose operator is
+    /// NOT a literal is exactly the interesting case and must survive.
+    /// `x & 0` is provably `[0,0]`, and the operator is an `i32.and` — the
+    /// consumer cannot read the value off it.
+    #[test]
+    fn derived_point_range_on_a_non_literal_operator_is_kept() {
+        let mut module = module_with(func(
+            sig(vec![ValueType::I32], vec![ValueType::I32]),
+            vec![
+                Instruction::LocalGet(0),
+                Instruction::I32Const(0),
+                Instruction::I32And,
+            ],
+        ));
+        module.facts = collect_module_facts(&module);
+        assert!(
+            module.facts.iter().any(|f| matches!(
+                f.kind,
+                ModuleFactKind::ValueRange { lo: 0, hi: 0 }
+            ) && matches!(
+                module.functions[0].instructions.get(f.value_id as usize),
+                Some(Instruction::I32And)
+            )),
+            "a [0,0] range on the i32.and must be kept — it is not readable from the operator, got {:?}",
+            module.facts
+        );
+        // Ground truth: the fact names the i32.and in the emitted binary.
+        assert_facts_key_expected_operators(&module, &[(2, "I32And")]);
     }
 
     /// SOUNDNESS GUARD: values loom cannot bound get NO fact — silence, not a
@@ -560,8 +607,14 @@ mod wsc_facts_source_tests {
         let mut module = module_with(func(
             sig(vec![ValueType::I32], vec![]),
             vec![
-                Instruction::I32Const(7), // 0  prefix: a fact is derivable here
-                Instruction::Drop,        // 1
+                // Prefix uses a MASK, not a literal: a literal's point range is
+                // suppressed as redundant, and an expectation of "no facts"
+                // would pass even if the walk were broken. The surviving
+                // [0,255] is what makes this test discriminating.
+                Instruction::LocalGet(0),   // 0
+                Instruction::I32Const(255), // 1
+                Instruction::I32And,        // 2  prefix fact: [0,255]
+                Instruction::Drop,          // 3
                 Instruction::Block {
                     block_type: BlockType::Empty,
                     body: vec![
@@ -580,13 +633,13 @@ mod wsc_facts_source_tests {
             module.facts,
             vec![ModuleFact {
                 func_index: 0,
-                value_id: 0,
-                kind: ModuleFactKind::ValueRange { lo: 7, hi: 7 },
+                value_id: 2,
+                kind: ModuleFactKind::ValueRange { lo: 0, hi: 255 },
             }],
-            "only the straight-line prefix may produce facts"
+            "the prefix mask must produce a fact, and nothing inside or after the block may"
         );
         // And the surviving fact really does name that operator in the binary.
-        assert_facts_key_expected_operators(&module, &[(0, "I32Const")]);
+        assert_facts_key_expected_operators(&module, &[(2, "I32And")]);
     }
 
     /// RENUMBERING SAFETY: a fact-bearing value deleted by a later pass must
@@ -613,12 +666,9 @@ mod wsc_facts_source_tests {
                 .iter()
                 .map(|f| (f.value_id, f.kind.clone()))
                 .collect::<Vec<_>>(),
-            vec![
-                (0, ModuleFactKind::ValueRange { lo: 255, hi: 255 }),
-                (3, ModuleFactKind::ValueRange { lo: 63, hi: 63 }),
-                (4, ModuleFactKind::ValueRange { lo: 0, hi: 63 }),
-            ],
-            "precondition: three facts, keyed to the PRE-pass indices"
+            vec![(4, ModuleFactKind::ValueRange { lo: 0, hi: 63 })],
+            "precondition: the mask fact, keyed to its PRE-pass index (the two \
+             literal point ranges are suppressed as redundant)"
         );
 
         // A later pass deletes the dead constant, renumbering everything after
@@ -646,18 +696,11 @@ mod wsc_facts_source_tests {
         );
         assert_eq!(
             module.facts,
-            vec![
-                ModuleFact {
-                    func_index: 0,
-                    value_id: 1,
-                    kind: ModuleFactKind::ValueRange { lo: 63, hi: 63 },
-                },
-                ModuleFact {
-                    func_index: 0,
-                    value_id: 2,
-                    kind: ModuleFactKind::ValueRange { lo: 0, hi: 63 },
-                },
-            ],
+            vec![ModuleFact {
+                func_index: 0,
+                value_id: 2,
+                kind: ModuleFactKind::ValueRange { lo: 0, hi: 63 },
+            },],
             "surviving facts must be re-keyed to the post-pass operator indices"
         );
         // The old value_id 4 does not even exist any more; the mask now sits at
@@ -719,18 +762,8 @@ mod wsc_facts_source_tests {
             vec![
                 ModuleFact {
                     func_index: 0,
-                    value_id: 1,
-                    kind: ModuleFactKind::ValueRange { lo: 63, hi: 63 },
-                },
-                ModuleFact {
-                    func_index: 0,
                     value_id: 2,
                     kind: ModuleFactKind::ValueRange { lo: 0, hi: 63 },
-                },
-                ModuleFact {
-                    func_index: 0,
-                    value_id: 4,
-                    kind: ModuleFactKind::ValueRange { lo: 15, hi: 15 },
                 },
                 ModuleFact {
                     func_index: 0,
