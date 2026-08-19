@@ -3451,9 +3451,9 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wsc-attestation"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedfcc9a66df51876143d599378dab6fbcf8b390153aaf8797f5c2d508a6adc6"
+checksum = "2de5e92c4520478283a9583258e342fb0d71d2b57bc24336cf91429bf7ffbc4f"
 dependencies = [
  "base64",
  "chrono",
