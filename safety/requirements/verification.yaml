@@ -951,3 +951,96 @@ artifacts:
         target: REQ-4
       - type: verifies
         target: REQ-18
+  # #332 / #331 — v1.4.1: the tool must not report more than it checked.
+  #
+  # Two independent findings with one root: a claim reaching a caller that the
+  # code never substantiated. `loom verify` led with a checkmark and exited 0
+  # without opening its argument, and the free verification entry point turned
+  # a solver-internal panic into a crash rather than a refusal. Both are
+  # REQ-3 (no silent failures) violations reached from opposite directions —
+  # one says too much, the other says nothing at all.
+  # ============================================================================
+
+  - id: TEST-332-VERIFY-REPORTS-NO-VACUOUS-SUCCESS
+    type: feature
+    title: "`loom verify` has no success path while it verifies nothing (#332)"
+    description: >
+      Verifies that the `verify` subcommand cannot report success. As shipped
+      in v1.2.0 it printed a leading checkmark, never opened its argument, and
+      exited 0 for all four of the reported negative controls — a wasm module
+      passed where an ISLE file was expected, a path that did not exist, a file
+      containing arbitrary text, and an empty file. The "not yet implemented"
+      line was present and honest but sat below the checkmark and never reached
+      the exit code, which is the only thing automation reads.
+      Asserted, by executing the real binary: (1) each of the four reported
+      negative controls exits NON-ZERO with an empty stdout; (2) a directory
+      argument is refused; (3) a WELL-FORMED ISLE file ALSO fails — this is the
+      load-bearing case, because every other assertion here would still hold
+      for a validator that rejects bad input and then reports success for good
+      input, which is the same vacuous gate wearing a coat; (4) the exit code
+      is distinct from the code an ordinary optimization failure produces, so
+      "this build cannot verify anything" stays distinguishable from
+      "verification ran and rejected something" once Phase 5 makes the second
+      outcome possible; (5) no documentation advertises the command as
+      runnable — the two references that did used a two-wasm form the CLI has
+      never accepted, and fixing the exit code while a doc still recommended
+      the command would have left half the defect in place.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given any of the four reported negative controls, the exit code is non-zero and stdout is empty"
+        - "Given a well-formed .isle file, the command STILL exits non-zero and says plainly that nothing was verified"
+        - "Given the output, no checkmark appears while there is nothing to check"
+        - "Given the docs tree, no line invokes `loom verify` as a runnable command"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test verify_subcommand
+    status: verified
+    release: v1.4.1
+    tags: [v141, cli, honesty, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-2
+      - type: verifies
+        target: REQ-10
+
+  - id: TEST-331-FREE-VERIFY-ENTRY-POINT-IS-PANIC-SAFE
+    type: feature
+    title: the free verification entry point converts solver panics into refusals, not crashes (#331 Gap 2)
+    description: >
+      Verifies that `verify_function_equivalence` no longer propagates a
+      solver-internal panic. Encoding can panic inside the solver bindings
+      before any solver is consulted — a mixed-width BitVec binop, or an
+      unwrap-on-None in the `ite` constructor when the arms have different
+      sorts — both reachable from a `Select` over mixed i32/i64. The
+      TranslationValidator path has always caught these and reverted cleanly;
+      the free function did not, so two public entry points behaved
+      differently with nothing in either signature saying which.
+      Asserted on the in-tree fused-records fixture: (1) none of the four
+      identified functions propagates a panic through the free entry point;
+      (2) the outcome is `Err` — nothing established — and NEVER `Ok(true)`,
+      because a proof obtained by not finishing the proof is worse than the
+      crash it replaces; (3) at least one of those functions still fails to
+      encode, so the guard is exercised rather than vacuous (#289) — if the
+      fixture ever stops reaching the panic path the test says so instead of
+      passing quietly. Confirmed discriminating: with the fix reverted the test
+      reports "propagated 4 panic(s)" and fails.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given the four mixed-width Select functions, ZERO panics escape the free entry point"
+        - "Given an encoding failure, the result is Err (not established), never Ok(true)"
+        - "Given the fixture, at least one function still fails to encode, so the guard is reachable"
+      steps:
+        - run: |
+            cargo test --release -p loom-core --features verification --test verification -- t331_free_verify_entry_point_converts_solver_panics_into_errors
+    status: verified
+    release: v1.4.1
+    tags: [v141, verification, honesty, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-5

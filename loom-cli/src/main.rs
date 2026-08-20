@@ -100,7 +100,7 @@ enum Commands {
         facts: bool,
     },
 
-    /// Verify ISLE optimization rules
+    /// Verify ISLE optimization rules (NOT YET IMPLEMENTED — always exits 2)
     Verify {
         /// ISLE file to verify
         #[arg(value_name = "ISLE_FILE")]
@@ -1071,6 +1071,73 @@ fn run_verification(original: &loom_core::Module, optimized: &loom_core::Module)
     }
 }
 
+/// Process exit code for `loom verify`.
+///
+/// `verify` has NO success path today, so this is the only code it can
+/// produce. It is deliberately distinct from `1` (the code `main`'s
+/// `Result` produces for an ordinary optimization failure) so a caller can
+/// tell "this build cannot verify anything" apart from "verification ran
+/// and rejected something" once Phase 5 makes the latter possible.
+const EXIT_VERIFY_UNIMPLEMENTED: i32 = 2;
+
+/// The `loom verify` placeholder (#332).
+///
+/// This subcommand used to print `✓ LOOM Verification`, never open the
+/// file, and **exit 0** — for a `.wasm` passed where an ISLE file was
+/// expected, for a file containing arbitrary garbage, for an empty file,
+/// and for a path that did not exist at all. The `⚠️ not yet implemented`
+/// line was present and honest, but it sat below the checkmark and never
+/// reached the exit code, which is the only thing automation reads. Wiring
+/// that into CI would have produced a check that was green forever over
+/// nothing, in a tool whose entire claim is that it proves things.
+///
+/// So there is deliberately **no exit-0 path here**. Input validation runs
+/// first and reports real errors, but passing it establishes only that the
+/// argument is a plausible ISLE file — never that anything was verified.
+/// The two outcomes are kept textually distinct for that reason: a
+/// validation failure says `error:`, and a validated file still says
+/// `warning: nothing was verified`. Both exit non-zero.
+///
+/// Everything goes to stderr; stdout stays empty so a caller redirecting it
+/// gets nothing that could be mistaken for a result.
+fn run_verify_placeholder(isle_file: &str) -> ! {
+    let path = std::path::Path::new(isle_file);
+
+    if !path.exists() {
+        eprintln!("error: no such file: {}", isle_file);
+        std::process::exit(EXIT_VERIFY_UNIMPLEMENTED);
+    }
+    if !path.is_file() {
+        eprintln!("error: not a regular file: {}", isle_file);
+        std::process::exit(EXIT_VERIFY_UNIMPLEMENTED);
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("isle") {
+        eprintln!(
+            "error: expected an ISLE rule file (.isle), got: {}",
+            isle_file
+        );
+        eprintln!("note: `loom verify` checks ISLE rewrite rules, not wasm modules.");
+        eprintln!("note: to optimize a wasm module, use `loom optimize`.");
+        std::process::exit(EXIT_VERIFY_UNIMPLEMENTED);
+    }
+    // Prove the file is actually readable rather than merely present — a
+    // path that stats but cannot be opened is exactly the kind of thing a
+    // check should not pass over in silence.
+    if let Err(e) = std::fs::read(path) {
+        eprintln!("error: cannot read {}: {}", isle_file, e);
+        std::process::exit(EXIT_VERIFY_UNIMPLEMENTED);
+    }
+
+    eprintln!(
+        "warning: ISLE rule verification is not implemented yet (Phase 5); \
+         nothing was verified."
+    );
+    eprintln!("note: {} was read but not checked.", isle_file);
+    eprintln!("note: rule-level proofs today run in the test suite — see");
+    eprintln!("      `cargo test -p loom-core --features verification`.");
+    std::process::exit(EXIT_VERIFY_UNIMPLEMENTED);
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -1116,12 +1183,7 @@ fn main() -> Result<()> {
         }
 
         Some(Commands::Verify { isle_file }) => {
-            println!("✓ LOOM Verification");
-            println!("ISLE file: {}", isle_file);
-
-            // TODO: Implement in Phase 5
-            println!("\n⚠️  Verification not yet implemented (Phase 5)");
-            println!("This is a Phase 1 placeholder.");
+            run_verify_placeholder(&isle_file);
         }
 
         Some(Commands::Version) => {
@@ -1139,7 +1201,7 @@ fn main() -> Result<()> {
             println!();
             println!("Commands:");
             println!("  optimize    Optimize a WebAssembly module");
-            println!("  verify      Verify ISLE optimization rules");
+            println!("  verify      Verify ISLE optimization rules (not yet implemented)");
             println!("  version     Show version information");
             println!("  help        Print this message or the help of a subcommand");
             println!();
