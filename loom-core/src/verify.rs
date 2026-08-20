@@ -2459,21 +2459,15 @@ pub fn verify_function_equivalence_with_backend(
     // operators see how often verification is bypassed. The structured
     // VerificationCoverage tracker (see verify_function_equivalence_with_result)
     // records counts.
-    if contains_unverifiable_instructions(&original.instructions)
-        || contains_unverifiable_instructions(&optimized.instructions)
-    {
-        let reason = if contains_memory_instructions(&original.instructions)
-            || contains_memory_instructions(&optimized.instructions)
-        {
-            "float load/store"
-        } else {
-            "unknown opcode"
-        };
+    if let Some(reason) = unverifiable_reason(original, optimized) {
         eprintln!(
             "{}: verification skipped (unverifiable instructions: {})",
             pass_name, reason
         );
-        return Ok(true); // Assume equivalent — can't prove without precise model
+        // Kept without proof. The wrapper above records this under that
+        // reason so it reaches the operator as a number, not just a line of
+        // stderr that scrolls past.
+        return Ok(true);
     }
 
     // Create Z3 context and solver using thread-local context
@@ -2779,12 +2773,64 @@ fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
     false
 }
 
+/// The reason this pair cannot be proven by the SMT encoder, if any.
+///
+/// This is the structural pre-check both verification paths already applied
+/// inline; it is extracted so the coverage accounting classifies an attempt
+/// with the SAME predicate that decides it, rather than a second copy that
+/// could drift out of agreement and mislabel the report.
+#[cfg(feature = "verification")]
+fn unverifiable_reason(original: &Function, optimized: &Function) -> Option<&'static str> {
+    if !contains_unverifiable_instructions(&original.instructions)
+        && !contains_unverifiable_instructions(&optimized.instructions)
+    {
+        return None;
+    }
+    if contains_memory_instructions(&original.instructions)
+        || contains_memory_instructions(&optimized.instructions)
+    {
+        Some("float load/store")
+    } else {
+        Some("unknown opcode")
+    }
+}
+
 /// Verify function equivalence with signature context for proper Call handling
 ///
 /// This version uses the signature context to properly model Call/CallIndirect
 /// stack effects, providing more accurate verification.
+///
+/// # Coverage accounting (#331)
+///
+/// This wrapper classifies every attempt into exactly one of proven / kept
+/// without proof / rejected, and records it in [`crate::stats`]. It exists
+/// because the inner function returns `Ok(true)` for BOTH "proved equivalent"
+/// and "could not model this, keeping the transform anyway" — a collapse that
+/// made unverified accepts indistinguishable from proofs at every call site
+/// above it, and therefore unreportable.
 #[cfg(feature = "verification")]
 pub fn verify_function_equivalence_with_context(
+    original: &Function,
+    optimized: &Function,
+    pass_name: &str,
+    sig_ctx: &VerificationSignatureContext,
+) -> Result<bool> {
+    let unprovable = unverifiable_reason(original, optimized);
+    let result =
+        verify_function_equivalence_with_context_uncounted(original, optimized, pass_name, sig_ctx);
+    match (&result, unprovable) {
+        // Kept, but nothing was proved about it. The caller will not revert,
+        // so this is exactly the outcome a revert count cannot see.
+        (Ok(true), Some(reason)) => crate::stats::record_kept_unproven(reason),
+        (Ok(true), None) => crate::stats::record_proven(),
+        // Ok(false) / Err: the caller reverts and records that itself.
+        _ => {}
+    }
+    result
+}
+
+#[cfg(feature = "verification")]
+fn verify_function_equivalence_with_context_uncounted(
     original: &Function,
     optimized: &Function,
     pass_name: &str,
@@ -3070,12 +3116,22 @@ pub fn compute_verification_coverage(
     optimized: &Module,
     _pass_name: &str,
 ) -> VerificationCoverage {
-    // When verification is disabled, report all functions as verified
-    // (they're assumed correct)
+    // #331: this used to report EVERY function as verified, on the reasoning
+    // that they are "assumed correct" when verification is compiled out. A
+    // function named `compute_verification_coverage` returning 100% proven
+    // for a build that proved nothing is the same defect as `loom verify`
+    // printing a checkmark without opening the file (#332) — a claim whose
+    // only basis is that nothing checked it.
+    //
+    // Nothing was verified, so nothing is reported as verified. The functions
+    // are counted as errors, which is the only bucket in this (deliberately
+    // unchanged) struct that does not assert a positive result, and the
+    // dedicated `verification_error` count makes the state legible to a
+    // caller that inspects it.
     let mut coverage = VerificationCoverage::new();
     let func_count = original.functions.len().min(optimized.functions.len());
     for _ in 0..func_count {
-        coverage.record_verified();
+        coverage.record_error();
     }
     coverage
 }
@@ -3167,7 +3223,13 @@ impl TranslationValidator {
         let n_instr =
             count_function_instructions(&self.original).max(count_function_instructions(optimized));
         if n_instr > max_instructions {
-            crate::stats::record_revert(&format!("{}/z3-size-skipped", self.pass_name));
+            // #331: this is NOT a revert. The transform is KEPT — `Ok(())`
+            // means the caller accepts it — so recording it in the revert
+            // counters made `--stats` print "N function(s) reverted" for
+            // functions that shipped. A stat that names the wrong outcome is
+            // worse than no stat: it reads as evidence verification did its
+            // job, in exactly the case where it did not run.
+            crate::stats::record_kept_unproven("body over the solver size threshold");
             return Ok(());
         }
 
@@ -3191,6 +3253,10 @@ impl TranslationValidator {
                 verify_acyclic_equivalence(&original, &optimized_clone, &sig_ctx)
             }));
             if let Ok(Ok(true)) = acyclic {
+                // A real proof: the acyclic executor is EXACT for acyclic
+                // control flow with by-body calls, so this counts as proven
+                // rather than as a bypass.
+                crate::stats::record_proven();
                 return Ok(());
             }
             // else: fall through to the existing encoder (no behavior change).
@@ -3284,7 +3350,10 @@ impl TranslationValidator {
     pub fn verify_or_revert_strict(&self, func: &mut Function) -> bool {
         let result = verify_function_equivalence_with_result(&self.original, func, &self.pass_name);
         match result {
-            VerificationResult::Verified => true,
+            VerificationResult::Verified => {
+                crate::stats::record_proven();
+                true
+            }
             VerificationResult::Failed(reason) => {
                 revert_note(format_args!(
                     "{}: reverting function (counterexample): {}",
