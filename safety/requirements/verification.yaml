@@ -755,3 +755,199 @@ artifacts:
         target: REQ-5
       - type: verifies
         target: REQ-12
+
+  # ============================================================================
+  # #313 — the REMAINDER of the v1.5.0 scope, recorded BEFORE it is built.
+  #
+  # These entries exist because `rivet release status v1.5.0` reported
+  # "✓ Cuttable" while the release contained exactly one artifact (slice 1).
+  # That is the vacuous-gate shape one layer up from the code: the gate read
+  # green not because the work was done but because almost nothing was in
+  # scope, and a release gate that passes on an empty scope is
+  # indistinguishable from one that passes on a finished one. The same defect
+  # class has now been found in the trap gate (#288), the premise hook (#323),
+  # the cranelift pin (#318) and the `verify` subcommand (#332); recording the
+  # scope up front is the mechanical fix, the way the dependabot `ignore`
+  # entries were the mechanical fix for the pin.
+  #
+  # Every entry below is `draft` — NOT verified. Each becomes `verified` only
+  # when its own evidence runs. The slice order and the correctness relation
+  # are fixed by the design recorded on #313.
+  # ============================================================================
+
+  - id: TEST-313-TIER2-SLICE2-PARTIAL-OPS
+    type: feature
+    title: partial operations — trap-equivalence for div/rem, trunc and bounded memory access (#313 Tier-2 slice 2)
+    description: >
+      PLANNED — not yet implemented. The first slice in which the trap
+      disjunct of the correctness relation does real work:
+      UNSAT(orig.trap != opt.trap OR (NOT orig.trap AND opt.value NOT IN
+      orig.valueSet)). Traps are an EQUIVALENCE, not a refinement: a wasm trap
+      is a defined, deterministic, observable outcome, so neither removing nor
+      introducing one is sound, and the LLVM-style "the original was UB so
+      anything is permitted" reading would license exactly the bug class this
+      work exists to eliminate.
+      To assert, once built: (1) each trapping operator's condition matches the
+      core spec exactly — div_s and div_u trap on divide-by-zero, div_s ALSO on
+      INT_MIN / -1, while rem_s(INT_MIN, -1) is 0 and does NOT trap; a test must
+      fail if that asymmetry is flattened; (2) a transform that DROPS a
+      mandatory trap is REJECTED, and so is one that ADDS a trap the original
+      did not have — both directions, since a one-directional check would
+      accept trap-introduction; (3) #257's trap_gate predicates fold in here
+      rather than remaining a second, separate gate; (4) under `both` the two
+      engines run on every routed obligation and any disagreement panics.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given div_s(INT_MIN, -1), the encoded trap condition is TRUE; given rem_s(INT_MIN, -1) it is FALSE"
+        - "Given a transform that removes a mandatory trap, the validator REJECTS it"
+        - "Given a transform that introduces a trap the original did not have, the validator REJECTS it"
+        - "Given LOOM_VERIFY_BACKEND=both, the full suite runs with no divergence panic"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration, traps]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-313-TIER2-SLICE3-UF-CONGRUENCE
+    type: feature
+    title: uninterpreted-function congruence for pure calls (#313 Tier-2 slice 3)
+    description: >
+      PLANNED — not yet implemented. Ports the `pure_call` obligations to
+      uninterpreted functions on the certificate-checked engine. Mechanical
+      relative to slices 1-2, but the congruence axiom is what licenses CSE
+      across calls, so it must be asserted positively rather than assumed:
+      equal arguments must force equal results, and UNEQUAL arguments must NOT
+      be forced equal — the second is what distinguishes a real UF from a
+      constant.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given f(x) and f(y) with x == y proven, the results are provably equal"
+        - "Given f(x) and f(y) with x and y unconstrained, the results are NOT provably equal"
+        - "Given LOOM_VERIFY_BACKEND=both, the routed obligations show no divergence"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-313-TIER2-SLICE4-HAVOC-CONCRETE-MEM
+    type: feature
+    title: havoc values and concrete-index memory (#313 Tier-2 slice 4)
+    description: >
+      PLANNED — not yet implemented. Fresh unconstrained constants (havoc) and
+      the concrete-index array encoding. The obligation to assert is that a
+      havoc value is genuinely unconstrained — a transform that assumes ANY
+      property of it must be rejected — and that two distinct havoc values are
+      not silently unified, which is the shape #283 suspects in the float
+      const-name path and which must not be reproduced here.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a transform that assumes a havoc value is non-zero, the validator REJECTS it"
+        - "Given two distinct havoc values, they are NOT provably equal"
+        - "Given a concrete-index store followed by a load of the same index, the loaded value is provably the stored one"
+        - "Given a load of a DIFFERENT concrete index, the stored value is NOT forced"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration, memory]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-313-TIER2-SLICE5-SYMBOLIC-MEM
+    type: feature
+    title: symbolic-index memory obligations (#313 Tier-2 slice 5)
+    description: >
+      PLANNED — not yet implemented. Moves the memory obligations that slice 1
+      deliberately LEFT on the incumbent onto symbolic-index arrays. This slice
+      is what retires that bound, so its evidence must show the obligations are
+      now DECIDED by the new engine rather than merely offered to it —
+      reachability asserted as a property, per #289.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a store at symbolic index i and a load at symbolic index j with i == j, the value is forced"
+        - "Given i != j proven, the load is NOT forced to the stored value"
+        - "Given a memory obligation, it is routed to and DECIDED by the new engine (not deferred to the incumbent)"
+        - "Given LOOM_VERIFY_BACKEND=both, memory obligations show no divergence"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration, memory]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-313-TIER2-SLICE6-FLOATS
+    type: feature
+    title: float obligations, the non-singleton valueSet, and the resolution of #283 (#313 Tier-2 slice 6)
+    description: >
+      PLANNED — not yet implemented. Floats are last, and they are where the
+      value half of the relation stops being theoretical: NaN payload bits are
+      the one place `valueSet` is genuinely not a singleton, so this is the
+      slice that must prove the refinement path is REACHABLE rather than dead
+      code that happens to type-check.
+      #283 (the opaque-float shared const name possibly unifying distinct float
+      operations) must be RESOLVED here — reproduced or disproved on the
+      record — not transcribed into the new encoding, because transcribing it
+      would launder a suspected soundness bug into "new code".
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a rewrite that changes a NaN payload to another member of the spec's NaN set, the validator ACCEPTS it"
+        - "Given a rewrite producing a value OUTSIDE the original valueSet, the validator REJECTS it"
+        - "The non-singleton valueSet path has a test that FAILS if the path is removed (reachability is the asserted property)"
+        - "#283 is resolved on the record: either a reproduction showing distinct float ops unified, or a proof they cannot be"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration, floats]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-313-EXIT-Z3-REMOVED
+    type: feature
+    title: the incumbent solver is gone and the C++ toolchain coupling with it (#313 exit conditions)
+    description: >
+      PLANNED — not yet implemented, and NOT startable until slices 2-6 are
+      verified and `both` mode is clean across the full suite. This is the
+      artifact that makes the retirement checkable instead of declared.
+      The C++ coupling is the whole reason the retirement is worth doing: the
+      shipped linux binary's GLIBCXX floor (#311) exists ONLY because the
+      optimizer links a C++ solver, and the same coupling breaks the
+      wasm32-wasip2 build. Removing the dependency is what lets the #311 glibc
+      floor assertion be DELETED rather than maintained, and lets a musl build
+      ship.
+      Ordering note: the fork is archived (read-only, NOT deleted, so the patch
+      history stays readable) only AFTER a re-run of the org-wide search
+      confirms this repository is still its only consumer — the previously
+      measured result was 2 hits, both here, but an index can lag.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a full-workspace grep, there are ZERO references to z3 or z3-sys in any manifest, source file or workflow"
+        - "Given the wasm32-wasip2 target, the build succeeds with NO wasi-sdk C++ sysroot present"
+        - "Given the release workflow, the #311 glibc-floor assertion is removed and a musl artifact is produced and smoke-run"
+        - "Given the dependabot config, the per-pin cranelift-isle ignore entries are removed (superseded by the committed lockfile)"
+        - "Given a re-run of the org-wide consumer search, the fork has no consumer outside this repository before it is archived"
+    status: draft
+    release: v1.5.0
+    tags: [v150, verification, solver-migration, release-engineering]
+    links:
+      - type: verifies
+        target: REQ-4
+      - type: verifies
+        target: REQ-18
