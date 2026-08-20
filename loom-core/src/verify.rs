@@ -752,6 +752,16 @@ pub struct VerificationCoverage {
     pub verification_failed: usize,
     /// Number of functions where verification errored (timeout, etc.)
     pub verification_error: usize,
+    /// Number of functions verification was never ATTEMPTED on — currently
+    /// only a build compiled without the `verification` feature.
+    ///
+    /// This bucket exists because every other one asserts something: that a
+    /// function was proven, that it was skipped for a named reason, that a
+    /// counterexample was found, that the solver errored. "Nothing ran" is
+    /// none of those, and borrowing the nearest bucket would replace one
+    /// false statement with another — reporting a timeout that never
+    /// happened is no better than reporting a proof that never happened.
+    pub not_attempted: usize,
 }
 
 impl VerificationCoverage {
@@ -790,6 +800,17 @@ impl VerificationCoverage {
         self.verification_error += 1;
     }
 
+    /// Record a function verification was never attempted on.
+    pub fn record_not_attempted(&mut self) {
+        self.not_attempted += 1;
+    }
+
+    /// True when no function in this coverage was actually verified —
+    /// the state a caller must be able to detect before quoting a number.
+    pub fn nothing_was_attempted(&self) -> bool {
+        self.total() > 0 && self.not_attempted == self.total()
+    }
+
     /// Total number of functions processed
     pub fn total(&self) -> usize {
         self.verified
@@ -798,6 +819,7 @@ impl VerificationCoverage {
             + self.skipped_unknown
             + self.verification_failed
             + self.verification_error
+            + self.not_attempted
     }
 
     /// Total number of functions skipped (not fully verified)
@@ -2438,7 +2460,10 @@ pub fn verify_function_equivalence_with_backend(
                 }
             }
         } else {
-            return Ok(true); // K-induction disabled - assume equivalent
+            // Unreachable while ENABLE_K_INDUCTION is true, but if it is
+            // ever flipped this is an assumption, not a proof.
+            note_unproven_acceptance("k-induction disabled — loops assumed equivalent");
+            return Ok(true);
         }
     }
 
@@ -2464,9 +2489,9 @@ pub fn verify_function_equivalence_with_backend(
             "{}: verification skipped (unverifiable instructions: {})",
             pass_name, reason
         );
-        // Kept without proof. The wrapper above records this under that
-        // reason so it reaches the operator as a number, not just a line of
-        // stderr that scrolls past.
+        // Kept without proof. Noted so the wrapper reports it under that
+        // reason as a number, not just a line of stderr that scrolls past.
+        note_unproven_acceptance(reason);
         return Ok(true);
     }
 
@@ -2539,6 +2564,24 @@ pub fn verify_function_equivalence_with_backend(
             }
             (Ok(None), Ok(None)) => {
                 // Both functions return no value (void). Currently auto-pass.
+                //
+                // Counted as KEPT WITHOUT PROOF, not as proven. This arm's own
+                // comment below calls the equivalence vacuous, and it is: the
+                // model asserts nothing about the post-state, so for a void
+                // function it asserts nothing at all. Reporting it as a proof
+                // would inflate the coverage number with exactly the empty
+                // checks that number exists to expose.
+                //
+                // MEASURED, not assumed: this arm did not fire once when
+                // probed against a module of nothing but void functions
+                // (including a completely empty one and one that writes a
+                // global) or against the 724-function fused-records fixture —
+                // the encoder returns `Ok(Some(..))` for void bodies, so
+                // `(Ok(None), Ok(None))` appears unreachable in practice. The
+                // classification is therefore DEFENSIVE: it is here so that if
+                // the arm ever does fire it cannot be silently counted as a
+                // proof, and it is deliberately not claimed as exercised.
+                note_unproven_acceptance("void function — side effects not modelled");
                 //
                 // KNOWN LIMITATION: void functions can still have side effects
                 // (memory writes, global writes) that differ between original
@@ -2773,6 +2816,34 @@ fn contains_memory_instructions(instructions: &[Instruction]) -> bool {
     false
 }
 
+thread_local! {
+    /// Set by whichever site in the verifier ACCEPTED without discharging the
+    /// obligation, and read back by the counting wrapper below.
+    ///
+    /// This is a thread-local rather than a structural re-derivation in the
+    /// wrapper because several of those sites are decided by the ENCODING
+    /// RESULT, not by anything visible in the function's shape — the void
+    /// auto-pass fires on `(Ok(None), Ok(None))`, which no predicate over the
+    /// instruction list can reliably predict. Guessing in the wrapper is how
+    /// an accounting layer starts disagreeing with the thing it accounts for.
+    /// Verification runs one function per rayon worker, so a thread-local is
+    /// the right scope.
+    static UNPROVEN_ACCEPTANCE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Record that this attempt is about to be ACCEPTED without a proof.
+#[cfg(feature = "verification")]
+fn note_unproven_acceptance(reason: &'static str) {
+    UNPROVEN_ACCEPTANCE.with(|c| c.set(Some(reason)));
+}
+
+/// Read and clear the pending unproven-acceptance reason.
+#[cfg(feature = "verification")]
+fn take_unproven_acceptance() -> Option<&'static str> {
+    UNPROVEN_ACCEPTANCE.with(|c| c.take())
+}
+
 /// The reason this pair cannot be proven by the SMT encoder, if any.
 ///
 /// This is the structural pre-check both verification paths already applied
@@ -2815,10 +2886,12 @@ pub fn verify_function_equivalence_with_context(
     pass_name: &str,
     sig_ctx: &VerificationSignatureContext,
 ) -> Result<bool> {
-    let unprovable = unverifiable_reason(original, optimized);
+    // Clear any stale note from an earlier attempt on this worker before the
+    // one we are about to classify.
+    let _ = take_unproven_acceptance();
     let result =
         verify_function_equivalence_with_context_uncounted(original, optimized, pass_name, sig_ctx);
-    match (&result, unprovable) {
+    match (&result, take_unproven_acceptance()) {
         // Kept, but nothing was proved about it. The caller will not revert,
         // so this is exactly the outcome a revert count cannot see.
         (Ok(true), Some(reason)) => crate::stats::record_kept_unproven(reason),
@@ -3123,17 +3196,107 @@ pub fn compute_verification_coverage(
     // printing a checkmark without opening the file (#332) — a claim whose
     // only basis is that nothing checked it.
     //
-    // Nothing was verified, so nothing is reported as verified. The functions
-    // are counted as errors, which is the only bucket in this (deliberately
-    // unchanged) struct that does not assert a positive result, and the
-    // dedicated `verification_error` count makes the state legible to a
-    // caller that inspects it.
+    // Nothing was verified, so nothing is reported as verified. They go in
+    // `not_attempted`, a bucket added for this: every other one asserts
+    // something specific, and reporting a timeout that never happened would
+    // simply trade one false statement for another.
     let mut coverage = VerificationCoverage::new();
     let func_count = original.functions.len().min(optimized.functions.len());
     for _ in 0..func_count {
-        coverage.record_error();
+        coverage.record_not_attempted();
     }
     coverage
+}
+
+/// The disabled-feature coverage stub must not claim anything was verified.
+///
+/// This module compiles ONLY when the `verification` feature is off, which is
+/// the whole point: the arm it covers is invisible to the default test run, so
+/// before this existed the claim "coverage does not report functions as
+/// verified in a no-verification build" was asserted by nothing. That stub
+/// previously reported EVERY function as verified — a function named
+/// `compute_verification_coverage` returning 100% proven for a build that
+/// proved nothing.
+///
+/// Run with: `cargo test -p loom-core --no-default-features`
+#[cfg(all(test, not(feature = "verification")))]
+mod disabled_feature_coverage_tests {
+    use super::*;
+
+    fn void_function() -> crate::Function {
+        crate::Function {
+            name: None,
+            signature: crate::FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: vec![crate::Instruction::End],
+        }
+    }
+
+    fn module_of(functions: Vec<crate::Function>) -> crate::Module {
+        crate::Module {
+            functions,
+            memories: vec![],
+            tables: vec![],
+            globals: vec![],
+            types: vec![],
+            exports: vec![],
+            imports: vec![],
+            data_segments: vec![],
+            element_section_bytes: None,
+            start_function: None,
+            custom_sections: vec![],
+            type_section_bytes: None,
+            global_section_bytes: None,
+            facts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_build_without_verification_reports_nothing_as_verified() {
+        let module = module_of(vec![void_function(), void_function(), void_function()]);
+        let coverage = compute_verification_coverage(&module, &module, "no_verification_build");
+
+        assert_eq!(
+            coverage.verified, 0,
+            "a build that verified nothing must not report ANY function as \
+             verified; that is a claim whose only basis is that nothing \
+             checked it"
+        );
+        assert_eq!(
+            coverage.not_attempted, 3,
+            "all three functions must be accounted for as not-attempted"
+        );
+        assert_eq!(
+            coverage.total(),
+            3,
+            "no function may be dropped from the total"
+        );
+        assert!(
+            coverage.nothing_was_attempted(),
+            "the state must be detectable by a caller before it quotes a number"
+        );
+    }
+
+    /// The nearest existing bucket would have been `verification_error`, which
+    /// is documented as "timeout, encoding error". Reporting a timeout that
+    /// never happened trades one false statement for another, so it must stay
+    /// empty here.
+    #[test]
+    fn not_attempted_is_not_reported_as_an_error() {
+        let module = module_of(vec![void_function()]);
+        let coverage = compute_verification_coverage(&module, &module, "no_verification_build");
+        assert_eq!(
+            coverage.verification_error, 0,
+            "nothing errored — no solver ran at all"
+        );
+        assert_eq!(
+            coverage.verification_failed, 0,
+            "no counterexample was found"
+        );
+    }
 }
 
 // ============================================================================
