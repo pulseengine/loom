@@ -1044,3 +1044,78 @@ artifacts:
         target: REQ-3
       - type: verifies
         target: REQ-5
+
+  - id: TEST-331-VERIFICATION-COVERAGE-IS-REPORTED
+    type: feature
+    title: the optimizer reports what verification established, with a denominator, and names what it kept unproven (#331 Gap 1)
+    description: >
+      Verifies that `loom optimize --stats` reports verification coverage.
+      Two defects motivated this. First, nothing surfaced a DENOMINATOR: the
+      revert counters answer "how often did verification catch something?" but
+      cannot answer "how much was verified at all?", and the outcome that
+      matters most is invisible to a revert count by construction — a
+      transform KEPT without a proof does not revert, so it never appears. A
+      `VerificationCoverage` tracker with the full taxonomy had existed in the
+      verifier, documented with the exact summary line it was meant to
+      produce, with ZERO non-test callers. Second, the solver size-threshold
+      bypass recorded itself through the revert counter and then returned
+      acceptance, so the tool printed "N function(s) reverted" for functions
+      that shipped — a stat naming the wrong outcome, which reads as evidence
+      verification did its job in precisely the case where it did not run.
+      Asserted by driving the real binary over a real 724-function module:
+      (1) coverage is printed at all; (2) the proven count carries its
+      denominator; (3) nothing is reported under the size-skip revert label
+      any more; (4) the kept-without-proof bucket is REACHED on this module
+      and attributed BY REASON, so the count can be acted on — without this
+      every other assertion would still pass for an implementation that never
+      records the bucket, which is the failure mode that left the original
+      tracker unread; (5) an incomplete run says so in words. Paired with a
+      positive control on a fully-proven module asserting the warning is
+      ABSENT, so it cannot degrade into an unconditional caveat that carries
+      no information. Unit tests pin that a run which attempted nothing
+      reports no percentage rather than 100%.
+      Also corrects the disabled-feature coverage stub, which reported every
+      function as verified for a build that verified nothing — the same claim
+      -without-a-basis as #332, one layer deeper and pre-loaded rather than
+      fired. Those functions now land in a NEW `not_attempted` bucket rather
+      than borrowing `verification_error`: every other bucket asserts
+      something specific, and reporting a timeout that never happened would
+      trade one false statement for another. That arm is exercised by a test
+      compiled only when the feature is off, because the default test run
+      cannot see it.
+      Classification happens at the DECISION SITE (via a thread-local note)
+      rather than by re-deriving a predicate in the accounting wrapper:
+      several acceptances are decided by the encoding result, not by anything
+      visible in the function's shape, and an accounting layer that guesses is
+      one that can disagree with what it accounts for. This caught a real
+      overclaim during review — the void-function auto-pass, whose own comment
+      calls the equivalence vacuous, was initially counted as proven.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a real module, --stats prints a proven count WITH its denominator"
+        - "Given the size-threshold bypass, it is reported as kept-without-proof and NOT as a revert"
+        - "Given a run that kept transforms unproven, the reason is named and the run says it is incomplete"
+        - "Given a fully-proven run, the unproven-transform warning is ABSENT"
+        - "Given zero attempts, no percentage is reported (never 100%)"
+        - "Given a build without the verification feature, coverage reports functions as not-attempted and NOT as verified, and not as errors either"
+        - "Given an acceptance that discharges no obligation, it is counted as kept-without-proof rather than proven"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test verification_coverage
+        - run: |
+            cargo test --release -p loom-core --features verification --lib stats::
+        # The disabled-feature arm is INVISIBLE to the two runs above — they
+        # both compile `verification` in. Without this step the criterion
+        # about a no-verification build would be asserted by nothing, which
+        # is the defect class this artifact exists to close.
+        - run: |
+            cargo test -p loom-core --no-default-features --lib disabled_feature_coverage
+    status: verified
+    release: v1.4.1
+    tags: [v141, verification, honesty, no-silent-failures, observability]
+    links:
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-1

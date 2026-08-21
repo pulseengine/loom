@@ -193,8 +193,52 @@ impl OptimizationStats {
             }
         }
 
+        // Verification coverage (#331). The revert summary below answers
+        // "how often did verification catch something?"; it has no
+        // denominator, so on its own it cannot answer "how much was verified
+        // at all?" — and the outcome that matters most is invisible to it by
+        // construction: a transform KEPT without a proof does not revert, so
+        // it never appears in a revert count.
+        //
+        // loom keeps such transforms deliberately and for stated reasons.
+        // That is defensible; reporting success without mentioning it is not
+        // (REQ-3). So the denominator is printed whether or not anything was
+        // skipped, and an incomplete run says so in as many words.
+        let coverage = loom_core::stats::coverage_summary();
+        if coverage.attempts() > 0 {
+            println!();
+            println!("🔍 Verification Coverage");
+            println!("─────────────────────────────────────────");
+            match coverage.proven_percentage() {
+                Some(pct) => println!(
+                    "  Proven:  {}/{} attempts ({:.1}%)",
+                    coverage.proven,
+                    coverage.attempts(),
+                    pct
+                ),
+                None => println!("  Proven:  0/0 attempts"),
+            }
+            if !coverage.kept_unproven.is_empty() {
+                println!(
+                    "  Kept WITHOUT proof: {} attempt(s)",
+                    coverage.total_kept_unproven()
+                );
+                for (reason, count) in &coverage.kept_unproven {
+                    println!("    {:36} {}", reason, count);
+                }
+            }
+            if coverage.reverted > 0 {
+                println!("  Rejected (reverted): {}", coverage.reverted);
+            }
+            println!("  (one attempt = one function, one pass — not one function)");
+            if !coverage.is_fully_proven() {
+                println!();
+                println!("  ⚠️  Not every transform in this output carries a proof.");
+            }
+        }
+
         // Per-pass revert summary — counts how many functions each pass
-        // tried to transform and then reverted because the Z3 verifier
+        // tried to transform and then reverted because the verifier
         // rejected the result. Non-zero counts indicate verification
         // saved a potential miscompile.
         let reverts = loom_core::stats::revert_summary();
