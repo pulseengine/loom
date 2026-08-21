@@ -348,6 +348,56 @@ fn count_instructions_from_bytes(bytes: &[u8]) -> usize {
 /// (safe, unoptimized) bytes to `output_path` and return `Err` so the process
 /// exits non-zero. A no-op when the gate is disabled (`original` is `None`).
 #[allow(unused_variables)]
+/// Write the optimized artifact ONLY if it passes authoritative WebAssembly
+/// validation (#346).
+///
+/// `loom optimize` used to write whatever the encoder produced and print
+/// "✅ Optimization complete!" over it. When the encoder dropped the data
+/// count section while keeping the `memory.init` instructions that require it,
+/// the result was a module no validator accepts — emitted with exit code 0.
+/// Silent invalid output is the worst shape this can take: the next tool in
+/// the chain reports the failure against ITS OWN input, so the blame lands
+/// downstream of the tool that actually broke the module.
+///
+/// `loom_core::optimize::optimize_module` has carried exactly this gate since
+/// #257, described there as the systemic guarantee that loom can NEVER emit
+/// structurally invalid wasm. The CLI does not go through that function — it
+/// drives the passes directly (#345) — so it inherited none of it. This closes
+/// that hole at the only point that matters: the write.
+///
+/// On failure the ORIGINAL input is written instead, when the original itself
+/// validates, so the worst case is unoptimized-but-valid output rather than a
+/// missing or corrupt file. The exit code is still non-zero: a caller that
+/// checks it learns something went wrong, and a caller that ignores it still
+/// gets a module that loads.
+fn write_validated_output(
+    output_path: &str,
+    output_bytes: &[u8],
+    wasm_to_validate: &[u8],
+    original_input: &[u8],
+) -> Result<()> {
+    if let Err(e) = loom_core::encode::validate_output_bytes(wasm_to_validate) {
+        eprintln!("error: the optimized module failed authoritative WebAssembly validation:");
+        eprintln!("       {e}");
+        // Fall back to the input, but only after proving the input itself is
+        // valid wasm — a `.wat` input, or one that was already invalid, must
+        // not be copied over the output path and presented as a module.
+        let recovered = loom_core::encode::validate_output_bytes(original_input).is_ok()
+            && fs::write(output_path, original_input).is_ok();
+        if recovered {
+            eprintln!("note: wrote the ORIGINAL module to {output_path} instead;");
+            eprintln!("      nothing invalid was written, and nothing was optimized.");
+        } else {
+            eprintln!("note: no output was written.");
+        }
+        eprintln!("note: this is a loom bug — please report it with the input module.");
+        return Err(anyhow!("refusing to emit a module that does not validate"));
+    }
+    fs::write(output_path, output_bytes).context("Failed to write output file")?;
+    println!("✓ Written to: {}", output_path);
+    Ok(())
+}
+
 fn maybe_differential_gate(
     original: Option<&[u8]>,
     optimized_wasm: &[u8],
@@ -519,9 +569,14 @@ fn optimize_command(
 
                     // Write optimized component
                     let output_path = output.unwrap_or_else(|| "output.wasm".to_string());
-                    fs::write(&output_path, &optimized_bytes)
-                        .context("Failed to write output file")?;
-                    println!("✓ Written to: {}", output_path);
+                    // #346: components go through the same gate. `validate`
+                    // handles the component grammar as well as core modules.
+                    write_validated_output(
+                        &output_path,
+                        &optimized_bytes,
+                        &optimized_bytes,
+                        &input_bytes,
+                    )?;
                     println!("\n✅ Optimization complete!");
                     return Ok(());
                 }
@@ -653,8 +708,15 @@ fn optimize_command(
             };
             maybe_differential_gate(original_wasm.as_deref(), &opt_wasm, &output_path)?;
         }
-        fs::write(&output_path, &output_bytes).context("Failed to write output file")?;
-        println!("✓ Written to: {}", output_path);
+        // #346: validate before writing. For WAT output the bytes on disk are
+        // text, so the WASM encoding is what gets validated.
+        let validate_bytes = if output_wat {
+            loom_core::encode::encode_wasm(&module)
+                .context("Failed to encode optimized module for output validation")?
+        } else {
+            output_bytes.clone()
+        };
+        write_validated_output(&output_path, &output_bytes, &validate_bytes, &input_bytes)?;
 
         if show_stats {
             stats.print();
@@ -999,8 +1061,15 @@ fn optimize_command(
         };
         maybe_differential_gate(original_wasm.as_deref(), &opt_wasm, &output_path)?;
     }
-    fs::write(&output_path, &output_bytes).context("Failed to write output file")?;
-    println!("✓ Written to: {}", output_path);
+    // #346: validate before writing. For WAT output the bytes on disk are
+    // text, so the WASM encoding is what gets validated.
+    let validate_bytes = if output_wat {
+        loom_core::encode::encode_wasm(&module)
+            .context("Failed to encode optimized module for output validation")?
+    } else {
+        output_bytes.clone()
+    };
+    write_validated_output(&output_path, &output_bytes, &validate_bytes, &input_bytes)?;
 
     // Show statistics if requested
     if show_stats {
@@ -1531,5 +1600,73 @@ mod tests {
         assert_eq!(stats.reduction_percentage(10, 5), 50.0);
         assert_eq!(stats.reduction_percentage(100, 25), 75.0);
         assert_eq!(stats.reduction_percentage(0, 0), 0.0);
+    }
+
+    /// The #346 backstop, tested directly on its refusal path.
+    ///
+    /// The integration sweep asserts "success implies the artifact validates",
+    /// which holds trivially while the encoder is correct — so it cannot fail
+    /// if the gate is deleted. This can: it hands the gate bytes that are
+    /// definitely invalid and asserts the three things that must follow.
+    ///
+    /// Before #346 the CLI had no such gate at all: `fs::write` was called on
+    /// whatever the encoder returned, and "✅ Optimization complete!" was
+    /// printed over it.
+    #[test]
+    fn the_output_gate_refuses_invalid_bytes_and_restores_the_original() {
+        // Valid: (module) — the 8-byte preamble is a complete empty module.
+        const VALID: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        // Invalid: right magic, but a truncated type section header.
+        const INVALID: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x7f];
+        assert!(loom_core::encode::validate_output_bytes(VALID).is_ok());
+        assert!(
+            loom_core::encode::validate_output_bytes(INVALID).is_err(),
+            "the negative fixture must actually be invalid, or this test \
+             asserts nothing"
+        );
+
+        let dir = std::env::temp_dir().join(format!("loom-346-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        let out_path = dir.join("out.wasm");
+        let out_str = out_path.to_str().unwrap();
+
+        let result = write_validated_output(out_str, INVALID, INVALID, VALID);
+
+        assert!(
+            result.is_err(),
+            "the gate accepted bytes that do not validate; exit 0 over an \
+             invalid module is exactly the #346 defect"
+        );
+        let written = std::fs::read(&out_path).expect("the gate must leave a valid file behind");
+        assert_ne!(
+            written, INVALID,
+            "the invalid bytes were written to the output path"
+        );
+        assert_eq!(
+            written, VALID,
+            "the gate must fall back to the original module so the worst case \
+             is unoptimized-but-valid output, never a corrupt artifact"
+        );
+
+        let _ = std::fs::remove_file(&out_path);
+    }
+
+    /// The positive control: valid bytes must be written unchanged. Without
+    /// this, a gate that refused everything would pass the test above.
+    #[test]
+    fn the_output_gate_writes_valid_bytes_unchanged() {
+        const VALID: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        let dir = std::env::temp_dir().join(format!("loom-346-unit-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        let out_path = dir.join("ok.wasm");
+        let out_str = out_path.to_str().unwrap();
+
+        write_validated_output(out_str, VALID, VALID, VALID).expect("valid output must be written");
+        assert_eq!(
+            std::fs::read(&out_path).expect("read back"),
+            VALID,
+            "valid output must reach disk byte-for-byte"
+        );
+        let _ = std::fs::remove_file(&out_path);
     }
 }

@@ -1119,3 +1119,69 @@ artifacts:
         target: REQ-3
       - type: verifies
         target: REQ-1
+
+  # ============================================================================
+  # #346 / #345 — v1.4.1: the binary must not emit what it has not validated.
+  #
+  # The encoder never emitted a data count section — there was no reference to
+  # it anywhere in the crate — so any module using `memory.init` or `data.drop`
+  # came out structurally INVALID. Nothing caught it, because the #257
+  # output-validation backstop lives inside `optimize_module` and the CLI
+  # drives the passes directly (#345). A guarantee reachable only from a
+  # function nobody calls is prose, not a guarantee.
+  # ============================================================================
+
+  - id: TEST-346-OUTPUT-IS-VALIDATED-BEFORE-IT-IS-WRITTEN
+    type: feature
+    title: the data count section is emitted, and no unvalidated module is ever written (#346, #345)
+    description: >
+      Verifies both halves of the #346 defect. The narrow half: the encoder
+      now emits the data count section (id 12, between element and code)
+      whenever `memory.init` or `data.drop` survive into the output. The spec
+      makes that section mandatory for those instructions — it exists so they
+      can be validated without scanning the data section — and loom preserved
+      the data section and the instructions while dropping the section that
+      makes them legal.
+      The systemic half, which is the one that generalises: every CLI write
+      path now runs the authoritative WebAssembly spec validator BEFORE
+      writing, using the same check `optimize_module` has applied since #257.
+      On failure the ORIGINAL input is written instead — but only after the
+      original is itself proven valid, so a `.wat` input or an
+      already-invalid one is never copied over the output path and presented
+      as a module — and the exit code is non-zero. Worst case becomes
+      unoptimized-but-valid output; success can no longer be printed over an
+      invalid artifact.
+      Asserted: (1) a module using `memory.init` and `data.drop` is emitted
+      valid AND carries a data count section — the second assertion matters
+      because validation alone would also pass if the instructions were
+      simply deleted; (2) across every valid in-tree wasm fixture, a
+      successful exit implies the artifact on disk validates; (3) fed bytes
+      that definitely do not validate, the gate REFUSES, does not write them,
+      and restores the original; (4) fed valid bytes it writes them
+      byte-for-byte — the positive control, without which a gate that refused
+      everything would pass (3).
+      Confirmed discriminating: with the encoder fix reverted, (1) fails on
+      "data count section required".
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a module using memory.init/data.drop, the output validates AND contains a data count section"
+        - "Given any valid fixture, exit 0 implies the written artifact validates"
+        - "Given bytes that do not validate, the gate refuses, writes the original instead, and exits non-zero"
+        - "Given valid bytes, the gate writes them unchanged"
+        - "Given an original that is not itself valid wasm, it is NOT written over the output path"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test output_validation
+        - run: |
+            cargo test --release -p loom-cli --bin loom -- the_output_gate
+    status: verified
+    release: v1.4.1
+    tags: [v141, encoder, honesty, no-silent-failures, safety]
+    links:
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-12
+      - type: verifies
+        target: REQ-1
