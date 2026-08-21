@@ -1773,3 +1773,89 @@ fn test_rule_verification_parse_constant_folding_isle() {
         "First three rules should be 32-bit, last three 64-bit"
     );
 }
+
+/// #331 Gap 2 — the free `verify_function_equivalence` entry point must not
+/// propagate a solver-internal panic.
+///
+/// Four functions in this fixture (#132, #142, #161, #182) panic inside the
+/// solver bindings during encoding, before any solver is consulted: two with
+/// `SortDiffers { (_ BitVec 32), (_ BitVec 64) }` from a mixed-width binop and
+/// two with `unwrap()`-on-`None` in the `ite` constructor. All four contain a
+/// `Select` over mixed i32/i64, which is one root cause reached by two
+/// constructors.
+///
+/// `TranslationValidator::verify` has always caught these and reverted
+/// cleanly. The free function did not, so a direct caller inherited the panic
+/// while a validator caller got a clean rejection — the same public API
+/// surface behaving two different ways, with nothing in either signature
+/// saying which. This pins the asymmetry closed.
+///
+/// The assertion is deliberately about the RESULT, not merely about not
+/// crashing: a panic must become `Err` (nothing established), never
+/// `Ok(true)`. `Ok(true)` from a panicking encode would be a claim of proof
+/// obtained by not finishing the proof, which is worse than the crash.
+#[cfg(feature = "verification")]
+#[test]
+fn t331_free_verify_entry_point_converts_solver_panics_into_errors() {
+    use loom_core::verify::verify_function_equivalence;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/issue254-records-fused.wasm"
+    );
+    let bytes = std::fs::read(path).expect("read the issue254 fused fixture");
+    let module = loom_core::parse::parse_wasm(&bytes).expect("parse the fixture");
+
+    // The four functions #331 identified. Verifying all 724 would take
+    // minutes and prove nothing extra: these are the ones that reach the
+    // panic path, and naming them keeps the test targeted enough to run in
+    // the normal suite.
+    const MIXED_WIDTH_SELECT_FUNCS: [usize; 4] = [132, 142, 161, 182];
+
+    // Self-comparison: a function against itself is trivially equivalent, so
+    // any non-`Ok(true)` outcome here is the encoder failing rather than a
+    // real semantic difference. That is exactly what we want to observe.
+    let mut panicked = 0usize;
+    let mut errored = 0usize;
+    for idx in MIXED_WIDTH_SELECT_FUNCS {
+        let func = match module.functions.get(idx) {
+            Some(f) => f,
+            None => panic!(
+                "fixture has only {} functions; #331's indices no longer \
+                 address it, so this test cannot be exercising the panic path",
+                module.functions.len()
+            ),
+        };
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            verify_function_equivalence(func, func, "t331_panic_safety")
+        }));
+        match outcome {
+            Err(_) => {
+                panicked += 1;
+                eprintln!("fn#{idx} propagated a panic through the free entry point");
+            }
+            Ok(Err(_)) => errored += 1,
+            Ok(Ok(_)) => {}
+        }
+    }
+
+    assert_eq!(
+        panicked, 0,
+        "the free entry point propagated {panicked} panic(s); it must convert \
+         a solver-internal panic into Err so a direct caller behaves like a \
+         TranslationValidator caller (#331 Gap 2)"
+    );
+
+    // Reachability, per #289: if nothing in this fixture reaches the panic
+    // path any more, the guard above is vacuous and this test would keep
+    // passing after a regression re-opened the hole. The fixture is known to
+    // contain four such functions; require that at least one still fails to
+    // encode, and say so loudly if that changes.
+    assert!(
+        errored > 0,
+        "expected the mixed-width Select cases (#132/#142/#161/#182) to fail \
+         encoding. None did, so this test no longer exercises the panic path \
+         it exists to guard — re-check the fixture before trusting it"
+    );
+}

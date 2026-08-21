@@ -162,9 +162,12 @@ pub mod optimize {
 
 #### loom-cli
 ```bash
-loom optimize input.wasm -o output.wasm
-loom verify input.wasm output.wasm  # Z3 equivalence checking
-loom benchmark input.wasm           # Performance metrics
+loom optimize input.wasm -o output.wasm   # translation validation runs inside
+loom optimize input.wasm --stats         # per-pass + verification coverage
+# NOTE: `loom verify` takes an ISLE rule file, is NOT implemented (it exits 2),
+# and never accepted the two-wasm form shown here (#332). Module equivalence is
+# checked per pass inside `optimize`, not by a separate command.
+# `loom benchmark` does not exist either — both lines below were aspirational.
 ```
 
 ---
@@ -297,8 +300,8 @@ jobs:
 **Validation**:
 ```bash
 cargo test -p loom-shared  # Unit tests
-loom verify test.wasm      # Z3 SMT checking
-loom benchmark corpus/     # Performance regression
+cargo test -p loom-core --features verification  # rule + translation proofs
+# (`loom verify` / `loom benchmark` are proposed, not implemented — see #332.)
 ```
 
 ### Phase 2: Review & Merge (Week 2)

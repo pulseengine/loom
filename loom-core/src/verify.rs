@@ -2346,18 +2346,49 @@ pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool
 /// * `Ok(true)` - Functions are proven semantically equivalent
 /// * `Ok(false)` - Found a counterexample showing different behavior
 /// * `Err(_)` - Verification error or timeout
+///
+/// # Panic safety (#331)
+///
+/// This entry point does **not** propagate solver-internal panics. Encoding a
+/// function can panic inside the solver bindings before any solver is
+/// consulted — a `SortDiffers` mixed-width BitVec binop, or an
+/// `unwrap()`-on-`None` in the `ite` constructor when the arms have different
+/// sorts, both reachable from a `Select` over mixed i32/i64 (documented in
+/// detail at the `TranslationValidator::verify` call sites). Those are caught
+/// here and reported as `Err`, exactly as [`TranslationValidator::verify`]
+/// already does.
+///
+/// Before this was added, the two public entry points disagreed: a caller
+/// going through `TranslationValidator` got a clean rejection while a direct
+/// caller of this function inherited the panic, and nothing in either
+/// signature said so. A panic is not a proof, so the conservative reading is
+/// the same in both cases — `Err`, meaning *not established*, never
+/// `Ok(true)`. The asymmetry is removed rather than merely documented,
+/// because the failure mode of getting it wrong is a caller that crashes on
+/// input the optimizer itself handles.
 #[cfg(feature = "verification")]
 pub fn verify_function_equivalence(
     original: &Function,
     optimized: &Function,
     pass_name: &str,
 ) -> Result<bool> {
-    verify_function_equivalence_with_backend(
-        original,
-        optimized,
-        pass_name,
-        VerifyBackend::from_env(),
-    )
+    // Same as the validator path: keep the (always-caught) solver backtrace
+    // out of stderr. Idempotent and race-free via `Once`.
+    install_z3_panic_filter();
+    let backend = VerifyBackend::from_env();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        verify_function_equivalence_with_backend(original, optimized, pass_name, backend)
+    }));
+    match caught {
+        Ok(result) => result,
+        // Deliberately `Err`, never `Ok(false)`: a counterexample is a
+        // positive finding of INEQUIVALENCE, and this is not that. Nothing
+        // was decided, and the report has to say so.
+        Err(_panic) => Err(anyhow!(
+            "{}: solver-internal panic during encoding - equivalence not established",
+            pass_name
+        )),
+    }
 }
 
 /// [`verify_function_equivalence`] with the solver backend passed explicitly
