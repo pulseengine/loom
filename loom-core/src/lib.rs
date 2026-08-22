@@ -1901,6 +1901,25 @@ pub mod encode {
         encode_wasm_with_facts(module, false)
     }
 
+    /// Run the authoritative WebAssembly spec validator over emitted bytes.
+    ///
+    /// This is the SAME check the #257 output-validation backstop applies,
+    /// exposed so a caller that does its own encoding — notably the CLI, which
+    /// drives the passes directly rather than through
+    /// [`crate::optimize::optimize_module`] — can apply the identical gate
+    /// instead of an approximation of it.
+    ///
+    /// It exists because that divergence had teeth (#346): the backstop lived
+    /// inside `optimize_module`, the binary never called it, and so
+    /// `loom optimize` emitted a module that no validator would accept while
+    /// printing a success message. A guarantee reachable only from a function
+    /// nobody calls is prose, not a guarantee.
+    pub fn validate_output_bytes(bytes: &[u8]) -> Result<()> {
+        wasmparser::validate(bytes)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     /// Encode to WebAssembly binary, optionally emitting the #231 `wsc.facts`
     /// custom section (schema v1) from `module.facts`.
     ///
@@ -2106,6 +2125,34 @@ pub mod encode {
             wasm_module.section(&RawSection {
                 id: 9, // Element section ID
                 data: element_bytes,
+            });
+        }
+
+        // Build the DATA COUNT section (id 12) — #346.
+        //
+        // The spec makes this section MANDATORY whenever `memory.init` or
+        // `data.drop` appear in the code: it exists so those instructions can
+        // be validated without scanning the data section, and a validator
+        // rejects the module outright when it is missing. loom preserved the
+        // data section and the instructions but never emitted this section at
+        // all — there was no reference to it anywhere in the crate — so any
+        // module using `memory.init` came out structurally INVALID while the
+        // CLI reported success.
+        //
+        // It must be written between the element section (9) and the code
+        // section (10), which is why it is emitted here rather than beside the
+        // data section it describes.
+        //
+        // The count is the number of data segments, not the number of
+        // instructions referencing them: it is the length of the data index
+        // space that `memory.init`/`data.drop` index into.
+        if module.functions.iter().any(|f| {
+            f.instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::MemoryInit { .. } | Instruction::DataDrop(_)))
+        }) {
+            wasm_module.section(&wasm_encoder::DataCountSection {
+                count: module.data_segments.len() as u32,
             });
         }
 
