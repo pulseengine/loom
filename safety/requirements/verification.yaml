@@ -1119,3 +1119,148 @@ artifacts:
         target: REQ-3
       - type: verifies
         target: REQ-1
+
+  # ============================================================================
+  # #346 / #345 — v1.4.1: the binary must not emit what it has not validated.
+  #
+  # The encoder never emitted a data count section — there was no reference to
+  # it anywhere in the crate — so any module using `memory.init` or `data.drop`
+  # came out structurally INVALID. Nothing caught it, because the #257
+  # output-validation backstop lives inside `optimize_module` and the CLI
+  # drives the passes directly (#345). A guarantee reachable only from a
+  # function nobody calls is prose, not a guarantee.
+  # ============================================================================
+
+  - id: TEST-346-OUTPUT-IS-VALIDATED-BEFORE-IT-IS-WRITTEN
+    type: feature
+    title: the data count section is emitted, and no unvalidated module is ever written (#346, #345)
+    description: >
+      Verifies both halves of the #346 defect. The narrow half: the encoder
+      now emits the data count section (id 12, between element and code)
+      whenever `memory.init` or `data.drop` survive into the output. The spec
+      makes that section mandatory for those instructions — it exists so they
+      can be validated without scanning the data section — and loom preserved
+      the data section and the instructions while dropping the section that
+      makes them legal.
+      The systemic half, which is the one that generalises: every CLI write
+      path now runs the authoritative WebAssembly spec validator BEFORE
+      writing, using the same check `optimize_module` has applied since #257.
+      On failure the ORIGINAL input is written instead — but only after the
+      original is itself proven valid, so a `.wat` input or an
+      already-invalid one is never copied over the output path and presented
+      as a module — and the exit code is non-zero. Worst case becomes
+      unoptimized-but-valid output; success can no longer be printed over an
+      invalid artifact.
+      Asserted: (1) a module using `memory.init` and `data.drop` is emitted
+      valid AND carries a data count section — the second assertion matters
+      because validation alone would also pass if the instructions were
+      simply deleted; (2) across every valid in-tree wasm fixture, a
+      successful exit implies the artifact on disk validates; (3) fed bytes
+      that definitely do not validate, the gate REFUSES, does not write them,
+      and restores the original; (4) fed valid bytes it writes them
+      byte-for-byte — the positive control, without which a gate that refused
+      everything would pass (3).
+      Confirmed discriminating: with the encoder fix reverted, (1) fails on
+      "data count section required".
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a module using memory.init/data.drop, the output validates AND contains a data count section"
+        - "Given any valid fixture, exit 0 implies the written artifact validates"
+        - "Given bytes that do not validate, the gate refuses, writes the original instead, and exits non-zero"
+        - "Given valid bytes, the gate writes them unchanged"
+        - "Given an original that is not itself valid wasm, it is NOT written over the output path"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test output_validation
+        - run: |
+            cargo test --release -p loom-cli --bin loom -- the_output_gate
+    status: verified
+    release: v1.4.1
+    tags: [v141, encoder, honesty, no-silent-failures, safety]
+    links:
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-12
+      - type: verifies
+        target: REQ-1
+
+  # ============================================================================
+  # #347 — v1.4.1: bound the quantity that actually drives solver cost.
+  #
+  # 97 of 100 real-world components exceeded a 60 s budget; one 463 KB fused
+  # module ran past 455 s and was killed, while a structurally denser 1.13 MB
+  # ordinary module finished in 39 s. Profiling put 97% of wall clock inside
+  # the solver and 40% of the whole process inside its ARRAY theory
+  # instantiating store axioms pairwise. Instruction count — the only quantity
+  # loom bounded — does not track that at all.
+  # ============================================================================
+
+  - id: TEST-347-MEMORY-OP-BOUND
+    type: feature
+    title: the translation validator bounds array-modelled memory operations, and refuses rather than ships what it declines to verify (#347)
+    description: >
+      Verifies the memory-operation bound that makes store-dense inlines
+      terminate. The cost driver is the solver's array theory, whose store
+      axioms are instantiated pairwise, so cost grows quadratically in memory
+      accesses per body — a quantity inlining multiplies by concatenating
+      callee bodies into their caller, which is why only the inliner triggers
+      it.
+      Two design decisions are recorded because both were reached by
+      measurement and both could reasonably have gone the other way.
+      FIRST, exceeding the bound REVERTS rather than keeps. The existing
+      instruction bound keeps, and copying that here would have shipped
+      thousands of unproven transforms per module at this bound — the wrong
+      direction for a charter whose rule is to skip rather than risk. Refusing
+      costs optimization and costs nothing in safety. The instruction bound's
+      keep-behaviour is left untouched and the inconsistency stated rather
+      than quietly harmonised.
+      SECOND, tiny bodies are EXEMPT. Without the exemption the bound must be
+      2 or lower for the 463 KB module to finish, while #219's memory-seam and
+      division-seam dissolution require 4 or higher — irreconcilable, and the
+      naive bound silently broke a shipped, silicon-validated capability. The
+      exemption resolves it: measured 45 s (from >455 s killed) with the seam
+      intact, and slightly BETTER proof coverage than without it (49.8% vs
+      45.2%).
+      A wall-clock budget would generalise better and is deliberately not
+      used: which functions got verified would depend on machine speed, so the
+      same input could produce different output, violating REQ-14. A count is
+      the only mechanism here that stays deterministic. The solver's own
+      timeout is wired and measurably does NOT bound this — at 100 ms the pass
+      still exceeded 120 s, because the cost is axiom instantiation rather
+      than the search a timeout guards.
+      Asserted: (1) the counter counts array-modelled loads and stores; (2) it
+      sees through block/if bodies, so a body cannot hide its stores under the
+      bound; (3) it does NOT count float or partial-width accesses, which bail
+      earlier and never reach the array theory; (4) a tiny memory-dense body
+      is exempt — the #219 property, asserted directly rather than left
+      implicit in the seam tests; (5) a LARGE memory-dense body is not exempt,
+      the control without which the bound could never fire.
+      This is a BOUND, not a solution: it buys termination by declining the
+      hardest obligations. They are discharged only when the memory model
+      stops being the incumbent's array theory (#313 slice 5).
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a body with nested stores, all of them are counted"
+        - "Given float/partial-width accesses, none are counted"
+        - "Given a tiny memory-dense body, the bound does NOT apply (#219 seams keep dissolving)"
+        - "Given a large memory-dense body, the bound DOES apply"
+        - "Given the bound fires, the transform is REVERTED and the revert is attributed by reason"
+        - "Given the #347 module at default settings, the full pipeline completes and the output validates"
+      steps:
+        - run: |
+            cargo test --release -p loom-core --features verification --lib memory_bound_tests_347
+        - run: |
+            cargo test --release -p loom-core --features verification --lib -- seam_fully_dissolves
+    status: verified
+    release: v1.4.1
+    tags: [v141, verification, performance, solver-migration]
+    links:
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-14
+      - type: verifies
+        target: REQ-3

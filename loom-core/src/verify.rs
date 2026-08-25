@@ -88,6 +88,191 @@ pub struct VerificationSignatureContext {
     pub function_bodies: Vec<Option<std::sync::Arc<Function>>>,
 }
 
+#[cfg(all(test, feature = "verification"))]
+mod memory_bound_tests_347 {
+    use super::*;
+
+    fn f(instrs: Vec<Instruction>) -> Function {
+        Function {
+            name: None,
+            signature: FunctionSignature {
+                params: vec![],
+                results: vec![],
+            },
+            locals: vec![],
+            instructions: instrs,
+        }
+    }
+
+    fn store() -> Instruction {
+        Instruction::I32Store {
+            offset: 0,
+            align: 2,
+            mem: 0,
+        }
+    }
+
+    fn load() -> Instruction {
+        Instruction::I64Load {
+            offset: 0,
+            align: 3,
+            mem: 0,
+        }
+    }
+
+    #[test]
+    fn counts_array_modelled_loads_and_stores() {
+        assert_eq!(count_array_memory_ops(&f(vec![])), 0);
+        assert_eq!(
+            count_array_memory_ops(&f(vec![store(), load(), Instruction::I32Const(1)])),
+            2,
+            "only the memory accesses count, not the arithmetic beside them"
+        );
+    }
+
+    /// The count must see through structured control flow. A body that hides
+    /// its stores inside a block would otherwise slip under the bound and
+    /// reintroduce the hang the bound exists to prevent.
+    #[test]
+    fn counts_nested_bodies() {
+        let inner = Instruction::Block {
+            block_type: BlockType::Empty,
+            body: vec![store(), store()],
+        };
+        let outer = Instruction::If {
+            block_type: BlockType::Empty,
+            then_body: vec![store(), inner],
+            else_body: vec![load()],
+        };
+        assert_eq!(
+            count_array_memory_ops(&f(vec![outer, store()])),
+            5,
+            "stores nested in block/if bodies must be counted"
+        );
+    }
+
+    /// Float and partial-width loads are deliberately NOT counted: they are
+    /// rejected earlier by `contains_unverifiable_instructions` and never
+    /// reach the array theory, so counting them would defer functions this
+    /// bound has no reason to defer.
+    #[test]
+    fn does_not_count_accesses_that_never_reach_the_array_theory() {
+        let float_store = Instruction::F64Store {
+            offset: 0,
+            align: 3,
+            mem: 0,
+        };
+        let partial_load = Instruction::I32Load8U {
+            offset: 0,
+            align: 0,
+            mem: 0,
+        };
+        assert_eq!(
+            count_array_memory_ops(&f(vec![float_store, partial_load])),
+            0
+        );
+    }
+
+    /// The #219 exemption, asserted as a property rather than left implicit in
+    /// the seam tests.
+    ///
+    /// The bound defers only bodies that are BOTH memory-dense and non-trivial.
+    /// Dropping the instruction floor makes the memory-seam and division-seam
+    /// dissolution tests fail — measured, not assumed: at a floor of 0 the
+    /// bound needs to be >= 4 for those to pass, while #347 needs <= 2, and
+    /// the two are irreconcilable without this exemption.
+    #[test]
+    fn a_tiny_memory_dense_body_is_exempt_from_the_bound() {
+        let tiny = f(vec![store(), store(), store(), store()]);
+        assert!(
+            count_array_memory_ops(&tiny) > DEFAULT_MAX_ARRAY_MEMORY_OPS,
+            "the fixture must exceed the memory bound, or it proves nothing"
+        );
+        assert!(
+            count_function_instructions(&tiny) <= DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR,
+            "a body this small must fall under the instruction floor, which is \
+             what keeps #219's seam-dissolution inlines verifiable"
+        );
+    }
+
+    /// The control for the exemption: a body that is memory-dense AND large
+    /// must NOT be exempt, or the bound would never fire and #347 returns.
+    #[test]
+    fn a_large_memory_dense_body_is_not_exempt() {
+        let mut instrs = vec![store(); 4];
+        instrs.extend(std::iter::repeat_n(
+            Instruction::I32Const(0),
+            DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR + 1,
+        ));
+        let big = f(instrs);
+        assert!(count_array_memory_ops(&big) > DEFAULT_MAX_ARRAY_MEMORY_OPS);
+        assert!(
+            count_function_instructions(&big) > DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR,
+            "this body must clear the floor so the bound actually applies to it"
+        );
+    }
+}
+
+/// Count the memory accesses in a function that the SMT encoder models with
+/// the solver's ARRAY theory (#347).
+///
+/// This exists because `count_function_instructions` bounds the wrong
+/// quantity. Profiling the meld-fused module that would not finish in 300 s
+/// showed 97% of wall time inside `Z3_solver_check`, and **40% of the whole
+/// process** inside `theory_array_base::propagate` →
+/// `assert_store_axiom2_core`. Those are the array store axioms, and they are
+/// instantiated PAIRWISE, so the cost grows quadratically in the number of
+/// memory accesses reachable in one function body.
+///
+/// Instruction count does not track that at all: a body well under
+/// `LOOM_Z3_MAX_INSTRUCTIONS` can carry enough stores to be intractable,
+/// which is exactly how a 463 KB module ran past 455 s while a structurally
+/// denser 1.13 MB module finished in 39 s.
+///
+/// Only the inliner triggers it in practice, and for a structural reason: it
+/// is the one pass that concatenates callee bodies into a caller, so it is the
+/// one pass that multiplies memory accesses PER FUNCTION. Every other pass
+/// leaves that count roughly where it found it.
+///
+/// Counted here are the accesses the encoder actually lowers to array
+/// select/store. The float and partial-width loads that
+/// `contains_memory_instructions` rejects are deliberately NOT counted: those
+/// bail out earlier and never reach the array theory, so counting them would
+/// defer functions this bound has no reason to defer.
+#[cfg(feature = "verification")]
+fn count_array_memory_ops(func: &Function) -> usize {
+    fn count_body(instrs: &[Instruction]) -> usize {
+        let mut n = 0;
+        for instr in instrs {
+            match instr {
+                Instruction::I32Load { .. }
+                | Instruction::I64Load { .. }
+                | Instruction::I32Store { .. }
+                | Instruction::I64Store { .. }
+                | Instruction::I32Store8 { .. }
+                | Instruction::I32Store16 { .. }
+                | Instruction::I64Store8 { .. }
+                | Instruction::I64Store16 { .. }
+                | Instruction::I64Store32 { .. } => n += 1,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    n += count_body(body);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    n += count_body(then_body);
+                    n += count_body(else_body);
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+    count_body(&func.instructions)
+}
+
 #[cfg(feature = "verification")]
 impl VerificationSignatureContext {
     /// Create a new empty context (for backwards compatibility)
@@ -1527,6 +1712,39 @@ const MAX_LOOP_NESTING_DEPTH: usize = 1;
 /// When false, falls back to bounded unrolling only
 const ENABLE_K_INDUCTION: bool = true;
 
+/// Default ceiling on array-modelled memory accesses per function before the
+/// translation validator defers the obligation (#347).
+///
+/// Chosen by measurement, not taste. Full-pipeline sweep on the meld-fused
+/// module from #347 (463 KB, 1444 functions), which does not finish at all
+/// today — killed at 455 s:
+///
+/// | bound | wall clock | proven |
+/// |-------|-----------|--------|
+/// | 0     | 2 s       | 21.6%  |
+/// | **2** | **45 s**  | 45.0%  |
+/// | 4     | > 240 s   | —      |
+///
+/// The knee between 2 and 4 is far sharper than a "quadratic in stores"
+/// reading suggests, because memory is modelled BYTE-level: one `i64.store`
+/// is eight array stores, so four of them already generate on the order of
+/// 500 axiom pairs.
+///
+/// That sharpness makes this number fragile — it is tuned on ONE module and
+/// should be revisited against a corpus. It is recorded here rather than
+/// hidden so the next person knows it is empirical and narrow, not derived.
+///
+/// A wall-clock budget would generalise better and is deliberately NOT used:
+/// which functions got verified would then depend on machine speed, so the
+/// same input could produce different output, violating REQ-14 (deterministic
+/// optimization output). A count is the only mechanism here that stays
+/// deterministic.
+const DEFAULT_MAX_ARRAY_MEMORY_OPS: usize = 2;
+
+/// Bodies at or below this instruction count are exempt from the memory-op
+/// bound (#347). See the sweep in `TEST-347-MEMORY-OP-BOUND`.
+const DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR: usize = 16;
+
 /// K value for K-induction (number of base case iterations)
 /// Higher K = stronger base case but slower verification
 #[allow(dead_code)]
@@ -2832,6 +3050,27 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+thread_local! {
+    /// Why the validator REFUSED an obligation, when the reason is more
+    /// specific than "the proof failed" — read back by `verify_or_revert` so
+    /// the revert is attributed in `--stats` instead of landing in the
+    /// undifferentiated per-pass bucket.
+    static DEFERRAL_REASON: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Record why this obligation is being refused.
+#[cfg(feature = "verification")]
+fn note_deferral_reason(reason: &'static str) {
+    DEFERRAL_REASON.with(|c| c.set(Some(reason)));
+}
+
+/// Read and clear the pending refusal reason.
+#[cfg(feature = "verification")]
+fn take_deferral_reason() -> Option<&'static str> {
+    DEFERRAL_REASON.with(|c| c.take())
+}
+
 /// Record that this attempt is about to be ACCEPTED without a proof.
 #[cfg(feature = "verification")]
 fn note_unproven_acceptance(reason: &'static str) {
@@ -3396,6 +3635,71 @@ impl TranslationValidator {
             return Ok(());
         }
 
+        // #347 — MEMORY-OPERATION bound, beside the instruction bound above.
+        //
+        // The instruction bound cannot see the cost that actually blows up
+        // here. Profiling a meld-fused module that ran past 455 s put 97% of
+        // wall time in `Z3_solver_check` and 40% of the whole process in the
+        // solver's array theory instantiating store axioms PAIRWISE — a cost
+        // quadratic in memory accesses per body, which inlining multiplies by
+        // concatenating callees into their caller.
+        //
+        // Two things this deliberately is NOT:
+        //
+        //  * It is not a fix. It buys termination by declining to verify the
+        //    hardest inlines, so it trades proof coverage for completing at
+        //    all. Those obligations are only really discharged when the
+        //    memory model stops being the incumbent's array theory (#313
+        //    slice 5). The honest framing is a bound, not a solution.
+        //  * It is not a timeout. The solver's own timeout IS wired
+        //    (`LOOM_Z3_TIMEOUT_MS`, default 5000) and measurably does not
+        //    bound this: at 100 ms the pass still exceeded 120 s, because the
+        //    time goes into axiom instantiation and internalisation rather
+        //    than the search the timeout guards.
+        //
+        // The transform is KEPT, exactly as with the instruction bound, and
+        // recorded as kept-without-proof so `--stats` reports it against a
+        // denominator instead of it vanishing (#331). A deferral nobody can
+        // see is the failure mode this project keeps finding.
+        let max_memory_ops: usize = std::env::var("LOOM_Z3_MAX_MEMORY_OPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MAX_ARRAY_MEMORY_OPS);
+        let n_memory_ops =
+            count_array_memory_ops(&self.original).max(count_array_memory_ops(optimized));
+        // Tiny bodies are exempt regardless of memory-op count: they are
+        // cheap for the solver whatever they touch, and they are where the
+        // #219 seam-dissolution inlines live. Bounding them would trade a
+        // shipped, silicon-validated capability for nothing measurable.
+        let memory_bound_floor: usize = std::env::var("LOOM_Z3_MEMORY_BOUND_FLOOR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR);
+        if n_memory_ops > max_memory_ops && n_instr > memory_bound_floor {
+            // REVERT, not keep — deliberately unlike the instruction bound
+            // directly above.
+            //
+            // Returning `Ok(())` would accept a transform nothing verified,
+            // and at a default this low that would ship thousands of unproven
+            // transforms per module: the wrong direction for a charter whose
+            // rule is "skip the function rather than risk incorrect
+            // optimization". Refusing costs optimization on memory-dense
+            // inlines and costs nothing in safety, which is what makes a bound
+            // this aggressive defensible at all.
+            //
+            // The instruction bound above still keeps. That inconsistency is
+            // real and is left visible rather than quietly harmonised here —
+            // changing long-shipped behaviour belongs in its own change.
+            note_deferral_reason("memory-ops-over-threshold");
+            return Err(anyhow!(
+                "{}: {} array-modelled memory operations exceeds the limit of {} \
+                 (#347) - optimization rejected (unproven)",
+                self.pass_name,
+                n_memory_ops,
+                max_memory_ops
+            ));
+        }
+
         // PR-C (#219) M3.2: precise acyclic-CF fast-path for the inliner. The
         // main encoder models br_table approximately and a br_table callee is
         // not straight-line-by-body-modelable, so it cannot prove `call F`
@@ -3483,6 +3787,8 @@ impl TranslationValidator {
     /// Reverts are recorded in `crate::stats::record_revert(pass_name)` so
     /// callers can observe how often verification rejects a transform.
     pub fn verify_or_revert(&self, func: &mut Function) -> bool {
+        // Clear any stale note before the attempt we are about to classify.
+        let _ = take_deferral_reason();
         match self.verify(func) {
             Ok(()) => true,
             Err(e) => {
@@ -3490,7 +3796,17 @@ impl TranslationValidator {
                     "{}: reverting function: {}",
                     self.pass_name, e
                 ));
-                crate::stats::record_revert(&self.pass_name);
+                // Attribute the revert when the validator said something more
+                // specific than "the proof failed". Recorded HERE and only
+                // here: recording at the refusal site too would count one
+                // revert twice, and an inflated revert total is the same class
+                // of defect as the mislabelled one this replaced.
+                match take_deferral_reason() {
+                    Some(reason) => {
+                        crate::stats::record_revert(&format!("{}/{}", self.pass_name, reason))
+                    }
+                    None => crate::stats::record_revert(&self.pass_name),
+                }
                 func.instructions = self.original.instructions.clone();
                 func.locals = self.original.locals.clone();
                 false
