@@ -3,6 +3,14 @@ target/
 # Cargo.lock IS committed (#320): loom ships binaries, so the lock is part of
 # the build's reproducibility story and dependency changes must arrive as
 # reviewable diffs rather than as ambient resolution at CI time.
+#
+# `fuzz/` is a SEPARATE cargo workspace with its own lockfile, and committing
+# the root one did not cover it. That gap had teeth: commit 2317801 passed the
+# nightly fuzz build on 22, 23 and 24 August and failed on the 25th — same
+# tree, same SHA, different day — because the fuzz workspace re-resolved its
+# dependencies on every run. A red main with no code change costs a real
+# investigation each time, and it trains people to read fuzz failures as
+# noise, which is the last workflow that should be ignorable.
 **/*.rs.bk
 *.pdb
 
