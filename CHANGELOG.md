@@ -5,6 +5,107 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-08-25
+
+Say only what you checked. Four defects of one shape: the tool reporting more
+than it had established. One of them was firing in production.
+
+Every figure below was measured on this tree.
+
+### Fixed
+
+- **`loom optimize` emitted structurally invalid wasm and reported success
+  (#346).** The encoder never wrote a **data count section** — there was no
+  reference to it anywhere in `loom-core` — while preserving the `memory.init`
+  and `data.drop` instructions that make it mandatory. The result was rejected
+  by any validator, after `✅ Optimization complete!` and exit 0. Reproduces
+  from a 79-byte hand-written module. Silent invalid output is the worst shape
+  this can take: the next tool in the chain reports the failure against its own
+  input, so the blame lands downstream of the tool that broke the module.
+
+- **The CLI validated nothing before writing (#346, #345).** The `#257`
+  output-validation backstop — documented as *the systemic guarantee that loom
+  can never emit structurally invalid wasm* — lives inside
+  `optimize::optimize_module`. The CLI drives the passes directly and never
+  called it; grepping `loom-cli` for `validate` returned three hits, all
+  comments. All three write paths (serial, islands, component) now pass through
+  that gate. On failure the original input is written instead — but only after
+  the original is itself proven valid — and the exit code is non-zero, so the
+  worst case is unoptimized-but-valid output.
+
+- **`loom verify` printed `✓` and exited 0 for anything, including a file that
+  did not exist (#332).** A command named `verify`, in a tool titled *Formally
+  Verified WebAssembly Optimizer*, leading its output with a checkmark over
+  nothing. Wired into CI it would have been green forever. There is now no
+  exit-0 path: input is validated, everything goes to stderr, stdout stays
+  empty, and exit code `2` is distinct from the `1` an ordinary failure
+  produces. A **well-formed** ISLE file also fails — anything else would be the
+  same vacuous gate wearing a coat.
+
+- **The public `verify_function_equivalence` propagated solver panics (#331).**
+  `TranslationValidator::verify` caught them and reverted cleanly; the free
+  function did not, so two public entry points behaved differently with nothing
+  in either signature saying which. Now reported as `Err` — never `Ok(false)`,
+  because a counterexample is a positive finding of inequivalence and a panic is
+  not that.
+
+- **Verification bypasses were reported as reverts (#331).** The solver
+  size-threshold path recorded itself through the revert counter and then
+  returned acceptance, so `--stats` printed *"N function(s) reverted"* for
+  transforms that shipped unverified. A stat naming the wrong outcome is worse
+  than no stat.
+
+### Added
+
+- **Verification coverage in `--stats` (#331).** Every attempt now lands in
+  exactly one of proven / kept-without-proof (with the reason) / reverted,
+  against a denominator. The tracker had existed in `verify.rs` for a long time,
+  documented with the exact summary line it was meant to produce, with **zero
+  non-test callers**:
+
+  ```
+  🔍 Verification Coverage
+    Proven:  7283/7575 attempts (96.1%)
+    Kept WITHOUT proof: 18 attempt(s)
+      body over the solver size threshold  18
+    Rejected (reverted): 274
+    ⚠️  Not every transform in this output carries a proof.
+  ```
+
+  A run that attempted nothing reports no percentage rather than 100%, and a
+  build compiled without the `verification` feature now reports functions as
+  *not attempted* rather than as verified.
+
+### Changed
+
+- **The translation validator bounds array-modelled memory operations (#347).**
+  97 of 100 real-world components exceeded a 60 s budget; one 463 KB meld-fused
+  module ran past **455 s** and was killed, while a structurally denser 1.13 MB
+  ordinary module finished in 39 s. Profiling put 97% of wall clock inside the
+  solver and **40% of the whole process** inside its array theory instantiating
+  store axioms pairwise — a cost quadratic in memory accesses per body, which
+  inlining multiplies by concatenating callees into their caller.
+  `LOOM_Z3_MAX_INSTRUCTIONS` bounds a quantity that does not track it.
+
+  That module now completes in **45 s**. Tunable via `LOOM_Z3_MAX_MEMORY_OPS`.
+
+  Two decisions worth knowing: exceeding this bound **reverts** rather than
+  keeps, so it costs optimization and never safety; and tiny bodies are exempt,
+  because without that exemption the bound must be ≤2 for the module to finish
+  while #219's seam dissolution requires ≥4.
+
+  **This is a bound, not a solution.** It buys termination by declining the
+  hardest obligations; those are discharged when the memory model stops being
+  the incumbent's array theory (#313). Measured cost on an ordinary module:
+  0.47% larger output, 21% of the optimization gain foregone.
+
+### Compatibility
+
+`loom verify` changes from exit 0 to exit 2. This is a breaking CLI change on a
+subcommand that has never done anything — it is a pre-Phase-5 placeholder and is
+wired into no workflow in the organisation. Stated here rather than left
+implicit.
+
 ## [1.4.0] - 2026-08-13
 
 A correctness fix that should not have waited, the second half of proof-carrying

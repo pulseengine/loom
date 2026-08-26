@@ -1476,7 +1476,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "loom-cli"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "loom-core"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "criterion",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "loom-isle"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "cranelift-isle 0.132.3",
  "loom-shared",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "loom-shared"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "cranelift-isle 0.132.3",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "loom-testing"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "criterion",
