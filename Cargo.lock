@@ -1502,7 +1502,7 @@ dependencies = [
  "thiserror 2.0.20",
  "wasm-encoder 0.256.0",
  "wasmparser 0.256.0",
- "wasmprinter 0.256.0",
+ "wasmprinter 0.257.1",
  "wasmtime",
  "wat",
  "wit-component",
@@ -1526,7 +1526,7 @@ dependencies = [
  "thiserror 2.0.20",
  "wasm-encoder 0.256.0",
  "wasmparser 0.256.0",
- "wasmprinter 0.256.0",
+ "wasmprinter 0.257.1",
  "wat",
  "wit-component",
  "z3",
@@ -2946,6 +2946,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmparser"
+version = "0.257.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92fc335fb6d48f46bda1d8b26b69e28320c15ac3272208333833d6e217e2b4a"
+dependencies = [
+ "bitflags",
+ "indexmap",
+ "semver",
+]
+
+[[package]]
 name = "wasmprinter"
 version = "0.252.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2958,13 +2969,13 @@ dependencies = [
 
 [[package]]
 name = "wasmprinter"
-version = "0.256.0"
+version = "0.257.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e15994b4797b3826dc466488a9019975fda659a9746d28c29b9a09fc02c8ea"
+checksum = "39aefcb16c1b7d9a93b494e4e38da3b36893178f65084bfe852b2a574a5c65ab"
 dependencies = [
  "anyhow",
  "termcolor",
- "wasmparser 0.256.0",
+ "wasmparser 0.257.1",
 ]
 
 [[package]]
