@@ -1264,3 +1264,52 @@ artifacts:
         target: REQ-14
       - type: verifies
         target: REQ-3
+
+  - id: TEST-AARCH64-LINUX-RELEASE-TARGET
+    type: feature
+    title: aarch64-unknown-linux-gnu is built, gated and shipped like every other Linux target
+    description: >
+      PLANNED — status flips to verified once the ARM build has actually run
+      green, not on the strength of the workflow edit.
+      v1.4.1 shipped four binaries: x86_64-linux, both macOS arches and
+      Windows. ARM Linux — servers, arm64 containers, ARM CI runners, single
+      board machines — had no binary at all and had to build from source with
+      a C++ toolchain, which is the dependency #313 exists to remove. The
+      earlier deferral note in the release workflow gave the reason as
+      "cross-compiling z3-sys for aarch64-linux is untested". That was true and
+      is now moot: the target builds NATIVELY on a GitHub-hosted arm64 Linux
+      runner, so nothing is cross-compiled, and those runners are free for
+      public repositories, which this one is. z3-sys vendors and statically
+      compiles z3, so no host libz3 is needed on any runner, ARM included.
+      The load-bearing decision is WHERE the evidence lives. `release.yml`
+      only fires on a tag push, so adding the target there alone would ship it
+      on the strength of a job that had never run — the unexercised-gate shape
+      this repository keeps finding, and the one v1.4.1 exists to punish. The
+      target is therefore also built on EVERY PR via the CI matrix, so a
+      toolchain or z3-sys regression on ARM fails a check immediately rather
+      than during a release.
+      Both #311 gates are extended to the new target rather than left
+      x86_64-only: the glibc/libstdc++ floor is ASSERTED from the ARM binary's
+      own symbols, and the binary is SMOKE-RUN natively on the ARM image it
+      was built for. A shipped target whose floor is merely hoped-for is how
+      v1.2.0 went out unloadable.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given any PR, the aarch64-linux build runs and succeeds in CI"
+        - "Given a release tag, an aarch64-unknown-linux-gnu archive is published alongside the others"
+        - "Given the ARM binary, its glibc/libstdc++ floor is asserted from its own symbols, fail-closed"
+        - "Given the ARM binary, it is executed on the ARM runner, not merely inspected"
+      steps:
+        - run: |
+            gh run list --workflow ci.yml --limit 1 --json jobs --jq '.[].jobs[]|select(.name|test("ubuntu-22.04-arm"))|.conclusion'
+        - run: |
+            gh release view <tag> --json assets --jq '.assets[].name' | grep aarch64-unknown-linux-gnu
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, portability]
+    links:
+      - type: verifies
+        target: REQ-18
+      - type: verifies
+        target: REQ-12
