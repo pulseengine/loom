@@ -35,10 +35,18 @@ jobs:
   # so no host libz3 is required on the runner. The build succeeds on
   # every target in the CI matrix.
   #
-  # No aarch64-linux for now: the rocq-of-rust + bazel/nix stack used by
-  # the Rocq Formal Proofs job already constrains this repo's CI runners,
-  # and cross-compiling z3-sys for aarch64-linux is untested. Add it as
-  # a follow-up once the standard matrix is green again.
+  # aarch64-linux IS built (see the matrix entry below). The earlier
+  # deferral note here said cross-compiling z3-sys for aarch64-linux was
+  # untested — which was true, and is now moot: the target builds NATIVELY
+  # on a GitHub-hosted arm64 Linux runner, so nothing is cross-compiled.
+  # z3-sys vendors and statically compiles z3, so it needs no host libz3 on
+  # any runner, ARM included. Those runners are free for public repos, and
+  # this repository is public.
+  #
+  # The gap was real for consumers: v1.4.1 shipped x86_64-linux, both macOS
+  # arches and Windows, so ARM Linux — servers, arm64 containers, ARM CI
+  # runners, SBCs — had no binary at all and had to build from source with a
+  # C++ toolchain, which is the very thing #313 exists to remove.
   build-binaries:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -57,6 +65,15 @@ jobs:
           # raise the asserted ceiling.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            archive: tar.gz
+            binary: loom
+          # Same 22.04 image family as x86_64 above, and for the same #311
+          # reason: the runner image sets the shipped binary's glibc floor,
+          # so it is pinned rather than `-latest`, and the floor is ASSERTED
+          # below for this target too. A target that ships without that
+          # assertion is exactly how v1.2.0 went out unloadable.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
             archive: tar.gz
             binary: loom
           # x86_64-apple-darwin cross-compiles on the arm64 macos-14
@@ -96,10 +113,13 @@ jobs:
       # The libstdc++ requirement exists only because loom links Z3 (C++) — it
       # disappears with the ordeal migration, and so does this whole step.
       - name: Assert glibc / libstdc++ floor
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        # BOTH linux-gnu targets. Adding a shipped target without extending
+        # this gate would leave it asserted for one architecture and merely
+        # hoped-for on the other.
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
         env:
-          BIN_PATH: target/x86_64-unknown-linux-gnu/release/loom
+          BIN_PATH: target/${{ matrix.target }}/release/loom
           MAX_GLIBC: "2.35"
           MAX_GLIBCXX: "3.4.30"
         run: |
@@ -143,10 +163,12 @@ jobs:
       # failure ourselves instead of shipping it. The runner is ubuntu-22.04, so
       # a successful run here is direct evidence for the case that failed.
       - name: Smoke-run the binary (proves it loads on ubuntu-22.04)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        # Runs natively on both linux runners, so each architecture's binary
+        # is executed on the image it is built for — not merely inspected.
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
         env:
-          BIN_PATH: target/x86_64-unknown-linux-gnu/release/loom
+          BIN_PATH: target/${{ matrix.target }}/release/loom
         run: |
           set -euo pipefail
           echo "runner glibc: $(ldd --version | head -1)"

@@ -83,7 +83,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-22.04-arm is here so the aarch64-linux RELEASE target has
+        # continuous evidence rather than first running at tag time.
+        # `release.yml` only fires on a tag push, so a target added there
+        # alone would ship on the strength of an unrun job — the same
+        # unexercised-gate shape this repository keeps finding. Building it
+        # on every PR means a toolchain or z3-sys regression on ARM fails a
+        # check now, not during a release.
+        os: [ubuntu-latest, ubuntu-22.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
