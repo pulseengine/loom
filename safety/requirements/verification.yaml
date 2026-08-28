@@ -1269,8 +1269,20 @@ artifacts:
     type: feature
     title: aarch64-unknown-linux-gnu is built, gated and shipped like every other Linux target
     description: >
-      PLANNED — status flips to verified once the ARM build has actually run
-      green, not on the strength of the workflow edit.
+      PARTIALLY EVIDENCED. One of the four criteria below is now proven and
+      three are not, so this stays `draft`.
+      PROVEN (PR #364 CI): the `Build (ubuntu-22.04-arm)` job ran and
+      SUCCEEDED, which establishes the three things that were actually in
+      doubt — that arm64 Linux runners are available to this repository, that
+      `z3-sys` compiles its vendored C++ natively on ARM, and that loom builds
+      for the target at all.
+      NOT YET PROVEN: the three release-side criteria. The archive being
+      published, the glibc floor being asserted from the ARM binary's symbols,
+      and the binary being smoke-run all live in `release.yml`, which fires
+      only on a tag push. Their code is written and reviewed; none of it has
+      executed. Marking this `verified` on the CI job alone would assert
+      exactly the kind of untested gate the rest of this release exists to
+      remove, so it flips only after a tag has actually produced the asset.
       v1.4.1 shipped four binaries: x86_64-linux, both macOS arches and
       Windows. ARM Linux — servers, arm64 containers, ARM CI runners, single
       board machines — had no binary at all and had to build from source with
@@ -1296,10 +1308,10 @@ artifacts:
     fields:
       method: automated-test
       acceptance-criteria:
-        - "Given any PR, the aarch64-linux build runs and succeeds in CI"
-        - "Given a release tag, an aarch64-unknown-linux-gnu archive is published alongside the others"
-        - "Given the ARM binary, its glibc/libstdc++ floor is asserted from its own symbols, fail-closed"
-        - "Given the ARM binary, it is executed on the ARM runner, not merely inspected"
+        - "PROVEN: given any PR, the aarch64-linux build runs and succeeds in CI"
+        - "PENDING A TAG: an aarch64-unknown-linux-gnu archive is published alongside the others"
+        - "PENDING A TAG: the ARM binary's glibc/libstdc++ floor is asserted from its own symbols, fail-closed"
+        - "PENDING A TAG: the ARM binary is executed on the ARM runner, not merely inspected"
       steps:
         - run: |
             gh run list --workflow ci.yml --limit 1 --json jobs --jq '.[].jobs[]|select(.name|test("ubuntu-22.04-arm"))|.conclusion'
