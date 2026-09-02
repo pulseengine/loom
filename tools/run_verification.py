@@ -53,6 +53,23 @@ def rivet_list_ids(filter_sexp: str) -> list[str]:
     return [a["id"] for a in data.get("artifacts", [])]
 
 
+def rivet_get_status(artifact_id: str) -> str:
+    """The artifact's lifecycle status, or "" when it declares none.
+
+    Used to skip `draft` artifacts (#353). A draft describes work that is
+    deliberately unfinished; running its steps produces a red gate that
+    reports nothing except that the work is not done yet — which the status
+    field already says, more cheaply and without burning the budget.
+    """
+    proc = subprocess.run(
+        ["rivet", "get", artifact_id, "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(proc.stdout).get("status", "") or ""
+
+
 def rivet_get_steps(artifact_id: str) -> list[str]:
     proc = subprocess.run(
         ["rivet", "get", artifact_id, "--format", "json"],
@@ -117,6 +134,20 @@ def main() -> int:
     result.total = len(ids)
 
     for artifact_id in ids:
+        # #353: a `draft` artifact is unfinished BY DECLARATION. Executing its
+        # steps can only fail, and a gate that is red because planned work is
+        # planned is indistinguishable from a gate that is red because
+        # something broke. The status field already carries that information.
+        try:
+            if rivet_get_status(artifact_id) == "draft":
+                print(f"[SKIP] {artifact_id} (draft — not claimed verified)")
+                result.skipped.append(artifact_id)
+                continue
+        except subprocess.CalledProcessError as e:
+            print(f"[FAIL] {artifact_id}: rivet get failed: {e.stderr}")
+            result.failed.append(artifact_id)
+            continue
+
         try:
             steps = rivet_get_steps(artifact_id)
         except subprocess.CalledProcessError as e:

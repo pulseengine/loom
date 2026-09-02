@@ -14,10 +14,65 @@ permissions:
   pull-requests: write
 
 jobs:
+  # #353 — THE job whose green run carries a claim, split out so it can
+  # actually produce one.
+  #
+  # `TEST-RULE-SOLVER-DIFFERENTIAL` asserts that the incumbent solver and the
+  # certificate-checked engine agree on every rule obligation: under
+  # `LOOM_VERIFY_BACKEND=both` any divergence panics, so THE RUN PASSING IS
+  # THE ASSERTION. That claim was riding behind 30-plus other artifacts in the
+  # sweep below, inheriting both their runtime and their verdict — 0 green
+  # runs in 60 over six weeks, every one over the 30-minute budget, floor
+  # 30.4 minutes. A check that cannot go green is the mirror image of #332's
+  # check that could not go red, and it was reported as green-adjacent noise
+  # for long enough that a release shipped past it.
+  #
+  # This job builds one test binary and runs one filter. It is small enough to
+  # finish, which is the whole point: it is the one that should be REQUIRED on
+  # main.
+  solver-differential:
+    name: Solver differential (both engines must agree)
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # 45, not 25. The sweep's observed FLOOR was 30.4 minutes for a build plus
+    # 23 artifacts, which puts the build alone near 20 — so a 25-minute budget
+    # here would be tight on a warm cache and impossible on a cold one. Setting
+    # a budget the job might not meet is the precise mistake this change
+    # exists to correct, and it would be a poor one to repeat in the fix.
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      Z3_SYS_Z3_HEADER: /usr/include/z3.h
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Ensure Z3 header present
+        run: |
+          if [ ! -f "$Z3_SYS_Z3_HEADER" ]; then
+            sudo apt-get update && sudo apt-get install -y libz3-dev || true
+          fi
+      - name: Both engines must agree on every rule obligation
+        env:
+          LOOM_VERIFY_BACKEND: both
+        run: |
+          set -euo pipefail
+          # Divergence panics, so a clean exit IS the no-divergence assertion.
+          cargo test --release --lib -p loom-core --features verification -- \
+            test_verify_all_rules
+
   rivet-verification:
     name: Verification Gate (rivet-driven)
     runs-on: [self-hosted, linux, x64, rust-cpu]
-    timeout-minutes: 30
+    # #353: raised from 30. Observed durations for this sweep ran 30.4-102.5
+    # minutes against a 30-minute cap, so EVERY run was killed — the minimum
+    # exceeded the budget by 24 seconds. A budget the floor cannot meet is not
+    # a budget, it is a guaranteed cancellation wearing one.
+    #
+    # This sweep is broad and advisory by nature; the claim-bearing check is
+    # the dedicated job above. Raising this lets it finish and REPORT, which is
+    # what makes its failures readable instead of ambient.
+    timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
