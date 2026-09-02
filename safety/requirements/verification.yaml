@@ -1312,11 +1312,15 @@ artifacts:
         - "PENDING A TAG: an aarch64-unknown-linux-gnu archive is published alongside the others"
         - "PENDING A TAG: the ARM binary's glibc/libstdc++ floor is asserted from its own symbols, fail-closed"
         - "PENDING A TAG: the ARM binary is executed on the ARM runner, not merely inspected"
-      steps:
-        - run: |
-            gh run list --workflow ci.yml --limit 1 --json jobs --jq '.[].jobs[]|select(.name|test("ubuntu-22.04-arm"))|.conclusion'
-        - run: |
-            gh release view <tag> --json assets --jq '.assets[].name' | grep aarch64-unknown-linux-gnu
+      # No `steps:` deliberately. Every criterion below is either evidenced by
+      # a CI job that this artifact cannot re-run from inside the gate, or is
+      # PENDING A TAG and has no command that can pass yet. An earlier draft of
+      # this artifact carried `gh release view <tag> ...` — a literal
+      # placeholder, and `<tag>` is shell redirection, so the command could
+      # never succeed. That would have made the verification gate permanently
+      # red on account of work that is correctly marked unfinished, which is
+      # the failure #353 is about. An artifact with no steps is SKIPPED, which
+      # is the honest state for one that is not yet verifiable.
     status: draft
     release: v1.5.0
     tags: [v150, release-engineering, portability]
