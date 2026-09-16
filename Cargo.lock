@@ -1500,7 +1500,7 @@ dependencies = [
  "proptest",
  "rayon",
  "thiserror 2.0.20",
- "wasm-encoder 0.258.0",
+ "wasm-encoder 0.259.0",
  "wasmparser 0.256.0",
  "wasmprinter 0.258.0",
  "wasmtime",
@@ -1524,7 +1524,7 @@ dependencies = [
  "anyhow",
  "cranelift-isle 0.132.3",
  "thiserror 2.0.20",
- "wasm-encoder 0.258.0",
+ "wasm-encoder 0.259.0",
  "wasmparser 0.256.0",
  "wasmprinter 0.258.0",
  "wat",
@@ -1542,7 +1542,7 @@ dependencies = [
  "loom-core",
  "rand 0.10.2",
  "tempfile",
- "wasm-encoder 0.258.0",
+ "wasm-encoder 0.259.0",
  "wasmparser 0.256.0",
  "wasmtime",
  "wat",
@@ -2908,6 +2908,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-encoder"
+version = "0.259.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1d0246511d901aacf25d2dc9111f0054947de5e093fe662099e709ff7530dc3"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.259.0",
+]
+
+[[package]]
 name = "wasm-metadata"
 version = "0.254.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2965,6 +2975,17 @@ checksum = "d9a61719f93a87b16d325921e251800c4833f8fab50fa21c7de73aed50086313"
 dependencies = [
  "bitflags",
  "hashbrown 0.17.1",
+ "indexmap",
+ "semver",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.259.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f7c12eac7bb587801590f6a67ff0bc84d0748513864b71108e4b311cc3df694"
+dependencies = [
+ "bitflags",
  "indexmap",
  "semver",
 ]
