@@ -214,7 +214,7 @@ dependencies = [
  "loom-shared",
  "rayon",
  "thiserror",
- "wasm-encoder",
+ "wasm-encoder 0.259.0",
  "wasmparser 0.256.0",
  "wasmprinter",
  "wat",
@@ -246,7 +246,7 @@ dependencies = [
  "anyhow",
  "cranelift-isle",
  "thiserror",
- "wasm-encoder",
+ "wasm-encoder 0.259.0",
  "wasmparser 0.256.0",
  "wasmprinter",
  "wat",
@@ -440,6 +440,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-encoder"
+version = "0.259.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1d0246511d901aacf25d2dc9111f0054947de5e093fe662099e709ff7530dc3"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.259.0",
+]
+
+[[package]]
 name = "wasm-metadata"
 version = "0.258.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -447,7 +457,7 @@ checksum = "18a11585adb92fe9b55ad1d760e8d8fb5d87e0d2e303cb8eed57f078d54293a2"
 dependencies = [
  "anyhow",
  "indexmap",
- "wasm-encoder",
+ "wasm-encoder 0.258.0",
  "wasmparser 0.258.0",
 ]
 
@@ -477,6 +487,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmparser"
+version = "0.259.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f7c12eac7bb587801590f6a67ff0bc84d0748513864b71108e4b311cc3df694"
+dependencies = [
+ "bitflags",
+ "indexmap",
+ "semver",
+]
+
+[[package]]
 name = "wasmprinter"
 version = "0.258.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,7 +518,7 @@ dependencies = [
  "leb128fmt",
  "memchr",
  "unicode-width",
- "wasm-encoder",
+ "wasm-encoder 0.258.0",
 ]
 
 [[package]]
@@ -552,7 +573,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "wasm-encoder",
+ "wasm-encoder 0.258.0",
  "wasm-metadata",
  "wasmparser 0.258.0",
  "wit-parser",
