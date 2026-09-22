@@ -81,10 +81,16 @@ def rivet_get_steps(artifact_id: str) -> list[str]:
     return [s["run"] for s in data.get("fields", {}).get("steps", []) if "run" in s]
 
 
-# How many lines of a failing step's output to echo. Enough for a Rust test
-# summary plus the assertion that produced it; short enough that a dozen
-# failures do not bury the run.
-FAILURE_OUTPUT_LINES = 40
+# How many lines of a failing step's output to echo, split between the start
+# and the end.
+#
+# Tail-only was the first attempt and it was not enough: a `cargo test` failure
+# under `-D warnings` produced 246 lines, and the last 40 held the summary plus
+# ONE of seven compiler errors. The six that scrolled past were the ones naming
+# what to fix. A compiler reports its errors first and its verdict last, so a
+# window at one end shows either the symptom or the causes, never both.
+FAILURE_OUTPUT_HEAD = 30
+FAILURE_OUTPUT_TAIL = 30
 
 
 def run_one_step(cmd: str, shell: str) -> bool:
@@ -112,19 +118,24 @@ def run_one_step(cmd: str, shell: str) -> bool:
         return True
 
     output = (proc.stdout or "").rstrip().splitlines()
-    if output:
-        shown = output[-FAILURE_OUTPUT_LINES:]
-        if len(output) > FAILURE_OUTPUT_LINES:
-            print(
-                f"       ---- last {FAILURE_OUTPUT_LINES} of {len(output)} output lines ----"
-            )
-        else:
-            print("       ---- output ----")
-        for line in shown:
-            print(f"       | {line}")
-        print("       ----------------")
-    else:
+    if not output:
         print("       (the command produced no output)")
+        return False
+
+    budget = FAILURE_OUTPUT_HEAD + FAILURE_OUTPUT_TAIL
+    if len(output) <= budget:
+        print("       ---- output ----")
+        for line in output:
+            print(f"       | {line}")
+    else:
+        elided = len(output) - budget
+        print(f"       ---- output ({len(output)} lines, middle {elided} elided) ----")
+        for line in output[:FAILURE_OUTPUT_HEAD]:
+            print(f"       | {line}")
+        print(f"       | ... {elided} lines elided ...")
+        for line in output[-FAILURE_OUTPUT_TAIL:]:
+            print(f"       | {line}")
+    print("       ----------------")
     return False
 
 
