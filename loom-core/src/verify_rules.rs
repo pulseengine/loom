@@ -931,6 +931,11 @@ pub fn generate_test_from_counterexample(
 }
 
 /// Generate WAT code for a specific rule and inputs
+///
+/// Only reachable from the verification-gated rule harness below; without
+/// that feature nothing calls it, and `-D warnings` (which the verification
+/// gate sets) makes an uncalled function a hard error.
+#[cfg(feature = "verification")]
 fn generate_wat_for_rule(rule_name: &str, inputs: &[(String, i64)]) -> String {
     // Map rule names to WAT snippets
     match rule_name {
