@@ -1264,3 +1264,68 @@ artifacts:
         target: REQ-14
       - type: verifies
         target: REQ-3
+
+  - id: TEST-AARCH64-LINUX-RELEASE-TARGET
+    type: feature
+    title: aarch64-unknown-linux-gnu is built, gated and shipped like every other Linux target
+    description: >
+      PARTIALLY EVIDENCED. One of the four criteria below is now proven and
+      three are not, so this stays `draft`.
+      PROVEN (PR #364 CI): the `Build (ubuntu-22.04-arm)` job ran and
+      SUCCEEDED, which establishes the three things that were actually in
+      doubt — that arm64 Linux runners are available to this repository, that
+      `z3-sys` compiles its vendored C++ natively on ARM, and that loom builds
+      for the target at all.
+      NOT YET PROVEN: the three release-side criteria. The archive being
+      published, the glibc floor being asserted from the ARM binary's symbols,
+      and the binary being smoke-run all live in `release.yml`, which fires
+      only on a tag push. Their code is written and reviewed; none of it has
+      executed. Marking this `verified` on the CI job alone would assert
+      exactly the kind of untested gate the rest of this release exists to
+      remove, so it flips only after a tag has actually produced the asset.
+      v1.4.1 shipped four binaries: x86_64-linux, both macOS arches and
+      Windows. ARM Linux — servers, arm64 containers, ARM CI runners, single
+      board machines — had no binary at all and had to build from source with
+      a C++ toolchain, which is the dependency #313 exists to remove. The
+      earlier deferral note in the release workflow gave the reason as
+      "cross-compiling z3-sys for aarch64-linux is untested". That was true and
+      is now moot: the target builds NATIVELY on a GitHub-hosted arm64 Linux
+      runner, so nothing is cross-compiled, and those runners are free for
+      public repositories, which this one is. z3-sys vendors and statically
+      compiles z3, so no host libz3 is needed on any runner, ARM included.
+      The load-bearing decision is WHERE the evidence lives. `release.yml`
+      only fires on a tag push, so adding the target there alone would ship it
+      on the strength of a job that had never run — the unexercised-gate shape
+      this repository keeps finding, and the one v1.4.1 exists to punish. The
+      target is therefore also built on EVERY PR via the CI matrix, so a
+      toolchain or z3-sys regression on ARM fails a check immediately rather
+      than during a release.
+      Both #311 gates are extended to the new target rather than left
+      x86_64-only: the glibc/libstdc++ floor is ASSERTED from the ARM binary's
+      own symbols, and the binary is SMOKE-RUN natively on the ARM image it
+      was built for. A shipped target whose floor is merely hoped-for is how
+      v1.2.0 went out unloadable.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "PROVEN: given any PR, the aarch64-linux build runs and succeeds in CI"
+        - "PENDING A TAG: an aarch64-unknown-linux-gnu archive is published alongside the others"
+        - "PENDING A TAG: the ARM binary's glibc/libstdc++ floor is asserted from its own symbols, fail-closed"
+        - "PENDING A TAG: the ARM binary is executed on the ARM runner, not merely inspected"
+      # No `steps:` deliberately. Every criterion below is either evidenced by
+      # a CI job that this artifact cannot re-run from inside the gate, or is
+      # PENDING A TAG and has no command that can pass yet. An earlier draft of
+      # this artifact carried `gh release view <tag> ...` — a literal
+      # placeholder, and `<tag>` is shell redirection, so the command could
+      # never succeed. That would have made the verification gate permanently
+      # red on account of work that is correctly marked unfinished, which is
+      # the failure #353 is about. An artifact with no steps is SKIPPED, which
+      # is the honest state for one that is not yet verifiable.
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, portability]
+    links:
+      - type: verifies
+        target: REQ-18
+      - type: verifies
+        target: REQ-12
