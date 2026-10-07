@@ -1501,7 +1501,7 @@ dependencies = [
  "rayon",
  "thiserror 2.0.21",
  "wasm-encoder 0.259.0",
- "wasmparser 0.259.0",
+ "wasmparser 0.261.0",
  "wasmprinter 0.259.0",
  "wasmtime",
  "wat",
@@ -1525,7 +1525,7 @@ dependencies = [
  "cranelift-isle 0.132.3",
  "thiserror 2.0.21",
  "wasm-encoder 0.259.0",
- "wasmparser 0.259.0",
+ "wasmparser 0.261.0",
  "wasmprinter 0.259.0",
  "wat",
  "wit-component 0.259.0",
@@ -1543,7 +1543,7 @@ dependencies = [
  "rand 0.10.3",
  "tempfile",
  "wasm-encoder 0.259.0",
- "wasmparser 0.259.0",
+ "wasmparser 0.261.0",
  "wasmtime",
  "wat",
  "which",
@@ -2964,7 +2964,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -2974,8 +2973,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
 dependencies = [
  "bitflags",
+ "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
