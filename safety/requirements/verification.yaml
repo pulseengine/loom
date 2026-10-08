@@ -1264,3 +1264,126 @@ artifacts:
         target: REQ-14
       - type: verifies
         target: REQ-3
+
+  # ============================================================================
+  # v1.5.0 release-engineering scope: #388, #389, #399.
+  #
+  # Recorded as `draft` BEFORE the work, for the reason PR #342 recorded the
+  # #313 slices: a release gate reading "✓ Cuttable" because almost nothing is
+  # in scope is indistinguishable from one reading it because the work is done.
+  # ============================================================================
+
+  - id: TEST-388-MUSL-LINUX-RELEASE
+    type: feature
+    title: Linux releases are not glibc-only — a musl artifact ships and runs where glibc 2.34 does not (#388)
+    description: >
+      PLANNED — not yet implemented.
+      v1.4.1's Linux x86_64 asset is dynamically linked with a GLIBC_2.34
+      floor, measured from the downloaded binary. That excludes every distro
+      older than the 2.34 line and all of Alpine, so "Linux" in the release
+      notes currently means "recent glibc Linux".
+      SEQUENCING, stated because it is the whole cost of this item: a static
+      musl build needs a musl C++ toolchain, because loom links a C++ solver.
+      That coupling is the same one that produced the #311 glibc floor and
+      breaks the wasm32-wasip2 build, and it is what #313 removes. Shipping
+      musl BEFORE the solver migration means standing up a musl C++ sysroot in
+      CI; after it, the target is an ordinary Rust cross-build. This is
+      therefore scoped behind TEST-313-EXIT-Z3-REMOVED, whose own criteria
+      already name "ship musl" — and if #313 slips, the honest options are to
+      slip this with it or to pay for the sysroot deliberately, not to
+      discover the cost mid-release.
+      Asserted, once built: (1) a musl artifact is published alongside the gnu
+      one; (2) it is statically linked — `file` reports no interpreter and
+      `readelf -V` reports NO GLIBC requirement at all, which is the actual
+      claim being made and is fail-closed the way the #311 floor assertion is;
+      (3) it is EXECUTED on an image without the glibc the gnu build needs,
+      because a static-linkage claim verified only by inspection is the kind
+      this repository keeps finding wrong.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a release tag, a musl Linux artifact is published beside the gnu one"
+        - "Given the musl binary, readelf reports NO GLIBC version requirement (fail-closed if undeterminable)"
+        - "Given an image lacking glibc 2.34, the musl binary RUNS there"
+        - "Given #313 is not yet complete, this item's cost is a musl C++ sysroot and that is stated, not discovered"
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, portability]
+    links:
+      - type: verifies
+        target: REQ-18
+
+  - id: TEST-389-VEX-WITH-EVERY-RELEASE
+    type: feature
+    title: every release carries a CycloneDX VEX, and it is re-issued when an advisory lands against a shipped version (#389)
+    description: >
+      PLANNED — not yet implemented. This repo already publishes
+      `loom-<version>.cdx.json` inside the signed sums, so a VEX slots in
+      beside it on the same machinery. It has no `deny.toml`, so the advisory
+      check itself arrives with this change.
+      The motivating case is concrete and recent rather than hypothetical:
+      GHSA-xfxf-qxr3-435x (#393) landed against a solver version loom had
+      already shipped, and the only way a consumer could learn whether loom
+      was affected was to read an issue written by hand. A VEX makes that
+      answer machine-readable, and the RE-ISSUE half is the part that
+      matters — an advisory arriving after a release is the normal case, not
+      the exception, so a VEX produced only at tag time answers the question
+      for exactly the period during which nobody is asking it.
+      Asserted, once built: (1) a release carries a VEX alongside its SBOM,
+      covered by the same signature; (2) the advisory check runs in CI and
+      FAILS on a known-vulnerable fixture, so it cannot pass by finding
+      nothing — the control that distinguishes a working scanner from a
+      silent one; (3) a VEX can be re-issued against an ALREADY-PUBLISHED
+      release without re-tagging; (4) the statement for a component loom does
+      not reach is "not_affected" with a stated justification, not silence,
+      since an empty VEX and a clean VEX are the same document otherwise.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a release, a CycloneDX VEX is published beside the SBOM and covered by the same signature"
+        - "Given a known-vulnerable fixture, the advisory check FAILS (it cannot pass vacuously)"
+        - "Given an advisory landing after a release, a VEX can be re-issued without re-tagging"
+        - "Given an unreachable vulnerable component, the VEX says not_affected WITH a justification"
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, supply-chain]
+    links:
+      - type: verifies
+        target: REQ-2
+
+  - id: TEST-399-COMPLIANCE-REPORT-PER-RELEASE
+    type: feature
+    title: the compliance report is published for every release, not only user-published ones (#399)
+    description: >
+      PLANNED — not yet implemented.
+      `compliance.yml` has not run since v1.1.13 — 112 days and nine releases
+      ago — and the public release page still shows that report because it is
+      the newest one in existence. It did not fail. It triggers on
+      `release: types: [published]`, and GitHub does not start workflows from
+      events raised by the default `GITHUB_TOKEN`. Every release since has
+      been published by the bot in `release.yml`, so the trigger simply never
+      fires.
+      This is the release-engineering form of the pattern this release is
+      otherwise about: a job that is not red, not disabled, and not running —
+      and because its absence looks exactly like "nothing changed", the stale
+      report read as current for nine releases. #353 was a check that could
+      not go green; this is one that is never asked.
+      Asserted, once built: (1) a report is attached to a BOT-published
+      release, which is the case that silently stopped working; (2) the
+      publishing step is reachable without an `on: release` trigger — called
+      from the release workflow, or dispatched with the tag — so it does not
+      depend on who pressed the button; (3) a release that produces NO report
+      fails loudly rather than publishing without one, because a missing
+      report that nobody notices is how this lasted 112 days.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a bot-published release, the compliance report is attached to it"
+        - "Given the release workflow, report publication does not depend on an on:release trigger"
+        - "Given a release whose report cannot be produced, the release FAILS rather than shipping without one"
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, compliance]
+    links:
+      - type: verifies
+        target: REQ-2
