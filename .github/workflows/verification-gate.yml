@@ -12,6 +12,13 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  # The sticky-comment script upserts through /repos/{repo}/issues/comments,
+  # which is the ISSUES API even for a pull request, so `pull-requests: write`
+  # is not sufficient. Without this it returned 403 "Resource not accessible by
+  # integration" on every run — and because the script exits 2, that failed the
+  # job. The gate therefore could not go green no matter what verification
+  # found, which is the third variant of this theme in one workflow (#353).
+  issues: write
 
 jobs:
   # #353 — THE job whose green run carries a claim, split out so it can
@@ -150,7 +157,13 @@ jobs:
           path: verification-results.json
           if-no-files-found: warn
 
+      # continue-on-error: posting the summary is a CONVENIENCE, not a
+      # verification result. Letting it fail the job means "could not decorate
+      # the PR" is reported as "verification failed" — the same mislabelling
+      # that had the solver size-threshold bypass counted as a revert (#331).
+      # The verdict comes from the step below, which reads the actual results.
       - name: Post sticky PR comment
+        continue-on-error: true
         if: github.event_name == 'pull_request' && always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
