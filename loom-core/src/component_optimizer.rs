@@ -247,10 +247,10 @@ fn optimize_component_inner(
                 unchecked_range, ..
             } => {
                 // Extract the module bytes
-                let module_bytes =
-                    component_bytes[unchecked_range.start..unchecked_range.end].to_vec();
+                let module_range = crate::to_usize_range(unchecked_range.clone())?;
+                let module_bytes = component_bytes[module_range.clone()].to_vec();
 
-                module_ranges.push(unchecked_range.clone());
+                module_ranges.push(module_range);
                 core_modules.push(CoreModule {
                     original_bytes: module_bytes,
                     optimized_bytes: None,
@@ -260,7 +260,7 @@ fn optimize_component_inner(
                 // Only account for component-LEVEL custom sections here (those
                 // outside every nested core-module byte range). Module-level
                 // custom sections are handled by the module re-encode path.
-                let start = reader.range().start;
+                let start = crate::to_usize_offset(reader.range().start)?;
                 let inside_module = module_ranges.iter().any(|r| r.contains(&start));
                 if !inside_module {
                     component_custom.push((reader.name().to_string(), reader.data().len()));
@@ -809,7 +809,7 @@ fn reconstruct_component(
                 // core-module range). Module-level custom sections fall inside a
                 // module range and are carried by the module bytes; we must not
                 // touch the raw component bytes for those.
-                let content_start = reader.range().start;
+                let content_start = crate::to_usize_offset(reader.range().start)?;
                 let inside_module = module_ranges.iter().any(|r| r.contains(&content_start));
                 if inside_module {
                     // Leave module-level custom sections to the module path.
@@ -834,7 +834,7 @@ fn reconstruct_component(
                 }
                 result.extend_from_slice(&original_bytes[last_pos..section_start]);
                 stripped_names.push(reader.name().to_string());
-                last_pos = reader.range().end;
+                last_pos = crate::to_usize_offset(reader.range().end)?;
             }
 
             Payload::ModuleSection {
@@ -842,7 +842,8 @@ fn reconstruct_component(
             } => {
                 // unchecked_range points to MODULE content only (starts at module magic \0asm)
                 // We need to skip the SECTION header (section_id + LEB128 size) which comes before it
-                let section_start = section_header_start(original_bytes, unchecked_range.start);
+                let module_range = crate::to_usize_range(unchecked_range.clone())?;
+                let section_start = section_header_start(original_bytes, module_range.start);
 
                 // Copy everything before this module section (excluding section header)
                 result.extend_from_slice(&original_bytes[last_pos..section_start]);
@@ -870,13 +871,11 @@ fn reconstruct_component(
                     module_index += 1;
                 } else {
                     // Preserve original module section (entire section: ID + size + content)
-                    result.extend_from_slice(
-                        &original_bytes[unchecked_range.start..unchecked_range.end],
-                    );
+                    result.extend_from_slice(&original_bytes[module_range.clone()]);
                 }
 
                 // Skip past this section in the original
-                last_pos = unchecked_range.end;
+                last_pos = module_range.end;
             }
             _ => {
                 // Not a module section - will be copied verbatim
@@ -3246,7 +3245,13 @@ mod phase_b_reachability_gc_tests {
                 unchecked_range, ..
             }) = payload
             {
-                out.push(component_bytes[unchecked_range.start..unchecked_range.end].to_vec());
+                // A test helper returning `Vec<Vec<u8>>`, so no `?` here. An
+                // offset that does not fit `usize` cannot happen on any host
+                // these tests run on, and if it ever did, failing the test
+                // loudly is the right outcome.
+                let range = crate::to_usize_range(unchecked_range.clone())
+                    .expect("module range fits usize");
+                out.push(component_bytes[range].to_vec());
             }
         }
         out

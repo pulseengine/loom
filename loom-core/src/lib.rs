@@ -900,6 +900,51 @@ pub enum Instruction {
     Unknown(Vec<u8>),
 }
 
+/// Convert a byte range reported by the wasm parser into one that can index a
+/// byte slice.
+///
+/// The parser reports section ranges in its own integer type, and that type is
+/// not part of loom's contract: it changed from `usize` to `u64` in a patch
+/// bump, which is what broke `main` for three weeks. So this is deliberately
+/// generic over the integer type rather than naming one — a helper hardcoding
+/// `u64` would break again the moment resolution moves, in exactly the way
+/// that got us here.
+///
+/// It is also deliberately FALLIBLE. The obvious one-liner is
+/// `range.start as usize`, and `as` **truncates silently** when the value does
+/// not fit — on a 32-bit host a large offset would wrap and index the wrong
+/// bytes, with nothing said. That is the shape of defect this repository keeps
+/// filing (#332, #346), and it would be a poor one to introduce in a cast
+/// while fixing a build.
+///
+/// On a 64-bit host the error arm is unreachable, and that is fine: it exists
+/// so a 32-bit build fails loudly instead of reading out of bounds. It is not
+/// claimed to be exercised.
+pub fn to_usize_range<T>(
+    range: std::ops::Range<T>,
+) -> anyhow::Result<std::ops::Range<usize>>
+where
+    T: TryInto<usize> + Copy + std::fmt::Display,
+{
+    Ok(to_usize_offset(range.start)?..to_usize_offset(range.end)?)
+}
+
+/// Convert a single byte offset reported by the wasm parser to `usize`.
+///
+/// See [`to_usize_range`] for why this is generic and fallible rather than a
+/// silent `as` cast.
+pub fn to_usize_offset<T>(value: T) -> anyhow::Result<usize>
+where
+    T: TryInto<usize> + Copy + std::fmt::Display,
+{
+    value.try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "wasm byte offset {value} does not fit in usize on this target \
+             (refusing to truncate and index the wrong bytes)"
+        )
+    })
+}
+
 /// Module parsing functionality: Parse WebAssembly modules into LOOM's internal representation
 pub mod parse {
 
@@ -946,7 +991,8 @@ pub mod parse {
                 Payload::TypeSection(reader) => {
                     // Store raw type section bytes to pass through unchanged
                     let range = reader.range();
-                    type_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                    type_section_bytes =
+                        Some(bytes[crate::to_usize_range(range.clone())?].to_vec());
 
                     // Still extract function types for optimizer's use
                     for rec_group in reader.clone() {
@@ -1050,7 +1096,8 @@ pub mod parse {
                 Payload::GlobalSection(reader) => {
                     // Store raw global section bytes to pass through unchanged
                     let range = reader.range();
-                    global_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                    global_section_bytes =
+                        Some(bytes[crate::to_usize_range(range.clone())?].to_vec());
 
                     // Still extract basic globals for optimizer's use
                     for global in reader.clone() {
@@ -1177,7 +1224,8 @@ pub mod parse {
                 Payload::ElementSection(reader) => {
                     // Store raw element section bytes to pass through unchanged
                     let range = reader.range();
-                    element_section_bytes = Some(bytes[range.start..range.end].to_vec());
+                    element_section_bytes =
+                        Some(bytes[crate::to_usize_range(range.clone())?].to_vec());
                 }
                 Payload::CustomSection(reader) => {
                     // Store custom section data (without the name field)
