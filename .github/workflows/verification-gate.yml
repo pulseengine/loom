@@ -102,6 +102,16 @@ jobs:
             sudo apt-get update && sudo apt-get install -y libz3-dev || true
           fi
 
+      # TEST-CORPUS-HARNESS refuses to report a measurement it has not
+      # validated ("ERROR: wasm-tools not found on PATH (validation is
+      # mandatory)") — which is the right call, and the reason that artifact
+      # failed here while passing on other runs: the self-hosted runners do
+      # not all carry the tool, so the result depended on which machine
+      # picked up the job. The gate has to PROVIDE what its artifacts
+      # require; an environment-dependent verdict is not a verdict.
+      - name: Install wasm-tools
+        run: command -v wasm-tools >/dev/null || cargo install wasm-tools
+
       - name: Install rivet
         run: |
           # Pin to rivet v0.7.0 (commit b7a17be) — the release that first ships
