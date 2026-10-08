@@ -49,7 +49,10 @@ fn analyze_function_body(func_idx: u32, body: &FunctionBody) -> Result<Vec<DeadR
 
     // Collect all operators with their offsets
     while !reader.eof() {
-        let offset = reader.original_position();
+        // The parser reports positions in its own integer type, which changed
+        // from `usize` to `u64` in a patch bump. Converted explicitly rather
+        // than with a silent `as` cast — see `loom_core::to_usize_offset`.
+        let offset = loom_core::to_usize_offset(reader.original_position())?;
         let op = reader.read()?;
         operators.push((op, offset));
     }

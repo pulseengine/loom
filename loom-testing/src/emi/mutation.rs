@@ -115,68 +115,68 @@ where
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 1, // Type section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::ImportSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 2, // Import section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::FunctionSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 3, // Function section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::TableSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 4, // Table section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::MemorySection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 5, // Memory section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::GlobalSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 6, // Global section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::ExportSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 7, // Export section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::StartSection { range, .. } => {
                 module.section(&RawSection {
                     id: 8, // Start section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::ElementSection(reader) => {
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 9, // Element section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::DataCountSection { range, .. } => {
                 module.section(&RawSection {
                     id: 12, // DataCount section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::CodeSectionStart { .. } => {
@@ -193,7 +193,8 @@ where
                 } else {
                     // Copy function as-is
                     let range = body.range();
-                    code_section_entries.push(wasm_bytes[range.start..range.end].to_vec());
+                    code_section_entries
+                        .push(wasm_bytes[loom_core::to_usize_range(range.clone())?].to_vec());
                 }
                 func_idx += 1;
             }
@@ -206,13 +207,13 @@ where
                 let range = reader.range();
                 module.section(&RawSection {
                     id: 11, // Data section
-                    data: &wasm_bytes[range.start..range.end],
+                    data: &wasm_bytes[loom_core::to_usize_range(range.clone())?],
                 });
             }
             Payload::CustomSection(reader) => {
                 module.section(&RawSection {
                     id: 0, // Custom section
-                    data: &wasm_bytes[reader.range().start..reader.range().end],
+                    data: &wasm_bytes[loom_core::to_usize_range(reader.range())?],
                 });
             }
             Payload::End(_)
@@ -265,7 +266,7 @@ where
     // Parse and transform operators
     let mut reader = body.get_operators_reader()?;
     while !reader.eof() {
-        let offset = reader.original_position();
+        let offset = loom_core::to_usize_offset(reader.original_position())?;
         let op = reader.read()?;
 
         let in_region = offset >= region.start_offset && offset < region.end_offset;
