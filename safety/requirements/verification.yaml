@@ -204,11 +204,33 @@ artifacts:
       v1.0.0 set: inline, precompute, constant-folding, canonicalize,
       peephole-synth, cse, advanced, branches, dce, merge-blocks, vacuum,
       simplify-locals, dead-stores, dead-locals, vacuum-final, directize.
+      Driven over TRACKED corpus fixtures. It previously pointed at
+      `scripts/mythos/gale_measure/gale_in_baseline.wasm`, which is not in
+      git and cannot be: `.gitignore` blanket-ignores `*.wasm` and negates
+      only `tests/**` and `loom-core/tests/**`, while `scripts/mythos/` is a
+      scratch measurement area with nothing tracked under it. So this
+      artifact read `verified` on evidence that ran on exactly one machine
+      and failed everywhere else with "Input file not found" — invisible for
+      six weeks because the gate that would have failed it was being
+      cancelled at 30 minutes (#353). Evidence nobody else can reproduce is
+      not evidence.
+      Three fixtures rather than one, so a pass that breaks on a single
+      shape cannot hide. A successful exit also implies the output
+      VALIDATES, because the CLI refuses to write a module that does not
+      (#346) — so this exercises that gate as well.
     fields:
       method: automated-test
       steps:
         - run: |
-            cargo build --release -p loom-cli && ./target/release/loom optimize scripts/mythos/gale_measure/gale_in_baseline.wasm --attestation false -o /tmp/loom-pipeline-smoke.wasm
+            set -euo pipefail
+            cargo build --release -p loom-cli
+            for f in tests/corpus/httparse.wasm tests/corpus/json_lite.wasm tests/corpus/state_machine.wasm; do
+              # Explicit, loud existence check. The previous failure mode was a
+              # missing input reported as a generic step failure; a guard here
+              # names the cause instead of leaving the next reader to dig.
+              test -f "$f" || { echo "::error::missing TRACKED fixture $f (is it gitignored?)"; exit 1; }
+              ./target/release/loom optimize "$f" --attestation false -o /tmp/loom-pipeline-smoke.wasm
+            done
     status: verified
     tags: [v100, cli, pipeline]
     links:
