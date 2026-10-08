@@ -920,9 +920,7 @@ pub enum Instruction {
 /// On a 64-bit host the error arm is unreachable, and that is fine: it exists
 /// so a 32-bit build fails loudly instead of reading out of bounds. It is not
 /// claimed to be exercised.
-pub fn to_usize_range<T>(
-    range: std::ops::Range<T>,
-) -> anyhow::Result<std::ops::Range<usize>>
+pub fn to_usize_range<T>(range: std::ops::Range<T>) -> anyhow::Result<std::ops::Range<usize>>
 where
     T: TryInto<usize> + Copy + std::fmt::Display,
 {
