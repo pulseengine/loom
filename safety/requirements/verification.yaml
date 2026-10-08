@@ -1282,16 +1282,18 @@ artifacts:
       floor, measured from the downloaded binary. That excludes every distro
       older than the 2.34 line and all of Alpine, so "Linux" in the release
       notes currently means "recent glibc Linux".
-      SEQUENCING, stated because it is the whole cost of this item: a static
-      musl build needs a musl C++ toolchain, because loom links a C++ solver.
-      That coupling is the same one that produced the #311 glibc floor and
-      breaks the wasm32-wasip2 build, and it is what #313 removes. Shipping
-      musl BEFORE the solver migration means standing up a musl C++ sysroot in
-      CI; after it, the target is an ordinary Rust cross-build. This is
-      therefore scoped behind TEST-313-EXIT-Z3-REMOVED, whose own criteria
-      already name "ship musl" — and if #313 slips, the honest options are to
-      slip this with it or to pay for the sysroot deliberately, not to
-      discover the cost mid-release.
+      SEQUENCING. An earlier draft of this artifact claimed musl was gated
+      behind #313, on the reasoning that a static musl build needs a musl C++
+      toolchain because loom links a C++ solver. That was an assumption about
+      cost, not a measurement, and the maintainer corrected it: musl is in
+      routine use across this toolchain and is not the hard part here.
+      #313 still comes first, but on its own merits rather than because musl
+      waits on it — the C++ solver is the larger problem (it set the #311
+      glibc floor, it breaks the wasm32-wasip2 build, and it carries a
+      fork we maintain), and the migration to the certificate-checked engine
+      is wanted independently. So this item is sequenced AFTER #313 by
+      priority, not blocked BY it; if it turns out to be cheap enough to land
+      alongside, nothing here forbids that.
       Asserted, once built: (1) a musl artifact is published alongside the gnu
       one; (2) it is statically linked — `file` reports no interpreter and
       `readelf -V` reports NO GLIBC requirement at all, which is the actual
@@ -1305,7 +1307,7 @@ artifacts:
         - "Given a release tag, a musl Linux artifact is published beside the gnu one"
         - "Given the musl binary, readelf reports NO GLIBC version requirement (fail-closed if undeterminable)"
         - "Given an image lacking glibc 2.34, the musl binary RUNS there"
-        - "Given #313 is not yet complete, this item's cost is a musl C++ sysroot and that is stated, not discovered"
+        - "The musl build's actual cost is measured before it is scheduled, not assumed from the C++ dependency"
     status: draft
     release: v1.5.0
     tags: [v150, release-engineering, portability]
