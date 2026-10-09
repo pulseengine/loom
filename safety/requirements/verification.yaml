@@ -1330,6 +1330,13 @@ artifacts:
         - "Given the musl binary, readelf reports NO GLIBC version requirement (fail-closed if undeterminable)"
         - "Given an image lacking glibc 2.34, the musl binary RUNS there"
         - "The musl build's actual cost is measured before it is scheduled, not assumed from the C++ dependency"
+    status: draft
+    release: v1.5.0
+    tags: [v150, release-engineering, portability]
+    links:
+      - type: verifies
+        target: REQ-18
+
   - id: TEST-AARCH64-LINUX-RELEASE-TARGET
     type: feature
     title: aarch64-unknown-linux-gnu is built, gated and shipped like every other Linux target
