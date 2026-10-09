@@ -1223,6 +1223,111 @@ mod tests {
         });
     }
 
+    /// Every trapping operator against a HAND-AUTHORED table of the wasm
+    /// spec, at the points where the four kinds disagree.
+    ///
+    /// # Why a table and not a differential
+    ///
+    /// Slice 2 introduced a SECOND trap-condition implementation: this
+    /// module's `trap_condition` over the neutral term, beside
+    /// `trap_gate`'s predicates over ordeal terms for the constant-fold
+    /// backstop. That duplication is recorded as outstanding in
+    /// `TEST-313-TIER2-SLICE2-PARTIAL-OPS`, and the obvious mitigation is a
+    /// differential between the two.
+    ///
+    /// This is deliberately not that. Two implementations agreeing with each
+    /// other can both be wrong in the same way — and they would be, because
+    /// they were written from the same reading. A table written from the
+    /// spec pins each of them to the spec instead, which is the claim that
+    /// actually matters. ordeal's own `rem_s` bug (ordeal#72/#84) was exactly
+    /// a case where a second implementation would have agreed.
+    ///
+    /// `trap` rows assert REJECTION of any fold to a value, because a
+    /// trapping op has no value to fold to. `no trap` rows assert the fold
+    /// to the spec's value is ACCEPTED, which checks the trap condition is
+    /// not over-approximated as well as the value being right.
+    #[test]
+    fn the_four_trapping_ops_match_a_spec_table() {
+        // (name, build, expected): `expected` is None for "traps", or
+        // Some(bits) for "does not trap, and the value is these bits".
+        type Build = fn(RuleTerm, RuleTerm) -> RuleTerm;
+        let udiv: Build = |a, b| RuleTerm::Udiv(Box::new(a), Box::new(b));
+        let urem: Build = |a, b| RuleTerm::Urem(Box::new(a), Box::new(b));
+        let sdiv: Build = |a, b| RuleTerm::Sdiv(Box::new(a), Box::new(b));
+        let srem: Build = |a, b| RuleTerm::Srem(Box::new(a), Box::new(b));
+
+        const W: u32 = 32;
+        let int_min: u128 = 1u128 << 31;
+        let neg = |x: i64| -> u128 { (x as u32) as u128 };
+
+        #[allow(clippy::type_complexity)]
+        let table: Vec<(&str, Build, u128, u128, Option<u128>)> = vec![
+            // divide-by-zero traps for ALL FOUR kinds.
+            ("div_u by zero", udiv, 7, 0, None),
+            ("rem_u by zero", urem, 7, 0, None),
+            ("div_s by zero", sdiv, 7, 0, None),
+            ("rem_s by zero", srem, 7, 0, None),
+            // signed overflow: div_s TRAPS, rem_s does NOT. This is the row
+            // pair that makes the asymmetry an asymmetry.
+            ("div_s INT_MIN / -1", sdiv, int_min, neg(-1), None),
+            ("rem_s INT_MIN / -1", srem, int_min, neg(-1), Some(0)),
+            // ordinary arithmetic: no trap, and the spec's value.
+            ("div_u 7/3", udiv, 7, 3, Some(2)),
+            ("rem_u 7/3", urem, 7, 3, Some(1)),
+            // signed division truncates TOWARD ZERO (not floor), so
+            // -6/3 = -2 and -7 % 3 = -1 (sign follows the dividend).
+            ("div_s -6/3", sdiv, neg(-6), 3, Some(neg(-2))),
+            ("rem_s -7/3", srem, neg(-7), 3, Some(neg(-1))),
+            ("div_s 7/-2", sdiv, 7, neg(-2), Some(neg(-3))),
+            ("rem_s 7/-2", srem, 7, neg(-2), Some(1)),
+            // INT_MIN with a divisor that does NOT overflow.
+            ("div_s INT_MIN / 1", sdiv, int_min, 1, Some(int_min)),
+            ("rem_s INT_MIN / 1", srem, int_min, 1, Some(0)),
+        ];
+
+        with_z3_config(&cfg(), || {
+            for (name, build, a, b, expected) in &table {
+                let op = build(k(*a, W), k(*b, W));
+                match expected {
+                    None => {
+                        // Traps: folding it to ANY value removes a mandatory
+                        // trap. Two different targets, so the rejection
+                        // cannot be an accident of one chosen constant.
+                        for target in [k(0, W), k(u32::MAX as u128, W)] {
+                            let verdict = decide_terms(&op, &target);
+                            assert!(
+                                matches!(verdict, RuleVerdict::Disproven(_)),
+                                "{name}: traps per the spec, so folding it to a \
+                                 value must be REJECTED; got {verdict:?}"
+                            );
+                        }
+                    }
+                    Some(bits) => {
+                        let verdict = decide_terms(&op, &k(*bits, W));
+                        assert!(
+                            matches!(verdict, RuleVerdict::Proven),
+                            "{name}: does NOT trap per the spec and evaluates to \
+                             {bits:#x}, so this fold is sound and must be \
+                             ACCEPTED. A rejection means the trap condition is \
+                             over-approximated or the value is wrong; got \
+                             {verdict:?}"
+                        );
+                        // And the dual: folding to the WRONG value must be
+                        // rejected, or "accepted" above would also hold for a
+                        // relation that accepts everything.
+                        let wrong = k(bits.wrapping_add(1) & 0xffff_ffff, W);
+                        let verdict = decide_terms(&op, &wrong);
+                        assert!(
+                            matches!(verdict, RuleVerdict::Disproven(_)),
+                            "{name}: folding to a wrong value must be REJECTED; \
+                             got {verdict:?}"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     /// A division under a conditional is REFUSED rather than approximated.
     ///
     /// A division in an untaken wasm `if` arm does not execute and so does

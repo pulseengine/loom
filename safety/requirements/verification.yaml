@@ -823,6 +823,19 @@ artifacts:
       there are now two trap-condition implementations that must agree about
       the div_s/rem_s asymmetry, which is a real duplication and a real risk —
       recorded as outstanding rather than quietly dropped from the criteria.
+      MITIGATION, since the duplication is not going away this slice: the
+      risk it creates is DRIFT — the two implementations disagreeing about
+      the asymmetry. A pairwise differential between them would be the
+      obvious answer and is deliberately NOT what was added, because two
+      implementations written from the same reading can agree and both be
+      wrong; ordeal's own `rem_s` bug is precisely a case where a second
+      implementation would have agreed. Instead a 14-row table written from
+      the wasm spec pins this implementation to the SPEC, covering all four
+      kinds, divide-by-zero, the signed-overflow asymmetry,
+      truncation-toward-zero sign behaviour, and a wrong-value dual on every
+      non-trapping row so "accepted" cannot be satisfied by a relation that
+      accepts everything. Confirmed discriminating: giving `rem_s` the
+      overflow disjunct (reproducing ordeal#84) fails the table by row name.
       SCOPE NARROWED. #313's design comment lists slice 2 as "div/rem, trunc,
       load/store bounds". This slice is div/rem ONLY. Memory is slices 4 and
       5 and the seam refuses it separately, so listing load/store here was an
@@ -845,6 +858,7 @@ artifacts:
         - "PROVEN: given a transform that introduces a trap the original did not have, the validator REJECTS it"
         - "PROVEN: given LOOM_VERIFY_BACKEND=both, 545 tests run with no divergence panic"
         - "PROVEN: given real wasm div_u/div_s/rem_s/rem_u/i64.div_s, each obligation is ROUTED AND DECIDED (1 routed, 0 deferred) rather than merely offered"
+        - "MITIGATED (not closed): the duplication's risk is drift on the div_s/rem_s asymmetry; a 14-row SPEC TABLE pins this implementation to the wasm spec, and flattening the asymmetry fails it by name"
         - "OUTSTANDING: #257's trap_gate predicates are NOT yet folded in; see the description"
         - "SCOPE NARROWED: trunc and load/store bounds are not in this slice; see the description"
     status: draft
