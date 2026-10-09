@@ -66,7 +66,9 @@
 //!                `LOOM_VERIFY_BACKEND=both` IS the no-divergence assertion.
 
 #[cfg(feature = "verification")]
-use crate::rule_solver::{RuleSolver, RuleTerm, RuleVerdict, VerifyBackend, Z3RuleSolver};
+use crate::rule_solver::{
+    RuleBool, RuleSolver, RuleTerm, RuleVerdict, VerifyBackend, Z3RuleSolver,
+};
 
 #[cfg(feature = "verification")]
 use std::cell::Cell;
@@ -128,6 +130,10 @@ pub enum DeferReason {
     /// The reflected term did not re-lower to the identical Z3 AST, so the
     /// reflection could not be self-validated and is not trusted.
     RoundTripFailed,
+    /// A division appeared inside an `Ite` arm, so its trap condition is
+    /// path-dependent and this seam will not approximate it. See
+    /// [`trap_condition`].
+    TrapUnderConditional,
     /// One variable name occurred at two different widths, or two distinct Z3
     /// constants shared a name.
     ///
@@ -145,6 +151,7 @@ impl DeferReason {
             DeferReason::IncumbentBackend => "incumbent backend selected",
             DeferReason::WidthMismatch => "result width mismatch",
             DeferReason::OutOfFragment(what) => what,
+            DeferReason::TrapUnderConditional => "division under a conditional",
             DeferReason::TooLarge => "term exceeds node budget",
             DeferReason::RoundTripFailed => "reflection round-trip not identical",
             DeferReason::VariableNameCollision => "variable name collision",
@@ -273,7 +280,226 @@ fn decide_inner(orig: &z3::ast::BV, opt: &z3::ast::BV, backend: VerifyBackend) -
         return SeamOutcome::Deferred(DeferReason::RoundTripFailed);
     }
 
-    SeamOutcome::Decided(prove(&lhs, &rhs, backend))
+    // #313 slice 2 / #300: the obligation is the TRAP-EQUIVALENCE +
+    // VALUE-REFINEMENT relation, not a bare value equality.
+    //
+    // Derived from the reflected terms rather than the Z3 ASTs on purpose:
+    // these are the terms the round trip above validated, so the trap
+    // condition is read off the same representation the proof is discharged
+    // on. Reading it from the Z3 side instead would reintroduce a second,
+    // unvalidated path into the obligation.
+    let lhs_trap = match trap_condition(&lhs) {
+        Ok(t) => t,
+        Err(reason) => return SeamOutcome::Deferred(reason),
+    };
+    let rhs_trap = match trap_condition(&rhs) {
+        Ok(t) => t,
+        Err(reason) => return SeamOutcome::Deferred(reason),
+    };
+
+    // When NEITHER side can trap this is byte-identical to slice 1's
+    // obligation modulo a constant 0 flag on both sides, so the pure-BV path
+    // is unchanged in substance.
+    let goal_lhs = trap_guarded(&lhs, lhs_trap.as_ref());
+    let goal_rhs = trap_guarded(&rhs, rhs_trap.as_ref());
+
+    SeamOutcome::Decided(prove(&goal_lhs, &goal_rhs, backend))
+}
+
+/// The wasm trap condition of every division in a reflected term, or a
+/// refusal.
+///
+/// wasm's `div`/`rem` are PARTIAL where the bitvector operators are total:
+///
+/// | op | traps when |
+/// |----|------------|
+/// | `div_u`, `rem_u` | `b == 0` |
+/// | `rem_s` | `b == 0` |
+/// | `div_s` | `b == 0` **or** `a == INT_MIN && b == -1` |
+///
+/// The `div_s` / `rem_s` asymmetry is the one detail most likely to be
+/// flattened by someone tidying this function: wasm defines
+/// `rem_s(INT_MIN, -1) = 0`, no trap. ordeal itself got this wrong before
+/// 0.10.0 (ordeal#72/#84) and the resulting over-approximation would have
+/// falsely REJECTED a sound fold. There are tests that fail if the two are
+/// made uniform.
+///
+/// # Why a division under a conditional is REFUSED
+///
+/// Returns [`DeferReason::TrapUnderConditional`] if a division appears inside
+/// an `Ite` arm. A division in an untaken wasm `if` arm does not execute and
+/// therefore does not trap, so the honest trap condition is
+/// `branch_taken && divisor_is_zero` — not the flat disjunction this function
+/// would otherwise build. Using the flat version would over-approximate: it
+/// claims a trap on inputs where none occurs, which is not unsound for the
+/// equivalence check but silently rejects correct transforms, and makes the
+/// seam's claim ("the trap conditions match") untrue as stated.
+///
+/// Refusing is the same scope discipline slice 1 applied to memory: the bound
+/// is narrow, exact, and named, rather than wide and approximate.
+#[cfg(feature = "verification")]
+fn trap_condition(term: &RuleTerm) -> Result<Option<RuleBool>, DeferReason> {
+    fn walk(t: &RuleTerm, under_ite: bool, acc: &mut Vec<RuleBool>) -> Result<(), DeferReason> {
+        use RuleTerm as T;
+        // The division arms first: these are the nodes that can trap.
+        let divisor_and_kind = match t {
+            T::Udiv(a, b) | T::Urem(a, b) | T::Srem(a, b) => Some((a, b, false)),
+            T::Sdiv(a, b) => Some((a, b, true)),
+            _ => None,
+        };
+        if let Some((a, b, is_signed_div)) = divisor_and_kind {
+            if under_ite {
+                return Err(DeferReason::TrapUnderConditional);
+            }
+            let width = b.width();
+            let zero = T::Const { value: 0, width };
+            // Every kind traps on a zero divisor.
+            let mut cond = RuleBool::Eq(Box::new((**b).clone()), Box::new(zero.clone()));
+            if is_signed_div {
+                // `div_s` ALSO traps on INT_MIN / -1 (signed overflow).
+                // `rem_s` deliberately does NOT — see the doc comment.
+                let int_min = T::Const {
+                    value: 1u128 << (width - 1),
+                    width,
+                };
+                let minus_one = T::Const {
+                    value: (!0u128) >> (128 - width),
+                    width,
+                };
+                let overflow = RuleBool::BoolAnd(
+                    Box::new(RuleBool::Eq(Box::new((**a).clone()), Box::new(int_min))),
+                    Box::new(RuleBool::Eq(Box::new((**b).clone()), Box::new(minus_one))),
+                );
+                cond = RuleBool::BoolOr(Box::new(cond), Box::new(overflow));
+            }
+            acc.push(cond);
+        }
+
+        // Recurse. `Ite` arms set `under_ite` for everything beneath them;
+        // the CONDITION is not an arm and is evaluated unconditionally, so it
+        // keeps the current flag.
+        match t {
+            T::Const { .. } | T::Var { .. } => {}
+            T::Add(a, b)
+            | T::Sub(a, b)
+            | T::Mul(a, b)
+            | T::Udiv(a, b)
+            | T::Urem(a, b)
+            | T::Sdiv(a, b)
+            | T::Srem(a, b)
+            | T::And(a, b)
+            | T::Or(a, b)
+            | T::Xor(a, b)
+            | T::Shl(a, b)
+            | T::Lshr(a, b)
+            | T::Ashr(a, b)
+            | T::Rotl(a, b)
+            | T::Rotr(a, b)
+            | T::Concat(a, b) => {
+                walk(a, under_ite, acc)?;
+                walk(b, under_ite, acc)?;
+            }
+            T::Neg(a) | T::Not(a) => walk(a, under_ite, acc)?,
+            T::ZeroExt { arg, .. } | T::SignExt { arg, .. } | T::Extract { arg, .. } => {
+                walk(arg, under_ite, acc)?
+            }
+            T::Ite { cond, then_, else_ } => {
+                walk_bool(cond, under_ite, acc)?;
+                walk(then_, true, acc)?;
+                walk(else_, true, acc)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn walk_bool(
+        b: &RuleBool,
+        under_ite: bool,
+        acc: &mut Vec<RuleBool>,
+    ) -> Result<(), DeferReason> {
+        use RuleBool as B;
+        match b {
+            B::Eq(x, y)
+            | B::Ult(x, y)
+            | B::Ule(x, y)
+            | B::Ugt(x, y)
+            | B::Uge(x, y)
+            | B::Slt(x, y)
+            | B::Sle(x, y)
+            | B::Sgt(x, y)
+            | B::Sge(x, y) => {
+                walk(x, under_ite, acc)?;
+                walk(y, under_ite, acc)
+            }
+            B::Not(inner) => walk_bool(inner, under_ite, acc),
+            B::BoolAnd(x, y) | B::BoolOr(x, y) => {
+                walk_bool(x, under_ite, acc)?;
+                walk_bool(y, under_ite, acc)
+            }
+        }
+    }
+
+    let mut acc = Vec::new();
+    walk(term, false, &mut acc)?;
+    Ok(acc
+        .into_iter()
+        .reduce(|l, r| RuleBool::BoolOr(Box::new(l), Box::new(r))))
+}
+
+/// Fold a side's trap condition and value into ONE bitvector term, so the
+/// slice-2 relation becomes a plain equality the existing solver API can
+/// discharge.
+///
+/// ```text
+///   [ 1-bit trap flag ] ++ [ value, forced to 0 when trapping ]
+/// ```
+///
+/// Comparing two of these for equality is EXACTLY the relation #300 asks for:
+///
+/// * trap conditions differ  -> flags differ -> terms differ -> REJECTED,
+///   which catches trap REMOVAL and trap ADDITION symmetrically. A bare value
+///   equality sees neither.
+/// * both trap               -> both sides are `1 ++ 0` -> equal. Correct:
+///   wasm traps are observable but a trapped computation has no value, so the
+///   values are genuinely don't-care there. Without this normalisation the
+///   total `bvsdiv`'s arbitrary value at `b == 0` would leak into the
+///   obligation and reject sound transforms.
+/// * neither traps           -> `0 ++ v` vs `0 ++ v'` -> equal iff the values
+///   are equal, which is the relation the validator already proved.
+///
+/// Values are a singleton set here, so refinement degenerates to equality.
+/// That is correct for integer div/rem — the places wasm is genuinely
+/// nondeterministic (NaN payloads, `memory.grow`) are floats and memory,
+/// slices 5 and 6.
+///
+/// Expressing the relation inside the existing `prove_rule_equiv` rather than
+/// adding a trait method is deliberate: every construct used here
+/// (`Ite`, `Concat`, `Const`, the comparisons) is already covered by the
+/// reflect-and-re-lower round trip, so the encoding inherits that validation
+/// instead of needing its own.
+#[cfg(feature = "verification")]
+fn trap_guarded(term: &RuleTerm, trap: Option<&RuleBool>) -> RuleTerm {
+    let Some(trap) = trap else {
+        // Nothing in this term can trap; the relation reduces to the value
+        // equality the seam already discharged. Prefixing a constant 0 flag
+        // keeps both sides the same shape.
+        return RuleTerm::Concat(
+            Box::new(RuleTerm::Const { value: 0, width: 1 }),
+            Box::new(term.clone()),
+        );
+    };
+    let width = term.width();
+    let flag = RuleTerm::Ite {
+        cond: Box::new(trap.clone()),
+        then_: Box::new(RuleTerm::Const { value: 1, width: 1 }),
+        else_: Box::new(RuleTerm::Const { value: 0, width: 1 }),
+    };
+    let value = RuleTerm::Ite {
+        cond: Box::new(trap.clone()),
+        then_: Box::new(RuleTerm::Const { value: 0, width }),
+        else_: Box::new(term.clone()),
+    };
+    RuleTerm::Concat(Box::new(flag), Box::new(value))
 }
 
 /// Discharge a reflected obligation on the selected backend.
@@ -886,6 +1112,150 @@ mod tests {
                  difference that says nothing about loom."
             );
         });
+    }
+
+    fn v(name: &str, width: u32) -> RuleTerm {
+        RuleTerm::Var {
+            name: name.to_string(),
+            width,
+        }
+    }
+    fn k(value: u128, width: u32) -> RuleTerm {
+        RuleTerm::Const { value, width }
+    }
+    /// The relation as the seam discharges it, for a hand-built pair.
+    fn decide_terms(lhs: &RuleTerm, rhs: &RuleTerm) -> RuleVerdict {
+        let lt = trap_condition(lhs).expect("no conditional division in these fixtures");
+        let rt = trap_condition(rhs).expect("no conditional division in these fixtures");
+        Z3RuleSolver.prove_rule_equiv(
+            &trap_guarded(lhs, lt.as_ref()),
+            &trap_guarded(rhs, rt.as_ref()),
+        )
+    }
+
+    /// Trap REMOVAL must be rejected — and this is the case that proves the
+    /// guard is doing work a value equality cannot.
+    ///
+    /// `div_u(a, 0)` traps on every input. SMT-LIB's TOTAL `bvudiv` defines
+    /// `bvudiv(a, 0)` as all-ones. So replacing the division with the
+    /// constant all-ones is, to a bare bitvector equality, a correct
+    /// transform — the two terms are equal everywhere. To wasm it is a
+    /// miscompile: one traps unconditionally and the other returns a value.
+    ///
+    /// The test asserts BOTH halves, because only the pair is evidence:
+    /// the unguarded equality ACCEPTS it (so the guard is not redundant), and
+    /// the guarded relation REJECTS it (so the guard works).
+    #[test]
+    fn trap_removal_is_rejected_where_a_value_equality_would_accept_it() {
+        with_z3_config(&cfg(), || {
+            let always_traps = RuleTerm::Udiv(Box::new(v("a", 32)), Box::new(k(0, 32)));
+            let all_ones = k(u32::MAX as u128, 32);
+
+            // What slice 1's obligation would have said.
+            let unguarded = Z3RuleSolver.prove_rule_equiv(&always_traps, &all_ones);
+            assert!(
+                matches!(unguarded, RuleVerdict::Proven),
+                "the premise of this test is that a BARE value equality accepts \
+                 this transform (SMT-LIB bvudiv(a,0) == all-ones). If this ever \
+                 stops holding, the test below no longer demonstrates that the \
+                 trap guard adds anything. got {unguarded:?}"
+            );
+
+            // What the slice-2 relation says.
+            let guarded = decide_terms(&always_traps, &all_ones);
+            assert!(
+                matches!(guarded, RuleVerdict::Disproven(_)),
+                "removing a mandatory trap must be REJECTED; got {guarded:?}"
+            );
+        });
+    }
+
+    /// Trap ADDITION must be rejected too. One-directional checks are how
+    /// half a bug class survives: a gate that only refuses trap removal
+    /// happily accepts an optimizer that introduces a trap.
+    #[test]
+    fn trap_addition_is_rejected() {
+        with_z3_config(&cfg(), || {
+            let all_ones = k(u32::MAX as u128, 32);
+            let always_traps = RuleTerm::Udiv(Box::new(v("a", 32)), Box::new(k(0, 32)));
+            let guarded = decide_terms(&all_ones, &always_traps);
+            assert!(
+                matches!(guarded, RuleVerdict::Disproven(_)),
+                "introducing a trap must be REJECTED; got {guarded:?}"
+            );
+        });
+    }
+
+    /// The div_s / rem_s asymmetry, asserted as the pair that makes it an
+    /// asymmetry rather than two separate facts.
+    ///
+    /// wasm: `div_s(INT_MIN, -1)` TRAPS (signed overflow);
+    /// `rem_s(INT_MIN, -1)` is `0` and does NOT trap. Flattening the two —
+    /// which ordeal itself did before 0.10.0 (ordeal#72/#84) — makes the
+    /// `rem_s` row fail here.
+    #[test]
+    fn div_s_traps_on_int_min_over_minus_one_and_rem_s_does_not() {
+        with_z3_config(&cfg(), || {
+            let int_min = k(1u128 << 31, 32);
+            let minus_one = k(u32::MAX as u128, 32);
+
+            // rem_s(INT_MIN, -1) does not trap and is 0, so folding it to 0
+            // must be ACCEPTED.
+            let rem = RuleTerm::Srem(Box::new(int_min.clone()), Box::new(minus_one.clone()));
+            let rem_verdict = decide_terms(&rem, &k(0, 32));
+            assert!(
+                matches!(rem_verdict, RuleVerdict::Proven),
+                "rem_s(INT_MIN, -1) = 0 with NO trap, so this fold is sound and \
+                 must be accepted. A rejection here means the overflow disjunct \
+                 leaked into rem_s (ordeal#84's bug). got {rem_verdict:?}"
+            );
+
+            // div_s(INT_MIN, -1) TRAPS, so folding it to any value must be
+            // REJECTED. INT_MIN is the two's-complement wrap-around result a
+            // naive folder would produce, which is why it is the value used.
+            let div = RuleTerm::Sdiv(Box::new(int_min.clone()), Box::new(minus_one));
+            let div_verdict = decide_terms(&div, &int_min);
+            assert!(
+                matches!(div_verdict, RuleVerdict::Disproven(_)),
+                "div_s(INT_MIN, -1) traps, so folding it to a value is a trap \
+                 removal and must be rejected; got {div_verdict:?}"
+            );
+        });
+    }
+
+    /// A division under a conditional is REFUSED rather than approximated.
+    ///
+    /// A division in an untaken wasm `if` arm does not execute and so does
+    /// not trap; the honest condition is path-dependent. The flat
+    /// disjunction this seam builds would over-approximate and silently
+    /// reject correct transforms, so the obligation is declined instead —
+    /// the same scope discipline slice 1 applied to memory.
+    #[test]
+    fn a_division_under_a_conditional_is_refused_not_approximated() {
+        let cond = RuleBool::Eq(Box::new(v("c", 32)), Box::new(k(0, 32)));
+        let conditional_div = RuleTerm::Ite {
+            cond: Box::new(cond),
+            then_: Box::new(RuleTerm::Udiv(Box::new(v("a", 32)), Box::new(v("b", 32)))),
+            else_: Box::new(k(0, 32)),
+        };
+        assert!(
+            matches!(
+                trap_condition(&conditional_div),
+                Err(DeferReason::TrapUnderConditional)
+            ),
+            "a division under an Ite arm must be refused, not approximated"
+        );
+
+        // The control: the same division NOT under a conditional is accepted
+        // by the predicate, so the refusal above is about the conditional and
+        // not about division generally.
+        let plain = RuleTerm::Udiv(Box::new(v("a", 32)), Box::new(v("b", 32)));
+        assert!(
+            trap_condition(&plain)
+                .expect("plain division is fine")
+                .is_some(),
+            "an unconditional division must produce a trap condition"
+        );
     }
 
     #[test]
