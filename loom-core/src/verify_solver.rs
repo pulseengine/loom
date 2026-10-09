@@ -472,12 +472,22 @@ mod reflect {
             }
 
             match kind {
-                // --- trapping / partial operations: slice 2, refused here ---
-                DeclKind::BUDIV
-                | DeclKind::BUREM
-                | DeclKind::BSDIV
-                | DeclKind::BSREM
-                | DeclKind::BSMOD
+                // --- still refused ---
+                //
+                // `bvsmod` is floored modulo. Wasm has no such operator, so a
+                // `bsmod` node in a loom-built term would mean the encoder
+                // produced something the spec does not define; refusing is
+                // the honest answer to a term we cannot attribute to a wasm
+                // instruction.
+                //
+                // The `*0` and `*_I` kinds are Z3's INTERNAL representations
+                // of the partial operators — the uninterpreted
+                // division-by-zero function and the interpreted form. They
+                // are not what loom builds, and their semantics at the
+                // undefined point are Z3's own business rather than
+                // something the wasm spec pins, so the seam does not reflect
+                // them.
+                DeclKind::BSMOD
                 | DeclKind::BUDIV0
                 | DeclKind::BUREM0
                 | DeclKind::BSDIV0
@@ -488,8 +498,31 @@ mod reflect {
                 | DeclKind::BSDIV_I
                 | DeclKind::BSREM_I
                 | DeclKind::BSMOD_I => Err(DeferReason::OutOfFragment(
-                    "division/remainder (partial op — slice 2)",
+                    "floored modulo, or a Z3-internal partial-op node",
                 )),
+
+                // --- slice 2: signed/unsigned division and remainder ---
+                //
+                // Reflected as PURE VALUE operators. `bvsdiv`/`bvsrem` and
+                // `bvudiv`/`bvurem` are total bitvector operations; wasm's
+                // `div_s`/`div_u`/`rem_s`/`rem_u` are partial, and the trap
+                // clause is NOT carried here. It could not be: a trap
+                // predicate has no node in the Z3 AST, so it would be the one
+                // part of the reflection that reflect-and-re-lower cannot
+                // validate, in a seam whose trustworthiness is exactly that
+                // check. Traps are discharged by `trap_gate`'s `DefineOrTrap`
+                // and enter the obligation as the `¬may_trap ⇒ value_eq`
+                // guard.
+                //
+                // `bvsmod` is NOT included. Wasm has no floored-modulo
+                // operator, so a `bsmod` node in a loom-built term would mean
+                // the encoder produced something the wasm spec does not
+                // define, and refusing is the honest response to a term we
+                // cannot attribute to a wasm instruction.
+                DeclKind::BUDIV => self.binop(node, n, RuleTerm::Udiv),
+                DeclKind::BUREM => self.binop(node, n, RuleTerm::Urem),
+                DeclKind::BSDIV => self.binop(node, n, RuleTerm::Sdiv),
+                DeclKind::BSREM => self.binop(node, n, RuleTerm::Srem),
 
                 // --- memory: Array theory, slice 2 ---
                 DeclKind::SELECT | DeclKind::STORE => {
@@ -758,8 +791,105 @@ mod tests {
         }
     }
 
+    /// Do the two engines agree about division at the points wasm never
+    /// reaches?
+    ///
+    /// `bvsdiv`/`bvudiv` are TOTAL in SMT-LIB: they are defined at `b == 0`.
+    /// Wasm traps there, so that point is a don't-care for loom — but the
+    /// seam currently routes a bare value equality, which quantifies over it.
+    /// If Z3 and ordeal happen to define the divide-by-zero result
+    /// differently, two correct engines would return different verdicts on
+    /// the same obligation, and `LOOM_VERIFY_BACKEND=both` would panic on a
+    /// disagreement that means nothing about loom.
+    ///
+    /// ordeal reaches `bvsdiv` through a BLESSED DERIVED op
+    /// (`lowering::bvsdiv`) rather than a primitive, so its behaviour at the
+    /// undefined point is a property of that construction, not something the
+    /// two engines share by assumption.
+    ///
+    /// MEASURED (ordeal 0.27.0, this tree): they agree on the VERDICT in
+    /// every case probed.
+    ///
+    /// ```text
+    /// sdiv by 0 vs all-ones: z3=Disproven(a -> #xffffffff)
+    ///                    ordeal=Disproven(a -> 0x80000000)   agree
+    /// udiv by 0 vs all-ones: z3=Proven   ordeal=Proven        agree
+    /// control: sdiv == itself: z3=Proven ordeal=Proven        agree
+    /// ```
+    ///
+    /// Both define `bvudiv(a, 0)` as all-ones, per SMT-LIB. The `sdiv` row
+    /// repays a careful read: the verdicts match while the COUNTEREXAMPLES
+    /// differ. That is not a divergence — a counterexample witnesses an
+    /// existential, and two different witnesses are both valid.
+    /// `agrees_with` compares verdicts, which is the right granularity.
+    ///
+    /// So the `both`-mode panic risk on routed division is lower than
+    /// feared. It does NOT remove the need for the trap guard: a bare value
+    /// equality still quantifies over `b == 0`, so a correct transform
+    /// differing only there would be REJECTED — conservative, but a
+    /// precision loss — and the slice-2 relation needs the guard regardless,
+    /// since it must reject trap REMOVAL and trap ADDITION, neither of which
+    /// a value equality can see. What this test buys is a regression guard on
+    /// the agreement itself.
     #[test]
-    fn every_slice1_op_reflects_and_round_trips_identically() {
+    fn the_engines_are_asked_whether_they_agree_on_division_by_zero() {
+        with_z3_config(&cfg(), || {
+            let a = RuleTerm::Var {
+                name: "a".to_string(),
+                width: 32,
+            };
+            let zero = RuleTerm::Const {
+                value: 0,
+                width: 32,
+            };
+            // Each pair is (name, lhs, rhs). The first two are the don't-care
+            // points; the third is a control that must hold on any engine.
+            let cases: Vec<(&str, RuleTerm, RuleTerm)> = vec![
+                (
+                    "sdiv by zero vs all-ones",
+                    RuleTerm::Sdiv(Box::new(a.clone()), Box::new(zero.clone())),
+                    RuleTerm::Const {
+                        value: u32::MAX as u128,
+                        width: 32,
+                    },
+                ),
+                (
+                    "udiv by zero vs all-ones",
+                    RuleTerm::Udiv(Box::new(a.clone()), Box::new(zero.clone())),
+                    RuleTerm::Const {
+                        value: u32::MAX as u128,
+                        width: 32,
+                    },
+                ),
+                (
+                    "control: sdiv is equal to itself",
+                    RuleTerm::Sdiv(Box::new(a.clone()), Box::new(a.clone())),
+                    RuleTerm::Sdiv(Box::new(a.clone()), Box::new(a.clone())),
+                ),
+            ];
+            let mut disagreements = Vec::new();
+            for (name, lhs, rhs) in &cases {
+                let z3 = Z3RuleSolver.prove_rule_equiv(lhs, rhs);
+                let ordeal = BoundedOrdealSolver::from_env().prove_rule_equiv(lhs, rhs);
+                let agree = z3.agrees_with(&ordeal);
+                println!("  {name}: z3={z3:?} ordeal={ordeal:?} agree={agree}");
+                if !agree {
+                    disagreements.push(*name);
+                }
+            }
+            assert!(
+                disagreements.is_empty(),
+                "the engines disagree about division at a point wasm never \
+                 reaches: {disagreements:?}. A bare value equality over a \
+                 total division therefore cannot be routed under `both` \
+                 without the trap guard, because the panic would report a \
+                 difference that says nothing about loom."
+            );
+        });
+    }
+
+    #[test]
+    fn every_routed_op_reflects_and_round_trips_identically() {
         // This is the reflection's faithfulness test: for each operation in
         // the closed fragment, the neutral term must re-lower to the SAME Z3
         // AST node. A wrong match arm (e.g. reflecting bvsub as bvadd) fails
@@ -790,6 +920,17 @@ mod tests {
                 a.concat(&b),
                 BV::from_u64(0xdead_beef, 32),
                 a.eq(&b).ite(&a, &b),
+                // slice 2: the four partial operators, reflected as pure
+                // value operators. These are the arms most likely to be got
+                // wrong, because trap_gate builds signed division as
+                // abs/udiv/negate — a term that is EQUIVALENT to `bvsdiv`
+                // but is not the same AST. Reflecting into that shape would
+                // fail here rather than silently prove a different query,
+                // which is what this test is for.
+                a.bvudiv(&b),
+                a.bvurem(&b),
+                a.bvsdiv(&b),
+                a.bvsrem(&b),
                 a.bvslt(&b).ite(&a, &b),
                 a.bvult(&b).ite(&a, &b),
                 a.bvule(&b).ite(&a, &b),
@@ -820,14 +961,30 @@ mod tests {
             let a = BV::new_const("a", 32);
             let b = BV::new_const("b", 32);
 
-            // Trapping / partial ops — deliberately deferred to slice 2.
+            // Slice 2 moved div/rem INTO the fragment, so the old
+            // assertion here (that they are refused) is gone — deliberately,
+            // and replaced by its dual rather than deleted. These must now
+            // reflect, and `every_routed_op_reflects_and_round_trips_identically`
+            // additionally pins that they round-trip to the same AST.
             for op in [a.bvudiv(&b), a.bvurem(&b), a.bvsdiv(&b), a.bvsrem(&b)] {
+                let mut r = reflect::Reflector::new(MAX_TERM_NODES);
                 assert!(
-                    matches!(reflect_err(&op), DeferReason::OutOfFragment(_)),
-                    "partial op must be refused: {}",
+                    r.reflect_bv(&op).is_ok(),
+                    "slice 2 routes this partial op; it must reflect: {}",
                     op
                 );
             }
+
+            // What is still OUT: floored modulo has no wasm operator, so a
+            // `bvsmod` node would be a term loom cannot attribute to any
+            // instruction. Refusing it is the honest answer, and keeping this
+            // assertion is what stops "slice 2 opened the division arms" from
+            // drifting into "the seam accepts anything division-shaped".
+            let smod = a.bvsmod(&b);
+            assert!(
+                matches!(reflect_err(&smod), DeferReason::OutOfFragment(_)),
+                "bvsmod has no wasm counterpart and must stay refused"
+            );
 
             // Memory: Array select.
             let mem = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
@@ -1012,9 +1169,19 @@ mod tests {
             let b = BV::new_const("b", 32);
             // Routed: pure BV.
             let _ = decide_bv_equivalence(&a.bvadd(&b), &b.bvadd(&a), VerifyBackend::Ordeal);
-            // Deferred: trapping op.
-            let _ = decide_bv_equivalence(&a.bvudiv(&b), &a.bvudiv(&b), VerifyBackend::Ordeal);
-            assert_eq!(route_counts(), (1, 1));
+            // Routed since slice 2: division is in the fragment now. This
+            // used to be the DEFERRED case in this test, and swapping it to
+            // the routed side is the point — a counter that only ever ticked
+            // "deferred" for division would keep passing after slice 2 while
+            // describing slice 1.
+            let _ = decide_bv_equivalence(&a.bvsdiv(&b), &a.bvsdiv(&b), VerifyBackend::Ordeal);
+            // Deferred: floored modulo has no wasm counterpart.
+            let _ = decide_bv_equivalence(&a.bvsmod(&b), &a.bvsmod(&b), VerifyBackend::Ordeal);
+            assert_eq!(
+                route_counts(),
+                (2, 1),
+                "two routed (add, sdiv) and one deferred (smod)"
+            );
         });
     }
 }
