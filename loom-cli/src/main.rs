@@ -400,9 +400,19 @@ fn write_validated_output(
 
 fn maybe_differential_gate(
     original: Option<&[u8]>,
-    optimized_wasm: &[u8],
-    output_path: &str,
+    // Underscored: these are read only inside the `differential` cfg block
+    // below, so without that feature they are genuinely unused. The
+    // verification gate builds with `RUSTFLAGS: -D warnings`, which turned
+    // three such warnings into hard errors and stopped `loom-cli` compiling
+    // there at all — so every artifact whose evidence is a `cargo test -p
+    // loom-cli` invocation failed, while being marked `verified`. The
+    // warnings were long-standing and looked ignorable in a normal build;
+    // they were only ever visible in the one environment that had not
+    // completed a run in six weeks (#353).
+    #[cfg_attr(not(feature = "differential"), allow(unused_variables))] optimized_wasm: &[u8],
+    #[cfg_attr(not(feature = "differential"), allow(unused_variables))] output_path: &str,
 ) -> Result<()> {
+    #[cfg_attr(not(feature = "differential"), allow(unused_variables))]
     let original = match original {
         Some(o) => o,
         None => return Ok(()),

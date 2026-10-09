@@ -1701,15 +1701,18 @@ fn contains_complex_loops(instructions: &[Instruction]) -> bool {
 }
 
 /// Maximum instructions in a loop body for bounded verification
+#[cfg(feature = "verification")]
 const MAX_LOOP_BODY_INSTRUCTIONS: usize = 100;
 
 /// Maximum nesting depth for loop verification
 /// Allows one level of nesting to verify nested loops
+#[cfg(feature = "verification")]
 const MAX_LOOP_NESTING_DEPTH: usize = 1;
 
 /// Enable K-induction for unbounded loop verification
 /// When true, uses inductive step to prove loops correct for ALL iterations
 /// When false, falls back to bounded unrolling only
+#[cfg(feature = "verification")]
 const ENABLE_K_INDUCTION: bool = true;
 
 /// Default ceiling on array-modelled memory accesses per function before the
@@ -1739,10 +1742,12 @@ const ENABLE_K_INDUCTION: bool = true;
 /// same input could produce different output, violating REQ-14 (deterministic
 /// optimization output). A count is the only mechanism here that stays
 /// deterministic.
+#[cfg(feature = "verification")]
 const DEFAULT_MAX_ARRAY_MEMORY_OPS: usize = 2;
 
 /// Bodies at or below this instruction count are exempt from the memory-op
 /// bound (#347). See the sweep in `TEST-347-MEMORY-OP-BOUND`.
+#[cfg(feature = "verification")]
 const DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR: usize = 16;
 
 /// K value for K-induction (number of base case iterations)
@@ -9047,6 +9052,13 @@ fn validate_instruction_sequence(
     }
 }
 
+/// Stub for builds without the `verification` feature: there is no verifier
+/// to consult, so this reports an error rather than a verdict.
+///
+/// Documented because `-D warnings` implies `-D missing-docs`, and the
+/// verification gate builds that way — but also because a public function
+/// whose whole job is to decline is exactly the one whose contract should be
+/// written down (#331: nothing was verified, and it says so).
 #[cfg(not(feature = "verification"))]
 pub fn verify_optimization(_original: &Module, _optimized: &Module) -> Result<bool> {
     Err(anyhow!(
