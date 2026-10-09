@@ -809,7 +809,26 @@ artifacts:
       introducing one is sound, and the LLVM-style "the original was UB so
       anything is permitted" reading would license exactly the bug class this
       work exists to eliminate.
-      To assert, once built: (1) each trapping operator's condition matches the
+      STATUS: the relation is implemented and five of seven criteria below are
+      proven; the artifact stays `draft` because two are not.
+      OUTSTANDING — trap_gate consolidation. The criteria said #257's
+      trap_gate predicates would "fold in here rather than remaining a
+      separate gate". They have not. Slice 2 builds its own `trap_condition`
+      over the reflected neutral term, because trap_gate's predicates are
+      built over ordeal `BvTerm`s for a different consumer (the
+      constant-operand fold backstop, which is exact precisely BECAUSE its
+      operands are literals and has "no symbolic slack"). Reusing them would
+      have meant translating between representations inside the obligation,
+      adding a path the reflect-and-re-lower round trip does not cover. So
+      there are now two trap-condition implementations that must agree about
+      the div_s/rem_s asymmetry, which is a real duplication and a real risk —
+      recorded as outstanding rather than quietly dropped from the criteria.
+      SCOPE NARROWED. #313's design comment lists slice 2 as "div/rem, trunc,
+      load/store bounds". This slice is div/rem ONLY. Memory is slices 4 and
+      5 and the seam refuses it separately, so listing load/store here was an
+      error in the design comment; trunc is deferred rather than attempted.
+      Narrowing is recorded here so two documents do not disagree silently.
+      Asserted: (1) each trapping operator's condition matches the
       core spec exactly — div_s and div_u trap on divide-by-zero, div_s ALSO on
       INT_MIN / -1, while rem_s(INT_MIN, -1) is 0 and does NOT trap; a test must
       fail if that asymmetry is flattened; (2) a transform that DROPS a
@@ -821,10 +840,13 @@ artifacts:
     fields:
       method: automated-test
       acceptance-criteria:
-        - "Given div_s(INT_MIN, -1), the encoded trap condition is TRUE; given rem_s(INT_MIN, -1) it is FALSE"
-        - "Given a transform that removes a mandatory trap, the validator REJECTS it"
-        - "Given a transform that introduces a trap the original did not have, the validator REJECTS it"
-        - "Given LOOM_VERIFY_BACKEND=both, the full suite runs with no divergence panic"
+        - "PROVEN: given div_s(INT_MIN, -1) the trap condition is TRUE; given rem_s(INT_MIN, -1) it is FALSE — both rows in ONE test, so a tidy-up that makes them uniform cannot pass by breaking only half"
+        - "PROVEN: given a transform that removes a mandatory trap, the validator REJECTS it — and the same test asserts a bare value equality ACCEPTS it, so the guard is shown to be load-bearing rather than assumed to be"
+        - "PROVEN: given a transform that introduces a trap the original did not have, the validator REJECTS it"
+        - "PROVEN: given LOOM_VERIFY_BACKEND=both, 545 tests run with no divergence panic"
+        - "PROVEN: given real wasm div_u/div_s/rem_s/rem_u/i64.div_s, each obligation is ROUTED AND DECIDED (1 routed, 0 deferred) rather than merely offered"
+        - "OUTSTANDING: #257's trap_gate predicates are NOT yet folded in; see the description"
+        - "SCOPE NARROWED: trunc and load/store bounds are not in this slice; see the description"
     status: draft
     release: v1.5.0
     tags: [v150, verification, solver-migration, traps]
