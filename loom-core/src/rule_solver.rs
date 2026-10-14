@@ -157,6 +157,20 @@ pub enum RuleTerm {
     /// Concatenation (`concat`): the first operand becomes the HIGH bits.
     Concat(Box<RuleTerm>, Box<RuleTerm>),
 
+    /// `select(array, index)` — read the byte at `index` of a linear-memory
+    /// array. Always 8 bits wide, because loom models linear memory as
+    /// `Array(BV32 -> BV8)` and nothing else (#313 slice 4).
+    ///
+    /// This is the one term whose children are not all bitvectors, so it is
+    /// also the one place the fragment stops being closed under the pure-BV
+    /// backends: see [`RuleArray`].
+    Select {
+        /// The array read from.
+        array: Box<RuleArray>,
+        /// The BV32 byte address read.
+        index: Box<RuleTerm>,
+    },
+
     /// If-then-else: `cond ? then_ : else_` (both arms share the result width).
     Ite {
         /// Boolean condition.
@@ -165,6 +179,39 @@ pub enum RuleTerm {
         then_: Box<RuleTerm>,
         /// Value when `cond` does not hold.
         else_: Box<RuleTerm>,
+    },
+}
+
+/// A backend-neutral **array-sorted** term: wasm linear memory, modelled as
+/// the non-extensional `Array(BV32 -> BV8)` both engines already agree on
+/// (#313 slice 4).
+///
+/// Deliberately tiny. There is no array equality, no array-valued `ite` and
+/// no array parameter — only a named base array and a chain of byte stores
+/// over it. That is exactly what `verify.rs` builds: a fresh
+/// `Array::new_const` for the initial memory and for each havoc point, with
+/// `store` applied per byte by the little-endian store encoders.
+///
+/// The narrowness is the point. An array-sorted `ite` (which a control-flow
+/// merge over two memory states would produce) is **refused** by the
+/// reflection rather than approximated, because neither the round-trip gate
+/// nor ordeal's sliver can take it.
+#[derive(Clone, Debug)]
+pub enum RuleArray {
+    /// A free array variable: the initial memory, or a havoc point. Two
+    /// distinct havoc points carry distinct names and must never be unified.
+    Var {
+        /// The array's name — its identity for both backends.
+        name: String,
+    },
+    /// `store(array, index, value)`: a single byte written at a BV32 address.
+    Store {
+        /// The array being updated.
+        array: Box<RuleArray>,
+        /// The BV32 byte address written.
+        index: Box<RuleTerm>,
+        /// The BV8 value written.
+        value: Box<RuleTerm>,
     },
 }
 
@@ -260,6 +307,8 @@ impl RuleTerm {
             RuleTerm::SignExt { by, arg } | RuleTerm::ZeroExt { by, arg } => arg.width() + by,
             RuleTerm::Concat(a, b) => a.width() + b.width(),
             RuleTerm::Ite { then_, .. } => then_.width(),
+            // Linear memory is byte-addressed: a select is always one byte.
+            RuleTerm::Select { .. } => 8,
         }
     }
 
@@ -484,9 +533,9 @@ pub struct Z3RuleSolver;
 
 #[cfg(feature = "verification")]
 pub(crate) mod z3_backend {
-    use super::{RuleBool, RuleSolver, RuleTerm, RuleVerdict, Z3RuleSolver};
-    use z3::ast::{BV, Bool};
-    use z3::{SatResult, Solver};
+    use super::{RuleArray, RuleBool, RuleSolver, RuleTerm, RuleVerdict, Z3RuleSolver};
+    use z3::ast::{Array, BV, Bool};
+    use z3::{SatResult, Solver, Sort};
 
     /// Lower a neutral term to a Z3 bitvector.
     ///
@@ -539,6 +588,33 @@ pub(crate) mod z3_backend {
             RuleTerm::Ite { cond, then_, else_ } => {
                 lower_bool(cond).ite(&lower(then_), &lower(else_))
             }
+            // #313 slice 4. `as_bv()` cannot fail here: `lower_array` only
+            // ever builds `Array(BV32 -> BV8)`, so a select off it is a BV8.
+            // The `expect` is a sort invariant of this very function, not a
+            // claim about anything the reflection handed us.
+            RuleTerm::Select { array, index } => lower_array(array)
+                .select(&lower(index))
+                .as_bv()
+                .expect("select on an Array(BV32 -> BV8) is a BV8 by construction"),
+        }
+    }
+
+    /// Lower a neutral array term to the Z3 `Array(BV32 -> BV8)` that
+    /// `verify.rs` builds, node for node.
+    ///
+    /// The sorts are hard-coded rather than carried on [`RuleArray`] because
+    /// the fragment admits exactly one array sort; a second one would need a
+    /// reflection change here, not a silent widening.
+    fn lower_array(array: &RuleArray) -> Array {
+        match array {
+            RuleArray::Var { name } => {
+                Array::new_const(name.as_str(), &Sort::bitvector(32), &Sort::bitvector(8))
+            }
+            RuleArray::Store {
+                array,
+                index,
+                value,
+            } => lower_array(array).store(&lower(index), &lower(value)),
         }
     }
 
@@ -603,86 +679,242 @@ pub struct OrdealRuleSolver;
 
 #[cfg(feature = "verification")]
 pub(crate) mod ordeal_backend {
-    use super::{OrdealRuleSolver, RuleBool, RuleSolver, RuleTerm, RuleVerdict};
+    use super::{OrdealRuleSolver, RuleArray, RuleBool, RuleSolver, RuleTerm, RuleVerdict};
     use ordeal::lowering;
+    use ordeal::sliver::{ArrayTerm, ExtBvTerm, ExtOp};
     use ordeal::{BoolTerm, BvTerm, CheckResult, Solver, Sort};
 
-    fn lower(term: &RuleTerm) -> BvTerm {
-        match term {
-            RuleTerm::Const { value, width } => BvTerm::Const {
-                value: *value,
-                sort: Sort::new(*width),
-            },
-            RuleTerm::Var { name, width } => BvTerm::Var {
-                name: name.clone(),
-                sort: Sort::new(*width),
-            },
-            RuleTerm::Add(a, b) => BvTerm::Add(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Sub(a, b) => BvTerm::Sub(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Mul(a, b) => BvTerm::Mul(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Udiv(a, b) => BvTerm::Udiv(Box::new(lower(a)), Box::new(lower(b))),
-            // bvurem is a blessed derived op in ordeal::lowering.
-            RuleTerm::Urem(a, b) => lowering::bvurem(lower(a), lower(b), a.width()),
-            // bvsdiv / bvsrem are likewise blessed derived ops.
-            RuleTerm::Sdiv(a, b) => lowering::bvsdiv(lower(a), lower(b), a.width()),
-            RuleTerm::Srem(a, b) => lowering::bvsrem(lower(a), lower(b), a.width()),
-            // bvneg / bvnot are blessed derived ops in ordeal::lowering
-            // (`0 - x` and `x xor 1..1` respectively).
-            RuleTerm::Neg(a) => lowering::bvneg(lower(a), a.width()),
-            RuleTerm::And(a, b) => BvTerm::And(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Or(a, b) => BvTerm::Or(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Xor(a, b) => BvTerm::Xor(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Not(a) => lowering::bvnot(lower(a), a.width()),
-            RuleTerm::Shl(a, b) => BvTerm::Shl(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Lshr(a, b) => BvTerm::Lshr(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Ashr(a, b) => BvTerm::Ashr(Box::new(lower(a)), Box::new(lower(b))),
-            // `bvrotl` is derived as `rotr(a, 0 - b)`, which ordeal documents
-            // as exact only for power-of-two widths. The reflection that
-            // produces `Rotl` refuses any other width (see
-            // `crate::verify_solver`), and the rules only ever use 32/64.
-            RuleTerm::Rotl(a, b) => lowering::bvrotl(lower(a), lower(b), a.width()),
-            RuleTerm::Rotr(a, b) => BvTerm::Rotr(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Extract { hi, lo, arg } => BvTerm::Extract {
-                hi: *hi,
-                lo: *lo,
-                arg: Box::new(lower(arg)),
-            },
-            RuleTerm::SignExt { by, arg } => BvTerm::SignExt {
-                by: *by,
-                arg: Box::new(lower(arg)),
-            },
-            RuleTerm::ZeroExt { by, arg } => BvTerm::ZeroExt {
-                by: *by,
-                arg: Box::new(lower(arg)),
-            },
-            RuleTerm::Concat(a, b) => BvTerm::Concat(Box::new(lower(a)), Box::new(lower(b))),
-            RuleTerm::Ite { cond, then_, else_ } => BvTerm::Ite {
-                cond: Box::new(lower_bool(cond)),
-                then_: Box::new(lower(then_)),
-                else_: Box::new(lower(else_)),
-            },
+    /// A gap in the **extended** (sliver) language: an operator that exists
+    /// in the closed core but has no [`ExtOp`] variant, so it cannot sit
+    /// above a `select`.
+    ///
+    /// `ExtOp` lifts most of the core over extended children, but not
+    /// `Ite`, `Urem`, `Neg`, `Not`, `Rotl`, `Sdiv` or `Srem`. For a
+    /// select-free subtree that costs nothing — it collapses into a single
+    /// [`ExtBvTerm::Core`] node and the operator is used in its blessed core
+    /// form. It only bites when memory is genuinely underneath, and then the
+    /// honest answer is to refuse: deriving, say, `bvnot` by hand in the
+    /// extended language would introduce a SECOND derivation beside
+    /// `ordeal::lowering`'s blessed one, which is exactly the kind of
+    /// silently-diverging duplicate the seam exists to avoid.
+    ///
+    /// `Ite` is the one that matters in practice and it is tracked upstream
+    /// as ordeal#231.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct ExtGap(pub(crate) &'static str);
+
+    /// Combine two lowered children under an operator that **is** liftable:
+    /// stay in the core when both children did, lift otherwise.
+    ///
+    /// Keeping the core node whenever possible is not an optimisation — it
+    /// is what preserves the invariant that [`lower_ext`] returns
+    /// [`ExtBvTerm::Core`] *exactly* when the subtree is select-free, which
+    /// is in turn how [`lower_to_ordeal`] decides whether a term is pure.
+    fn lift(
+        a: ExtBvTerm,
+        b: ExtBvTerm,
+        core: impl FnOnce(Box<BvTerm>, Box<BvTerm>) -> BvTerm,
+        ext: impl FnOnce(ExtBvTerm, ExtBvTerm) -> ExtOp,
+    ) -> ExtBvTerm {
+        match (a, b) {
+            (ExtBvTerm::Core(x), ExtBvTerm::Core(y)) => {
+                ExtBvTerm::Core(core(Box::new(x), Box::new(y)))
+            }
+            (x, y) => ExtBvTerm::Op(Box::new(ext(x, y))),
         }
     }
 
-    fn lower_bool(cond: &RuleBool) -> BoolTerm {
-        match cond {
-            RuleBool::Eq(a, b) => BoolTerm::Eq(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Ult(a, b) => BoolTerm::Ult(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Ule(a, b) => BoolTerm::Ule(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Ugt(a, b) => BoolTerm::Ugt(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Uge(a, b) => BoolTerm::Uge(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Slt(a, b) => BoolTerm::Slt(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Sle(a, b) => BoolTerm::Sle(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Sgt(a, b) => BoolTerm::Sgt(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Sge(a, b) => BoolTerm::Sge(Box::new(lower(a)), Box::new(lower(b))),
-            RuleBool::Not(inner) => BoolTerm::Not(Box::new(lower_bool(inner))),
-            RuleBool::BoolAnd(a, b) => {
-                BoolTerm::And(Box::new(lower_bool(a)), Box::new(lower_bool(b)))
-            }
-            RuleBool::BoolOr(a, b) => {
-                BoolTerm::Or(Box::new(lower_bool(a)), Box::new(lower_bool(b)))
-            }
+    /// Combine two lowered children under an operator that is **not**
+    /// liftable: only the all-core case is expressible.
+    fn core_only(
+        a: ExtBvTerm,
+        b: ExtBvTerm,
+        what: &'static str,
+        core: impl FnOnce(BvTerm, BvTerm) -> BvTerm,
+    ) -> Result<ExtBvTerm, ExtGap> {
+        match (a, b) {
+            (ExtBvTerm::Core(x), ExtBvTerm::Core(y)) => Ok(ExtBvTerm::Core(core(x, y))),
+            _ => Err(ExtGap(what)),
         }
+    }
+
+    /// Lower a neutral term into ordeal's extended (array/UF sliver)
+    /// language.
+    ///
+    /// **Invariant:** the result is [`ExtBvTerm::Core`] if and only if the
+    /// term contains no [`RuleTerm::Select`]. Everything that depends on
+    /// "is this obligation pure?" reads that off the result rather than
+    /// walking the tree a second time.
+    pub(crate) fn lower_ext(term: &RuleTerm) -> Result<ExtBvTerm, ExtGap> {
+        use ExtBvTerm::Core;
+        let w = term.width();
+        Ok(match term {
+            RuleTerm::Const { value, width } => Core(BvTerm::Const {
+                value: *value,
+                sort: Sort::new(*width),
+            }),
+            RuleTerm::Var { name, width } => Core(BvTerm::Var {
+                name: name.clone(),
+                sort: Sort::new(*width),
+            }),
+
+            RuleTerm::Add(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Add, ExtOp::Add),
+            RuleTerm::Sub(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Sub, ExtOp::Sub),
+            RuleTerm::Mul(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Mul, ExtOp::Mul),
+            RuleTerm::Udiv(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Udiv, ExtOp::Udiv),
+            RuleTerm::And(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::And, ExtOp::And),
+            RuleTerm::Or(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Or, ExtOp::Or),
+            RuleTerm::Xor(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Xor, ExtOp::Xor),
+            RuleTerm::Shl(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Shl, ExtOp::Shl),
+            RuleTerm::Lshr(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Lshr, ExtOp::Lshr),
+            RuleTerm::Ashr(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Ashr, ExtOp::Ashr),
+            RuleTerm::Rotr(a, b) => lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Rotr, ExtOp::Rotr),
+            RuleTerm::Concat(a, b) => {
+                lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Concat, ExtOp::Concat)
+            }
+
+            // Derived ops: `ordeal::lowering` owns the derivation, and it is
+            // stated over core terms only. See [`ExtGap`].
+            RuleTerm::Urem(a, b) => {
+                core_only(lower_ext(a)?, lower_ext(b)?, "memory under urem", |x, y| {
+                    lowering::bvurem(x, y, a.width())
+                })?
+            }
+            RuleTerm::Sdiv(a, b) => {
+                core_only(lower_ext(a)?, lower_ext(b)?, "memory under sdiv", |x, y| {
+                    lowering::bvsdiv(x, y, a.width())
+                })?
+            }
+            RuleTerm::Srem(a, b) => {
+                core_only(lower_ext(a)?, lower_ext(b)?, "memory under srem", |x, y| {
+                    lowering::bvsrem(x, y, a.width())
+                })?
+            }
+            // `bvrotl` is derived as `rotr(a, 0 - b)`, exact only at
+            // power-of-two widths; the reflection refuses any other.
+            RuleTerm::Rotl(a, b) => {
+                core_only(lower_ext(a)?, lower_ext(b)?, "memory under rotl", |x, y| {
+                    lowering::bvrotl(x, y, a.width())
+                })?
+            }
+
+            RuleTerm::Neg(a) => match lower_ext(a)? {
+                Core(x) => Core(lowering::bvneg(x, a.width())),
+                _ => return Err(ExtGap("memory under neg")),
+            },
+            RuleTerm::Not(a) => match lower_ext(a)? {
+                Core(x) => Core(lowering::bvnot(x, a.width())),
+                _ => return Err(ExtGap("memory under not")),
+            },
+
+            RuleTerm::Extract { hi, lo, arg } => match lower_ext(arg)? {
+                Core(x) => Core(BvTerm::Extract {
+                    hi: *hi,
+                    lo: *lo,
+                    arg: Box::new(x),
+                }),
+                x => ExtBvTerm::Op(Box::new(ExtOp::Extract {
+                    hi: *hi,
+                    lo: *lo,
+                    arg: x,
+                })),
+            },
+            RuleTerm::SignExt { by, arg } => match lower_ext(arg)? {
+                Core(x) => Core(BvTerm::SignExt {
+                    by: *by,
+                    arg: Box::new(x),
+                }),
+                x => ExtBvTerm::Op(Box::new(ExtOp::SignExt { by: *by, arg: x })),
+            },
+            RuleTerm::ZeroExt { by, arg } => match lower_ext(arg)? {
+                Core(x) => Core(BvTerm::ZeroExt {
+                    by: *by,
+                    arg: Box::new(x),
+                }),
+                x => ExtBvTerm::Op(Box::new(ExtOp::ZeroExt { by: *by, arg: x })),
+            },
+
+            // `ExtOp` has no `Ite`, so a select under a conditional cannot be
+            // expressed. That is ordeal#231, and it gates memory under
+            // control flow as well as the slice-3 UF work.
+            RuleTerm::Ite { cond, then_, else_ } => {
+                match (lower_bool_ext(cond)?, lower_ext(then_)?, lower_ext(else_)?) {
+                    (Some(c), Core(t), Core(e)) => Core(BvTerm::Ite {
+                        cond: Box::new(c),
+                        then_: Box::new(t),
+                        else_: Box::new(e),
+                    }),
+                    _ => return Err(ExtGap("memory under a conditional (ordeal#231)")),
+                }
+            }
+
+            RuleTerm::Select { array, index } => {
+                debug_assert_eq!(w, 8, "a select is a byte read");
+                ExtBvTerm::Select {
+                    array: Box::new(lower_array_ext(array)?),
+                    index: Box::new(lower_ext(index)?),
+                }
+            }
+        })
+    }
+
+    /// Lower a neutral array term to ordeal's [`ArrayTerm`].
+    fn lower_array_ext(array: &RuleArray) -> Result<ArrayTerm, ExtGap> {
+        Ok(match array {
+            RuleArray::Var { name } => ArrayTerm::Var { name: name.clone() },
+            RuleArray::Store {
+                array,
+                index,
+                value,
+            } => ArrayTerm::Store {
+                array: Box::new(lower_array_ext(array)?),
+                index: Box::new(lower_ext(index)?),
+                value: Box::new(lower_ext(value)?),
+            },
+        })
+    }
+
+    /// Lower a boolean, which is expressible only when every operand stayed
+    /// in the core — `ExtBoolTerm` exists, but it is only reachable from the
+    /// top-level goal, never from an `Ite` condition inside a term.
+    ///
+    /// `Ok(None)` means "a select appeared under this condition", which the
+    /// caller turns into the `ite` gap.
+    fn lower_bool_ext(cond: &RuleBool) -> Result<Option<BoolTerm>, ExtGap> {
+        let pair = |a: &RuleTerm, b: &RuleTerm| -> Result<Option<(BvTerm, BvTerm)>, ExtGap> {
+            match (lower_ext(a)?, lower_ext(b)?) {
+                (ExtBvTerm::Core(x), ExtBvTerm::Core(y)) => Ok(Some((x, y))),
+                _ => Ok(None),
+            }
+        };
+        macro_rules! cmp {
+            ($a:expr, $b:expr, $ctor:path) => {
+                match pair($a, $b)? {
+                    Some((x, y)) => Some($ctor(Box::new(x), Box::new(y))),
+                    None => None,
+                }
+            };
+        }
+        Ok(match cond {
+            RuleBool::Eq(a, b) => cmp!(a, b, BoolTerm::Eq),
+            RuleBool::Ult(a, b) => cmp!(a, b, BoolTerm::Ult),
+            RuleBool::Ule(a, b) => cmp!(a, b, BoolTerm::Ule),
+            RuleBool::Ugt(a, b) => cmp!(a, b, BoolTerm::Ugt),
+            RuleBool::Uge(a, b) => cmp!(a, b, BoolTerm::Uge),
+            RuleBool::Slt(a, b) => cmp!(a, b, BoolTerm::Slt),
+            RuleBool::Sle(a, b) => cmp!(a, b, BoolTerm::Sle),
+            RuleBool::Sgt(a, b) => cmp!(a, b, BoolTerm::Sgt),
+            RuleBool::Sge(a, b) => cmp!(a, b, BoolTerm::Sge),
+            RuleBool::Not(inner) => lower_bool_ext(inner)?.map(|c| BoolTerm::Not(Box::new(c))),
+            RuleBool::BoolAnd(a, b) => match (lower_bool_ext(a)?, lower_bool_ext(b)?) {
+                (Some(x), Some(y)) => Some(BoolTerm::And(Box::new(x), Box::new(y))),
+                _ => None,
+            },
+            RuleBool::BoolOr(a, b) => match (lower_bool_ext(a)?, lower_bool_ext(b)?) {
+                (Some(x), Some(y)) => Some(BoolTerm::Or(Box::new(x), Box::new(y))),
+                _ => None,
+            },
+        })
     }
 
     /// Lower a neutral term to an ordeal `BvTerm`.
@@ -693,8 +925,65 @@ pub(crate) mod ordeal_backend {
     /// whole-function obligation can be far larger than an algebraic rule, and
     /// an unbounded solve would turn a slow query into a hang instead of a
     /// conservative revert.
-    pub(crate) fn lower_to_ordeal(term: &RuleTerm) -> BvTerm {
-        lower(term)
+    /// `None` when the term reads memory, because a `select` has no closed-core
+    /// form — such an obligation belongs on the sliver path
+    /// ([`lower_ext`]), never on this one. Returning an `Option` rather than
+    /// panicking keeps the pure path total and makes the memory case an
+    /// explicit, conservative `Unknown` at every call site.
+    pub(crate) fn lower_to_ordeal(term: &RuleTerm) -> Option<BvTerm> {
+        match lower_ext(term) {
+            // The `lower_ext` invariant: `Core` iff select-free.
+            Ok(ExtBvTerm::Core(bv)) => Some(bv),
+            _ => None,
+        }
+    }
+
+    /// A lowered equivalence goal, ready to assert on a [`Solver`].
+    pub(crate) enum GoalLowering {
+        /// Neither side reads memory: the closed-core `Ne` goal, exactly as
+        /// slices 1-2 built it.
+        Core(BoolTerm),
+        /// A memory obligation, already eliminated into the closed core by
+        /// the array sliver (eager read-over-write + array congruence). No
+        /// array construct remains; the ordinary blast pipeline decides it.
+        Sliver(Vec<BoolTerm>),
+    }
+
+    /// Why an equivalence goal could not be lowered.
+    #[derive(Debug)]
+    pub(crate) enum GoalError {
+        /// An operator with no extended form sits above a `select`.
+        Gap(ExtGap),
+        /// ordeal's sliver refused the query outright.
+        Sliver(ordeal::sliver::SliverError),
+    }
+
+    /// Lower the goal `lhs != rhs`, routing through the array sliver when
+    /// either side reads memory.
+    ///
+    /// Deliberately NOT `Solver::prove_equiv_sliver`/`check_sliver`. Those
+    /// are one-shot helpers that run the **unbounded** `Solver::check` and
+    /// collapse every `SliverError` into `Unknown`. Both are wrong here: the
+    /// deadline is what turns a slow memory query into a conservative revert
+    /// instead of a hang (loom#347 is exactly that failure mode), and an
+    /// out-of-sliver query must surface as a REFUSAL the seam can defer to
+    /// the incumbent on, not as an undecided verdict the call site turns
+    /// into a revert. Lowering here and asserting the core ourselves keeps
+    /// both properties.
+    pub(crate) fn lower_goal_ne(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<GoalLowering, GoalError> {
+        use ordeal::sliver::ExtBoolTerm;
+        let l = lower_ext(lhs).map_err(GoalError::Gap)?;
+        let r = lower_ext(rhs).map_err(GoalError::Gap)?;
+        match (l, r) {
+            // The `lower_ext` invariant: both `Core` iff neither side reads
+            // memory, so the pure path is byte-identical to slices 1-2.
+            (ExtBvTerm::Core(a), ExtBvTerm::Core(b)) => {
+                Ok(GoalLowering::Core(BoolTerm::Ne(Box::new(a), Box::new(b))))
+            }
+            (a, b) => ordeal::sliver::lower(&[ExtBoolTerm::Ne(a, b)])
+                .map(GoalLowering::Sliver)
+                .map_err(GoalError::Sliver),
+        }
     }
 
     /// Render an ordeal model the way the rule solver does (shared with
@@ -716,8 +1005,12 @@ pub(crate) mod ordeal_backend {
 
     impl RuleSolver for OrdealRuleSolver {
         fn prove_rule_equiv(&self, lhs: &RuleTerm, rhs: &RuleTerm) -> RuleVerdict {
-            let l = lower(lhs);
-            let r = lower(rhs);
+            // Tier-1's algebraic rules never touch memory. If one ever does,
+            // `Unknown` is the conservative answer — the rule is simply not
+            // proven, and the caller keeps the original.
+            let (Some(l), Some(r)) = (lower_to_ordeal(lhs), lower_to_ordeal(rhs)) else {
+                return RuleVerdict::Unknown;
+            };
             // prove_equiv asserts the negation (lhs != rhs) and runs the
             // certificate-checked pipeline.
             match Solver::prove_equiv(l, r) {

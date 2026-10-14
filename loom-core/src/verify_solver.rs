@@ -67,11 +67,13 @@
 
 #[cfg(feature = "verification")]
 use crate::rule_solver::{
-    RuleBool, RuleSolver, RuleTerm, RuleVerdict, VerifyBackend, Z3RuleSolver,
+    RuleArray, RuleBool, RuleSolver, RuleTerm, RuleVerdict, VerifyBackend, Z3RuleSolver,
 };
 
 #[cfg(feature = "verification")]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+#[cfg(feature = "verification")]
+use std::collections::BTreeMap;
 
 // ============================================================================
 // Budgets
@@ -87,6 +89,34 @@ use std::cell::Cell;
 /// governs the SAT search).
 #[cfg(feature = "verification")]
 const MAX_TERM_NODES: usize = 4096;
+
+/// Maximum number of memory accesses (`select`s plus `store`s, both sides
+/// together) in a routed obligation.
+///
+/// [`MAX_TERM_NODES`] bounds the reflected TREE; it does not bound what the
+/// array elimination expands that tree into. Resolving a read walks the whole
+/// store chain, and ordeal then relates every pair of reads of one base array
+/// with an aliasing constraint — so the lowered core grows as roughly
+/// `reads x stores + reads^2 / 2`. All of that is built, and bit-blasted,
+/// before `check_with_deadline` starts counting, which is precisely the shape
+/// of blow-up loom#347 was: a cost in the ENCODING, not in the search, so a
+/// timeout does not bound it.
+///
+/// 64 accesses is 16 `i32` memory operations (loads and stores are four bytes
+/// each). The number is a starting bound, not a measurement — the corpus
+/// deferral counts reported for this slice are what tells us whether it is
+/// the right one.
+#[cfg(feature = "verification")]
+const DEFAULT_MAX_MEMORY_ACCESSES: usize = 64;
+
+/// Read the memory-access bound from `LOOM_ORDEAL_MAX_MEM_ACCESSES`.
+#[cfg(feature = "verification")]
+fn max_memory_accesses() -> usize {
+    std::env::var("LOOM_ORDEAL_MAX_MEM_ACCESSES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_MEMORY_ACCESSES)
+}
 
 /// Default per-obligation wall-clock budget for the ordeal solve, in ms.
 ///
@@ -142,6 +172,24 @@ pub enum DeferReason {
     /// variables. Z3 keys constants by `(symbol, sort)` and would not. Rather
     /// than rely on this never happening, the seam refuses the obligation.
     VariableNameCollision,
+    /// A `select` sits beneath an operator that ordeal's extended language
+    /// cannot lift over extended children. The `&'static str` names the
+    /// operator; the one that matters in practice is `ite`, tracked upstream
+    /// as ordeal#231. See `rule_solver::ordeal_backend::ExtGap`.
+    MemoryUnderUnliftedOp(&'static str),
+    /// The obligation touches more distinct memory bytes than
+    /// [`max_memory_accesses`] allows. Eliminating the array is quadratic —
+    /// every read walks the whole store chain, and every pair of reads of one
+    /// base array contributes an aliasing constraint — and that work happens
+    /// BEFORE the solver deadline can intervene, so it needs its own bound.
+    TooManyMemoryAccesses,
+    /// ordeal's sliver refused the lowered query outright. The `&'static
+    /// str` names which refusal, because the three mean very different
+    /// things: a bad array sort would be a loom encoding bug, an
+    /// inconsistent call signature belongs to slice 3, and a non-concrete
+    /// index is vestigial in ordeal 0.27 (symbolic indices were decided from
+    /// 0.11.0 / TR-028) — seeing it would mean that changed.
+    SliverRefused(&'static str),
 }
 
 impl DeferReason {
@@ -155,6 +203,9 @@ impl DeferReason {
             DeferReason::TooLarge => "term exceeds node budget",
             DeferReason::RoundTripFailed => "reflection round-trip not identical",
             DeferReason::VariableNameCollision => "variable name collision",
+            DeferReason::MemoryUnderUnliftedOp(what) => what,
+            DeferReason::TooManyMemoryAccesses => "too many memory accesses",
+            DeferReason::SliverRefused(what) => what,
         }
     }
 }
@@ -183,6 +234,14 @@ pub enum SeamOutcome {
 thread_local! {
     static ROUTED: Cell<u64> = const { Cell::new(0) };
     static DEFERRED: Cell<u64> = const { Cell::new(0) };
+    /// Deferrals broken down by reason.
+    ///
+    /// The totals say how much coverage there is; this says what is in the
+    /// way, which is the number that decides what the next slice should be.
+    /// Keyed by [`DeferReason::label`] so the breakdown reads the same in a
+    /// test as in `LOOM_VERBOSE_REVERTS` output.
+    static DEFERRED_BY_REASON: RefCell<BTreeMap<&'static str, u64>> =
+        const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Reset this thread's route counters.
@@ -190,6 +249,17 @@ thread_local! {
 pub fn reset_route_counts() {
     ROUTED.with(|c| c.set(0));
     DEFERRED.with(|c| c.set(0));
+    DEFERRED_BY_REASON.with(|m| m.borrow_mut().clear());
+}
+
+/// Deferrals since the last [`reset_route_counts`], by reason label,
+/// most frequent first.
+#[cfg(feature = "verification")]
+pub fn deferrals_by_reason() -> Vec<(&'static str, u64)> {
+    let mut v: Vec<_> =
+        DEFERRED_BY_REASON.with(|m| m.borrow().iter().map(|(k, n)| (*k, *n)).collect());
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v
 }
 
 /// `(routed, deferred)` obligation counts for this thread since the last
@@ -207,6 +277,7 @@ fn note_routed() {
 #[cfg(feature = "verification")]
 fn note_deferred(reason: DeferReason) {
     DEFERRED.with(|c| c.set(c.get() + 1));
+    DEFERRED_BY_REASON.with(|m| *m.borrow_mut().entry(reason.label()).or_insert(0) += 1);
     // Same switch the validator already uses for per-function revert detail
     // (loom#145). During the migration an operator needs to be able to see
     // WHY coverage is what it is, not just that it is partial.
@@ -303,7 +374,117 @@ fn decide_inner(orig: &z3::ast::BV, opt: &z3::ast::BV, backend: VerifyBackend) -
     let goal_lhs = trap_guarded(&lhs, lhs_trap.as_ref());
     let goal_rhs = trap_guarded(&rhs, rhs_trap.as_ref());
 
+    // #313 slice 4: a memory obligation leaves the closed core, so ordeal
+    // decides it through the array sliver. Whether the sliver can TAKE it is
+    // settled here, before anything is routed.
+    //
+    // That ordering is the point. `prove` returns a verdict, and the call
+    // sites in `verify.rs` map `Unknown` onto a revert — so an obligation
+    // routed and then found inexpressible would cost an optimization that
+    // the incumbent could have proven. Deferring instead hands it back
+    // untouched. The cost is that the lowering runs twice on the memory
+    // path; it is a tree rebuild against a SAT solve, and it buys an exact
+    // defer reason.
+    if let Err(reason) = sliver_admits(&goal_lhs, &goal_rhs) {
+        return SeamOutcome::Deferred(reason);
+    }
+
     SeamOutcome::Decided(prove(&goal_lhs, &goal_rhs, backend))
+}
+
+/// Count the memory accesses (`select`s and `store`s) in a term.
+#[cfg(feature = "verification")]
+fn memory_accesses(term: &RuleTerm) -> usize {
+    use RuleTerm as T;
+    fn arr(a: &RuleArray) -> usize {
+        match a {
+            RuleArray::Var { .. } => 0,
+            RuleArray::Store {
+                array,
+                index,
+                value,
+            } => 1 + arr(array) + memory_accesses(index) + memory_accesses(value),
+        }
+    }
+    fn boolean(b: &RuleBool) -> usize {
+        use RuleBool as B;
+        match b {
+            B::Eq(x, y)
+            | B::Ult(x, y)
+            | B::Ule(x, y)
+            | B::Ugt(x, y)
+            | B::Uge(x, y)
+            | B::Slt(x, y)
+            | B::Sle(x, y)
+            | B::Sgt(x, y)
+            | B::Sge(x, y) => memory_accesses(x) + memory_accesses(y),
+            B::Not(x) => boolean(x),
+            B::BoolAnd(x, y) | B::BoolOr(x, y) => boolean(x) + boolean(y),
+        }
+    }
+    match term {
+        T::Const { .. } | T::Var { .. } => 0,
+        T::Select { array, index } => 1 + arr(array) + memory_accesses(index),
+        T::Add(a, b)
+        | T::Sub(a, b)
+        | T::Mul(a, b)
+        | T::Udiv(a, b)
+        | T::Urem(a, b)
+        | T::Sdiv(a, b)
+        | T::Srem(a, b)
+        | T::And(a, b)
+        | T::Or(a, b)
+        | T::Xor(a, b)
+        | T::Shl(a, b)
+        | T::Lshr(a, b)
+        | T::Ashr(a, b)
+        | T::Rotl(a, b)
+        | T::Rotr(a, b)
+        | T::Concat(a, b) => memory_accesses(a) + memory_accesses(b),
+        T::Neg(a) | T::Not(a) => memory_accesses(a),
+        T::Extract { arg, .. } | T::SignExt { arg, .. } | T::ZeroExt { arg, .. } => {
+            memory_accesses(arg)
+        }
+        T::Ite { cond, then_, else_ } => {
+            boolean(cond) + memory_accesses(then_) + memory_accesses(else_)
+        }
+    }
+}
+
+/// Can ordeal's array sliver take this obligation?
+///
+/// `Ok(())` for a pure obligation (nothing changes — no sliver is involved)
+/// and for a memory obligation that lowers within budget. Every other answer
+/// is a named refusal the caller defers on.
+#[cfg(feature = "verification")]
+fn sliver_admits(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<(), DeferReason> {
+    use crate::rule_solver::ordeal_backend::{GoalError, lower_goal_ne};
+
+    let accesses = memory_accesses(lhs) + memory_accesses(rhs);
+    if accesses == 0 {
+        // Pure: slices 1-2 unchanged, and no array elimination to bound.
+        return Ok(());
+    }
+    if accesses > max_memory_accesses() {
+        return Err(DeferReason::TooManyMemoryAccesses);
+    }
+    match lower_goal_ne(lhs, rhs) {
+        Ok(_) => Ok(()),
+        Err(GoalError::Gap(gap)) => Err(DeferReason::MemoryUnderUnliftedOp(gap.0)),
+        Err(GoalError::Sliver(e)) => Err(DeferReason::SliverRefused(match e {
+            ordeal::sliver::SliverError::NonConcreteIndex => {
+                "array sliver: non-concrete index (unexpected on ordeal >= 0.11)"
+            }
+            ordeal::sliver::SliverError::BadArraySort => "array sliver: array sort rejected",
+            ordeal::sliver::SliverError::InconsistentCall { .. } => {
+                "array sliver: inconsistent call signature"
+            } // Deliberately exhaustive, with no catch-all. `SliverError` is
+              // not `#[non_exhaustive]`, so a new refusal reason in a future
+              // ordeal breaks this build — which is the right outcome: a new
+              // way for the sliver to refuse is a new thing the seam has to
+              // classify, not something to absorb under a wildcard.
+        })),
+    }
 }
 
 /// The wasm trap condition of every division in a reflected term, or a
@@ -408,8 +589,41 @@ fn trap_condition(term: &RuleTerm) -> Result<Option<RuleBool>, DeferReason> {
                 walk(then_, true, acc)?;
                 walk(else_, true, acc)?;
             }
+            // A `select` contributes NO trap clause of its own: loom's
+            // memory model is a total `Array(BV32 -> BV8)` with no bounds
+            // check, so an out-of-bounds load is not representable here, let
+            // alone trapping. That is a REAL gap in what the obligation
+            // covers and it is recorded as such in the slice-4 artifact —
+            // but it is the incumbent's gap too, inherited unchanged, not
+            // one this slice introduces.
+            //
+            // The children still have to be walked: an address can be
+            // computed with a division, and so can a stored value.
+            T::Select { array, index } => {
+                walk_array(array, under_ite, acc)?;
+                walk(index, under_ite, acc)?;
+            }
         }
         Ok(())
+    }
+
+    fn walk_array(
+        a: &RuleArray,
+        under_ite: bool,
+        acc: &mut Vec<RuleBool>,
+    ) -> Result<(), DeferReason> {
+        match a {
+            RuleArray::Var { .. } => Ok(()),
+            RuleArray::Store {
+                array,
+                index,
+                value,
+            } => {
+                walk_array(array, under_ite, acc)?;
+                walk(index, under_ite, acc)?;
+                walk(value, under_ite, acc)
+            }
+        }
     }
 
     fn walk_bool(
@@ -566,14 +780,27 @@ impl BoundedOrdealSolver {
 #[cfg(feature = "verification")]
 impl RuleSolver for BoundedOrdealSolver {
     fn prove_rule_equiv(&self, lhs: &RuleTerm, rhs: &RuleTerm) -> RuleVerdict {
-        use crate::rule_solver::ordeal_backend::{lower_to_ordeal, render_ordeal_model};
-        use ordeal::{BoolTerm, CheckResult, Solver};
+        use crate::rule_solver::ordeal_backend::{
+            GoalLowering, lower_goal_ne, render_ordeal_model,
+        };
+        use ordeal::{CheckResult, Solver};
 
         let mut solver = Solver::new();
-        solver.assert(BoolTerm::Ne(
-            Box::new(lower_to_ordeal(lhs)),
-            Box::new(lower_to_ordeal(rhs)),
-        ));
+        match lower_goal_ne(lhs, rhs) {
+            Ok(GoalLowering::Core(ne)) => solver.assert(ne),
+            // The sliver has already eliminated every array construct; what
+            // is asserted here is closed-core, and the deadline below
+            // governs it exactly as it governs a pure obligation.
+            Ok(GoalLowering::Sliver(core)) => {
+                for assertion in core {
+                    solver.assert(assertion);
+                }
+            }
+            // `decide_bv_equivalence` gates this case and defers instead, so
+            // reaching it means the obligation came from somewhere else.
+            // `Unknown` is the conservative answer either way.
+            Err(_) => return RuleVerdict::Unknown,
+        }
         match solver.check_with_deadline(self.timeout_ms) {
             CheckResult::Unsat(cert) => match cert.recheck() {
                 Ok(()) => RuleVerdict::Proven,
@@ -596,10 +823,10 @@ impl RuleSolver for BoundedOrdealSolver {
 #[cfg(feature = "verification")]
 mod reflect {
     use super::DeferReason;
-    use crate::rule_solver::{RuleBool, RuleTerm};
+    use crate::rule_solver::{RuleArray, RuleBool, RuleTerm};
     use std::collections::HashMap;
-    use z3::ast::{Ast, BV, Bool, Dynamic};
-    use z3::{AstKind, DeclKind};
+    use z3::ast::{Array, Ast, BV, Bool, Dynamic};
+    use z3::{AstKind, DeclKind, Sort};
 
     type Reflected<T> = Result<T, DeferReason>;
 
@@ -618,6 +845,12 @@ mod reflect {
     pub(super) struct Reflector {
         /// name → (width, the Z3 constant it came from).
         vars: HashMap<String, (u32, BV)>,
+        /// Array name -> the Z3 array constant it came from. Separate from
+        /// `vars` because the sorts are disjoint, but guarded identically:
+        /// ordeal keys arrays by name alone, so two distinct Z3 memories
+        /// sharing a name would be conflated — which is exactly the hazard
+        /// that would let two HAVOC points be proven equal (#313 slice 4).
+        arrays: HashMap<String, Array>,
         budget: usize,
     }
 
@@ -625,6 +858,7 @@ mod reflect {
         pub(super) fn new(max_nodes: usize) -> Self {
             Reflector {
                 vars: HashMap::new(),
+                arrays: HashMap::new(),
                 budget: max_nodes,
             }
         }
@@ -640,6 +874,7 @@ mod reflect {
         /// Record a free variable, refusing any name reuse that ordeal's
         /// name-keyed interning could conflate.
         fn intern(&mut self, name: String, width: u32, ast: &BV) -> Reflected<RuleTerm> {
+            reserved_name_check(&name)?;
             match self.vars.get(&name) {
                 Some((w, prev)) => {
                     // Two distinct Z3 constants must never share a neutral
@@ -653,6 +888,94 @@ mod reflect {
                 }
             }
             Ok(RuleTerm::Var { name, width })
+        }
+
+        /// Record a free ARRAY variable under the same name discipline as
+        /// [`Reflector::intern`].
+        fn intern_array(&mut self, name: String, ast: &Array) -> Reflected<RuleArray> {
+            reserved_name_check(&name)?;
+            match self.arrays.get(&name) {
+                Some(prev) => {
+                    if prev != ast {
+                        return Err(DeferReason::VariableNameCollision);
+                    }
+                }
+                None => {
+                    self.arrays.insert(name.clone(), ast.clone());
+                }
+            }
+            Ok(RuleArray::Var { name })
+        }
+
+        /// Reflect an array-sorted node into the neutral array sub-language.
+        ///
+        /// Admits exactly two shapes — a named `Array(BV32 -> BV8)` constant
+        /// and a `store` over one. Everything else is refused, and the
+        /// refusals are load-bearing rather than incidental:
+        ///
+        /// * an array-sorted **`ite`** is what a control-flow merge over two
+        ///   memory states produces. ordeal's extended language has no array
+        ///   `ite`, so there is nothing to lower it to (ordeal#231);
+        /// * a **const-array** (`((as const (Array ...)) v)`) has no neutral
+        ///   form either, and silently treating it as a fresh variable would
+        ///   DROP the constraint that every byte equals `v` — unsound in the
+        ///   direction that matters, because it would make more things
+        ///   provable, not fewer.
+        fn reflect_array(&mut self, node: &Array) -> Reflected<RuleArray> {
+            self.spend()?;
+
+            // One array sort, checked rather than assumed: the neutral
+            // `RuleArray` hard-codes BV32 -> BV8 at both lowerings, so a
+            // differently-sorted array must never reach it.
+            if node.get_sort() != Sort::array(&Sort::bitvector(32), &Sort::bitvector(8)) {
+                return Err(DeferReason::OutOfFragment(
+                    "array whose sort is not BV32 -> BV8",
+                ));
+            }
+            if node.kind() != AstKind::App {
+                return Err(DeferReason::OutOfFragment("non-application array node"));
+            }
+            let decl = node
+                .safe_decl()
+                .map_err(|_| DeferReason::OutOfFragment("array node is not an application"))?;
+            let n = node.num_children();
+
+            if decl.kind() == DeclKind::UNINTERPRETED {
+                if n == 0 {
+                    return self.intern_array(decl.name(), node);
+                }
+                return Err(DeferReason::OutOfFragment(
+                    "uninterpreted array-valued function application",
+                ));
+            }
+
+            if decl.kind() == DeclKind::STORE {
+                if n != 3 {
+                    return Err(DeferReason::OutOfFragment("store with != 3 arguments"));
+                }
+                let inner = node
+                    .nth_child(0)
+                    .and_then(|d| d.as_array())
+                    .ok_or(DeferReason::OutOfFragment("store target is not an array"))?;
+                let index = child_bv_of(node, 1)?;
+                let value = child_bv_of(node, 2)?;
+                // Implied by the sort check above; asserted so a future sort
+                // widening cannot quietly change what gets stored.
+                if index.get_size() != 32 || value.get_size() != 8 {
+                    return Err(DeferReason::OutOfFragment(
+                        "store index/value is not BV32/BV8",
+                    ));
+                }
+                return Ok(RuleArray::Store {
+                    array: Box::new(self.reflect_array(&inner)?),
+                    index: Box::new(self.reflect_bv(&index)?),
+                    value: Box::new(self.reflect_bv(&value)?),
+                });
+            }
+
+            Err(DeferReason::OutOfFragment(
+                "array term that is neither a named memory nor a store",
+            ))
         }
 
         pub(super) fn reflect_bv(&mut self, node: &BV) -> Reflected<RuleTerm> {
@@ -750,10 +1073,36 @@ mod reflect {
                 DeclKind::BSDIV => self.binop(node, n, RuleTerm::Sdiv),
                 DeclKind::BSREM => self.binop(node, n, RuleTerm::Srem),
 
-                // --- memory: Array theory, slice 2 ---
-                DeclKind::SELECT | DeclKind::STORE => {
-                    Err(DeferReason::OutOfFragment("memory array select/store"))
+                // --- memory: Array theory, slice 4 ---
+                //
+                // A `select` is the only array-theory node that is
+                // bitvector-sorted, so it is the only one that can appear
+                // here; a `store` is array-sorted and is reached through
+                // `reflect_array` instead. A BV-sorted `store` cannot exist,
+                // and refusing it costs nothing.
+                DeclKind::SELECT => {
+                    if n != 2 {
+                        return Err(DeferReason::OutOfFragment("select with != 2 arguments"));
+                    }
+                    if width != 8 {
+                        return Err(DeferReason::OutOfFragment("select result is not a byte"));
+                    }
+                    let array = node
+                        .nth_child(0)
+                        .and_then(|d| d.as_array())
+                        .ok_or(DeferReason::OutOfFragment("select source is not an array"))?;
+                    let index = child_bv(node, 1)?;
+                    if index.get_size() != 32 {
+                        return Err(DeferReason::OutOfFragment("select index is not BV32"));
+                    }
+                    Ok(RuleTerm::Select {
+                        array: Box::new(self.reflect_array(&array)?),
+                        index: Box::new(self.reflect_bv(&index)?),
+                    })
                 }
+                DeclKind::STORE => Err(DeferReason::OutOfFragment(
+                    "bitvector-sorted store (not a shape Z3 builds)",
+                )),
 
                 // --- the closed pure-BV fragment ---
                 DeclKind::BADD => self.binop(node, n, RuleTerm::Add),
@@ -962,6 +1311,25 @@ mod reflect {
 
     fn child_bv(node: &BV, idx: usize) -> Reflected<BV> {
         as_bv(node.nth_child(idx))
+    }
+
+    fn child_bv_of(node: &Array, idx: usize) -> Reflected<BV> {
+        as_bv(node.nth_child(idx))
+    }
+
+    /// ordeal's sliver mints its own core variables while eliminating
+    /// arrays, named `$sel:<array>:<index>`. It interns every variable by
+    /// name alone, so a loom-supplied name in that namespace could be
+    /// conflated with a lowering-internal one. loom never produces such a
+    /// name, but "never produces" is an assumption about a 3000-line
+    /// encoder, so it is checked rather than relied upon.
+    fn reserved_name_check(name: &str) -> Reflected<()> {
+        if name.starts_with('$') {
+            return Err(DeferReason::OutOfFragment(
+                "name in the solver's reserved `$` namespace",
+            ));
+        }
+        Ok(())
     }
 
     fn bv_child(node: &Bool, idx: usize) -> Reflected<BV> {
@@ -1461,10 +1829,32 @@ mod tests {
                 "bvsmod has no wasm counterpart and must stay refused"
             );
 
-            // Memory: Array select.
-            let mem = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
-            let load = mem.select(&a).as_bv().unwrap();
-            assert!(matches!(reflect_err(&load), DeferReason::OutOfFragment(_)));
+            // Memory: slice 4 moved `select`/`store` INTO the fragment, so
+            // this assertion is inverted rather than deleted — same
+            // discipline slice 2 applied to division above. A load must now
+            // reflect.
+            let memory = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
+            let load = memory.select(&a).as_bv().unwrap();
+            assert!(
+                reflect::Reflector::new(MAX_TERM_NODES)
+                    .reflect_bv(&load)
+                    .is_ok(),
+                "slice 4 routes memory reads; a select must reflect"
+            );
+
+            // What is still OUT on the memory side: an array-sorted `ite`,
+            // which is what a control-flow merge over two memory states
+            // produces. Neither the round-trip gate nor ordeal's extended
+            // language has a form for it.
+            let merged = a.eq(&b).ite(
+                &memory,
+                &Array::new_const("other", &Sort::bitvector(32), &Sort::bitvector(8)),
+            );
+            let load_merged = merged.select(&a).as_bv().unwrap();
+            assert!(matches!(
+                reflect_err(&load_merged),
+                DeferReason::OutOfFragment(_)
+            ));
 
             // Uninterpreted function application (the `pure_call` shape).
             let f = z3::FuncDecl::new("pure_call_f", &[&Sort::bitvector(32)], &Sort::bitvector(32));
@@ -1656,6 +2046,414 @@ mod tests {
                 route_counts(),
                 (2, 1),
                 "two routed (add, sdiv) and one deferred (smod)"
+            );
+        });
+    }
+
+    // ========================================================================
+    // #313 slice 4 — havoc and memory
+    //
+    // The artifact `TEST-313-TIER2-SLICE4-HAVOC-CONCRETE-MEM` states four
+    // acceptance criteria. Each has a test below named after it, plus the
+    // aliasing pair that is the real content of a memory model.
+    //
+    // Every one of these asserts `route_counts().0 > 0`. Without that, a
+    // regression that made the seam refuse memory again would leave each
+    // test passing — the verdicts would still be right, because Z3 would
+    // still be deciding them. "Decided by the new engine, not merely offered
+    // to it" is the property (#289), so it is asserted, not assumed.
+    // ========================================================================
+
+    /// The shared `Array(BV32 -> BV8)` sort, as `verify.rs` builds it.
+    fn mem(name: &str) -> Array {
+        Array::new_const(name, &Sort::bitvector(32), &Sort::bitvector(8))
+    }
+
+    /// Decide `orig == opt` on ordeal alone, asserting it was actually
+    /// routed. Returns the verdict.
+    fn decide_routed(orig: &BV, opt: &BV) -> RuleVerdict {
+        reset_route_counts();
+        let outcome = decide_bv_equivalence(orig, opt, VerifyBackend::Ordeal);
+        let (routed, deferred) = route_counts();
+        match outcome {
+            SeamOutcome::Decided(v) => {
+                assert_eq!(
+                    (routed, deferred),
+                    (1, 0),
+                    "the obligation must be DECIDED by ordeal, not left on the \
+                     incumbent — otherwise this test would still pass with the \
+                     memory path removed"
+                );
+                v
+            }
+            SeamOutcome::Deferred(reason) => panic!(
+                "expected the memory obligation to route, but it deferred: {}",
+                reason.label()
+            ),
+        }
+    }
+
+    /// Both engines, asserting agreement (the `both` panic is the check).
+    fn decide_routed_both(orig: &BV, opt: &BV) -> RuleVerdict {
+        reset_route_counts();
+        let outcome = decide_bv_equivalence(orig, opt, VerifyBackend::Both);
+        match outcome {
+            SeamOutcome::Decided(v) => {
+                assert_eq!(route_counts().0, 1, "must be routed under `both` too");
+                v
+            }
+            SeamOutcome::Deferred(reason) => {
+                panic!("deferred under `both`: {}", reason.label())
+            }
+        }
+    }
+
+    /// Criterion 3: a store then a load of the SAME address reads back what
+    /// was stored.
+    ///
+    /// Written at byte granularity, which is the granularity the model
+    /// actually has — a wider load is four of these, and proving the byte
+    /// case is what makes the wide case work.
+    #[test]
+    fn slice4_a_load_of_a_stored_address_is_provably_the_stored_value() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let addr = BV::new_const("addr", 32);
+            let val = BV::new_const("val", 8);
+            let stored = m.store(&addr, &val);
+            let loaded: BV = stored.select(&addr).as_bv().unwrap();
+
+            let verdict = decide_routed(&loaded, &val);
+            assert!(
+                matches!(verdict, RuleVerdict::Proven),
+                "select(store(m, a, v), a) must be provably v — this is \
+                 read-over-write, the whole basis of the memory encoding; \
+                 got {verdict:?}"
+            );
+            assert!(matches!(
+                decide_routed_both(&loaded, &val),
+                RuleVerdict::Proven
+            ));
+        });
+    }
+
+    /// Criterion 4, and the load-bearing one: a load at a DIFFERENT address
+    /// is NOT forced to the stored value.
+    ///
+    /// This is the aliasing question, and it is where a memory model is
+    /// usually wrong. Forwarding a store to a load at an unrelated address
+    /// is only valid when the two addresses are equal — which is not known
+    /// here, so the fold must be REJECTED.
+    ///
+    /// A model that collapsed all addresses to one cell, or that dropped the
+    /// index from the read variable, would prove this and miscompile every
+    /// program with two live pointers.
+    #[test]
+    fn slice4_a_load_of_a_different_address_is_not_forced_to_the_stored_value() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let p = BV::new_const("p", 32);
+            let q = BV::new_const("q", 32);
+            let val = BV::new_const("val", 8);
+            let stored = m.store(&p, &val);
+            let loaded_elsewhere: BV = stored.select(&q).as_bv().unwrap();
+
+            let verdict = decide_routed(&loaded_elsewhere, &val);
+            assert!(
+                matches!(verdict, RuleVerdict::Disproven(_)),
+                "select(store(m, p, v), q) with p and q unconstrained must NOT \
+                 be provably v — p and q may differ. A `Proven` here means the \
+                 model cannot distinguish two addresses; got {verdict:?}"
+            );
+        });
+    }
+
+    /// The same shape at CONCRETE indices, which is the case the artifact
+    /// names and the one ordeal settles statically rather than handing to
+    /// the SAT core.
+    ///
+    /// Both rows together: the matching index must be forced, the
+    /// neighbouring one must not. The pair is the evidence — a model that
+    /// always answered "forced" would pass the first alone, and one that
+    /// always answered "not forced" would pass the second alone.
+    #[test]
+    fn slice4_concrete_indices_resolve_statically_in_both_directions() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let val = BV::new_const("val", 8);
+            let at_100 = m.store(&BV::from_u64(100, 32), &val);
+
+            let same: BV = at_100.select(&BV::from_u64(100, 32)).as_bv().unwrap();
+            let other: BV = at_100.select(&BV::from_u64(101, 32)).as_bv().unwrap();
+
+            assert!(
+                matches!(decide_routed(&same, &val), RuleVerdict::Proven),
+                "the byte written at 100 must read back at 100"
+            );
+            let verdict = decide_routed(&other, &val);
+            assert!(
+                matches!(verdict, RuleVerdict::Disproven(_)),
+                "the byte at 101 is untouched by a write to 100 and must NOT \
+                 be forced to it; got {verdict:?}"
+            );
+        });
+    }
+
+    /// Criterion 2: two distinct HAVOC points must not be unified.
+    ///
+    /// `verify.rs` havocs memory after an impure call by replacing it with a
+    /// fresh `Array::new_const("mem_after_call_<f>_<n>", ..)`. Two different
+    /// calls get different names and are genuinely unrelated, so a load from
+    /// one must not be provably equal to a load from the other at the same
+    /// address.
+    ///
+    /// The failure mode this guards is concrete: ordeal interns arrays by
+    /// NAME ALONE. If the reflection let two distinct Z3 arrays share a
+    /// neutral name, they would become one array in the lowered query and
+    /// this would come out `Proven` — licensing a transform that moves a
+    /// load across a call. That is the shape #283 suspects elsewhere, and
+    /// the reason `intern_array` refuses a name collision.
+    #[test]
+    fn slice4_two_distinct_havoc_memories_are_not_provably_equal() {
+        with_z3_config(&cfg(), || {
+            let addr = BV::new_const("addr", 32);
+            let first: BV = mem("mem_after_call_7_0").select(&addr).as_bv().unwrap();
+            let second: BV = mem("mem_after_call_7_1").select(&addr).as_bv().unwrap();
+
+            let verdict = decide_routed(&first, &second);
+            assert!(
+                matches!(verdict, RuleVerdict::Disproven(_)),
+                "two distinct havoc memories are unrelated, so reading the same \
+                 address from each must NOT be provably equal. `Proven` here \
+                 would mean the two arrays were conflated — the exact hazard of \
+                 name-keyed interning; got {verdict:?}"
+            );
+
+            // The control: the SAME havoc memory read twice IS equal. Without
+            // this row the test above would also pass if every memory read
+            // came back as a fresh unconstrained value.
+            let again: BV = mem("mem_after_call_7_0").select(&addr).as_bv().unwrap();
+            assert!(
+                matches!(decide_routed(&first, &again), RuleVerdict::Proven),
+                "the same address in the same memory must read the same value"
+            );
+        });
+    }
+
+    /// Criterion 1: a transform that assumes anything about a havoc value is
+    /// rejected.
+    ///
+    /// A havoc'd byte is unconstrained, so `v / v` is not 1 (it traps when
+    /// `v` is 0), `v | 1` is not `v`, and `v` is not any particular
+    /// constant. The last is the one asserted here, with the control that an
+    /// identity on the same value IS accepted.
+    #[test]
+    fn slice4_a_transform_assuming_a_havoc_value_is_rejected() {
+        with_z3_config(&cfg(), || {
+            let addr = BV::new_const("addr", 32);
+            let havoc: BV = mem("mem_after_call_3_0").select(&addr).as_bv().unwrap();
+
+            // Both directions, because only the PAIR says "unconstrained".
+            // Rejecting the fold to 0 alone would also hold for a value
+            // known to be non-zero, and rejecting the fold to 1 alone would
+            // hold for a value known to be zero. Asserting both is what
+            // states that NO constant is forced — which is the criterion
+            // ("a transform that assumes a havoc value is non-zero is
+            // rejected") and its generalisation at once.
+            for assumed in [0u64, 1u64] {
+                let verdict = decide_routed(&havoc, &BV::from_u64(assumed, 8));
+                assert!(
+                    matches!(verdict, RuleVerdict::Disproven(_)),
+                    "a havoc'd byte is unconstrained; folding it to {assumed} \
+                     must be rejected. got {verdict:?}"
+                );
+            }
+
+            // Control: a real identity over the same havoc value is accepted,
+            // so the rejection above is about the ASSUMPTION, not about the
+            // seam refusing everything that mentions memory.
+            assert!(
+                matches!(
+                    decide_routed(&havoc.bvor(&havoc), &havoc),
+                    RuleVerdict::Proven
+                ),
+                "`v | v == v` holds for any v, havoc'd or not"
+            );
+        });
+    }
+
+    /// A full little-endian `i32` load forwarded from the four stores that
+    /// wrote it — the shape `encode_i32_load_from` and
+    /// `encode_i32_store_into` actually produce.
+    ///
+    /// The byte-level tests above are the semantics; this is the evidence
+    /// that the operators loom really emits (`bvadd`, `zero_ext`, `bvshl`,
+    /// `bvor`, `select`, `store`, `extract`) all survive the reflection, the
+    /// round trip, and the extended lowering together.
+    #[test]
+    fn slice4_a_full_i32_store_then_load_round_trips_through_the_seam() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let addr = BV::new_const("addr", 32);
+            let value = BV::new_const("value", 32);
+
+            let mut stored = m.clone();
+            for i in 0..4i64 {
+                let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+                stored = stored.store(&addr.bvadd(BV::from_i64(i, 32)), &byte);
+            }
+            let mut loaded = BV::from_i64(0, 32);
+            for i in 0..4i64 {
+                let b: BV = stored
+                    .select(&addr.bvadd(BV::from_i64(i, 32)))
+                    .as_bv()
+                    .unwrap();
+                loaded = loaded.bvor(b.zero_ext(24).bvshl(BV::from_i64(i * 8, 32)));
+            }
+
+            let verdict = decide_routed(&loaded, &value);
+            assert!(
+                matches!(verdict, RuleVerdict::Proven),
+                "storing an i32 and loading it back at the same address must be \
+                 provably the identity; got {verdict:?}"
+            );
+        });
+    }
+
+    /// The bound, and the shape of what is still refused.
+    ///
+    /// Memory under a conditional is ordeal#231: the extended language has
+    /// no `ite` over extended children, so a `select` cannot sit beneath
+    /// one. Refusing is correct, but it must be a NAMED refusal that defers
+    /// to the incumbent, not a routed `Unknown` — the call sites in
+    /// `verify.rs` turn `Unknown` into a revert, so routing an obligation we
+    /// cannot express would cost an optimization Z3 could have proven.
+    #[test]
+    fn slice4_memory_under_a_conditional_defers_rather_than_routing() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let p = BV::new_const("p", 32);
+            let q = BV::new_const("q", 32);
+
+            // The `ite` must be ABOVE the select — `wasm select` or an `if`
+            // choosing between two LOADED values. An `ite` BENEATH a select
+            // (a load at a conditionally computed address) is a different
+            // thing entirely and routes fine; see the test below, which
+            // pins that difference so this one cannot be "fixed" by
+            // widening the refusal.
+            let left: BV = m.select(&p).as_bv().unwrap();
+            let right: BV = m.select(&q).as_bv().unwrap();
+            let chosen = p.bvult(&q).ite(&left, &right);
+
+            reset_route_counts();
+            let outcome = decide_bv_equivalence(&chosen, &chosen, VerifyBackend::Ordeal);
+            match outcome {
+                SeamOutcome::Deferred(DeferReason::MemoryUnderUnliftedOp(what)) => {
+                    assert!(
+                        what.contains("conditional"),
+                        "the refusal must name the conditional; got {what:?}"
+                    );
+                }
+                other => panic!(
+                    "memory under a conditional must DEFER with a named reason, \
+                     not {other:?} — a routed Unknown would revert the pass"
+                ),
+            }
+            assert_eq!(
+                route_counts(),
+                (0, 1),
+                "nothing may be routed when the sliver cannot express the goal"
+            );
+        });
+    }
+
+    /// The other side of ordeal#231, and the reason the wall is narrower
+    /// than it first looks: an `ite` BENEATH a select routes.
+    ///
+    /// A load at a conditionally computed address — `base + (c ? i : j)` —
+    /// has its conditional entirely inside the index, where the extended
+    /// language embeds it verbatim as a closed-core subterm. Only an `ite`
+    /// whose arms or condition CONTAIN a select is inexpressible.
+    ///
+    /// This test is what stops the refusal above from being widened to "any
+    /// memory near a conditional", which would defer a large and routable
+    /// class for no reason.
+    #[test]
+    fn slice4_a_load_at_a_conditionally_computed_address_still_routes() {
+        with_z3_config(&cfg(), || {
+            let m = mem("memory");
+            let p = BV::new_const("p", 32);
+            let q = BV::new_const("q", 32);
+            let addr = p.bvult(&q).ite(&p, &q);
+            let loaded: BV = m.select(&addr).as_bv().unwrap();
+
+            let verdict = decide_routed(&loaded, &loaded);
+            assert!(
+                matches!(verdict, RuleVerdict::Proven),
+                "a load at a conditionally computed address is expressible and \
+                 must route; got {verdict:?}"
+            );
+        });
+    }
+
+    /// An obligation with more memory accesses than the budget defers
+    /// instead of building a lowered core that the deadline cannot bound.
+    #[test]
+    fn slice4_an_oversized_memory_obligation_defers() {
+        with_z3_config(&cfg(), || {
+            let addr = BV::new_const("addr", 32);
+            let mut m = mem("memory");
+            // Comfortably past DEFAULT_MAX_MEMORY_ACCESSES.
+            for i in 0..100i64 {
+                m = m.store(&addr.bvadd(BV::from_i64(i, 32)), &BV::from_u64(0, 8));
+            }
+            let loaded: BV = m.select(&addr).as_bv().unwrap();
+
+            reset_route_counts();
+            let outcome = decide_bv_equivalence(&loaded, &loaded, VerifyBackend::Ordeal);
+            assert!(
+                matches!(
+                    outcome,
+                    SeamOutcome::Deferred(DeferReason::TooManyMemoryAccesses)
+                ),
+                "101 accesses is over the budget and must defer; got {outcome:?}"
+            );
+        });
+    }
+
+    /// An array-sorted `ite` — what a control-flow merge over two memory
+    /// states produces — is refused at REFLECTION, before any lowering.
+    #[test]
+    fn slice4_an_array_valued_conditional_is_refused() {
+        with_z3_config(&cfg(), || {
+            let a = mem("mem_a");
+            let b = mem("mem_b");
+            let c = Bool::new_const("c");
+            let merged = c.ite(&a, &b);
+            let loaded: BV = merged.select(&BV::new_const("addr", 32)).as_bv().unwrap();
+
+            reset_route_counts();
+            let outcome = decide_bv_equivalence(&loaded, &loaded, VerifyBackend::Ordeal);
+            assert!(
+                matches!(outcome, SeamOutcome::Deferred(_)),
+                "an array-valued ite has no neutral form and must be refused; \
+                 got {outcome:?}"
+            );
+        });
+    }
+
+    /// The reserved-namespace guard. ordeal mints `$sel:<array>:<index>`
+    /// variables while eliminating arrays and interns every variable by name
+    /// alone, so a loom name in that namespace could be conflated with one
+    /// of them.
+    #[test]
+    fn slice4_a_variable_in_the_solvers_reserved_namespace_is_refused() {
+        with_z3_config(&cfg(), || {
+            let shady = BV::new_const("$sel:memory:0", 8);
+            let reason = reflect_err(&shady.bvadd(BV::from_u64(1, 8)));
+            assert!(
+                matches!(reason, DeferReason::OutOfFragment(what) if what.contains('$')),
+                "a `$`-prefixed name must be refused; got {reason:?}"
             );
         });
     }

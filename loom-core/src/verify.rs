@@ -10511,11 +10511,18 @@ mod tests {
 
     #[cfg(feature = "verification")]
     #[test]
-    fn tier2_slice1_memory_obligations_stay_on_the_incumbent() {
-        // Slice 1 is pure BV only. A load threads a memory `select` into the
-        // term, which the reflection must refuse — and the validator must
-        // still reach the same verdict via Z3. This asserts the CONSERVATIVE
-        // half of the seam: partial coverage, honestly bounded.
+    fn tier2_slice4_memory_obligations_are_routed_and_decided() {
+        // Slice 1 deliberately left memory on the incumbent and said so;
+        // slice 4 retires that bound. Inverted rather than deleted, for the
+        // same reason as the division case above: "memory is no longer
+        // deferred" and "memory is now DECIDED by the new engine" are
+        // different claims, and only the second one is worth having (#289).
+        //
+        // End to end through the real validator, because the point is that
+        // whatever `encode_i32_load_from` actually builds — four `select`s
+        // combined with `bvadd`/`zero_ext`/`bvshl`/`bvor` — survives the
+        // reflection, the identical-AST round trip, and the extended
+        // lowering. A hand-built term would not test that.
         let load = "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))";
         let (a, b) = func_pair(load, load);
         verify_solver::reset_route_counts();
@@ -10526,9 +10533,65 @@ mod tests {
         assert!(proved, "a function is equivalent to itself");
         assert_eq!(
             (routed, deferred),
-            (0, 1),
-            "a memory obligation must NOT be routed in slice 1"
+            (1, 0),
+            "a memory obligation must now be DECIDED by ordeal, not deferred"
         );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_a_store_then_load_is_decided_by_the_new_engine() {
+        // The write side, end to end: store an i32 and load it straight
+        // back. This is read-over-write through the whole stack — encoder,
+        // reflection, round trip, array elimination — on the operators the
+        // store encoder really emits (`extract` per byte over a `store`
+        // chain).
+        let store_load = "(module (memory 1) (func (param i32) (param i32) (result i32) \
+                          local.get 0 local.get 1 i32.store \
+                          local.get 0 i32.load))";
+        let (a, b) = func_pair(store_load, store_load);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, deferred) = verify_solver::route_counts();
+        assert!(proved, "a function is equivalent to itself");
+        assert_eq!(
+            (routed, deferred),
+            (1, 0),
+            "a store-then-load obligation must be decided by ordeal"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_a_wrong_memory_transform_is_rejected_by_the_new_engine() {
+        // The half that matters. A seam that routed memory and always
+        // answered "Proven" would pass every test above while licensing
+        // miscompiles.
+        //
+        // Forwarding a store to a load at a DIFFERENT address is exactly
+        // that miscompile: `mem[p] = v; return mem[q]` is not `v` unless
+        // p == q, which is not known. ordeal must reject it, and must be
+        // the engine that did.
+        let honest = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 0 local.get 2 i32.store \
+                      local.get 1 i32.load))";
+        let folded = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 0 local.get 2 i32.store \
+                      local.get 2))";
+        let (a, b) = func_pair(honest, folded);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, _) = verify_solver::route_counts();
+        assert!(
+            !proved,
+            "forwarding a store to a load at an unrelated address is a \
+             miscompile and must be REJECTED"
+        );
+        assert_eq!(routed, 1, "the rejection must come from the neutral seam");
     }
 
     #[cfg(feature = "verification")]
@@ -10659,6 +10722,129 @@ mod tests {
             "expected the seam to decide real corpus obligations, got routed={} deferred={}",
             routed,
             deferred
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_memory_coverage_on_the_real_corpus() {
+        // What slice 4 actually buys, measured rather than asserted.
+        //
+        // The hand-written tests prove the memory relation is right; this
+        // says how much of REAL code it reaches, and — through the deferral
+        // breakdown it prints — what is in the way of the rest. That second
+        // number is what should decide slice 5's scope, instead of a guess.
+        use crate::Instruction::*;
+        fn touches_memory(f: &Function) -> bool {
+            f.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    I32Load { .. }
+                        | I64Load { .. }
+                        | F32Load { .. }
+                        | F64Load { .. }
+                        | I32Load8S { .. }
+                        | I32Load8U { .. }
+                        | I32Load16S { .. }
+                        | I32Load16U { .. }
+                        | I64Load8S { .. }
+                        | I64Load8U { .. }
+                        | I64Load16S { .. }
+                        | I64Load16U { .. }
+                        | I64Load32S { .. }
+                        | I64Load32U { .. }
+                        | I32Store { .. }
+                        | I64Store { .. }
+                        | F32Store { .. }
+                        | F64Store { .. }
+                        | I32Store8 { .. }
+                        | I32Store16 { .. }
+                        | I64Store8 { .. }
+                        | I64Store16 { .. }
+                        | I64Store32 { .. }
+                )
+            })
+        }
+
+        let corpus = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/corpus/httparse.wasm"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/json_lite.wasm"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/state_machine.wasm"
+            ),
+        ];
+
+        let (mut mem_fns, mut mem_routed, mut mem_deferred) = (0u64, 0u64, 0u64);
+        let mut reasons: std::collections::BTreeMap<&'static str, u64> = Default::default();
+        let mut skipped: std::collections::BTreeMap<&'static str, u64> = Default::default();
+        let mut void_fns = 0u64;
+        for path in corpus {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            let m = crate::parse::parse_wasm(&bytes).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            for f in &m.functions {
+                if !touches_memory(f) {
+                    continue;
+                }
+                mem_fns += 1;
+                // A VOID function produces no obligation at all: the
+                // relation is return-value equality, and there is no return
+                // value. That is neither a skip nor a deferral — it is the
+                // claim boundary, and counting it anywhere else would hide
+                // it. See the slice-4 artifact.
+                if f.signature.results.is_empty() {
+                    void_fns += 1;
+                    continue;
+                }
+                // A function can be skipped BEFORE the seam ever sees it
+                // (unverifiable instructions, loom#220's float guard). Those
+                // are not slice-4 deferrals and must not be counted as such,
+                // or the coverage number would blame the wrong gate.
+                if let Some(why) = unverifiable_reason(f, f) {
+                    *skipped.entry(why).or_insert(0) += 1;
+                    continue;
+                }
+                verify_solver::reset_route_counts();
+                let _ =
+                    verify_function_equivalence_with_backend(f, f, "corpus", VerifyBackend::Ordeal);
+                let (r, d) = verify_solver::route_counts();
+                mem_routed += r;
+                mem_deferred += d;
+                for (reason, n) in verify_solver::deferrals_by_reason() {
+                    *reasons.entry(reason).or_insert(0) += n;
+                }
+            }
+        }
+
+        println!(
+            "slice-4 corpus coverage: {} memory-touching functions, \
+             {} void (no obligation exists), {} routed, {} deferred",
+            mem_fns, void_fns, mem_routed, mem_deferred
+        );
+        for (reason, n) in &skipped {
+            println!("  skipped upstream x{n}: {reason}");
+        }
+        for (reason, n) in &reasons {
+            println!("  deferred x{n}: {reason}");
+        }
+
+        // The corpus must actually contain the thing being measured,
+        // otherwise a green result here means nothing (#289).
+        assert!(
+            mem_fns > 0,
+            "no corpus function touches memory, so this measures nothing"
+        );
+
+        // A sliver REFUSAL would mean loom built an array the sliver cannot
+        // take — an encoding bug on our side, not a coverage bound. It must
+        // never appear, whatever the routed/deferred split turns out to be.
+        assert!(
+            !reasons.keys().any(|r| r.starts_with("array sliver")),
+            "the array sliver refused a loom-built query, which is a loom \
+             encoding bug rather than a coverage bound: {reasons:?}"
         );
     }
 

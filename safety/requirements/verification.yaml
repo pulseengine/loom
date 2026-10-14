@@ -633,9 +633,13 @@ artifacts:
       the in-tree binary corpus — are DECIDED by the new engine, not merely
       offered to it, which is what makes the seam's reachability a checked
       property rather than an assumption; (2) a genuinely wrong transform is
-      REJECTED by it, so the seam is not a rubber stamp; (3) obligations
-      carrying a memory array or a trapping division are left on the incumbent,
-      which bounds the claim honestly; (4) under `both` the two engines run on
+      REJECTED by it, so the seam is not a rubber stamp; (3) the slice-1 bound —
+      obligations carrying a memory array or a trapping division are left on
+      the incumbent — was stated here and has since been RETIRED, by slice 2
+      for division and slice 4 for memory; the tests that asserted those
+      refusals were INVERTED rather than deleted, so the retirement is itself
+      a checked property and this artifact's step for it moved to slice 4;
+      (4) under `both` the two engines run on
       every routed obligation and any disagreement panics — the run passing IS
       the no-divergence assertion; (5) the default backend routes NOTHING, so a
       build that has not opted in is unaffected.
@@ -652,8 +656,6 @@ artifacts:
             cargo test --release --lib -p loom-core --features verification -- tier2_slice1_routes_obligations_from_the_real_corpus
         - run: |
             cargo test --release --lib -p loom-core --features verification -- tier2_slice1_disproves_a_wrong_transform_through_ordeal
-        - run: |
-            cargo test --release --lib -p loom-core --features verification -- tier2_slice1_memory_obligations_stay_on_the_incumbent
         - run: |
             cargo test --release --lib -p loom-core --features verification -- tier2_slice1_default_backend_leaves_the_validator_untouched
         - run: |
@@ -898,14 +900,61 @@ artifacts:
 
   - id: TEST-313-TIER2-SLICE4-HAVOC-CONCRETE-MEM
     type: feature
-    title: havoc values and concrete-index memory (#313 Tier-2 slice 4)
+    title: havoc values and memory obligations on the certificate-checked solver (#313 Tier-2 slice 4)
     description: >
-      PLANNED — not yet implemented. Fresh unconstrained constants (havoc) and
-      the concrete-index array encoding. The obligation to assert is that a
-      havoc value is genuinely unconstrained — a transform that assumes ANY
-      property of it must be rejected — and that two distinct havoc values are
-      not silently unified, which is the shape #283 suspects in the float
-      const-name path and which must not be reproduced here.
+      Routes the translation validator's MEMORY obligations to the
+      certificate-checked engine. loom models linear memory as a
+      non-extensional `Array(BV32 -> BV8)`; ordeal eliminates that into the
+      closed QF_BV core by eager read-over-write plus pairwise array
+      congruence, so no array construct ever reaches the bit-blaster.
+      The neutral DSL gained a deliberately tiny array sub-language — a named
+      base array and a chain of byte stores, nothing else — and both backends
+      lower it, so the reflect-and-re-lower self-validation gate covers memory
+      exactly as it covers arithmetic: a reflected `select`/`store` must
+      re-lower to the byte-identical Z3 node or the obligation is refused.
+      Asserted: (1) a load of a stored address is provably the stored value,
+      and (2) a load of a DIFFERENT address is NOT forced to it — the pair is
+      the aliasing property, and either row alone would be satisfied by a
+      model that always answers the same way; (3) two distinct HAVOC memories
+      are not provably equal, with the same-memory control, which is the
+      guard against ordeal's name-keyed interning conflating two havoc points;
+      (4) a havoc'd byte is provably equal to NO constant (both the zero and
+      the non-zero row), so no transform may assume a property of it;
+      (5) real wasm — `i32.load`, `i32.store` then `i32.load` — is DECIDED by
+      the new engine rather than merely offered to it, and forwarding a store
+      to a load at an unrelated address is REJECTED by it; (6) under `both`
+      the two engines run on every routed memory obligation and any
+      disagreement panics.
+      Deliberately NOT routed through `Solver::prove_equiv_sliver` /
+      `check_sliver`: both run an UNBOUNDED solve and collapse every
+      `SliverError` into `Unknown`. loom lowers through `sliver::lower`
+      itself and asserts the resulting core under `check_with_deadline`, so
+      the per-obligation deadline still applies (loom#347 was a cost in the
+      ENCODING, which a timeout does not bound) and an inexpressible query
+      DEFERS to the incumbent instead of returning an undecided verdict the
+      call site would turn into a revert.
+      BOUNDS, stated rather than implied. (a) An `ite` whose arms or
+      condition CONTAIN a select is refused: ordeal's extended language has
+      no `ite` over extended children (ordeal#231). The wall is narrower than
+      it looks — an `ite` BENEATH a select, i.e. a load at a conditionally
+      computed address, routes, and a test pins that difference so the
+      refusal is not widened. (b) `urem`/`sdiv`/`srem`/`neg`/`not`/`rotl`
+      above a select are refused for the same reason; deriving them by hand
+      in the extended language would create a second derivation beside
+      ordeal's blessed one. (c) A memory-access budget
+      (`LOOM_ORDEAL_MAX_MEM_ACCESSES`, default 64) bounds the quadratic array
+      elimination, which happens before the solver deadline can intervene.
+      (d) An array-sorted `ite` — a control-flow merge over two memory states
+      — is refused at reflection. (e) THE CLAIM BOUNDARY, pre-existing and
+      inherited unchanged from the incumbent: the obligation is return-value
+      equality with NO memory postcondition and no out-of-bounds trap, so a
+      void function that only writes memory produces no obligation at all.
+      Measured on the in-tree corpus, both memory-touching functions are
+      exactly that, so slice 4 adds no corpus coverage there; the measurement
+      is a test (`tier2_slice4_memory_coverage_on_the_real_corpus`) that
+      prints the breakdown rather than a claim in prose. Closing that gap
+      needs a memory-state postcondition, which is #196's behavioural gate,
+      not a solver slice.
     fields:
       method: automated-test
       acceptance-criteria:
@@ -913,7 +962,21 @@ artifacts:
         - "Given two distinct havoc values, they are NOT provably equal"
         - "Given a concrete-index store followed by a load of the same index, the loaded value is provably the stored one"
         - "Given a load of a DIFFERENT concrete index, the stored value is NOT forced"
-    status: draft
+      steps:
+        # One filter covers every slice-4 test, and the expected COUNT is
+        # pinned: `cargo test -- <filter>` exits 0 when the filter matches
+        # nothing, so a step that only checks the exit code would pass while
+        # running no tests at all. The count makes the step non-vacuous and
+        # fails if a test is silently dropped.
+        - run: |
+            out=$(cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "15 passed; 0 failed"
+        - run: |
+            out=$(LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "15 passed; 0 failed"
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice4_a_wrong_memory_transform_is_rejected_by_the_new_engine
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice4_memory_coverage_on_the_real_corpus -- --nocapture
+    status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration, memory]
     links:
