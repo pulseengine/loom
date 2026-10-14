@@ -10533,11 +10533,17 @@ mod tests {
 
     #[cfg(feature = "verification")]
     #[test]
-    fn tier2_slice1_div_obligations_stay_on_the_incumbent() {
-        // Division is a PARTIAL op: it traps. Slice 1 does not change the
-        // correctness relation, so it must not decide such an obligation even
-        // though `bvudiv` is expressible in the neutral DSL. This is scope
-        // discipline, not incapacity.
+    fn tier2_slice2_div_obligations_are_routed_and_decided() {
+        // Slice 1 deliberately left division on the incumbent and said so;
+        // slice 2 is where that bound is retired. The assertion is inverted
+        // from its slice-1 form rather than removed, because "division is no
+        // longer deferred" and "division is now decided by the new engine"
+        // are different claims and only the second one is worth having.
+        //
+        // Driven end to end through the real validator on a real wasm
+        // function, not through the seam's unit API: the reflection has to
+        // survive whatever the encoder actually builds for `i32.div_u`, which
+        // is the part a hand-built term cannot test.
         let div = "(module (func (param i32) (param i32) (result i32) \
                    local.get 0 local.get 1 i32.div_u))";
         let (a, b) = func_pair(div, div);
@@ -10549,9 +10555,51 @@ mod tests {
         assert!(proved, "a function is equivalent to itself");
         assert_eq!(
             (routed, deferred),
-            (0, 1),
-            "a trapping div obligation must NOT be routed in slice 1"
+            (1, 0),
+            "a trapping div obligation must now be DECIDED by the new engine, \
+             not merely offered to it — reachability is the asserted property \
+             (#289), because a seam that defers everything also passes a test \
+             that only checks the verdict"
         );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice2_signed_div_and_rem_are_routed_from_real_wasm() {
+        // The signed pair separately, because `div_s` and `rem_s` are where
+        // the trap conditions diverge: `div_s(INT_MIN, -1)` traps and
+        // `rem_s(INT_MIN, -1)` is 0. Routing them is not the same event as
+        // routing `div_u`, and a test covering only the unsigned case would
+        // report slice 2 as done while the asymmetric half was still
+        // deferred.
+        for (name, op) in [
+            ("i32.div_s", "i32.div_s"),
+            ("i32.rem_s", "i32.rem_s"),
+            ("i32.rem_u", "i32.rem_u"),
+            ("i64.div_s", "i64.div_s"),
+        ] {
+            let ty = if name.starts_with("i64") {
+                "i64"
+            } else {
+                "i32"
+            };
+            let src = format!(
+                "(module (func (param {ty}) (param {ty}) (result {ty}) \
+                 local.get 0 local.get 1 {op}))"
+            );
+            let (a, b) = func_pair(&src, &src);
+            verify_solver::reset_route_counts();
+            let proved =
+                verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                    .unwrap();
+            let (routed, deferred) = verify_solver::route_counts();
+            assert!(proved, "{name}: a function is equivalent to itself");
+            assert_eq!(
+                (routed, deferred),
+                (1, 0),
+                "{name}: must be routed and decided by the new engine"
+            );
+        }
     }
 
     #[cfg(feature = "verification")]

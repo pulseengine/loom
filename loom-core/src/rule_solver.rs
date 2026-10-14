@@ -82,6 +82,26 @@ pub enum RuleTerm {
     Udiv(Box<RuleTerm>, Box<RuleTerm>),
     /// Unsigned remainder (`bvurem`).
     Urem(Box<RuleTerm>, Box<RuleTerm>),
+    /// Signed division (`bvsdiv`) — the TOTAL bitvector operation, not wasm
+    /// `idiv_s`.
+    ///
+    /// This is a pure VALUE operator and carries no trap semantics, by
+    /// design. Wasm's `div_s` traps on `b == 0` and on `INT_MIN / -1`; the
+    /// bitvector `bvsdiv` is defined everywhere. The trap clause is NOT
+    /// represented here because it is not representable here: a trap
+    /// predicate has no corresponding node in the solver term, so it could
+    /// not be covered by the seam's reflect-and-re-lower self-validation
+    /// (#313 slice 1). Putting it in the DSL would mean the seam advertised a
+    /// round-trip guarantee over a field the round-trip cannot see.
+    ///
+    /// Trap semantics are discharged where they already live, by
+    /// [`crate::trap_gate`]'s `DefineOrTrap`, and enter the obligation as the
+    /// `¬may_trap ⇒ value_eq` guard rather than as part of the value term.
+    Sdiv(Box<RuleTerm>, Box<RuleTerm>),
+    /// Signed remainder (`bvsrem`) — truncated toward zero, matching wasm
+    /// `irem_s` on its non-trapping domain. See [`RuleTerm::Sdiv`] on why no
+    /// trap clause appears here.
+    Srem(Box<RuleTerm>, Box<RuleTerm>),
 
     /// Two's-complement negation (`bvneg`).
     Neg(Box<RuleTerm>),
@@ -224,6 +244,8 @@ impl RuleTerm {
             | RuleTerm::Mul(a, _)
             | RuleTerm::Udiv(a, _)
             | RuleTerm::Urem(a, _)
+            | RuleTerm::Sdiv(a, _)
+            | RuleTerm::Srem(a, _)
             | RuleTerm::And(a, _)
             | RuleTerm::Or(a, _)
             | RuleTerm::Xor(a, _)
@@ -493,6 +515,13 @@ pub(crate) mod z3_backend {
             RuleTerm::Mul(a, b) => lower(a).bvmul(&lower(b)),
             RuleTerm::Udiv(a, b) => lower(a).bvudiv(&lower(b)),
             RuleTerm::Urem(a, b) => lower(a).bvurem(&lower(b)),
+            // Deliberately the SAME nodes the reflection reads back
+            // (`BSDIV`/`BSREM`). Lowering a reflected `bvsdiv` into
+            // trap_gate's abs/udiv/negate formulation instead would produce a
+            // different AST and fail the round-trip on every division, even
+            // though both terms are equivalent.
+            RuleTerm::Sdiv(a, b) => lower(a).bvsdiv(&lower(b)),
+            RuleTerm::Srem(a, b) => lower(a).bvsrem(&lower(b)),
             RuleTerm::Neg(a) => lower(a).bvneg(),
             RuleTerm::And(a, b) => lower(a).bvand(&lower(b)),
             RuleTerm::Or(a, b) => lower(a).bvor(&lower(b)),
@@ -594,6 +623,9 @@ pub(crate) mod ordeal_backend {
             RuleTerm::Udiv(a, b) => BvTerm::Udiv(Box::new(lower(a)), Box::new(lower(b))),
             // bvurem is a blessed derived op in ordeal::lowering.
             RuleTerm::Urem(a, b) => lowering::bvurem(lower(a), lower(b), a.width()),
+            // bvsdiv / bvsrem are likewise blessed derived ops.
+            RuleTerm::Sdiv(a, b) => lowering::bvsdiv(lower(a), lower(b), a.width()),
+            RuleTerm::Srem(a, b) => lowering::bvsrem(lower(a), lower(b), a.width()),
             // bvneg / bvnot are blessed derived ops in ordeal::lowering
             // (`0 - x` and `x xor 1..1` respectively).
             RuleTerm::Neg(a) => lowering::bvneg(lower(a), a.width()),
