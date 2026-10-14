@@ -918,13 +918,24 @@ artifacts:
       model that always answers the same way; (3) two distinct HAVOC memories
       are not provably equal, with the same-memory control, which is the
       guard against ordeal's name-keyed interning conflating two havoc points;
-      (4) a havoc'd byte is provably equal to NO constant (both the zero and
-      the non-zero row), so no transform may assume a property of it;
+      (4) a fold correct for every NON-ZERO byte is REJECTED on a havoc'd
+      byte — `v | ((zext(v,24)-1) >>u 31)[7:0]` against `v`, which differ
+      only at zero — so the criterion is discharged by showing zero is
+      reachable, not by two constant rows that a value secretly constrained
+      to `2..=255` would also satisfy;
       (5) real wasm — `i32.load`, `i32.store` then `i32.load` — is DECIDED by
       the new engine rather than merely offered to it, and forwarding a store
       to a load at an unrelated address is REJECTED by it; (6) under `both`
       the two engines run on every routed memory obligation and any
-      disagreement panics.
+      disagreement panics — asserted for EVERY verdict-asserting test,
+      because the shared helper runs each obligation on `Ordeal` and then on
+      `Both` rather than leaving the differential to whichever cases
+      remembered to ask for it; (7) a store inside an `if` arm is NOT
+      forwarded to a later load, on all three backends, with the identity on
+      the same shape PROVEN as the control. `ExecutionState` carries no
+      memory field, so nothing merges a conditional store against the
+      not-taken path; this is the only evidence that memory under control
+      flow is encoded soundly, and it was measured rather than assumed.
       Deliberately NOT routed through `Solver::prove_equiv_sliver` /
       `check_sliver`: both run an UNBOUNDED solve and collapse every
       `SliverError` into `Unknown`. loom lowers through `sliver::lower`
@@ -949,18 +960,32 @@ artifacts:
       in the extended language would create a second derivation beside
       ordeal's blessed one. A consequence worth naming: an obligation
       containing BOTH memory and a trapping division defers today, because
-      the trap guard wraps the whole term in an `ite`. (c) A memory-access budget
-      (`LOOM_ORDEAL_MAX_MEM_ACCESSES`, default 64) bounds the quadratic array
-      elimination, which happens before the solver deadline can intervene.
+      the trap guard wraps the whole term in an `ite`. (c) A memory-access budget (`LOOM_ORDEAL_MAX_MEM_ACCESSES`, default
+      1024) bounds the quadratic array elimination, which happens before the
+      solver deadline can intervene, and a store-chain DEPTH bound (256)
+      bounds the reflector's recursion — a long chain costs stack before the
+      node budget is spent, and overflowing it is an abort rather than the
+      conservative revert this seam is built around. The access default was
+      first set to 64 by reasoning and then CORRECTED to 1024 by measuring:
+      64 admitted one `i32` store/load pair while the solver was deciding
+      600 accesses in 37 ms. It is now four pairs, with `MAX_TERM_NODES` the
+      binding constraint, and `slice4_the_memory_budget_is_measured` prints
+      the table so the number stays answerable.
       (d) An array-sorted `ite` — a control-flow merge over two memory states
       — is refused at reflection. (e) THE CLAIM BOUNDARY, pre-existing and
       inherited unchanged from the incumbent: the obligation is return-value
       equality with NO memory postcondition and no out-of-bounds trap, so a
       void function that only writes memory produces no obligation at all.
       Measured on the in-tree corpus, both memory-touching functions are
-      exactly that, so slice 4 adds no corpus coverage there; the measurement
-      is a test (`tier2_slice4_memory_coverage_on_the_real_corpus`) that
-      prints the breakdown rather than a claim in prose. Closing that gap
+      exactly that, so slice 4 adds no corpus coverage there. The
+      measurement drives every function THROUGH the validator and reports
+      which gate stopped it — an earlier version classified void functions
+      by signature and skipped them, which would have reported "no
+      obligation exists" without ever checking it. Both land in the
+      `(Ok(None), Ok(None))` arm under "void function — side effects not
+      modelled", an arm whose own comment called itself unreachable in
+      practice; that comment was wrong and is corrected with this
+      evidence. Closing that gap
       needs a memory-state postcondition, which is #196's behavioural gate,
       not a solver slice.
     fields:
@@ -977,13 +1002,17 @@ artifacts:
         # running no tests at all. The count makes the step non-vacuous and
         # fails if a test is silently dropped.
         - run: |
-            out=$(cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "15 passed; 0 failed"
+            out=$(cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "18 passed; 0 failed"
         - run: |
-            out=$(LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "15 passed; 0 failed"
+            out=$(LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification -- slice4 2>&1); echo "$out"; echo "$out" | grep -q "18 passed; 0 failed"
         - run: |
             cargo test --release --lib -p loom-core --features verification -- tier2_slice4_a_wrong_memory_transform_is_rejected_by_the_new_engine
         - run: |
-            cargo test --release --lib -p loom-core --features verification -- tier2_slice4_memory_coverage_on_the_real_corpus -- --nocapture
+            cargo test --release --lib -p loom-core --features verification -- --nocapture tier2_slice4_memory_coverage_on_the_real_corpus
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- --nocapture slice4_the_memory_budget_is_measured
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- tier2_slice4_a_store_under_a_branch_must_not_forward_unconditionally
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration, memory]

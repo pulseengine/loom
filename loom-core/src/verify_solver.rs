@@ -102,12 +102,36 @@ const MAX_TERM_NODES: usize = 4096;
 /// of blow-up loom#347 was: a cost in the ENCODING, not in the search, so a
 /// timeout does not bound it.
 ///
-/// 64 accesses is 16 `i32` memory operations (loads and stores are four bytes
-/// each). The number is a starting bound, not a measurement — the corpus
-/// deferral counts reported for this slice are what tells us whether it is
-/// the right one.
+/// The count is over the reflected TREE, which is the Z3 DAG already
+/// expanded, so it is far larger than the number of wasm reads a function
+/// performs: each of a load's four `select`s carries its own copy of the
+/// store chain beneath it. One `i32` store followed by one `i32` load is
+/// four selects over a four-store chain — about 20 accesses, not 8.
+///
+/// That expansion also makes the count a good PROXY for what it is meant to
+/// bound: the tree access count is roughly `reads x stores`, which is the
+/// size of the lowered core after read-over-write and array congruence.
+///
+/// MEASURED on this tree, `n` `i32` store/load pairs against the 5000 ms
+/// deadline (`slice4_the_memory_budget_is_measured` prints it, release):
+///
+/// ```text
+///   pairs  accesses  solve
+///       1        20    0 ms
+///       2        72    3 ms
+///       4       272   15 ms
+///       6       600   37 ms
+///       8         -   reflection refuses first (MAX_TERM_NODES)
+/// ```
+///
+/// The first default here was 64, which admitted exactly ONE pair while the
+/// solver was finishing 600 accesses in 37 ms — discarding almost all real
+/// coverage to bound a cost that was not there. 1024 sits above every shape
+/// that reflects at all, so [`MAX_TERM_NODES`] is the binding constraint for
+/// ordinary code, while this still caps the quadratic for a shape with an
+/// unusual read/store ratio.
 #[cfg(feature = "verification")]
-const DEFAULT_MAX_MEMORY_ACCESSES: usize = 64;
+const DEFAULT_MAX_MEMORY_ACCESSES: usize = 1024;
 
 /// Read the memory-access bound from `LOOM_ORDEAL_MAX_MEM_ACCESSES`.
 #[cfg(feature = "verification")]
@@ -922,7 +946,29 @@ mod reflect {
         ///   direction that matters, because it would make more things
         ///   provable, not fewer.
         fn reflect_array(&mut self, node: &Array) -> Reflected<RuleArray> {
+            self.reflect_array_at(node, 0)
+        }
+
+        /// Maximum `store` chain depth.
+        ///
+        /// Separate from the node budget because they bound different
+        /// things. [`super::MAX_TERM_NODES`] caps TOTAL nodes; a store chain
+        /// is walked by RECURSION, so a long one costs stack proportional to
+        /// its length before the node budget has been spent. 4096 nodes of
+        /// chain is several megabytes of debug frames, which overflows a
+        /// test thread's 2 MiB stack — an abort, not the conservative revert
+        /// this seam is built around.
+        ///
+        /// 256 byte-stores is 64 `i32` stores in one straight-line run, and
+        /// such a function exhausts the node budget long before this, so
+        /// this is a safety floor rather than a coverage limit.
+        const MAX_ARRAY_CHAIN: usize = 256;
+
+        fn reflect_array_at(&mut self, node: &Array, depth: usize) -> Reflected<RuleArray> {
             self.spend()?;
+            if depth >= Self::MAX_ARRAY_CHAIN {
+                return Err(DeferReason::TooLarge);
+            }
 
             // One array sort, checked rather than assumed: the neutral
             // `RuleArray` hard-codes BV32 -> BV8 at both lowerings, so a
@@ -967,7 +1013,7 @@ mod reflect {
                     ));
                 }
                 return Ok(RuleArray::Store {
-                    array: Box::new(self.reflect_array(&inner)?),
+                    array: Box::new(self.reflect_array_at(&inner, depth + 1)?),
                     index: Box::new(self.reflect_bv(&index)?),
                     value: Box::new(self.reflect_bv(&value)?),
                 });
@@ -2069,43 +2115,47 @@ mod tests {
         Array::new_const(name, &Sort::bitvector(32), &Sort::bitvector(8))
     }
 
-    /// Decide `orig == opt` on ordeal alone, asserting it was actually
-    /// routed. Returns the verdict.
+    /// Decide `orig == opt`, asserting it was actually routed — on ordeal
+    /// AND under `both`. Returns the verdict.
+    ///
+    /// Running both backends here rather than in a separate helper is
+    /// deliberate. `LOOM_VERIFY_BACKEND` is not consulted by these tests
+    /// (they pass the backend explicitly, so they are deterministic), which
+    /// means a test that only ever passed `Ordeal` would leave the
+    /// no-divergence claim resting on whichever cases happened to remember
+    /// to ask for `Both`. Putting it in the shared helper makes every
+    /// verdict-asserting slice-4 test a differential by construction.
+    ///
+    /// Under `Both` the seam runs Z3 and ordeal on the same obligation and
+    /// PANICS on disagreement, so these calls passing IS the assertion.
     fn decide_routed(orig: &BV, opt: &BV) -> RuleVerdict {
-        reset_route_counts();
-        let outcome = decide_bv_equivalence(orig, opt, VerifyBackend::Ordeal);
-        let (routed, deferred) = route_counts();
-        match outcome {
-            SeamOutcome::Decided(v) => {
-                assert_eq!(
-                    (routed, deferred),
-                    (1, 0),
-                    "the obligation must be DECIDED by ordeal, not left on the \
-                     incumbent — otherwise this test would still pass with the \
-                     memory path removed"
-                );
-                v
-            }
-            SeamOutcome::Deferred(reason) => panic!(
-                "expected the memory obligation to route, but it deferred: {}",
-                reason.label()
-            ),
-        }
-    }
-
-    /// Both engines, asserting agreement (the `both` panic is the check).
-    fn decide_routed_both(orig: &BV, opt: &BV) -> RuleVerdict {
-        reset_route_counts();
-        let outcome = decide_bv_equivalence(orig, opt, VerifyBackend::Both);
-        match outcome {
-            SeamOutcome::Decided(v) => {
-                assert_eq!(route_counts().0, 1, "must be routed under `both` too");
-                v
-            }
-            SeamOutcome::Deferred(reason) => {
-                panic!("deferred under `both`: {}", reason.label())
+        let mut first: Option<RuleVerdict> = None;
+        for backend in [VerifyBackend::Ordeal, VerifyBackend::Both] {
+            reset_route_counts();
+            let outcome = decide_bv_equivalence(orig, opt, backend);
+            let (routed, deferred) = route_counts();
+            match outcome {
+                SeamOutcome::Decided(v) => {
+                    assert_eq!(
+                        (routed, deferred),
+                        (1, 0),
+                        "the obligation must be DECIDED by the seam on \
+                         {backend:?}, not left on the incumbent — otherwise \
+                         this test would still pass with the memory path \
+                         removed"
+                    );
+                    if first.is_none() {
+                        first = Some(v);
+                    }
+                }
+                SeamOutcome::Deferred(reason) => panic!(
+                    "expected the memory obligation to route on {backend:?}, \
+                     but it deferred: {}",
+                    reason.label()
+                ),
             }
         }
+        first.expect("at least one backend was run")
     }
 
     /// Criterion 3: a store then a load of the SAME address reads back what
@@ -2130,10 +2180,6 @@ mod tests {
                  read-over-write, the whole basis of the memory encoding; \
                  got {verdict:?}"
             );
-            assert!(matches!(
-                decide_routed_both(&loaded, &val),
-                RuleVerdict::Proven
-            ));
         });
     }
 
@@ -2282,6 +2328,134 @@ mod tests {
         });
     }
 
+    /// Criterion 1 proper: a transform correct for every value EXCEPT zero
+    /// must be rejected on a havoc'd byte.
+    ///
+    /// The `fold to 0` / `fold to 1` rows above are necessary but not
+    /// sufficient. A havoc value secretly constrained to, say, `2..=255`
+    /// would satisfy both of them — and that constraint is exactly the
+    /// failure the criterion exists to catch. Neither row ever shows the
+    /// byte can BE zero.
+    ///
+    /// This one does. `v | ((zext(v,24) - 1) >>u 31)[7:0]` equals `v` for
+    /// every non-zero `v`, and equals `1` when `v` is `0` (the subtraction
+    /// wraps, setting the sign bit). So folding it to `v` is sound exactly
+    /// when `v != 0`, and a REJECTION is the proof that zero is reachable.
+    /// Built from `or`/`zero_ext`/`sub`/`lshr`/`extract` only — all
+    /// liftable, so it routes on the pinned ordeal rather than deferring.
+    #[test]
+    fn slice4_a_transform_assuming_a_havoc_value_is_nonzero_is_rejected() {
+        with_z3_config(&cfg(), || {
+            let addr = BV::new_const("addr", 32);
+            let havoc: BV = mem("mem_after_call_9_0").select(&addr).as_bv().unwrap();
+
+            let is_zero = havoc
+                .zero_ext(24)
+                .bvsub(BV::from_u64(1, 32))
+                .bvlshr(BV::from_u64(31, 32))
+                .extract(7, 0);
+            let same_unless_zero = havoc.bvor(&is_zero);
+
+            let verdict = decide_routed(&same_unless_zero, &havoc);
+            assert!(
+                matches!(verdict, RuleVerdict::Disproven(_)),
+                "a fold that is correct for every NON-ZERO byte must be \
+                 rejected on a havoc'd byte, because nothing rules zero out. \
+                 `Proven` here would mean the havoc value is secretly \
+                 constrained away from 0; got {verdict:?}"
+            );
+        });
+    }
+
+    /// Where the memory-access budget actually bites, measured.
+    ///
+    /// [`DEFAULT_MAX_MEMORY_ACCESSES`] counts nodes of the reflected tree,
+    /// which is the Z3 DAG expanded — so the bound is far tighter in wasm
+    /// terms than the raw number suggests. Rather than leave that as a
+    /// comment, this walks `i32` store/load PAIRS until the seam defers and
+    /// prints where the edge is, asserting only the two things that must
+    /// hold: one pair fits, and the budget does eventually bite.
+    #[test]
+    fn slice4_the_memory_budget_is_measured() {
+        with_z3_config(&cfg(), || {
+            let mut last_routed = 0usize;
+            let mut first_deferred = None;
+            let mut timings: Vec<(usize, usize, u128, String)> = Vec::new();
+            for pairs in [1usize, 2, 4, 8, 10, 12, 14, 16] {
+                let m = mem("memory");
+                let value = BV::new_const("value", 32);
+                let mut stored = m.clone();
+                for p in 0..pairs as i64 {
+                    let base = BV::new_const(format!("addr{p}"), 32);
+                    for i in 0..4i64 {
+                        let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+                        stored = stored.store(&base.bvadd(BV::from_i64(i, 32)), &byte);
+                    }
+                }
+                let mut acc = BV::from_i64(0, 32);
+                for p in 0..pairs as i64 {
+                    let base = BV::new_const(format!("addr{p}"), 32);
+                    for i in 0..4i64 {
+                        let b: BV = stored
+                            .select(&base.bvadd(BV::from_i64(i, 32)))
+                            .as_bv()
+                            .unwrap();
+                        acc = acc.bvor(b.zero_ext(24).bvshl(BV::from_i64(i * 8, 32)));
+                    }
+                }
+                reset_route_counts();
+                match decide_bv_equivalence(&acc, &acc, VerifyBackend::Ordeal) {
+                    SeamOutcome::Decided(_) => last_routed = pairs,
+                    SeamOutcome::Deferred(r) => {
+                        if first_deferred.is_none() {
+                            first_deferred = Some((pairs, r.label()));
+                        }
+                    }
+                }
+
+                // What the bound is protecting against, measured directly:
+                // reflect and solve with a generous deadline, bypassing the
+                // budget, and time it. A bound chosen without this is a
+                // guess; with it, the default can be defended or moved on
+                // evidence.
+                let mut r = reflect::Reflector::new(MAX_TERM_NODES);
+                if let Ok(t) = r.reflect_bv(&acc) {
+                    let goal = trap_guarded(&t, None);
+                    let started = std::time::Instant::now();
+                    let verdict =
+                        BoundedOrdealSolver { timeout_ms: 60_000 }.prove_rule_equiv(&goal, &goal);
+                    timings.push((
+                        pairs,
+                        memory_accesses(&goal),
+                        started.elapsed().as_millis(),
+                        format!("{verdict:?}")
+                            .split('(')
+                            .next()
+                            .unwrap()
+                            .to_string(),
+                    ));
+                }
+            }
+            println!(
+                "memory budget (default {DEFAULT_MAX_MEMORY_ACCESSES}): largest routed = {last_routed} i32 store/load pair(s); first deferral = {first_deferred:?}"
+            );
+            for (pairs, accesses, ms, verdict) in &timings {
+                println!("  {pairs} pair(s): {accesses} accesses, solved in {ms} ms -> {verdict}");
+            }
+            assert!(
+                last_routed >= 4,
+                "at least four i32 store/load pairs must fit, or the budget is \
+                 discarding coverage the solver demonstrably handles in \
+                 milliseconds (got {last_routed})"
+            );
+            assert!(
+                first_deferred.is_some(),
+                "nothing bounded the obligation within the probed range, so \
+                 this test measures no edge at all — widen the range"
+            );
+        });
+    }
+
     /// A full little-endian `i32` load forwarded from the four stores that
     /// wrote it — the shape `encode_i32_load_from` and
     /// `encode_i32_store_into` actually produce.
@@ -2396,28 +2570,36 @@ mod tests {
         });
     }
 
-    /// An obligation with more memory accesses than the budget defers
-    /// instead of building a lowered core that the deadline cannot bound.
+    /// An oversized memory obligation DEFERS instead of building a lowered
+    /// core nothing bounds.
+    ///
+    /// Two budgets can stop it — [`MAX_TERM_NODES`] on the reflected tree and
+    /// [`DEFAULT_MAX_MEMORY_ACCESSES`] on the array elimination — and which
+    /// fires first depends on the shape, because both scale with the
+    /// expanded tree. The property worth asserting is that one of them does,
+    /// not which; `slice4_the_memory_budget_is_measured` reports the edge.
     #[test]
     fn slice4_an_oversized_memory_obligation_defers() {
         with_z3_config(&cfg(), || {
             let addr = BV::new_const("addr", 32);
             let mut m = mem("memory");
-            // Comfortably past DEFAULT_MAX_MEMORY_ACCESSES.
-            for i in 0..100i64 {
+            for i in 0..2000i64 {
                 m = m.store(&addr.bvadd(BV::from_i64(i, 32)), &BV::from_u64(0, 8));
             }
             let loaded: BV = m.select(&addr).as_bv().unwrap();
 
             reset_route_counts();
             let outcome = decide_bv_equivalence(&loaded, &loaded, VerifyBackend::Ordeal);
-            assert!(
-                matches!(
-                    outcome,
-                    SeamOutcome::Deferred(DeferReason::TooManyMemoryAccesses)
+            match outcome {
+                SeamOutcome::Deferred(
+                    DeferReason::TooManyMemoryAccesses | DeferReason::TooLarge,
+                ) => {}
+                other => panic!(
+                    "a 2000-store chain must defer on one of the two budgets, \
+                     not {other:?} — otherwise nothing bounds the lowered core"
                 ),
-                "101 accesses is over the budget and must defer; got {outcome:?}"
-            );
+            }
+            assert_eq!(route_counts(), (0, 1), "nothing may be routed");
         });
     }
 

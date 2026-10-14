@@ -2795,15 +2795,24 @@ pub fn verify_function_equivalence_with_backend(
                 // would inflate the coverage number with exactly the empty
                 // checks that number exists to expose.
                 //
-                // MEASURED, not assumed: this arm did not fire once when
-                // probed against a module of nothing but void functions
-                // (including a completely empty one and one that writes a
-                // global) or against the 724-function fused-records fixture —
-                // the encoder returns `Ok(Some(..))` for void bodies, so
-                // `(Ok(None), Ok(None))` appears unreachable in practice. The
-                // classification is therefore DEFENSIVE: it is here so that if
-                // the arm ever does fire it cannot be silently counted as a
-                // proof, and it is deliberately not claimed as exercised.
+                // MEASURED. An earlier probe — a module of nothing but void
+                // functions (including a completely empty one and one that
+                // writes a global) and the 724-function fused-records fixture
+                // — did not reach this arm, and the comment here concluded it
+                // "appears unreachable in practice".
+                //
+                // That conclusion was WRONG, and #313 slice 4 falsified it:
+                // `tier2_slice4_memory_coverage_on_the_real_corpus` drives the
+                // in-tree corpus through the validator and finds BOTH of its
+                // memory-touching functions landing here, reported under this
+                // exact reason. The earlier probe's fixtures simply did not
+                // include the shape that produces it.
+                //
+                // So the classification is not defensive — it is load-bearing
+                // on real code, and it is what keeps a void memory-writing
+                // function out of the proven count. Lesson worth keeping: a
+                // probe that does not reach an arm shows the probe's reach,
+                // not the arm's.
                 note_unproven_acceptance("void function — side effects not modelled");
                 //
                 // KNOWN LIMITATION: void functions can still have side effects
@@ -10727,6 +10736,65 @@ mod tests {
 
     #[cfg(feature = "verification")]
     #[test]
+    fn tier2_slice4_a_store_under_a_branch_must_not_forward_unconditionally() {
+        // `ExecutionState` carries stack, locals, globals and the path
+        // condition — but NOT memory, which the encoder threads as a plain
+        // `let mut`. So a store inside an `if` arm has nothing merging it
+        // against the not-taken path.
+        //
+        // If that store leaks out of the arm unconditionally, then after
+        // `if (c) { mem[p] = v }` the encoder believes `mem[p] == v` whatever
+        // `c` was, and folding the following load to `v` would come out
+        // PROVEN. It is a miscompile whenever `c` is false.
+        //
+        // Every other slice-4 test is straight-line, so this is the only
+        // thing that says anything about memory under control flow. It runs
+        // on BOTH engines because the question is about the ENCODER, which
+        // they share — agreement here would not be reassurance.
+        let honest = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 2 if local.get 0 local.get 1 i32.store end \
+                      local.get 0 i32.load))";
+        let folded = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 2 if local.get 0 local.get 1 i32.store end \
+                      local.get 1))";
+        let (a, b) = func_pair(honest, folded);
+        for backend in [
+            VerifyBackend::Z3,
+            VerifyBackend::Ordeal,
+            VerifyBackend::Both,
+        ] {
+            verify_solver::reset_route_counts();
+            let proved =
+                verify_function_equivalence_with_backend(&a, &b, "test", backend).unwrap_or(false);
+            assert!(
+                !proved,
+                "forwarding a CONDITIONAL store to a later load was reported \
+                 PROVEN on {backend:?}. The fold is only valid when the branch \
+                 is taken, so this would license a miscompile."
+            );
+        }
+
+        // The control that makes the rows above mean something. An
+        // unverifiable function is SKIPPED, and a skip returns `Ok(true)` —
+        // so if this shape were simply not encodable, the assertions above
+        // would have failed, not passed. But a revert for an unrelated
+        // reason would still satisfy them, so assert positively that the
+        // shape IS verifiable: the identity on it must be PROVEN.
+        let (c, d) = func_pair(honest, honest);
+        for backend in [VerifyBackend::Z3, VerifyBackend::Ordeal] {
+            let proved =
+                verify_function_equivalence_with_backend(&c, &d, "test", backend).unwrap_or(false);
+            assert!(
+                proved,
+                "a conditional store followed by a load must be verifiable \
+                 against ITSELF on {backend:?}; if it is not, the rejection \
+                 above says nothing about memory under a branch"
+            );
+        }
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
     fn tier2_slice4_memory_coverage_on_the_real_corpus() {
         // What slice 4 actually buys, measured rather than asserted.
         //
@@ -10790,24 +10858,16 @@ mod tests {
                     continue;
                 }
                 mem_fns += 1;
-                // A VOID function produces no obligation at all: the
-                // relation is return-value equality, and there is no return
-                // value. That is neither a skip nor a deferral — it is the
-                // claim boundary, and counting it anywhere else would hide
-                // it. See the slice-4 artifact.
                 if f.signature.results.is_empty() {
                     void_fns += 1;
-                    continue;
                 }
-                // A function can be skipped BEFORE the seam ever sees it
-                // (unverifiable instructions, loom#220's float guard). Those
-                // are not slice-4 deferrals and must not be counted as such,
-                // or the coverage number would blame the wrong gate.
-                if let Some(why) = unverifiable_reason(f, f) {
-                    *skipped.entry(why).or_insert(0) += 1;
-                    continue;
-                }
+                // Every function is driven THROUGH the validator — none is
+                // classified by inspection and skipped. An earlier version of
+                // this test skipped void functions on their signature, which
+                // would have let it report "no obligation exists" without
+                // ever checking that claim.
                 verify_solver::reset_route_counts();
+                let _ = take_unproven_acceptance();
                 let _ =
                     verify_function_equivalence_with_backend(f, f, "corpus", VerifyBackend::Ordeal);
                 let (r, d) = verify_solver::route_counts();
@@ -10815,6 +10875,14 @@ mod tests {
                 mem_deferred += d;
                 for (reason, n) in verify_solver::deferrals_by_reason() {
                     *reasons.entry(reason).or_insert(0) += n;
+                }
+                // A function kept WITHOUT PROOF never reached the solver at
+                // all; the reason says which gate stopped it. This is the
+                // bucket that distinguishes "the seam declined" from "no
+                // obligation was ever built".
+                if r == 0 && d == 0 {
+                    let why = take_unproven_acceptance().unwrap_or("no obligation built");
+                    *skipped.entry(why).or_insert(0) += 1;
                 }
             }
         }
@@ -10825,7 +10893,7 @@ mod tests {
             mem_fns, void_fns, mem_routed, mem_deferred
         );
         for (reason, n) in &skipped {
-            println!("  skipped upstream x{n}: {reason}");
+            println!("  never reached the solver x{n}: {reason}");
         }
         for (reason, n) in &reasons {
             println!("  deferred x{n}: {reason}");
