@@ -933,15 +933,23 @@ artifacts:
       ENCODING, which a timeout does not bound) and an inexpressible query
       DEFERS to the incumbent instead of returning an undecided verdict the
       call site would turn into a revert.
-      BOUNDS, stated rather than implied. (a) An `ite` whose arms or
-      condition CONTAIN a select is refused: ordeal's extended language has
-      no `ite` over extended children (ordeal#231). The wall is narrower than
+      BOUNDS, stated rather than implied — and (a) through (c) are bounds
+      of the PINNED DEPENDENCY, not of the design: ordeal#231 is already
+      fixed upstream (ordeal PR #233), where `ExtOp` gains `Ite`, `Urem`,
+      `Sdiv`, `Srem`, `Rotl`, `Not` and `Neg` in v0.29.0 — not yet
+      published; loom pins 0.27.0. Tracked as loom#416, which also records
+      that the inverted-not-deleted discipline applies when they are
+      retired. (a) An `ite` whose arms or condition CONTAIN a select is
+      refused: ordeal 0.27's extended language has no `ite` over extended
+      children (ordeal#231). The wall is narrower than
       it looks — an `ite` BENEATH a select, i.e. a load at a conditionally
       computed address, routes, and a test pins that difference so the
       refusal is not widened. (b) `urem`/`sdiv`/`srem`/`neg`/`not`/`rotl`
       above a select are refused for the same reason; deriving them by hand
       in the extended language would create a second derivation beside
-      ordeal's blessed one. (c) A memory-access budget
+      ordeal's blessed one. A consequence worth naming: an obligation
+      containing BOTH memory and a trapping division defers today, because
+      the trap guard wraps the whole term in an `ite`. (c) A memory-access budget
       (`LOOM_ORDEAL_MAX_MEM_ACCESSES`, default 64) bounds the quadratic array
       elimination, which happens before the solver deadline can intervene.
       (d) An array-sorted `ite` — a control-flow merge over two memory states
