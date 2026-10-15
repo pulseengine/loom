@@ -67,6 +67,19 @@ jobs:
     # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
+      # #421: the default (true) made one transient flake look like three
+      # platform failures. On run 38662406408, macOS died in 12s at the
+      # `dtolnay/rust-toolchain@stable` step — no test was ever compiled — and
+      # fail-fast then cancelled ubuntu and windows, which had NOT yet been
+      # assigned a runner. `gh pr checks` reported all three as `fail`, so two
+      # of them asserted a test failure for a suite that never ran: the same
+      # "reports a state it never established" defect as #332 and #353.
+      #
+      # It also reclaimed nothing here, which is the usual argument for
+      # fail-fast. Neither cancelled leg had started, so no runner time was
+      # saved; they were simply re-run later, after the cascade had hidden
+      # which OS actually broke.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable]
