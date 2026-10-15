@@ -64,9 +64,30 @@ jobs:
           LOOM_VERIFY_BACKEND: both
         run: |
           set -euo pipefail
-          # Divergence panics, so a clean exit IS the no-divergence assertion.
+          # Divergence panics, so a clean exit IS the no-divergence assertion
+          # — but only while the test actually RUNS.
+          #
+          # `mod tests` in verify_rules.rs is
+          # #[cfg(all(test, feature = "verification"))]. Drop that feature
+          # flag and the test ceases to exist, the filter matches nothing,
+          # `cargo test` exits 0, and THE ONLY REQUIRED CHECK ON MAIN goes
+          # green having asserted nothing. That is #353's complaint wearing
+          # the opposite sign, and it is one edit away.
+          #
+          # Pinning the count makes the vacuous case red. Measured locally:
+          # the filter matches exactly one test (547 filtered out), all 38
+          # rules prove, and `both` really does run both engines — z3 alone
+          # 10ms, ordeal alone 60ms, both 70ms, i.e. additive rather than a
+          # silent fallback to the default backend.
+          # --color never: this job sets CARGO_TERM_COLOR=always, and a
+          # coloured "ok" would put an escape sequence inside the string the
+          # pin greps for, turning the required check red on every PR.
+          # Measured: libtest does not colour the summary line when stdout is
+          # not a tty, so the pin matches today either way — but the pin must
+          # not depend on that staying true.
           cargo test --release --lib -p loom-core --features verification -- \
-            test_verify_all_rules
+            test_verify_all_rules --color never 2>&1 | tee solver-differential.out
+          grep -qE '^test result: ok\. 1 passed' solver-differential.out
 
   rivet-verification:
     name: Verification Gate (rivet-driven)
