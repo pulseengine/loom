@@ -876,20 +876,59 @@ artifacts:
     type: feature
     title: uninterpreted-function congruence for pure calls (#313 Tier-2 slice 3)
     description: >
-      PLANNED — not yet implemented. Ports the `pure_call` obligations to
-      uninterpreted functions on the certificate-checked engine. Mechanical
-      relative to slices 1-2, but the congruence axiom is what licenses CSE
-      across calls, so it must be asserted positively rather than assumed:
-      equal arguments must force equal results, and UNEQUAL arguments must NOT
-      be forced equal — the second is what distinguishes a real UF from a
+      Ports the `pure_call` obligations to uninterpreted functions on the
+      certificate-checked engine. The congruence axiom is what licenses CSE
+      across calls, so it is asserted positively rather than assumed: equal
+      arguments must force equal results, and UNEQUAL arguments must NOT be
+      forced equal — the second is what distinguishes a real UF from a
       constant.
+
+
+      HOW IT LANDED. loom encodes a call to a provably pure callee as a Z3
+      FuncDecl named `pure_call_<F>`. The reflector previously REFUSED that
+      shape outright (`OutOfFragment("uninterpreted function application")`);
+      it now reflects it to `RuleTerm::PureCall` and `lower_ext` emits
+      `ExtBvTerm::PureCall`. That refusal was asserted by
+      `out_of_fragment_obligations_are_refused`, and the assertion is
+      INVERTED rather than deleted — before the change that test passed, after
+      it failed with "expected (pure_call_f a) to be refused, but it reflected
+      to PureCall { .. }". The inversion is what shows the change took effect.
+
+
+      INVARIANT WIDENED. ordeal's core `BvTerm` has no UF node, so a
+      `PureCall` is ALWAYS extended and never `ExtBvTerm::Core`. The standing
+      invariant "`lower_ext` returns `Core` iff the subtree is select-free" is
+      therefore restated as "select-free AND call-free", in all three places
+      that asserted it. Leaving the old wording would have made
+      `lower_to_ordeal`'s purity read wrong.
+
+
+      WHAT IS REFUSED, AND WHY BY NAME. ordeal keys an uninterpreted function
+      by NAME for congruence, so one name carrying two signatures would
+      conflate two different functions and let unequal results be proven
+      equal. loom refuses that first, as `DeferReason::CallSignatureCollision`,
+      so the deferral names its cause rather than surfacing as ordeal's
+      generic `InconsistentCall`.
+
+
+      SCOPE. Criterion 2 is asserted as DISPROVEN-with-counterexample, not
+      merely "not proven": `Unknown` would satisfy a weaker assertion while
+      testing nothing. Measured, the engine separates the arguments concretely
+      (x -> 0x0, y -> 0x80000000, with the UF returning different results).
     fields:
       method: automated-test
       acceptance-criteria:
         - "Given f(x) and f(y) with x == y proven, the results are provably equal"
-        - "Given f(x) and f(y) with x and y unconstrained, the results are NOT provably equal"
+        - "Given f(x) and f(y) with x and y unconstrained, the results are NOT provably equal — asserted as Disproven WITH a counterexample, since Unknown would satisfy a weaker check while testing nothing"
         - "Given LOOM_VERIFY_BACKEND=both, the routed obligations show no divergence"
-    status: draft
+        - "Given one function name used at two different signatures, the obligation is REFUSED as CallSignatureCollision rather than conflated"
+      steps:
+        - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_routed_and_congruence_is_decided
+        - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
+        - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
+        - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 566 passed'"
+    status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]
     links:

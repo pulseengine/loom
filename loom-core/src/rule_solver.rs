@@ -171,6 +171,28 @@ pub enum RuleTerm {
         index: Box<RuleTerm>,
     },
 
+    /// An uninterpreted-function application — loom's `pure_call_<F>(args)`
+    /// encoding of a call to a provably pure callee (#313 Tier-2 slice 3).
+    ///
+    /// The function is opaque: nothing is assumed about what it computes.
+    /// The ONE thing asserted is congruence — equal argument tuples yield
+    /// equal results — and that is exactly what licenses CSE across calls.
+    /// It must be asserted positively rather than assumed, because an engine
+    /// that treated the call as a constant would also satisfy congruence
+    /// while being unsound; see the slice-3 tests.
+    ///
+    /// Like [`RuleTerm::Select`], this is a term the pure-BV core cannot
+    /// express: ordeal's `BvTerm` has no UF node, so a `PureCall` is
+    /// *always* extended and never [`ExtBvTerm::Core`].
+    PureCall {
+        /// The function's name — its identity for congruence.
+        name: String,
+        /// The argument terms.
+        args: Vec<RuleTerm>,
+        /// Width of the result bitvector.
+        width: u32,
+    },
+
     /// If-then-else: `cond ? then_ : else_` (both arms share the result width).
     Ite {
         /// Boolean condition.
@@ -285,7 +307,9 @@ impl RuleTerm {
     /// The bit width of this term.
     pub fn width(&self) -> u32 {
         match self {
-            RuleTerm::Const { width, .. } | RuleTerm::Var { width, .. } => *width,
+            RuleTerm::Const { width, .. }
+            | RuleTerm::Var { width, .. }
+            | RuleTerm::PureCall { width, .. } => *width,
             RuleTerm::Add(a, _)
             | RuleTerm::Sub(a, _)
             | RuleTerm::Mul(a, _)
@@ -535,7 +559,7 @@ pub struct Z3RuleSolver;
 pub(crate) mod z3_backend {
     use super::{RuleArray, RuleBool, RuleSolver, RuleTerm, RuleVerdict, Z3RuleSolver};
     use z3::ast::{Array, BV, Bool};
-    use z3::{SatResult, Solver, Sort};
+    use z3::{FuncDecl, SatResult, Solver, Sort};
 
     /// Lower a neutral term to a Z3 bitvector.
     ///
@@ -592,6 +616,29 @@ pub(crate) mod z3_backend {
             // ever builds `Array(BV32 -> BV8)`, so a select off it is a BV8.
             // The `expect` is a sort invariant of this very function, not a
             // claim about anything the reflection handed us.
+            // Rebuild the SAME Z3 function decl. Z3 symbol-deduplicates
+            // decls: the same name + domain + range in one context resolves
+            // to the identical decl, which is both what gives congruence its
+            // teeth and what lets the reflect-and-re-lower self-validation
+            // gate see a byte-identical AST. `verify.rs` builds the forward
+            // encoding the same way.
+            RuleTerm::PureCall { name, args, width } => {
+                let lowered: Vec<BV> = args.iter().map(lower).collect();
+                // Domain sorts come from the ARGUMENT WIDTHS, not from the
+                // lowered nodes, so this matches the forward encoding even if
+                // a lowering ever introduces a differently-sorted temporary.
+                let domain: Vec<Sort> = args.iter().map(|a| Sort::bitvector(a.width())).collect();
+                let domain_refs: Vec<&Sort> = domain.iter().collect();
+                let range = Sort::bitvector(*width);
+                let decl = FuncDecl::new(name.as_str(), &domain_refs, &range);
+                let arg_refs: Vec<&dyn z3::ast::Ast> =
+                    lowered.iter().map(|a| a as &dyn z3::ast::Ast).collect();
+                // Infallible: `range` is a bitvector sort by construction one
+                // line above, so the application is a bitvector.
+                decl.apply(&arg_refs)
+                    .as_bv()
+                    .expect("pure_call range sort is a bitvector by construction")
+            }
             RuleTerm::Select { array, index } => lower_array(array)
                 .select(&lower(index))
                 .as_bv()
@@ -742,7 +789,10 @@ pub(crate) mod ordeal_backend {
     /// language.
     ///
     /// **Invariant:** the result is [`ExtBvTerm::Core`] if and only if the
-    /// term contains no [`RuleTerm::Select`]. Everything that depends on
+    /// term contains no [`RuleTerm::Select`] **and** no
+    /// [`RuleTerm::PureCall`]. Both are terms the pure-BV core cannot
+    /// express — ordeal's `BvTerm` has neither an array nor a UF node — so
+    /// either one forces the extended language. Everything that depends on
     /// "is this obligation pure?" reads that off the result rather than
     /// walking the tree a second time.
     pub(crate) fn lower_ext(term: &RuleTerm) -> Result<ExtBvTerm, ExtGap> {
@@ -853,7 +903,8 @@ pub(crate) mod ordeal_backend {
             // Stay in the core when the whole conditional is select-free;
             // otherwise build `ExtOp::Ite`, which ordeal 0.29.0 added (#416,
             // closing ordeal#231). The core branch is not an optimisation —
-            // it is what preserves the `Core` iff select-free invariant that
+            // it is what preserves the `Core` iff select-free-and-call-free
+            // invariant that
             // `lower_to_ordeal` reads purity off.
             RuleTerm::Ite { cond, then_, else_ } => {
                 match (lower_bool_ext(cond)?, lower_ext(then_)?, lower_ext(else_)?) {
@@ -870,6 +921,20 @@ pub(crate) mod ordeal_backend {
                 }
             }
 
+            // Always extended, never `Core`: ordeal's core `BvTerm` has no
+            // UF node, so there is nothing to stay in the core AS. This is
+            // why the invariant above reads "select-free AND call-free".
+            RuleTerm::PureCall { name, args, width } => {
+                let mut lowered = Vec::with_capacity(args.len());
+                for a in args {
+                    lowered.push(lower_ext(a)?);
+                }
+                ExtBvTerm::PureCall {
+                    name: name.clone(),
+                    args: lowered,
+                    sort: Sort::new(*width),
+                }
+            }
             RuleTerm::Select { array, index } => {
                 debug_assert_eq!(w, 8, "a select is a byte read");
                 ExtBvTerm::Select {
@@ -994,7 +1059,9 @@ pub(crate) mod ordeal_backend {
     /// explicit, conservative `Unknown` at every call site.
     pub(crate) fn lower_to_ordeal(term: &RuleTerm) -> Option<BvTerm> {
         match lower_ext(term) {
-            // The `lower_ext` invariant: `Core` iff select-free.
+            // The `lower_ext` invariant: `Core` iff select-free AND
+            // call-free. A `pure_call` has no closed-core form either, so
+            // it belongs on the sliver path exactly as a `select` does.
             Ok(ExtBvTerm::Core(bv)) => Some(bv),
             _ => None,
         }
