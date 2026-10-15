@@ -2795,15 +2795,24 @@ pub fn verify_function_equivalence_with_backend(
                 // would inflate the coverage number with exactly the empty
                 // checks that number exists to expose.
                 //
-                // MEASURED, not assumed: this arm did not fire once when
-                // probed against a module of nothing but void functions
-                // (including a completely empty one and one that writes a
-                // global) or against the 724-function fused-records fixture —
-                // the encoder returns `Ok(Some(..))` for void bodies, so
-                // `(Ok(None), Ok(None))` appears unreachable in practice. The
-                // classification is therefore DEFENSIVE: it is here so that if
-                // the arm ever does fire it cannot be silently counted as a
-                // proof, and it is deliberately not claimed as exercised.
+                // MEASURED. An earlier probe — a module of nothing but void
+                // functions (including a completely empty one and one that
+                // writes a global) and the 724-function fused-records fixture
+                // — did not reach this arm, and the comment here concluded it
+                // "appears unreachable in practice".
+                //
+                // That conclusion was WRONG, and #313 slice 4 falsified it:
+                // `tier2_slice4_memory_coverage_on_the_real_corpus` drives the
+                // in-tree corpus through the validator and finds BOTH of its
+                // memory-touching functions landing here, reported under this
+                // exact reason. The earlier probe's fixtures simply did not
+                // include the shape that produces it.
+                //
+                // So the classification is not defensive — it is load-bearing
+                // on real code, and it is what keeps a void memory-writing
+                // function out of the proven count. Lesson worth keeping: a
+                // probe that does not reach an arm shows the probe's reach,
+                // not the arm's.
                 note_unproven_acceptance("void function — side effects not modelled");
                 //
                 // KNOWN LIMITATION: void functions can still have side effects
@@ -10511,11 +10520,18 @@ mod tests {
 
     #[cfg(feature = "verification")]
     #[test]
-    fn tier2_slice1_memory_obligations_stay_on_the_incumbent() {
-        // Slice 1 is pure BV only. A load threads a memory `select` into the
-        // term, which the reflection must refuse — and the validator must
-        // still reach the same verdict via Z3. This asserts the CONSERVATIVE
-        // half of the seam: partial coverage, honestly bounded.
+    fn tier2_slice4_memory_obligations_are_routed_and_decided() {
+        // Slice 1 deliberately left memory on the incumbent and said so;
+        // slice 4 retires that bound. Inverted rather than deleted, for the
+        // same reason as the division case above: "memory is no longer
+        // deferred" and "memory is now DECIDED by the new engine" are
+        // different claims, and only the second one is worth having (#289).
+        //
+        // End to end through the real validator, because the point is that
+        // whatever `encode_i32_load_from` actually builds — four `select`s
+        // combined with `bvadd`/`zero_ext`/`bvshl`/`bvor` — survives the
+        // reflection, the identical-AST round trip, and the extended
+        // lowering. A hand-built term would not test that.
         let load = "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))";
         let (a, b) = func_pair(load, load);
         verify_solver::reset_route_counts();
@@ -10526,9 +10542,65 @@ mod tests {
         assert!(proved, "a function is equivalent to itself");
         assert_eq!(
             (routed, deferred),
-            (0, 1),
-            "a memory obligation must NOT be routed in slice 1"
+            (1, 0),
+            "a memory obligation must now be DECIDED by ordeal, not deferred"
         );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_a_store_then_load_is_decided_by_the_new_engine() {
+        // The write side, end to end: store an i32 and load it straight
+        // back. This is read-over-write through the whole stack — encoder,
+        // reflection, round trip, array elimination — on the operators the
+        // store encoder really emits (`extract` per byte over a `store`
+        // chain).
+        let store_load = "(module (memory 1) (func (param i32) (param i32) (result i32) \
+                          local.get 0 local.get 1 i32.store \
+                          local.get 0 i32.load))";
+        let (a, b) = func_pair(store_load, store_load);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, deferred) = verify_solver::route_counts();
+        assert!(proved, "a function is equivalent to itself");
+        assert_eq!(
+            (routed, deferred),
+            (1, 0),
+            "a store-then-load obligation must be decided by ordeal"
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_a_wrong_memory_transform_is_rejected_by_the_new_engine() {
+        // The half that matters. A seam that routed memory and always
+        // answered "Proven" would pass every test above while licensing
+        // miscompiles.
+        //
+        // Forwarding a store to a load at a DIFFERENT address is exactly
+        // that miscompile: `mem[p] = v; return mem[q]` is not `v` unless
+        // p == q, which is not known. ordeal must reject it, and must be
+        // the engine that did.
+        let honest = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 0 local.get 2 i32.store \
+                      local.get 1 i32.load))";
+        let folded = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 0 local.get 2 i32.store \
+                      local.get 2))";
+        let (a, b) = func_pair(honest, folded);
+        verify_solver::reset_route_counts();
+        let proved =
+            verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
+                .unwrap();
+        let (routed, _) = verify_solver::route_counts();
+        assert!(
+            !proved,
+            "forwarding a store to a load at an unrelated address is a \
+             miscompile and must be REJECTED"
+        );
+        assert_eq!(routed, 1, "the rejection must come from the neutral seam");
     }
 
     #[cfg(feature = "verification")]
@@ -10659,6 +10731,188 @@ mod tests {
             "expected the seam to decide real corpus obligations, got routed={} deferred={}",
             routed,
             deferred
+        );
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_a_store_under_a_branch_must_not_forward_unconditionally() {
+        // `ExecutionState` carries stack, locals, globals and the path
+        // condition — but NOT memory, which the encoder threads as a plain
+        // `let mut`. So a store inside an `if` arm has nothing merging it
+        // against the not-taken path.
+        //
+        // If that store leaks out of the arm unconditionally, then after
+        // `if (c) { mem[p] = v }` the encoder believes `mem[p] == v` whatever
+        // `c` was, and folding the following load to `v` would come out
+        // PROVEN. It is a miscompile whenever `c` is false.
+        //
+        // Every other slice-4 test is straight-line, so this is the only
+        // thing that says anything about memory under control flow. It runs
+        // on BOTH engines because the question is about the ENCODER, which
+        // they share — agreement here would not be reassurance.
+        let honest = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 2 if local.get 0 local.get 1 i32.store end \
+                      local.get 0 i32.load))";
+        let folded = "(module (memory 1) (func (param i32) (param i32) (param i32) (result i32) \
+                      local.get 2 if local.get 0 local.get 1 i32.store end \
+                      local.get 1))";
+        let (a, b) = func_pair(honest, folded);
+        for backend in [
+            VerifyBackend::Z3,
+            VerifyBackend::Ordeal,
+            VerifyBackend::Both,
+        ] {
+            verify_solver::reset_route_counts();
+            let proved =
+                verify_function_equivalence_with_backend(&a, &b, "test", backend).unwrap_or(false);
+            assert!(
+                !proved,
+                "forwarding a CONDITIONAL store to a later load was reported \
+                 PROVEN on {backend:?}. The fold is only valid when the branch \
+                 is taken, so this would license a miscompile."
+            );
+        }
+
+        // The control that makes the rows above mean something. An
+        // unverifiable function is SKIPPED, and a skip returns `Ok(true)` —
+        // so if this shape were simply not encodable, the assertions above
+        // would have failed, not passed. But a revert for an unrelated
+        // reason would still satisfy them, so assert positively that the
+        // shape IS verifiable: the identity on it must be PROVEN.
+        let (c, d) = func_pair(honest, honest);
+        for backend in [VerifyBackend::Z3, VerifyBackend::Ordeal] {
+            let proved =
+                verify_function_equivalence_with_backend(&c, &d, "test", backend).unwrap_or(false);
+            assert!(
+                proved,
+                "a conditional store followed by a load must be verifiable \
+                 against ITSELF on {backend:?}; if it is not, the rejection \
+                 above says nothing about memory under a branch"
+            );
+        }
+    }
+
+    #[cfg(feature = "verification")]
+    #[test]
+    fn tier2_slice4_memory_coverage_on_the_real_corpus() {
+        // What slice 4 actually buys, measured rather than asserted.
+        //
+        // The hand-written tests prove the memory relation is right; this
+        // says how much of REAL code it reaches, and — through the deferral
+        // breakdown it prints — what is in the way of the rest. That second
+        // number is what should decide slice 5's scope, instead of a guess.
+        use crate::Instruction::*;
+        fn touches_memory(f: &Function) -> bool {
+            f.instructions.iter().any(|i| {
+                matches!(
+                    i,
+                    I32Load { .. }
+                        | I64Load { .. }
+                        | F32Load { .. }
+                        | F64Load { .. }
+                        | I32Load8S { .. }
+                        | I32Load8U { .. }
+                        | I32Load16S { .. }
+                        | I32Load16U { .. }
+                        | I64Load8S { .. }
+                        | I64Load8U { .. }
+                        | I64Load16S { .. }
+                        | I64Load16U { .. }
+                        | I64Load32S { .. }
+                        | I64Load32U { .. }
+                        | I32Store { .. }
+                        | I64Store { .. }
+                        | F32Store { .. }
+                        | F64Store { .. }
+                        | I32Store8 { .. }
+                        | I32Store16 { .. }
+                        | I64Store8 { .. }
+                        | I64Store16 { .. }
+                        | I64Store32 { .. }
+                )
+            })
+        }
+
+        let corpus = [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/corpus/httparse.wasm"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/json_lite.wasm"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../tests/corpus/state_machine.wasm"
+            ),
+        ];
+
+        let (mut mem_fns, mut mem_routed, mut mem_deferred) = (0u64, 0u64, 0u64);
+        let mut reasons: std::collections::BTreeMap<&'static str, u64> = Default::default();
+        let mut skipped: std::collections::BTreeMap<&'static str, u64> = Default::default();
+        let mut void_fns = 0u64;
+        for path in corpus {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            let m = crate::parse::parse_wasm(&bytes).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            for f in &m.functions {
+                if !touches_memory(f) {
+                    continue;
+                }
+                mem_fns += 1;
+                if f.signature.results.is_empty() {
+                    void_fns += 1;
+                }
+                // Every function is driven THROUGH the validator — none is
+                // classified by inspection and skipped. An earlier version of
+                // this test skipped void functions on their signature, which
+                // would have let it report "no obligation exists" without
+                // ever checking that claim.
+                verify_solver::reset_route_counts();
+                let _ = take_unproven_acceptance();
+                let _ =
+                    verify_function_equivalence_with_backend(f, f, "corpus", VerifyBackend::Ordeal);
+                let (r, d) = verify_solver::route_counts();
+                mem_routed += r;
+                mem_deferred += d;
+                for (reason, n) in verify_solver::deferrals_by_reason() {
+                    *reasons.entry(reason).or_insert(0) += n;
+                }
+                // A function kept WITHOUT PROOF never reached the solver at
+                // all; the reason says which gate stopped it. This is the
+                // bucket that distinguishes "the seam declined" from "no
+                // obligation was ever built".
+                if r == 0 && d == 0 {
+                    let why = take_unproven_acceptance().unwrap_or("no obligation built");
+                    *skipped.entry(why).or_insert(0) += 1;
+                }
+            }
+        }
+
+        println!(
+            "slice-4 corpus coverage: {} memory-touching functions, \
+             {} void (no obligation exists), {} routed, {} deferred",
+            mem_fns, void_fns, mem_routed, mem_deferred
+        );
+        for (reason, n) in &skipped {
+            println!("  never reached the solver x{n}: {reason}");
+        }
+        for (reason, n) in &reasons {
+            println!("  deferred x{n}: {reason}");
+        }
+
+        // The corpus must actually contain the thing being measured,
+        // otherwise a green result here means nothing (#289).
+        assert!(
+            mem_fns > 0,
+            "no corpus function touches memory, so this measures nothing"
+        );
+
+        // A sliver REFUSAL would mean loom built an array the sliver cannot
+        // take — an encoding bug on our side, not a coverage bound. It must
+        // never appear, whatever the routed/deferred split turns out to be.
+        assert!(
+            !reasons.keys().any(|r| r.starts_with("array sliver")),
+            "the array sliver refused a loom-built query, which is a loom \
+             encoding bug rather than a coverage bound: {reasons:?}"
         );
     }
 
