@@ -196,10 +196,19 @@ pub enum DeferReason {
     /// variables. Z3 keys constants by `(symbol, sort)` and would not. Rather
     /// than rely on this never happening, the seam refuses the obligation.
     VariableNameCollision,
+    /// Two `pure_call` sites shared a function name but disagreed on its
+    /// argument widths or result width. ordeal keys an uninterpreted
+    /// function by NAME for congruence, so conflating two different
+    /// functions under one name would let unequal results be proven equal.
+    /// ordeal would refuse this itself (`SliverError::InconsistentCall`);
+    /// loom refuses first, with a reason that names the cause.
+    CallSignatureCollision,
     /// A `select` sits beneath an operator that ordeal's extended language
     /// cannot lift over extended children. The `&'static str` names the
-    /// operator; the one that matters in practice is `ite`, tracked upstream
-    /// as ordeal#231. See `rule_solver::ordeal_backend::ExtGap`.
+    /// operator. ordeal 0.29.0 lifted `ite`, `not` and `neg` (ordeal#231,
+    /// taken in #416), so what remains are the four core-only derived ops —
+    /// `urem`, `sdiv`, `srem`, `rotl`. See
+    /// `rule_solver::ordeal_backend::ExtGap`.
     MemoryUnderUnliftedOp(&'static str),
     /// The obligation touches more distinct memory bytes than
     /// [`max_memory_accesses`] allows. Eliminating the array is quadratic —
@@ -227,6 +236,7 @@ impl DeferReason {
             DeferReason::TooLarge => "term exceeds node budget",
             DeferReason::RoundTripFailed => "reflection round-trip not identical",
             DeferReason::VariableNameCollision => "variable name collision",
+            DeferReason::CallSignatureCollision => "pure_call signature collision",
             DeferReason::MemoryUnderUnliftedOp(what) => what,
             DeferReason::TooManyMemoryAccesses => "too many memory accesses",
             DeferReason::SliverRefused(what) => what,
@@ -449,6 +459,10 @@ fn memory_accesses(term: &RuleTerm) -> usize {
     match term {
         T::Const { .. } | T::Var { .. } => 0,
         T::Select { array, index } => 1 + arr(array) + memory_accesses(index),
+        // The call itself touches no memory, but its arguments can:
+        // `f(load(p))` is one access. Counting it is what keeps the
+        // budget honest for call-carrying obligations.
+        T::PureCall { args, .. } => args.iter().map(memory_accesses).sum(),
         T::Add(a, b)
         | T::Sub(a, b)
         | T::Mul(a, b)
@@ -626,6 +640,18 @@ fn trap_condition(term: &RuleTerm) -> Result<Option<RuleBool>, DeferReason> {
             T::Select { array, index } => {
                 walk_array(array, under_ite, acc)?;
                 walk(index, under_ite, acc)?;
+            }
+            // A `pure_call` contributes no trap clause of its own — the
+            // callee was proven pure and total before this encoding was
+            // chosen, which is what licenses treating it as an uninterpreted
+            // function at all. Its ARGUMENTS still have to be walked: an
+            // argument can be computed with a division, and `under_ite` has
+            // to carry into them unchanged because an argument is evaluated
+            // exactly when the call is.
+            T::PureCall { args, .. } => {
+                for a in args {
+                    walk(a, under_ite, acc)?;
+                }
             }
         }
         Ok(())
@@ -875,6 +901,11 @@ mod reflect {
         /// sharing a name would be conflated — which is exactly the hazard
         /// that would let two HAVOC points be proven equal (#313 slice 4).
         arrays: HashMap<String, Array>,
+        /// `pure_call` name -> (argument widths, result width). ordeal keys
+        /// an uninterpreted function by name alone, so one name carrying two
+        /// signatures would conflate two different functions — the same
+        /// hazard `vars` and `arrays` guard against, one level up.
+        calls: HashMap<String, (Vec<u32>, u32)>,
         budget: usize,
     }
 
@@ -883,6 +914,7 @@ mod reflect {
             Reflector {
                 vars: HashMap::new(),
                 arrays: HashMap::new(),
+                calls: HashMap::new(),
                 budget: max_nodes,
             }
         }
@@ -912,6 +944,39 @@ mod reflect {
                 }
             }
             Ok(RuleTerm::Var { name, width })
+        }
+
+        /// Reflect a `pure_call_<F>(args)` application into
+        /// [`RuleTerm::PureCall`], refusing any name reuse that ordeal's
+        /// name-keyed congruence could conflate.
+        ///
+        /// The arguments are reflected first so that a refusal from deeper in
+        /// the tree wins over the signature check — a call whose argument is
+        /// out of fragment is out of fragment regardless of its name.
+        fn reflect_call(
+            &mut self,
+            name: String,
+            width: u32,
+            node: &BV,
+            n: usize,
+        ) -> Reflected<RuleTerm> {
+            reserved_name_check(&name)?;
+            let mut args = Vec::with_capacity(n);
+            for i in 0..n {
+                args.push(self.reflect_bv(&child_bv(node, i)?)?);
+            }
+            let signature: Vec<u32> = args.iter().map(RuleTerm::width).collect();
+            match self.calls.get(&name) {
+                Some((prev_sig, prev_width)) => {
+                    if *prev_sig != signature || *prev_width != width {
+                        return Err(DeferReason::CallSignatureCollision);
+                    }
+                }
+                None => {
+                    self.calls.insert(name.clone(), (signature, width));
+                }
+            }
+            Ok(RuleTerm::PureCall { name, args, width })
         }
 
         /// Record a free ARRAY variable under the same name discipline as
@@ -1055,15 +1120,16 @@ mod reflect {
             let n = node.num_children();
 
             // Free variables are 0-ary uninterpreted constants. An
-            // uninterpreted decl WITH arguments is a `pure_call`-style
-            // uninterpreted function — congruence reasoning, explicitly slice 2.
+            // uninterpreted decl WITH arguments is loom's
+            // `pure_call_<F>(args)` encoding of a call to a provably pure
+            // callee, which the sliver carries as an uninterpreted function
+            // (#313 Tier-2 slice 3). The comment here used to say "slice 2";
+            // the artifact has always said slice 3.
             if kind == DeclKind::UNINTERPRETED {
                 if n == 0 {
                     return self.intern(decl.name(), width, node);
                 }
-                return Err(DeferReason::OutOfFragment(
-                    "uninterpreted function application",
-                ));
+                return self.reflect_call(decl.name(), width, node, n);
             }
 
             match kind {
@@ -1902,13 +1968,15 @@ mod tests {
                 DeferReason::OutOfFragment(_)
             ));
 
-            // Uninterpreted function application (the `pure_call` shape).
-            let f = z3::FuncDecl::new("pure_call_f", &[&Sort::bitvector(32)], &Sort::bitvector(32));
-            let app = f.apply(&[&a]).as_bv().unwrap();
-            assert_eq!(
-                reflect_err(&app),
-                DeferReason::OutOfFragment("uninterpreted function application")
-            );
+            // An uninterpreted function application (the `pure_call` shape)
+            // used to belong here. It is OUT of this list as of #313 slice 3
+            // — it now reflects to `RuleTerm::PureCall` and routes. Moved
+            // rather than deleted: see
+            // `slice3_a_pure_call_is_routed_and_congruence_is_decided` and
+            // `slice3_a_pure_call_is_not_a_constant`, which assert the
+            // positive behaviour this line used to deny. What IS still
+            // refused on the call side is a name reused with a different
+            // signature — see `slice3_one_name_two_signatures_is_refused`.
 
             // Boolean constant condition — no neutral leaf.
             let t = Bool::from_bool(true).ite(&a, &b);
@@ -2490,6 +2558,113 @@ mod tests {
                 matches!(verdict, RuleVerdict::Proven),
                 "storing an i32 and loading it back at the same address must be \
                  provably the identity; got {verdict:?}"
+            );
+        });
+    }
+
+    // ───────────────────────── #313 Tier-2 slice 3 ─────────────────────────
+    //
+    // `pure_call_<F>(args)` is loom's encoding of a call to a provably pure
+    // callee. The sliver carries it as an uninterpreted function, and the ONE
+    // thing asserted about it is congruence: equal argument tuples yield
+    // equal results. That is exactly what licenses CSE across calls, so it is
+    // asserted positively below rather than assumed.
+    //
+    // Before this slice the reflector refused the shape outright
+    // (`OutOfFragment("uninterpreted function application")`); that assertion
+    // lived in `out_of_fragment_obligations_are_refused` and is now inverted.
+
+    /// Criterion [1]: equal arguments force equal results, and the obligation
+    /// is DECIDED by the new engine rather than merely offered to it
+    /// (`decide_routed` asserts routed == 1 / deferred == 0 on both `Ordeal`
+    /// and `Both`).
+    #[test]
+    fn slice3_a_pure_call_is_routed_and_congruence_is_decided() {
+        with_z3_config(&cfg(), || {
+            let f = z3::FuncDecl::new("pure_call_f", &[&Sort::bitvector(32)], &Sort::bitvector(32));
+            let x = BV::new_const("x", 32);
+
+            // f(x) vs f(x) — the same argument term, so congruence alone
+            // settles it.
+            let lhs = f.apply(&[&x]).as_bv().unwrap();
+            let rhs = f.apply(&[&x]).as_bv().unwrap();
+
+            let verdict = decide_routed(&lhs, &rhs);
+            assert!(
+                matches!(verdict, RuleVerdict::Proven),
+                "equal arguments must force equal results; got {verdict:?}"
+            );
+        });
+    }
+
+    /// Criterion [2], and the load-bearing half: an uninterpreted function is
+    /// NOT a constant.
+    ///
+    /// Criterion [1] on its own is satisfied by an engine that answers
+    /// `Proven` to everything, and equally by one that models the call as a
+    /// single opaque constant — both would "prove" congruence while being
+    /// unsound for CSE. Unconstrained arguments must therefore NOT yield
+    /// provably equal results. This is the test that distinguishes a real UF
+    /// from either degenerate reading.
+    #[test]
+    fn slice3_a_pure_call_is_not_a_constant() {
+        with_z3_config(&cfg(), || {
+            let f = z3::FuncDecl::new("pure_call_f", &[&Sort::bitvector(32)], &Sort::bitvector(32));
+            let x = BV::new_const("x", 32);
+            let y = BV::new_const("y", 32);
+
+            let fx = f.apply(&[&x]).as_bv().unwrap();
+            let fy = f.apply(&[&y]).as_bv().unwrap();
+
+            // DISPROVEN, not merely "not Proven". `Unknown` would also
+            // satisfy a `!Proven` assertion while telling us nothing, so this
+            // demands an actual counterexample — a model in which the two
+            // applications differ. Measured: the engine returns e.g.
+            //   $uf:pure_call_f:0 -> 0x0,  $uf:pure_call_f:1 -> 0x80000000
+            //   x -> 0x0,                  y -> 0x80000000
+            // i.e. it genuinely constructs a function separating the two
+            // arguments. (`$uf:…` is ordeal's own reserved namespace for UF
+            // results, which is why `reserved_name_check` refuses `$` names
+            // coming from loom.)
+            let verdict = decide_routed(&fx, &fy);
+            assert!(
+                matches!(verdict, RuleVerdict::Disproven(_)),
+                "f(x) and f(y) with x and y unconstrained must be DISPROVEN \
+                 with a counterexample — proving them equal would mean the \
+                 call is modelled as a constant and would license unsound \
+                 CSE, and `Unknown` would leave that untested; got {verdict:?}"
+            );
+        });
+    }
+
+    /// One name must not carry two signatures.
+    ///
+    /// ordeal keys an uninterpreted function by NAME for congruence, so two
+    /// genuinely different functions sharing a name would be conflated and
+    /// their unequal results could be proven equal. ordeal would refuse this
+    /// itself (`SliverError::InconsistentCall`); loom refuses first so the
+    /// deferral carries a reason that names the cause.
+    #[test]
+    fn slice3_one_name_two_signatures_is_refused() {
+        with_z3_config(&cfg(), || {
+            let x = BV::new_const("x", 32);
+            let narrow = BV::new_const("n", 8);
+
+            let g32 =
+                z3::FuncDecl::new("pure_call_g", &[&Sort::bitvector(32)], &Sort::bitvector(32));
+            let g8 = z3::FuncDecl::new("pure_call_g", &[&Sort::bitvector(8)], &Sort::bitvector(32));
+
+            // Both applications in ONE term, so a single reflection sees the
+            // conflict. Two separate obligations would each reflect fine.
+            let wide = g32.apply(&[&x]).as_bv().unwrap();
+            let narrow_app = g8.apply(&[&narrow]).as_bv().unwrap();
+            let combined = wide.bvadd(narrow_app);
+
+            assert_eq!(
+                reflect_err(&combined),
+                DeferReason::CallSignatureCollision,
+                "one name at two signatures must be refused by NAME, not \
+                 silently conflated"
             );
         });
     }
