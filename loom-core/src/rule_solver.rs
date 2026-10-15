@@ -681,7 +681,7 @@ pub struct OrdealRuleSolver;
 pub(crate) mod ordeal_backend {
     use super::{OrdealRuleSolver, RuleArray, RuleBool, RuleSolver, RuleTerm, RuleVerdict};
     use ordeal::lowering;
-    use ordeal::sliver::{ArrayTerm, ExtBvTerm, ExtOp};
+    use ordeal::sliver::{ArrayTerm, ExtBoolTerm, ExtBvTerm, ExtOp};
     use ordeal::{BoolTerm, BvTerm, CheckResult, Solver, Sort};
 
     /// A gap in the **extended** (sliver) language: an operator that exists
@@ -798,13 +798,16 @@ pub(crate) mod ordeal_backend {
                 })?
             }
 
+            // Core when the child is core — that is what keeps the
+            // `Core` iff select-free invariant true — and `ExtOp` otherwise.
+            // ordeal 0.29.0 lifted both over extended children (#416).
             RuleTerm::Neg(a) => match lower_ext(a)? {
                 Core(x) => Core(lowering::bvneg(x, a.width())),
-                _ => return Err(ExtGap("memory under neg")),
+                ext => ExtBvTerm::Op(Box::new(ExtOp::Neg(ext))),
             },
             RuleTerm::Not(a) => match lower_ext(a)? {
                 Core(x) => Core(lowering::bvnot(x, a.width())),
-                _ => return Err(ExtGap("memory under not")),
+                ext => ExtBvTerm::Op(Box::new(ExtOp::Not(ext))),
             },
 
             RuleTerm::Extract { hi, lo, arg } => match lower_ext(arg)? {
@@ -837,6 +840,11 @@ pub(crate) mod ordeal_backend {
             // `ExtOp` has no `Ite`, so a select under a conditional cannot be
             // expressed. That is ordeal#231, and it gates memory under
             // control flow as well as the slice-3 UF work.
+            // Stay in the core when the whole conditional is select-free;
+            // otherwise build `ExtOp::Ite`, which ordeal 0.29.0 added (#416,
+            // closing ordeal#231). The core branch is not an optimisation —
+            // it is what preserves the `Core` iff select-free invariant that
+            // `lower_to_ordeal` reads purity off.
             RuleTerm::Ite { cond, then_, else_ } => {
                 match (lower_bool_ext(cond)?, lower_ext(then_)?, lower_ext(else_)?) {
                     (Some(c), Core(t), Core(e)) => Core(BvTerm::Ite {
@@ -844,7 +852,11 @@ pub(crate) mod ordeal_backend {
                         then_: Box::new(t),
                         else_: Box::new(e),
                     }),
-                    _ => return Err(ExtGap("memory under a conditional (ordeal#231)")),
+                    (_, t, e) => ExtBvTerm::Op(Box::new(ExtOp::Ite {
+                        cond: lower_bool_to_ext(cond)?,
+                        then_: t,
+                        else_: e,
+                    })),
                 }
             }
 
@@ -917,6 +929,46 @@ pub(crate) mod ordeal_backend {
         })
     }
 
+    /// Lower a neutral condition into the **extended** boolean language.
+    ///
+    /// Distinct from [`lower_bool_ext`], which produces a *core* [`BoolTerm`]
+    /// and reports `Ok(None)` the moment a `select` appears. That is not a
+    /// stepping stone to this one: [`ExtBoolTerm`] has **no `Core` variant**
+    /// — unlike [`ExtBvTerm`], which embeds a pure core term verbatim — so an
+    /// already-lowered core `BoolTerm` cannot be wrapped. The comparison has
+    /// to be rebuilt over [`ExtBvTerm`] children instead.
+    ///
+    /// The mapping is total: every `RuleBool` variant has an `ExtBoolTerm`
+    /// counterpart, so this never widens the refusal surface. It can still
+    /// fail, but only by propagating an [`ExtGap`] from a child term.
+    fn lower_bool_to_ext(cond: &RuleBool) -> Result<ExtBoolTerm, ExtGap> {
+        macro_rules! cmp {
+            ($a:expr, $b:expr, $ctor:path) => {
+                $ctor(lower_ext($a)?, lower_ext($b)?)
+            };
+        }
+        Ok(match cond {
+            RuleBool::Eq(a, b) => cmp!(a, b, ExtBoolTerm::Eq),
+            RuleBool::Ult(a, b) => cmp!(a, b, ExtBoolTerm::Ult),
+            RuleBool::Ule(a, b) => cmp!(a, b, ExtBoolTerm::Ule),
+            RuleBool::Ugt(a, b) => cmp!(a, b, ExtBoolTerm::Ugt),
+            RuleBool::Uge(a, b) => cmp!(a, b, ExtBoolTerm::Uge),
+            RuleBool::Slt(a, b) => cmp!(a, b, ExtBoolTerm::Slt),
+            RuleBool::Sle(a, b) => cmp!(a, b, ExtBoolTerm::Sle),
+            RuleBool::Sgt(a, b) => cmp!(a, b, ExtBoolTerm::Sgt),
+            RuleBool::Sge(a, b) => cmp!(a, b, ExtBoolTerm::Sge),
+            RuleBool::Not(inner) => ExtBoolTerm::Not(Box::new(lower_bool_to_ext(inner)?)),
+            RuleBool::BoolAnd(a, b) => ExtBoolTerm::And(
+                Box::new(lower_bool_to_ext(a)?),
+                Box::new(lower_bool_to_ext(b)?),
+            ),
+            RuleBool::BoolOr(a, b) => ExtBoolTerm::Or(
+                Box::new(lower_bool_to_ext(a)?),
+                Box::new(lower_bool_to_ext(b)?),
+            ),
+        })
+    }
+
     /// Lower a neutral term to an ordeal `BvTerm`.
     ///
     /// Exposed within the crate so Tier-2 ([`crate::verify_solver`]) can drive
@@ -971,7 +1023,6 @@ pub(crate) mod ordeal_backend {
     /// into a revert. Lowering here and asserting the core ourselves keeps
     /// both properties.
     pub(crate) fn lower_goal_ne(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<GoalLowering, GoalError> {
-        use ordeal::sliver::ExtBoolTerm;
         let l = lower_ext(lhs).map_err(GoalError::Gap)?;
         let r = lower_ext(rhs).map_err(GoalError::Gap)?;
         match (l, r) {
