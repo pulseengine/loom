@@ -2494,49 +2494,56 @@ mod tests {
         });
     }
 
-    /// The bound, and the shape of what is still refused.
+    /// ordeal#231 is CLOSED (ordeal 0.29.0, taken in #416): the extended
+    /// language lifts `ite` over extended children, so memory under a
+    /// conditional now ROUTES AND IS DECIDED instead of deferring.
     ///
-    /// Memory under a conditional is ordeal#231: the extended language has
-    /// no `ite` over extended children, so a `select` cannot sit beneath
-    /// one. Refusing is correct, but it must be a NAMED refusal that defers
-    /// to the incumbent, not a routed `Unknown` — the call sites in
-    /// `verify.rs` turn `Unknown` into a revert, so routing an obligation we
-    /// cannot express would cost an optimization Z3 could have proven.
+    /// This test asserted the opposite until #416. It is inverted rather
+    /// than deleted, because an inverted test is the only thing that shows
+    /// the lift actually took effect. Bumping the dependency alone does not:
+    /// the gap was produced by loom's own `lower_ext`, and with ordeal
+    /// 0.30.0 already in the lockfile but the `Ite` arm unchanged, this test
+    /// still passed in its old deferring form.
     #[test]
-    fn slice4_memory_under_a_conditional_defers_rather_than_routing() {
+    fn slice4_memory_under_a_conditional_is_routed_and_decided() {
         with_z3_config(&cfg(), || {
             let m = mem("memory");
             let p = BV::new_const("p", 32);
             let q = BV::new_const("q", 32);
 
-            // The `ite` must be ABOVE the select — `wasm select` or an `if`
-            // choosing between two LOADED values. An `ite` BENEATH a select
-            // (a load at a conditionally computed address) is a different
-            // thing entirely and routes fine; see the test below, which
-            // pins that difference so this one cannot be "fixed" by
-            // widening the refusal.
+            // An `ite` ABOVE two selects — `wasm select`, or an `if`
+            // choosing between two LOADED values. This is the shape that
+            // was inexpressible.
             let left: BV = m.select(&p).as_bv().unwrap();
             let right: BV = m.select(&q).as_bv().unwrap();
             let chosen = p.bvult(&q).ite(&left, &right);
 
             reset_route_counts();
             let outcome = decide_bv_equivalence(&chosen, &chosen, VerifyBackend::Ordeal);
-            match outcome {
-                SeamOutcome::Deferred(DeferReason::MemoryUnderUnliftedOp(what)) => {
-                    assert!(
-                        what.contains("conditional"),
-                        "the refusal must name the conditional; got {what:?}"
-                    );
-                }
-                other => panic!(
-                    "memory under a conditional must DEFER with a named reason, \
-                     not {other:?} — a routed Unknown would revert the pass"
-                ),
-            }
+            assert!(
+                matches!(outcome, SeamOutcome::Decided(RuleVerdict::Proven)),
+                "memory under a conditional must now route and be decided, \
+                 not {outcome:?}"
+            );
             assert_eq!(
                 route_counts(),
-                (0, 1),
-                "nothing may be routed when the sliver cannot express the goal"
+                (1, 0),
+                "the obligation must be routed rather than deferred"
+            );
+
+            // ... and the decision has to discriminate. Reflexivity is
+            // trivially provable, so the assertion above would also pass
+            // against an engine that answered Proven to everything —
+            // exactly the failure mode the slice-4 review found three times.
+            // Swapping the arms changes the value whenever the two loads
+            // differ, so it must NOT be provable.
+            let swapped = p.bvult(&q).ite(&right, &left);
+            let verdict = decide_routed(&chosen, &swapped);
+            assert!(
+                !matches!(verdict, RuleVerdict::Proven),
+                "swapping the arms of a conditional over two DIFFERENT loads \
+                 changes the value, so it must not be proven equivalent; \
+                 got {verdict:?}"
             );
         });
     }
