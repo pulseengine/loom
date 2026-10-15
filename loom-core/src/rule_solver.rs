@@ -773,8 +773,23 @@ pub(crate) mod ordeal_backend {
                 lift(lower_ext(a)?, lower_ext(b)?, BvTerm::Concat, ExtOp::Concat)
             }
 
-            // Derived ops: `ordeal::lowering` owns the derivation, and it is
-            // stated over core terms only. See [`ExtGap`].
+            // Core-only, so memory under one of these still defers.
+            //
+            // They are no longer "derived" in the sense the old note here
+            // claimed. As of ordeal 0.30.0 `lowering::bvurem` and friends
+            // ignore their `width` argument and build the primitive
+            // `BvTerm::{Urem,Sdiv,Srem,Rotl}` node — exactly what
+            // `ExtOp::{Urem,Sdiv,Srem,Rotl}` lowers to — so lifting them
+            // would hand no derivation to anyone and could not disagree
+            // about the div_s/rem_s asymmetry.
+            //
+            // They are left core-only anyway, deliberately: `core_only` is
+            // the ONLY remaining constructor of `ExtGap`, so lifting these
+            // four would make `ExtGap` uninstantiable and render
+            // `GoalError::Gap` and `DeferReason::MemoryUnderUnliftedOp`
+            // unreachable. Removing that deferral path is a larger change
+            // than this one, and leaving a provably-dead error arm in place
+            // is the shape this codebase keeps having to correct. See #416.
             RuleTerm::Urem(a, b) => {
                 core_only(lower_ext(a)?, lower_ext(b)?, "memory under urem", |x, y| {
                     lowering::bvurem(x, y, a.width())
@@ -790,17 +805,12 @@ pub(crate) mod ordeal_backend {
                     lowering::bvsrem(x, y, a.width())
                 })?
             }
-            // `bvrotl` is derived as `rotr(a, 0 - b)`, exact only at
-            // power-of-two widths; the reflection refuses any other.
             RuleTerm::Rotl(a, b) => {
                 core_only(lower_ext(a)?, lower_ext(b)?, "memory under rotl", |x, y| {
                     lowering::bvrotl(x, y, a.width())
                 })?
             }
 
-            // Core when the child is core — that is what keeps the
-            // `Core` iff select-free invariant true — and `ExtOp` otherwise.
-            // ordeal 0.29.0 lifted both over extended children (#416).
             RuleTerm::Neg(a) => match lower_ext(a)? {
                 Core(x) => Core(lowering::bvneg(x, a.width())),
                 ext => ExtBvTerm::Op(Box::new(ExtOp::Neg(ext))),
