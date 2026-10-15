@@ -10,7 +10,10 @@ Usage:
     tools/post_verification_comment.py <pr-number> [--results-json PATH] [--repo OWNER/NAME]
 
 Required env:
-    GH_TOKEN (or GITHUB_TOKEN) with `pull-requests: write`.
+    GH_TOKEN (or GITHUB_TOKEN) with `issues: write` (PR comments go through
+        the ISSUES API even on a pull request).
+    GH_REPO (or GITHUB_REPOSITORY) naming the target OWNER/NAME, unless
+        --repo is passed. There is no default: see #420.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ def github_request(
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "spar-verification-gate",
+            "User-Agent": "rivet-verification-gate",
             "Content-Type": "application/json" if data else "application/octet-stream",
         },
     )
@@ -147,14 +150,29 @@ def main() -> int:
     )
     parser.add_argument(
         "--repo",
-        default=os.environ.get("GH_REPO", "pulseengine/spar"),
-        help="OWNER/NAME (default: %(default)s)",
+        # #420: this used to default to the repo this script was COPIED FROM.
+        # Nothing set GH_REPO here, so every run posted at that project's
+        # issue of the same number and was refused 403 by a repo-scoped
+        # token. A verification tool that silently picks the wrong target
+        # instead of refusing is the defect class this gate exists to catch,
+        # so there is deliberately no fallback now: resolve from the
+        # environment Actions already provides, or fail.
+        default=os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY"),
+        help="OWNER/NAME (default: $GH_REPO, else $GITHUB_REPOSITORY)",
     )
     args = parser.parse_args()
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
         print("GH_TOKEN or GITHUB_TOKEN required", file=sys.stderr)
+        return 2
+
+    if not args.repo:
+        print(
+            "target repository unknown: pass --repo OWNER/NAME, or set GH_REPO "
+            "or GITHUB_REPOSITORY (#420 — refusing to guess)",
+            file=sys.stderr,
+        )
         return 2
 
     if not args.results_json.is_file():

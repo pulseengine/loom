@@ -177,6 +177,12 @@ jobs:
         if: github.event_name == 'pull_request' && always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # #420: WITHOUT this the script falls back to the repo it was copied
+          # from, so every run addressed loom's verification summary to another
+          # project's issue of the same number and was refused 403 by the
+          # repo-scoped token. Six weeks of green runs reported nothing to any
+          # PR because of one unset variable.
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           tools/post_verification_comment.py "$PR_NUMBER"
