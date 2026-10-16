@@ -927,7 +927,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 568 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 571 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]

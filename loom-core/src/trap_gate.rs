@@ -19,14 +19,22 @@
 //! supersedes the per-pass `is_no_trap` stopgaps (they remain sound as a cheap
 //! fast-path, but this gate is the authority).
 //!
-//! # The boundary (loom supplies values, ordeal supplies traps)
+//! # The boundary (loom supplies values and the div/rem trap clause)
 //!
 //! ordeal's closed fragment has `Udiv` only (no `Sdiv`/`Srem`/`Urem`), so the
 //! VC's **value** clause is supplied here, by loom — which already models signed
-//! div/rem values in its Z3 encoding (cf. #163). ordeal contributes the
-//! trap-condition predicates ([`ordeal::trap::trap_div`],
-//! [`ordeal::trap::trap_mem_oob`], …) and the VC assembly; loom supplies value +
-//! trap terms; they meet in [`ordeal::trap::DefineOrTrap`]. Modeling signed
+//! div/rem values in its Z3 encoding (cf. #163). ordeal contributes the memory
+//! trap predicate ([`ordeal::trap::trap_mem_oob`]) and the VC assembly; they
+//! meet in [`ordeal::trap::DefineOrTrap`].
+//!
+//! The **div/rem** trap clause used to come from ordeal too
+//! (`ordeal::trap::trap_div`). It no longer does (#313 slice 2, criterion [7]):
+//! the translation validator needs the same clause over its neutral
+//! `RuleTerm`, which it lowers to BOTH engines, and an ordeal `BoolTerm` cannot
+//! be handed to the incumbent. Two hand-written copies of one rule had to agree
+//! on the `div_s`/`rem_s` asymmetry with nothing forcing them to. Now the rule
+//! is written once, in [`div_trap_condition`], generic over [`TrapTerms`], and
+//! each representation supplies only constructors. Modeling signed
 //! div/rem *values* natively inside ordeal is a separate, later decision — not
 //! needed here, because [`signed_div_value`] / [`signed_rem_value`] build the
 //! value `BvTerm` from the primitive fragment (`Ite`/`Slt`/`Sub`/`Udiv`).
@@ -50,9 +58,7 @@
 #![cfg(feature = "verification")]
 
 use ordeal::term::{BoolTerm, BvTerm, Sort};
-use ordeal::trap::{
-    self, DefineOrTrap, DivOp, prove_trap_condition_equivalence, prove_trap_equivalence,
-};
+use ordeal::trap::{self, DefineOrTrap, prove_trap_condition_equivalence, prove_trap_equivalence};
 use ordeal::{CheckResult, Solver};
 
 fn bx(t: BvTerm) -> Box<BvTerm> {
@@ -116,13 +122,89 @@ pub fn constant(value: u128, width: u32) -> BvTerm {
     }
 }
 
+/// The constructors a div/rem trap condition needs, for one term
+/// representation.
+///
+/// An implementation decides nothing about WHEN an operation traps — that is
+/// [`div_trap_condition`]'s job, and it is written once. An implementation only
+/// says how to spell a constant, an equality, a conjunction and a disjunction,
+/// so two representations cannot disagree about the rule itself.
+pub(crate) trait TrapTerms {
+    /// A bitvector term.
+    type Bv: Clone;
+    /// A boolean term.
+    type Bool;
+    /// The constant `value` at `width` bits.
+    fn constant(value: u128, width: u32) -> Self::Bv;
+    /// Bitvector equality.
+    fn eq(a: Self::Bv, b: Self::Bv) -> Self::Bool;
+    /// Conjunction.
+    fn and(a: Self::Bool, b: Self::Bool) -> Self::Bool;
+    /// Disjunction.
+    fn or(a: Self::Bool, b: Self::Bool) -> Self::Bool;
+}
+
+/// ordeal's terms — what this gate proves over.
+pub(crate) struct OrdealTerms;
+
+impl TrapTerms for OrdealTerms {
+    type Bv = BvTerm;
+    type Bool = BoolTerm;
+    fn constant(value: u128, width: u32) -> BvTerm {
+        constant(value, width)
+    }
+    fn eq(a: BvTerm, b: BvTerm) -> BoolTerm {
+        BoolTerm::Eq(bx(a), bx(b))
+    }
+    fn and(a: BoolTerm, b: BoolTerm) -> BoolTerm {
+        BoolTerm::And(bb(a), bb(b))
+    }
+    fn or(a: BoolTerm, b: BoolTerm) -> BoolTerm {
+        BoolTerm::Or(bb(a), bb(b))
+    }
+}
+
+/// THE wasm trap condition of a div/rem op — the single source for every
+/// consumer in loom (#313 slice 2, criterion [7]).
+///
+/// All four kinds trap on a zero divisor. `div_s` ALSO traps on
+/// `INT_MIN / -1` (signed overflow). `rem_s` deliberately does NOT: wasm
+/// defines `rem_s(INT_MIN, -1) = 0`. ordeal's own copy of this rule got that
+/// wrong before 0.10.0 (ordeal#72/#84), which is the failure a second copy
+/// invites; the slice-2 spec table pins this one to the wasm spec.
+///
+/// # Panics
+///
+/// If `width` is outside `1..=128`; a div/rem operand has no other width.
+pub(crate) fn div_trap_condition<T: TrapTerms>(
+    kind: DivKind,
+    a: &T::Bv,
+    b: &T::Bv,
+    width: u32,
+) -> T::Bool {
+    assert!(
+        (1..=128).contains(&width),
+        "div/rem trap condition at impossible width {width}"
+    );
+    let div_by_zero = T::eq(b.clone(), T::constant(0, width));
+    if kind != DivKind::DivS {
+        return div_by_zero;
+    }
+    let int_min = T::constant(1u128 << (width - 1), width);
+    let minus_one = T::constant(u128::MAX >> (128 - width), width);
+    T::or(
+        div_by_zero,
+        T::and(T::eq(a.clone(), int_min), T::eq(b.clone(), minus_one)),
+    )
+}
+
 /// Signed division **value** `BvTerm` matching WASM `iN.div_s` on non-trapping
 /// inputs, built from ordeal's closed fragment (it has `Udiv` only).
 ///
 /// `div_s(a, b) = sign(a) == sign(b) ? |a|/|b| : -(|a|/|b|)`, where `|x|` is the
 /// two's-complement absolute value. The trap cases (`b == 0`, `INT_MIN / -1`)
-/// are handled by the *trap clause* ([`ordeal::trap::trap_div`] with
-/// [`DivOp::DivS`]); this term only needs to agree with WASM on the
+/// are handled by the *trap clause* ([`div_trap_condition`] with
+/// [`DivKind::DivS`]); this term only needs to agree with WASM on the
 /// non-trapping domain, which the VC's `¬may_trap ⇒ value_eq` guard enforces.
 pub fn signed_div_value(a: &BvTerm, b: &BvTerm, width: u32) -> BvTerm {
     let abs = |x: &BvTerm| -> BvTerm {
@@ -179,7 +261,7 @@ pub fn signed_rem_value(a: &BvTerm, b: &BvTerm, width: u32) -> BvTerm {
 }
 
 /// The signedness/kind of a div/rem op, mapping loom instructions onto ordeal's
-/// [`DivOp`] plus the correct **value** builder.
+/// the single-source trap clause plus the correct **value** builder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DivKind {
     /// `iN.div_u`.
@@ -193,7 +275,12 @@ pub enum DivKind {
 }
 
 impl DivKind {
-    fn ordeal_op(self) -> DivOp {
+    /// ordeal's own name for this op. Test-only: production no longer asks
+    /// ordeal for the div/rem trap clause; the equivalence proof that retired
+    /// it does.
+    #[cfg(test)]
+    fn ordeal_op(self) -> ordeal::trap::DivOp {
+        use ordeal::trap::DivOp;
         match self {
             DivKind::DivU => DivOp::DivU,
             DivKind::DivS => DivOp::DivS,
@@ -218,14 +305,12 @@ impl DivKind {
     }
 }
 
-/// Build the [`DefineOrTrap`] for a div/rem op: loom's value term + ordeal's
-/// trap clause (`÷0` for all four; `INT_MIN / -1` overflow for **`div_s`
-/// only** — WASM defines `rem_s(INT_MIN, -1) = 0`, no trap; ordeal < 0.10.0
-/// wrongly included the overflow clause for `rem_s` too, ordeal#72/#84).
+/// Build the [`DefineOrTrap`] for a div/rem op: loom's value term + the
+/// single-source trap clause [`div_trap_condition`].
 pub fn div_define(kind: DivKind, a: &BvTerm, b: &BvTerm, width: u32) -> DefineOrTrap {
     DefineOrTrap {
         value: kind.value(a, b, width),
-        may_trap: trap::trap_div(kind.ordeal_op(), a, b, width),
+        may_trap: div_trap_condition::<OrdealTerms>(kind, a, b, width),
     }
 }
 
@@ -300,7 +385,7 @@ pub fn mem_bound_from_pages(pages: &BvTerm, width: u32) -> BvTerm {
 /// already refuses) is caught here as `Sat` (the overflow disjunct holds); a
 /// fold of `20 / 4` proves `Unsat` and is accepted.
 pub fn check_div_discard(kind: DivKind, a: &BvTerm, b: &BvTerm, width: u32) -> TrapVerdict {
-    let orig_trap = trap::trap_div(kind.ordeal_op(), a, b, width);
+    let orig_trap = div_trap_condition::<OrdealTerms>(kind, a, b, width);
     let no_trap = BoolTerm::Ne(bx(constant(0, 8)), bx(constant(0, 8))); // false
     verdict_of(prove_trap_condition_equivalence(&orig_trap, &no_trap))
 }
@@ -638,6 +723,53 @@ mod tests {
         );
     }
 
+    // ---- the single-source div/rem trap rule (#313 slice 2, [7]) ----
+
+    /// Every width the rule has a boundary at: 1 (INT_MIN == -1 == 1), the
+    /// wasm widths, and 128 (the shift boundary).
+    const TRAP_RULE_WIDTHS: [u32; 5] = [1, 8, 32, 64, 128];
+    const DIV_KINDS: [DivKind; 4] = [DivKind::DivU, DivKind::DivS, DivKind::RemU, DivKind::RemS];
+
+    /// Refactor safety for the swap: the single-source rule decides exactly
+    /// what ordeal's `trap_div` (the clause it replaced on this gate's path)
+    /// decided, for every kind and boundary width, over SYMBOLIC operands.
+    ///
+    /// This is not the pairwise "mitigation" slice 2 rejected — the spec table
+    /// in `verify_solver` is the anchor to the wasm spec. This test only shows
+    /// that retiring ordeal's copy changed no verdict this gate gives.
+    #[test]
+    fn single_source_rule_matches_the_ordeal_clause_it_replaced() {
+        for width in TRAP_RULE_WIDTHS {
+            let (a, b) = (v("a", width), v("b", width));
+            for kind in DIV_KINDS {
+                let ours = div_trap_condition::<OrdealTerms>(kind, &a, &b, width);
+                let theirs = trap::trap_div(kind.ordeal_op(), &a, &b, width);
+                let verdict = verdict_of(prove_trap_condition_equivalence(&ours, &theirs));
+                assert!(
+                    verdict.is_accepted(),
+                    "{kind:?} at width {width}: single-source rule differs from \
+                     ordeal's trap_div: {verdict:?}"
+                );
+            }
+        }
+    }
+
+    /// The comparison above must be able to FAIL: the div_s and rem_s rules
+    /// differ only on INT_MIN / -1, and the proof has to see that.
+    #[test]
+    fn single_source_comparison_discriminates_div_s_from_rem_s() {
+        for width in [8, 32, 64] {
+            let (a, b) = (v("a", width), v("b", width));
+            let div_s = div_trap_condition::<OrdealTerms>(DivKind::DivS, &a, &b, width);
+            let rem_s = trap::trap_div(DivKind::RemS.ordeal_op(), &a, &b, width);
+            let verdict = verdict_of(prove_trap_condition_equivalence(&div_s, &rem_s));
+            assert!(
+                matches!(verdict, TrapVerdict::RejectCounterexample(_)),
+                "width {width}: div_s and rem_s trap rules must be told apart, got {verdict:?}"
+            );
+        }
+    }
+
     // ---- select with trapping discarded arm (#281) ----
 
     #[test]
@@ -646,7 +778,7 @@ mod tests {
         // is satisfiable ⇒ dropping the arm may drop a trap ⇒ reject.
         let x = v("x", 32);
         let zero = c(0, 32);
-        let arm_trap = trap::trap_div(DivOp::DivU, &x, &zero, 32);
+        let arm_trap = div_trap_condition::<OrdealTerms>(DivKind::DivU, &x, &zero, 32);
         let verdict = check_select_discard(&arm_trap);
         assert!(
             matches!(verdict, TrapVerdict::RejectCounterexample(_)),
