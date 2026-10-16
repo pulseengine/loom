@@ -126,6 +126,8 @@ jobs:
 
       - name: Test CLI optimization
         run: |
+          set -euo pipefail
+
           # Create a simple test WASM module
           cat > test.wat << 'EOF'
           (module
@@ -137,15 +139,13 @@ jobs:
           )
           EOF
 
-          # Convert to WASM
           echo "Testing CLI with sample module..."
-          ./target/release/loom optimize test.wat -o test_optimized.wasm || true
-
-          if [ -f test_optimized.wasm ]; then
-            echo "✅ CLI optimization successful"
-          else
-            echo "⚠️ CLI test skipped (wat tool not available)"
-          fi
+          output_dir="$(mktemp -d)"
+          trap 'rm -rf "$output_dir" test.wat' EXIT
+          output="$output_dir/test_optimized.wasm"
+          ./target/release/loom optimize test.wat -o "$output"
+          test -s "$output"
+          echo "✅ CLI optimization successful"
 
   check-api-stability:
     name: Check API Stability
