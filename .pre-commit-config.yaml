@@ -38,8 +38,10 @@ repos:
         types: [rust]
         pass_filenames: false
       - id: rivet-validate
-        name: rivet validate (advisory — rivet#129 blocks pass)
-        entry: bash -c 'rivet validate || echo "rivet validate failed (known upstream issue pulseengine/rivet#129)"'
+        name: rivet validate
+        # Fails on errors only: warnings exit 0. The former `|| echo` passed an
+        # unparseable artifact file (#426).
+        entry: rivet validate
         language: system
         always_run: true
         pass_filenames: false
