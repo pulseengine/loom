@@ -24,14 +24,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: rivet
+      # The pin used to be v0.3.1, but on 3e8ebb8's run that is not what
+      # validated: cargo reported v0.3.1 "already installed", yet the `rivet`
+      # that ran printed the modern `Schemas: … (embedded)` line, which 0.3.x
+      # does not emit, and passed. v0.3.1 run directly FAILS this tree with 85
+      # errors. Whether PATH or a replaced binary caused it, the job validated
+      # with whatever the runner had. Pin a version that passes, assert it, and
+      # invoke the installed binary by path.
       - name: Install rivet
-        run: cargo install --git https://github.com/pulseengine/rivet.git --tag v0.3.1 rivet-cli
+        run: |
+          cargo install --git https://github.com/pulseengine/rivet.git --tag v0.40.0 rivet-cli --locked
+          "${CARGO_HOME:-$HOME/.cargo}/bin/rivet" --version | grep -q '^rivet 0\.40\.0 '
       - name: Validate artifacts
-        run: rivet validate || echo "::warning::rivet validate failed (known upstream issue pulseengine/rivet#129)"
+        # No `|| echo` fallback (#426). rivet#129, which it cited, is closed.
+        # `rivet validate` exits 0 on a pass with warnings and 1 only on an
+        # error, so the fallback hid nothing but real failures, such as an
+        # artifact file that no longer parses.
+        run: '"${CARGO_HOME:-$HOME/.cargo}/bin/rivet" validate'
       - name: Check traceability coverage
-        run: rivet coverage
+        run: '"${CARGO_HOME:-$HOME/.cargo}/bin/rivet" coverage'
       - name: Artifact statistics
-        run: rivet stats
+        run: '"${CARGO_HOME:-$HOME/.cargo}/bin/rivet" stats'
 
   format:
     name: Format
@@ -485,7 +498,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binaryen
-          cargo install wasm-tools || true
+          # No `|| true` (#429): without wasm-tools every row reads INVALID
+          # and the comparison is skipped, which the old predicate counted as
+          # zero failures.
+          cargo install wasm-tools --locked
+          wasm-tools --version
       - name: Build LOOM
         run: cargo build --release
       - name: Run differential comparison
@@ -533,9 +550,12 @@ jobs:
               wopt_valid="skip"
             fi
 
-            # CRITICAL: If LOOM output is invalid but wasm-opt is valid, that's a bug
-            if [ "$loom_valid" = "INVALID" ] && [ "$wopt_valid" = "yes" ]; then
-              echo "::error::LOOM produced invalid WASM for $filename but wasm-opt succeeded"
+            # Any LOOM outcome other than valid output is a failure (#429). The
+            # old predicate fired only on INVALID-with-wasm-opt-valid, so LOOM
+            # erroring on a fixture, or producing invalid output when wasm-opt
+            # could not run, passed. wasm-opt's result does not excuse LOOM.
+            if [ "$loom_valid" != "yes" ]; then
+              echo "::error::LOOM result for $filename: $loom_valid (wasm-opt: $wopt_valid)"
               failures=$((failures + 1))
             fi
 
@@ -543,9 +563,9 @@ jobs:
           done
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Failures (LOOM invalid where wasm-opt valid): $failures" >> $GITHUB_STEP_SUMMARY
+          echo "Failures (LOOM error or invalid output): $failures" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Fail CI if LOOM produced invalid output where wasm-opt succeeded
+          # Fail CI on any LOOM error or invalid output
           if [ "$failures" -gt 0 ]; then
             echo "::error::$failures differential test failures detected"
             exit 1
