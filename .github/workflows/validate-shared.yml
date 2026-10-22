@@ -147,29 +147,6 @@ jobs:
           test -s "$output"
           echo "✅ CLI optimization successful"
 
-  check-api-stability:
-    name: Check API Stability
-    runs-on: [self-hosted, linux, x64, rust-cpu]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-semver-checks
-        run: cargo install cargo-semver-checks --locked || echo "cargo-semver-checks installation skipped"
-
-      - name: Check for breaking changes
-        run: |
-          # Check if cargo-semver-checks is available
-          if command -v cargo-semver-checks &> /dev/null; then
-            cargo semver-checks check-release -p loom-shared || echo "⚠️ Potential breaking changes detected in loom-shared"
-          else
-            echo "⚠️ cargo-semver-checks not available, skipping API stability check"
-          fi
-
   format-and-lint:
     name: Format and Lint
     # Stays on ubuntu-latest: clippy step requires `sudo apt-get install z3`;

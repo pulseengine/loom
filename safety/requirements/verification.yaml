@@ -803,7 +803,7 @@ artifacts:
     type: feature
     title: partial operations — trap-equivalence for div/rem, trunc and bounded memory access (#313 Tier-2 slice 2)
     description: >
-      PLANNED — not yet implemented. The first slice in which the trap
+      The first slice in which the trap
       disjunct of the correctness relation does real work:
       UNSAT(orig.trap != opt.trap OR (NOT orig.trap AND opt.value NOT IN
       orig.valueSet)). Traps are an EQUIVALENCE, not a refinement: a wasm trap
@@ -864,7 +864,7 @@ artifacts:
         - "OUTSTANDING: #257's trap_gate predicates are NOT yet folded in; see the description"
         - "SCOPE NARROWED: trunc and load/store bounds are not in this slice; see the description"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
     links:
       - type: verifies
@@ -927,7 +927,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 566 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 568 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]
@@ -1078,7 +1078,7 @@ artifacts:
         - "Given a memory obligation, it is routed to and DECIDED by the new engine (not deferred to the incumbent)"
         - "Given LOOM_VERIFY_BACKEND=both, memory obligations show no divergence"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, verification, solver-migration, memory]
     links:
       - type: verifies
@@ -1107,7 +1107,7 @@ artifacts:
         - "The non-singleton valueSet path has a test that FAILS if the path is removed (reachability is the asserted property)"
         - "#283 is resolved on the record: either a reproduction showing distinct float ops unified, or a proof they cannot be"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, verification, solver-migration, floats]
     links:
       - type: verifies
@@ -1141,7 +1141,7 @@ artifacts:
         - "Given the dependabot config, the per-pin cranelift-isle ignore entries are removed (superseded by the committed lockfile)"
         - "Given a re-run of the org-wide consumer search, the fork has no consumer outside this repository before it is archived"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, verification, solver-migration, release-engineering]
     links:
       - type: verifies
@@ -1506,7 +1506,7 @@ artifacts:
         - "Given an image lacking glibc 2.34, the musl binary RUNS there"
         - "The musl build's actual cost is measured before it is scheduled, not assumed from the C++ dependency"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, release-engineering, portability]
     links:
       - type: verifies
@@ -1569,7 +1569,7 @@ artifacts:
       # the failure #353 is about. An artifact with no steps is SKIPPED, which
       # is the honest state for one that is not yet verifiable.
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, release-engineering, portability]
     links:
       - type: verifies
@@ -1607,7 +1607,7 @@ artifacts:
         - "Given an advisory landing after a release, a VEX can be re-issued without re-tagging"
         - "Given an unreachable vulnerable component, the VEX says not_affected WITH a justification"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, release-engineering, supply-chain]
     links:
       - type: verifies
@@ -1644,7 +1644,7 @@ artifacts:
         - "Given the release workflow, report publication does not depend on an on:release trigger"
         - "Given a release whose report cannot be produced, the release FAILS rather than shipping without one"
     status: draft
-    release: v1.5.0
+    release: v1.6.0
     tags: [v150, release-engineering, compliance]
     links:
       - type: verifies

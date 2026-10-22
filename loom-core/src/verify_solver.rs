@@ -830,27 +830,16 @@ impl BoundedOrdealSolver {
 #[cfg(feature = "verification")]
 impl RuleSolver for BoundedOrdealSolver {
     fn prove_rule_equiv(&self, lhs: &RuleTerm, rhs: &RuleTerm) -> RuleVerdict {
-        use crate::rule_solver::ordeal_backend::{
-            GoalLowering, lower_goal_ne, render_ordeal_model,
-        };
-        use ordeal::{CheckResult, Solver};
+        use crate::rule_solver::ordeal_backend::{render_ordeal_model, solver_for_goal_ne};
+        use ordeal::CheckResult;
 
-        let mut solver = Solver::new();
-        match lower_goal_ne(lhs, rhs) {
-            Ok(GoalLowering::Core(ne)) => solver.assert(ne),
-            // The sliver has already eliminated every array construct; what
-            // is asserted here is closed-core, and the deadline below
-            // governs it exactly as it governs a pure obligation.
-            Ok(GoalLowering::Sliver(core)) => {
-                for assertion in core {
-                    solver.assert(assertion);
-                }
-            }
+        let solver = match solver_for_goal_ne(lhs, rhs) {
+            Ok(solver) => solver,
             // `decide_bv_equivalence` gates this case and defers instead, so
             // reaching it means the obligation came from somewhere else.
             // `Unknown` is the conservative answer either way.
             Err(_) => return RuleVerdict::Unknown,
-        }
+        };
         match solver.check_with_deadline(self.timeout_ms) {
             CheckResult::Unsat(cert) => match cert.recheck() {
                 Ok(()) => RuleVerdict::Proven,
@@ -1815,6 +1804,66 @@ mod tests {
     /// disjunction this seam builds would over-approximate and silently
     /// reject correct transforms, so the obligation is declined instead —
     /// the same scope discipline slice 1 applied to memory.
+    /// #433 / ordeal#247: a query variable must never be identified with the
+    /// sliver's own fresh variable for a read.
+    ///
+    /// ordeal < 0.32.1 named the fresh variable for a concrete read
+    /// `$sel:<array>:<index>` without checking the query's own names, so a
+    /// query variable spelled that way was silently unified with the read and
+    /// `select(memory, 5) != $sel:memory:5` — satisfiable, the two are
+    /// independent — came back as a CERTIFIED `Unsat`. This drives the exact
+    /// counterexample through the production solver.
+    ///
+    /// loom's own variable names cannot start with `$` (every Z3 name it
+    /// creates begins with a literal letter), so production was not exposed;
+    /// this pins the fix so a future pin or name scheme cannot reopen it.
+    #[test]
+    fn a_query_variable_cannot_masquerade_as_a_sliver_read() {
+        use crate::rule_solver::RuleArray;
+        let read = RuleTerm::Select {
+            array: Box::new(RuleArray::Var {
+                name: "memory".into(),
+            }),
+            index: Box::new(k(5, 32)),
+        };
+        let impostor = v("$sel:memory:5", 8);
+        let verdict = BoundedOrdealSolver::from_env().prove_rule_equiv(&read, &impostor);
+        assert!(
+            matches!(verdict, RuleVerdict::Disproven(_)),
+            "a read and an independent variable are NOT equal; got {verdict:?}"
+        );
+    }
+
+    /// #433: a memory or call obligation must be decided by a solver built
+    /// with `Solver::from_sliver`. From ordeal 0.33.0 only such a solver runs
+    /// the trusted, Lean-proven `check_sliver_lowering` before it returns a
+    /// verdict, which proves that the closed core it decides is exactly the
+    /// read-over-write and congruence elimination of the query loom asked.
+    /// Lowering by hand and asserting the core skips that check.
+    /// `is_sliver()` reports which entry point built the solver. A pure
+    /// obligation has nothing to eliminate and must stay on the plain path.
+    #[test]
+    fn memory_obligations_are_decided_on_the_proven_sliver_path() {
+        use crate::rule_solver::RuleArray;
+        use crate::rule_solver::ordeal_backend::solver_for_goal_ne;
+        let read = |at: u128| RuleTerm::Select {
+            array: Box::new(RuleArray::Var {
+                name: "memory".into(),
+            }),
+            index: Box::new(k(at, 32)),
+        };
+        let memory = solver_for_goal_ne(&read(5), &read(6)).expect("in the sliver");
+        assert!(
+            memory.is_sliver(),
+            "a memory obligation was decided on a solver that skips check_sliver_lowering"
+        );
+        let pure = solver_for_goal_ne(&v("x", 32), &v("y", 32)).expect("closed core");
+        assert!(
+            !pure.is_sliver(),
+            "a pure obligation has no sliver to check"
+        );
+    }
+
     #[test]
     fn a_division_under_a_conditional_is_refused_not_approximated() {
         let cond = RuleBool::Eq(Box::new(v("c", 32)), Box::new(k(0, 32)));
