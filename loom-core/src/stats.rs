@@ -184,10 +184,22 @@ pub fn take_coverage_summary() -> CoverageSummary {
 mod tests {
     use super::*;
 
+    /// Serialises the tests that depend on the process-global revert map.
+    ///
+    /// A unique pass name is not enough: `take_resets` clears the WHOLE map,
+    /// so run on a parallel test thread it can erase `record_and_read`'s
+    /// entries between its writes and its read, which then sees `None`.
+    /// Measured on main: 1 failure in 400 runs of this module.
+    static REVERT_MAP: Mutex<()> = Mutex::new(());
+
+    fn lock_revert_map() -> std::sync::MutexGuard<'static, ()> {
+        // A panicking test must not cascade into the others as poison.
+        REVERT_MAP.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn record_and_read() {
-        // Use a unique pass name so we do not race with other tests
-        // that may run concurrently and share the global counter.
+        let _guard = lock_revert_map();
         let pass = "stats_test_record_and_read";
         record_revert(pass);
         record_revert(pass);
@@ -257,6 +269,7 @@ mod tests {
 
     #[test]
     fn take_resets() {
+        let _guard = lock_revert_map();
         let pass = "stats_test_take_resets";
         record_revert(pass);
         let _ = take_revert_summary();
