@@ -1072,10 +1072,13 @@ pub(crate) mod ordeal_backend {
         /// Neither side reads memory: the closed-core `Ne` goal, exactly as
         /// slices 1-2 built it.
         Core(BoolTerm),
-        /// A memory obligation, already eliminated into the closed core by
-        /// the array sliver (eager read-over-write + array congruence). No
-        /// array construct remains; the ordinary blast pipeline decides it.
-        Sliver(Vec<BoolTerm>),
+        /// A memory or call obligation, as a solver built by
+        /// [`ordeal::Solver::from_sliver`]. It holds the closed-core
+        /// elimination (read-over-write + array/UF congruence) AND the
+        /// extended query it came from, so every verdict it returns has first
+        /// passed ordeal's trusted `check_sliver_lowering` (#433): the core it
+        /// decided is provably the elimination of the query loom asked.
+        Sliver(ordeal::Solver),
     }
 
     /// Why an equivalence goal could not be lowered.
@@ -1085,6 +1088,21 @@ pub(crate) mod ordeal_backend {
         Gap(ExtGap),
         /// ordeal's sliver refused the query outright.
         Sliver(ordeal::sliver::SliverError),
+    }
+
+    /// A [`Solver`] holding the goal `lhs != rhs`, ready for a bounded check.
+    pub(crate) fn solver_for_goal_ne(
+        lhs: &RuleTerm,
+        rhs: &RuleTerm,
+    ) -> Result<ordeal::Solver, GoalError> {
+        Ok(match lower_goal_ne(lhs, rhs)? {
+            GoalLowering::Core(ne) => {
+                let mut solver = ordeal::Solver::new();
+                solver.assert(ne);
+                solver
+            }
+            GoalLowering::Sliver(solver) => solver,
+        })
     }
 
     /// Lower the goal `lhs != rhs`, routing through the array sliver when
@@ -1097,8 +1115,14 @@ pub(crate) mod ordeal_backend {
     /// instead of a hang (loom#347 is exactly that failure mode), and an
     /// out-of-sliver query must surface as a REFUSAL the seam can defer to
     /// the incumbent on, not as an undecided verdict the call site turns
-    /// into a revert. Lowering here and asserting the core ourselves keeps
-    /// both properties.
+    /// into a revert. `Solver::from_sliver` (ordeal#236) keeps both
+    /// properties: the refusal is an `Err`, and every bound applies to the
+    /// solver it returns.
+    ///
+    /// Nor `ordeal::sliver::lower` with the core asserted by hand, which is
+    /// what this did until #433: a solver built that way never runs the
+    /// trusted `check_sliver_lowering`, so a verdict would rest on an
+    /// unchecked elimination.
     pub(crate) fn lower_goal_ne(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<GoalLowering, GoalError> {
         let l = lower_ext(lhs).map_err(GoalError::Gap)?;
         let r = lower_ext(rhs).map_err(GoalError::Gap)?;
@@ -1108,7 +1132,7 @@ pub(crate) mod ordeal_backend {
             (ExtBvTerm::Core(a), ExtBvTerm::Core(b)) => {
                 Ok(GoalLowering::Core(BoolTerm::Ne(Box::new(a), Box::new(b))))
             }
-            (a, b) => ordeal::sliver::lower(&[ExtBoolTerm::Ne(a, b)])
+            (a, b) => ordeal::Solver::from_sliver(&[ExtBoolTerm::Ne(a, b)])
                 .map(GoalLowering::Sliver)
                 .map_err(GoalError::Sliver),
         }
