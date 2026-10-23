@@ -525,6 +525,30 @@ fn sliver_admits(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<(), DeferReason> {
     }
 }
 
+/// The neutral terms' constructors for the single-source div/rem trap rule
+/// ([`crate::trap_gate::div_trap_condition`]). These are what the seam lowers
+/// to BOTH engines, which is why the rule cannot simply be ordeal's.
+#[cfg(feature = "verification")]
+struct RuleTrapTerms;
+
+#[cfg(feature = "verification")]
+impl crate::trap_gate::TrapTerms for RuleTrapTerms {
+    type Bv = RuleTerm;
+    type Bool = RuleBool;
+    fn constant(value: u128, width: u32) -> RuleTerm {
+        RuleTerm::Const { value, width }
+    }
+    fn eq(a: RuleTerm, b: RuleTerm) -> RuleBool {
+        RuleBool::Eq(Box::new(a), Box::new(b))
+    }
+    fn and(a: RuleBool, b: RuleBool) -> RuleBool {
+        RuleBool::BoolAnd(Box::new(a), Box::new(b))
+    }
+    fn or(a: RuleBool, b: RuleBool) -> RuleBool {
+        RuleBool::BoolOr(Box::new(a), Box::new(b))
+    }
+}
+
 /// The wasm trap condition of every division in a reflected term, or a
 /// refusal.
 ///
@@ -558,40 +582,25 @@ fn sliver_admits(lhs: &RuleTerm, rhs: &RuleTerm) -> Result<(), DeferReason> {
 /// is narrow, exact, and named, rather than wide and approximate.
 #[cfg(feature = "verification")]
 fn trap_condition(term: &RuleTerm) -> Result<Option<RuleBool>, DeferReason> {
+    use crate::trap_gate::{DivKind, div_trap_condition};
     fn walk(t: &RuleTerm, under_ite: bool, acc: &mut Vec<RuleBool>) -> Result<(), DeferReason> {
         use RuleTerm as T;
         // The division arms first: these are the nodes that can trap.
-        let divisor_and_kind = match t {
-            T::Udiv(a, b) | T::Urem(a, b) | T::Srem(a, b) => Some((a, b, false)),
-            T::Sdiv(a, b) => Some((a, b, true)),
+        let division = match t {
+            T::Udiv(a, b) => Some((DivKind::DivU, a, b)),
+            T::Urem(a, b) => Some((DivKind::RemU, a, b)),
+            T::Sdiv(a, b) => Some((DivKind::DivS, a, b)),
+            T::Srem(a, b) => Some((DivKind::RemS, a, b)),
             _ => None,
         };
-        if let Some((a, b, is_signed_div)) = divisor_and_kind {
+        if let Some((kind, a, b)) = division {
             if under_ite {
                 return Err(DeferReason::TrapUnderConditional);
             }
-            let width = b.width();
-            let zero = T::Const { value: 0, width };
-            // Every kind traps on a zero divisor.
-            let mut cond = RuleBool::Eq(Box::new((**b).clone()), Box::new(zero.clone()));
-            if is_signed_div {
-                // `div_s` ALSO traps on INT_MIN / -1 (signed overflow).
-                // `rem_s` deliberately does NOT — see the doc comment.
-                let int_min = T::Const {
-                    value: 1u128 << (width - 1),
-                    width,
-                };
-                let minus_one = T::Const {
-                    value: (!0u128) >> (128 - width),
-                    width,
-                };
-                let overflow = RuleBool::BoolAnd(
-                    Box::new(RuleBool::Eq(Box::new((**a).clone()), Box::new(int_min))),
-                    Box::new(RuleBool::Eq(Box::new((**b).clone()), Box::new(minus_one))),
-                );
-                cond = RuleBool::BoolOr(Box::new(cond), Box::new(overflow));
-            }
-            acc.push(cond);
+            // WHEN it traps is decided by the single-source rule shared with
+            // `trap_gate` (#313 slice 2, criterion [7]); this walker only
+            // decides WHERE the divisions are.
+            acc.push(div_trap_condition::<RuleTrapTerms>(kind, a, b, b.width()));
         }
 
         // Recurse. `Ite` arms set `under_ite` for everything beneath them;
@@ -1797,13 +1806,6 @@ mod tests {
         });
     }
 
-    /// A division under a conditional is REFUSED rather than approximated.
-    ///
-    /// A division in an untaken wasm `if` arm does not execute and so does
-    /// not trap; the honest condition is path-dependent. The flat
-    /// disjunction this seam builds would over-approximate and silently
-    /// reject correct transforms, so the obligation is declined instead —
-    /// the same scope discipline slice 1 applied to memory.
     /// #433 / ordeal#247: a query variable must never be identified with the
     /// sliver's own fresh variable for a read.
     ///
@@ -1864,6 +1866,76 @@ mod tests {
         );
     }
 
+    /// #313 slice 2, criterion [7]: the rule this seam discharges and the rule
+    /// `trap_gate` proves over are ONE rule. Slice 2's instantiation, sent
+    /// through the PRODUCTION lowering (`lower_to_ordeal`, the path the seam's
+    /// obligations take), is proven equivalent to `trap_gate`'s instantiation
+    /// for every kind and boundary width, over symbolic operands — and the
+    /// comparison is shown to discriminate (div_s vs rem_s must differ).
+    #[test]
+    fn slice_two_and_trap_gate_share_one_trap_rule() {
+        use crate::rule_solver::ordeal_backend::lower_to_ordeal;
+        use crate::trap_gate::{DivKind, OrdealTerms, div_trap_condition, var};
+        use ordeal::term::{BoolTerm, BvTerm, Sort};
+        use ordeal::trap::prove_trap_condition_equivalence;
+
+        // A RuleBool reaches ordeal only inside a term, so carry it as the
+        // width-1 term `cond ? 1 : 0` and read it back as `== 1`.
+        let lowered = |cond: RuleBool| -> BoolTerm {
+            let carried = RuleTerm::Ite {
+                cond: Box::new(cond),
+                then_: Box::new(k(1, 1)),
+                else_: Box::new(k(0, 1)),
+            };
+            let bv = lower_to_ordeal(&carried).expect("a trap rule is in the closed core");
+            BoolTerm::Eq(
+                Box::new(bv),
+                Box::new(BvTerm::Const {
+                    value: 1,
+                    sort: Sort::new(1),
+                }),
+            )
+        };
+        let unsat = |a: &BoolTerm, b: &BoolTerm| {
+            matches!(
+                prove_trap_condition_equivalence(a, b),
+                ordeal::CheckResult::Unsat(_)
+            )
+        };
+
+        for width in [1, 8, 32, 64, 128] {
+            let (ra, rb) = (v("a", width), v("b", width));
+            let (oa, ob) = (var("a", width), var("b", width));
+            for kind in [DivKind::DivU, DivKind::DivS, DivKind::RemU, DivKind::RemS] {
+                let seam = lowered(div_trap_condition::<RuleTrapTerms>(kind, &ra, &rb, width));
+                let gate = div_trap_condition::<OrdealTerms>(kind, &oa, &ob, width);
+                assert!(
+                    unsat(&seam, &gate),
+                    "{kind:?} at width {width}: the seam's trap rule and trap_gate's differ"
+                );
+            }
+            // Even at width 1 (INT_MIN == -1 == 1) the two differ at a=1, b=1.
+            let seam_div_s = lowered(div_trap_condition::<RuleTrapTerms>(
+                DivKind::DivS,
+                &ra,
+                &rb,
+                width,
+            ));
+            let gate_rem_s = div_trap_condition::<OrdealTerms>(DivKind::RemS, &oa, &ob, width);
+            assert!(
+                !unsat(&seam_div_s, &gate_rem_s),
+                "width {width}: comparison failed to tell div_s from rem_s"
+            );
+        }
+    }
+
+    /// A division under a conditional is REFUSED rather than approximated.
+    ///
+    /// A division in an untaken wasm `if` arm does not execute and so does
+    /// not trap; the honest condition is path-dependent. The flat
+    /// disjunction this seam builds would over-approximate and silently
+    /// reject correct transforms, so the obligation is declined instead —
+    /// the same scope discipline slice 1 applied to memory.
     #[test]
     fn a_division_under_a_conditional_is_refused_not_approximated() {
         let cond = RuleBool::Eq(Box::new(v("c", 32)), Box::new(k(0, 32)));
