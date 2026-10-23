@@ -811,33 +811,31 @@ artifacts:
       introducing one is sound, and the LLVM-style "the original was UB so
       anything is permitted" reading would license exactly the bug class this
       work exists to eliminate.
-      STATUS: the relation is implemented and five of seven criteria below are
-      proven; the artifact stays `draft` because two are not.
-      OUTSTANDING — trap_gate consolidation. The criteria said #257's
-      trap_gate predicates would "fold in here rather than remaining a
-      separate gate". They have not. Slice 2 builds its own `trap_condition`
-      over the reflected neutral term, because trap_gate's predicates are
-      built over ordeal `BvTerm`s for a different consumer (the
-      constant-operand fold backstop, which is exact precisely BECAUSE its
-      operands are literals and has "no symbolic slack"). Reusing them would
-      have meant translating between representations inside the obligation,
-      adding a path the reflect-and-re-lower round trip does not cover. So
-      there are now two trap-condition implementations that must agree about
-      the div_s/rem_s asymmetry, which is a real duplication and a real risk —
-      recorded as outstanding rather than quietly dropped from the criteria.
-      MITIGATION, since the duplication is not going away this slice: the
-      risk it creates is DRIFT — the two implementations disagreeing about
-      the asymmetry. A pairwise differential between them would be the
-      obvious answer and is deliberately NOT what was added, because two
-      implementations written from the same reading can agree and both be
-      wrong; ordeal's own `rem_s` bug is precisely a case where a second
-      implementation would have agreed. Instead a 14-row table written from
-      the wasm spec pins this implementation to the SPEC, covering all four
-      kinds, divide-by-zero, the signed-overflow asymmetry,
-      truncation-toward-zero sign behaviour, and a wrong-value dual on every
-      non-trapping row so "accepted" cannot be satisfied by a relation that
-      accepts everything. Confirmed discriminating: giving `rem_s` the
-      overflow disjunct (reproducing ordeal#84) fails the table by row name.
+      STATUS: all criteria below are met; slice 2 ships in v1.6.0, not
+      v1.5.0 (the v1.5.0 scope was cut to slices 1, 3 and 4).
+      trap_gate consolidation — DONE (#434). There is now ONE rule for
+      when a div/rem traps: `trap_gate::div_trap_condition`, generic over a
+      small term-building trait. trap_gate instantiates it over ordeal
+      `BvTerm`s for the constant-operand fold backstop; the seam's
+      `trap_condition` instantiates the same function over `RuleTerm`s. An
+      earlier draft of this slice kept two hand-written implementations and
+      recorded the drift between them as a risk; the risk is removed rather
+      than mitigated, because there is no second implementation left to
+      drift. `slice_two_and_trap_gate_share_one_trap_rule` checks that the
+      two instantiations agree: the seam's instantiation is sent through the
+      production lowering and proven equivalent to trap_gate's for all four
+      kinds at widths 1, 8, 32, 64 and 128 over symbolic operands, and the
+      same test shows the comparison discriminates (div_s and rem_s must
+      differ).
+      The spec table stays: a 14-row table written from the wasm spec pins
+      the rule to the SPEC, covering all four kinds, divide-by-zero, the
+      signed-overflow asymmetry, truncation-toward-zero sign behaviour, and a
+      wrong-value dual on every non-trapping row so "accepted" cannot be
+      satisfied by a relation that accepts everything. A shared rule that
+      is wrong is still wrong in both places, so the spec table, not the
+      agreement test, is what pins correctness. Confirmed discriminating:
+      giving `rem_s` the overflow disjunct (reproducing ordeal#84) fails the
+      table by row name.
       SCOPE NARROWED. #313's design comment lists slice 2 as "div/rem, trunc,
       load/store bounds". This slice is div/rem ONLY. Memory is slices 4 and
       5 and the seam refuses it separately, so listing load/store here was an
@@ -858,12 +856,20 @@ artifacts:
         - "PROVEN: given div_s(INT_MIN, -1) the trap condition is TRUE; given rem_s(INT_MIN, -1) it is FALSE — both rows in ONE test, so a tidy-up that makes them uniform cannot pass by breaking only half"
         - "PROVEN: given a transform that removes a mandatory trap, the validator REJECTS it — and the same test asserts a bare value equality ACCEPTS it, so the guard is shown to be load-bearing rather than assumed to be"
         - "PROVEN: given a transform that introduces a trap the original did not have, the validator REJECTS it"
-        - "PROVEN: given LOOM_VERIFY_BACKEND=both, 545 tests run with no divergence panic"
+        - "PROVEN: given LOOM_VERIFY_BACKEND=both, the full loom-core suite (571 tests) runs with no divergence panic"
         - "PROVEN: given real wasm div_u/div_s/rem_s/rem_u/i64.div_s, each obligation is ROUTED AND DECIDED (1 routed, 0 deferred) rather than merely offered"
-        - "MITIGATED (not closed): the duplication's risk is drift on the div_s/rem_s asymmetry; a 14-row SPEC TABLE pins this implementation to the wasm spec, and flattening the asymmetry fails it by name"
-        - "OUTSTANDING: #257's trap_gate predicates are NOT yet folded in; see the description"
+        - "PROVEN: a 14-row SPEC TABLE pins the trap rule to the wasm spec, and flattening the div_s/rem_s asymmetry fails it by name"
+        - "PROVEN: #257's trap_gate and the seam use ONE trap rule (`div_trap_condition`); the two instantiations are proven equivalent for all four kinds at widths 1/8/32/64/128, and the comparison is shown to tell div_s from rem_s"
         - "SCOPE NARROWED: trunc and load/store bounds are not in this slice; see the description"
-    status: draft
+      steps:
+        - run: cargo test --release --lib -p loom-core --features verification -- div_s_traps_on_int_min_over_minus_one_and_rem_s_does_not
+        - run: cargo test --release --lib -p loom-core --features verification -- trap_removal_is_rejected_where_a_value_equality_would_accept_it
+        - run: cargo test --release --lib -p loom-core --features verification -- trap_addition_is_rejected
+        - run: cargo test --release --lib -p loom-core --features verification -- the_four_trapping_ops_match_a_spec_table
+        - run: cargo test --release --lib -p loom-core --features verification -- slice_two_and_trap_gate_share_one_trap_rule
+        - run: cargo test --release --lib -p loom-core --features verification -- tier2_slice2_div_obligations_are_routed_and_decided
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 571 passed'"
+    status: verified
     release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
     links:
