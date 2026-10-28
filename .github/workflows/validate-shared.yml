@@ -13,7 +13,10 @@ on:
 jobs:
   test-shared:
     name: Test loom-shared
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
+    # boundary: a fork PR can edit this file. Isolation is enforced by the org's
+    # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
 
     steps:
       - name: Checkout code
@@ -56,7 +59,7 @@ jobs:
 
   test-workspace:
     name: Test Full Workspace
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     needs: test-shared
 
     steps:
@@ -100,7 +103,7 @@ jobs:
 
   integration-test:
     name: Integration Testing
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     needs: test-workspace
 
     steps:
@@ -175,7 +178,7 @@ jobs:
 
   verify-architecture:
     name: Verify Architecture
-    runs-on: [self-hosted, linux, x64, light]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
 
     steps:
       - name: Checkout code

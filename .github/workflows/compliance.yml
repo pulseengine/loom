@@ -37,13 +37,13 @@ jobs:
           case "$TAG" in v*) ;; *) echo "::error::tag '$TAG' must start with v"; exit 1 ;; esac
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
       - name: Generate compliance report
         id: report
-        uses: pulseengine/rivet/.github/actions/compliance@v0.40.0
+        uses: pulseengine/rivet/.github/actions/compliance@5a6ef70293a1fe1c1033a860e136d0ca9cb7bc24 # v0.40.0
         with:
           theme: dark
           rivet-version: v0.15.0

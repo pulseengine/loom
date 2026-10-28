@@ -1,0 +1,4 @@
+# Agent instruction and configuration files.
+/.claude/ @avrabe
+/CLAUDE.md @avrabe
+/AGENTS.md @avrabe
