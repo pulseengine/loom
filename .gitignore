@@ -63,3 +63,6 @@ bazel-*
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Per-user agent settings (local permissions); never committed.
+.claude/settings.local.json

@@ -39,7 +39,10 @@ jobs:
   # main.
   solver-differential:
     name: Solver differential (both engines must agree)
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
+    # boundary: a fork PR can edit this file. Isolation is enforced by the org's
+    # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     # 45, not 25. The sweep's observed FLOOR was 30.4 minutes for a build plus
     # 23 artifacts, which puts the build alone near 20 — so a 25-minute budget
     # here would be tight on a warm cache and impossible on a cold one. Setting
@@ -91,7 +94,7 @@ jobs:
 
   rivet-verification:
     name: Verification Gate (rivet-driven)
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     # #353: raised from 30. Observed durations for this sweep ran 30.4-102.5
     # minutes against a 30-minute cap, so EVERY run was killed — the minimum
     # exceeded the budget by 24 seconds. A budget the floor cannot meet is not
@@ -109,11 +112,11 @@ jobs:
       # z3-sys feature provides the library statically.
       Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Ensure Z3 header present
         run: |
@@ -182,7 +185,7 @@ jobs:
 
       - name: Upload results artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-results
           path: verification-results.json
