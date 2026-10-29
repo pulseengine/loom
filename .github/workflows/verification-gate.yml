@@ -3,6 +3,14 @@ name: Verification Gate
 on:
   pull_request:
     branches: [main]
+  # GitHub merge queue: `Solver differential (both engines must agree)` is the
+  # one required context on main, so this workflow must run on merge_group or
+  # a queued PR waits on a check nothing reports. In the queue the required job
+  # runs in full; the advisory rivet sweep is skipped (it ran on the PR head,
+  # and nothing in the queue reads it). Concurrency: head_ref is empty in a
+  # queue run and github.ref is the entry's own gh-readonly-queue ref, so
+  # entries never cancel each other.
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -94,6 +102,8 @@ jobs:
 
   rivet-verification:
     name: Verification Gate (rivet-driven)
+    # Advisory and not required: skipped in the merge queue.
+    if: github.event_name != 'merge_group'
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     # #353: raised from 30. Observed durations for this sweep ran 30.4-102.5
     # minutes against a 30-minute cap, so EVERY run was killed — the minimum
