@@ -15,6 +15,54 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Docs-only PRs skip the compile/test suite (~226 runner-minutes per run).
+  # Job-level `if:` on this detector, never workflow-level `paths:` — a job
+  # skipped by `if:` still reports, a workflow that never starts does not.
+  # FAILS CLOSED: any event other than pull_request, an absent base, a failed
+  # or empty diff, or any changed file that is not a `.md`/LICENSE file runs
+  # everything. A `.md` whose basename appears in any `.rs` file also counts as
+  # code — loom-cli/tests/verify_subcommand.rs reads
+  # docs/analysis/synth-architecture.md at test time. rivet-validate is not
+  # gated: it validates artifact content and must run on every PR.
+  # Gated jobs use `!cancelled() && code != 'false'`, so a FAILED detector runs
+  # them (empty output) rather than skipping them as GitHub's implicit
+  # success() would.
+  # This workflow carries no required context, so it does not run on
+  # merge_group; verification-gate.yml does.
+  changes:
+    name: Detect changed areas
+    runs-on: [self-hosted, linux, x64, light]
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          run_all() { echo "code=true" >> "$GITHUB_OUTPUT"; echo "→ $1; running the full suite"; exit 0; }
+          [ "$EVENT_NAME" = "pull_request" ] || run_all "event $EVENT_NAME"
+          [ -n "$BASE_SHA" ] || run_all "no base sha"
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)" || run_all "git diff failed against $BASE_SHA"
+          [ -n "$changed" ] || run_all "git diff returned no paths"
+          echo "changed files:"; echo "$changed"
+          while IFS= read -r f; do
+            case "$f" in
+              *.md|LICENSE|LICENSE-*) ;;
+              *) run_all "non-docs file $f" ;;
+            esac
+            if git grep -qF -- "$(basename "$f")" -- '*.rs'; then
+              run_all "$f is referenced from Rust source"
+            fi
+          done <<< "$changed"
+          echo "code=false" >> "$GITHUB_OUTPUT"
+          echo "→ docs-only change; skipping the compile/test suite"
+
   rivet-validate:
     name: Rivet Artifact Traceability
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
@@ -51,6 +99,8 @@ jobs:
 
   format:
     name: Format
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       - uses: actions/checkout@v7
@@ -62,6 +112,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
     # provisioned on smithy hosts. Migrate once smithy ships z3 in toolchains.
     runs-on: ubuntu-latest
@@ -80,6 +132,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -108,6 +162,8 @@ jobs:
 
   build:
     name: Build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -205,6 +261,8 @@ jobs:
 
   coverage:
     name: Code Coverage
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: uses `sudo rm -rf` to free disk space on the
     # GitHub-hosted image. Could migrate by dropping the free-disk step
     # (smithy has plenty of disk via lv_runners) but leaving as-is for now.
@@ -235,6 +293,8 @@ jobs:
 
   benchmark:
     name: Benchmarks
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
@@ -249,6 +309,8 @@ jobs:
 
   verify:
     name: Z3 Verification Build
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
     # provisioned on smithy hosts. Migrate once smithy ships z3.
     runs-on: ubuntu-latest
@@ -309,6 +371,8 @@ jobs:
 
   differential-gate:
     name: Behavioral Differential Gate (#238)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # ubuntu-latest: default features pull `verification` (needs z3); the
     # `differential` feature additionally pulls wasmtime. Both build here.
     runs-on: ubuntu-latest
@@ -364,6 +428,8 @@ jobs:
 
   wasm-build:
     name: WASM Build (wasm32-wasip2 with Z3)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
     # Could migrate by extracting into $HOME, but skipping until needed.
     runs-on: ubuntu-latest
@@ -457,6 +523,8 @@ jobs:
 
   rocq-proofs:
     name: Rocq Formal Proofs
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires Nix + Bazel; both are out-of-scope for
     # smithy phase 1 (see migration playbook "What's currently out of scope").
     runs-on: ubuntu-latest
