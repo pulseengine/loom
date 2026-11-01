@@ -19,7 +19,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 # WebAssembly parsing and encoding
 wasmparser = { version = "0.261", features = ["component-model"] }
-wasm-encoder = { version = "0.261", features = ["component-model"] }
+wasm-encoder = { version = "0.262", features = ["component-model"] }
 wasmprinter = "0.261"
 wat = "1.261"
 wit-component = "0.261"
