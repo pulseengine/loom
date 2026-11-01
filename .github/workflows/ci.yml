@@ -24,6 +24,9 @@ jobs:
   # code — loom-cli/tests/verify_subcommand.rs reads
   # docs/analysis/synth-architecture.md at test time. rivet-validate is not
   # gated: it validates artifact content and must run on every PR.
+  # Gated jobs use `!cancelled() && code != 'false'`, so a FAILED detector runs
+  # them (empty output) rather than skipping them as GitHub's implicit
+  # success() would.
   # This workflow carries no required context, so it does not run on
   # merge_group; verification-gate.yml does.
   changes:
@@ -97,7 +100,7 @@ jobs:
   format:
     name: Format
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       - uses: actions/checkout@v7
@@ -110,7 +113,7 @@ jobs:
   clippy:
     name: Clippy
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
     # provisioned on smithy hosts. Migrate once smithy ships z3 in toolchains.
     runs-on: ubuntu-latest
@@ -130,7 +133,7 @@ jobs:
   test:
     name: Test
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -160,7 +163,7 @@ jobs:
   build:
     name: Build
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -259,7 +262,7 @@ jobs:
   coverage:
     name: Code Coverage
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: uses `sudo rm -rf` to free disk space on the
     # GitHub-hosted image. Could migrate by dropping the free-disk step
     # (smithy has plenty of disk via lv_runners) but leaving as-is for now.
@@ -291,7 +294,7 @@ jobs:
   benchmark:
     name: Benchmarks
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@v7
@@ -307,7 +310,7 @@ jobs:
   verify:
     name: Z3 Verification Build
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
     # provisioned on smithy hosts. Migrate once smithy ships z3.
     runs-on: ubuntu-latest
@@ -369,7 +372,7 @@ jobs:
   differential-gate:
     name: Behavioral Differential Gate (#238)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # ubuntu-latest: default features pull `verification` (needs z3); the
     # `differential` feature additionally pulls wasmtime. Both build here.
     runs-on: ubuntu-latest
@@ -426,7 +429,7 @@ jobs:
   wasm-build:
     name: WASM Build (wasm32-wasip2 with Z3)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
     # Could migrate by extracting into $HOME, but skipping until needed.
     runs-on: ubuntu-latest
@@ -521,7 +524,7 @@ jobs:
   rocq-proofs:
     name: Rocq Formal Proofs
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     # Stays on ubuntu-latest: requires Nix + Bazel; both are out-of-scope for
     # smithy phase 1 (see migration playbook "What's currently out of scope").
     runs-on: ubuntu-latest
