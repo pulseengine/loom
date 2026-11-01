@@ -5,6 +5,22 @@ All notable changes to LOOM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **wasmtime advisories, and the wasmtime path to zstd.** wasmtime 49.0.2 ->
+  49.0.4 (`cargo update`, within the existing `49.0` requirement) closes
+  RUSTSEC-2026-0353 through -0364, -0378 and -0379. wasmtime's default `cache`
+  feature pulled `wasmtime-internal-cache` -> zstd 0.13; loom never configures a
+  module cache, so both wasmtime declarations (loom-core dev-dependency,
+  loom-testing optional) take `default-features = false` with wasmtime 49's full
+  default set minus `cache`. tokio 1.53.1 -> 1.54.1 (RUSTSEC-2026-0386) and
+  chacha20 0.10.1 -> 0.10.2 (yanked). Still open: zstd 0.13 and zip 4.6
+  (RUSTSEC-2026-0367/-0368/-0369/-0391/-0398/-0403/-0410) also reach the lock
+  through the `z3-sys` fork's build-dependency `zip = "4.3"`, which needs a
+  change in pulseengine/z3.rs.
+
 ## [1.4.1] - 2026-08-25
 
 Say only what you checked. Four defects of one shape: the tool reporting more
