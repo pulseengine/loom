@@ -49,7 +49,7 @@ criterion = "0.8"
 # reachable on the 0.13 line. loom never configures a module cache.
 # Keep this list in sync with wasmtime's `default` on every wasmtime bump
 # (and with the other wasmtime declaration in loom-testing/Cargo.toml).
-wasmtime = { version = "49.0", default-features = false, features = [
+wasmtime = { version = "50.0", default-features = false, features = [
     "anyhow",
     "async",
     "backtrace",
