@@ -60,16 +60,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
-      Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Ensure Z3 header present
-        run: |
-          if [ ! -f "$Z3_SYS_Z3_HEADER" ]; then
-            sudo apt-get update && sudo apt-get install -y libz3-dev || true
-          fi
       - name: Both engines must agree on every rule obligation
         env:
           LOOM_VERIFY_BACKEND: both
@@ -118,23 +112,12 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
       CARGO_INCREMENTAL: 0
-      # LOOM's Z3 verifier needs the Z3 header at build time; the bundled
-      # z3-sys feature provides the library statically.
-      Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      - name: Ensure Z3 header present
-        run: |
-          # libz3-dev provides /usr/include/z3.h. Skip if already present
-          # (self-hosted runners may have it pre-installed).
-          if [ ! -f "$Z3_SYS_Z3_HEADER" ]; then
-            sudo apt-get update && sudo apt-get install -y libz3-dev || true
-          fi
 
       # TEST-CORPUS-HARNESS refuses to report a measurement it has not
       # validated ("ERROR: wasm-tools not found on PATH (validation is

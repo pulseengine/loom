@@ -85,9 +85,9 @@ default = ["verification"]
 verification = ["z3", "ordeal"]
 
 [dependencies.z3]
-version = "0.19"
+version = "0.22"
 optional = true
-features = ["bundled"]
+features = ["vendored"]
 
 # ordeal trap-semantics library (issue #279). Pure-Rust, certificate-checked
 # QF_BV decision procedure; supplies the trap-condition predicates + VC

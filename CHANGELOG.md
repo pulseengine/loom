@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Back on the upstream `z3` crate (0.22.0, `vendored`), off the pulseengine/z3.rs
+  fork.** The fork existed only for a wasi-sdk build of Z3 that is no longer
+  needed. Removed the `[patch.crates-io]` git override; `z3` 0.19 -> 0.22.0
+  (z3-sys 0.14.0, z3-src 503.2.2), still built from source via the `vendored`
+  feature. `DeclKind` variants in `verify_solver.rs` are renamed upstream
+  (`DeclKind::BSDIV_I` -> `DeclKind::BsdivI`, etc.); no logic changed. The
+  `wasm32-wasip2` CI job now builds without the `verification` feature (upstream
+  z3 does not target wasm), and no longer installs wasi-sdk.
+  This closes the zip 4.6 / zstd 0.13 advisories that reached the lock only
+  through the fork's `z3-sys` build-dependency (see the "Still open" note under
+  Fixed below).
+
 ### Fixed
 
 - **wasmtime advisories, and the wasmtime path to zstd.** wasmtime 49.0.2 ->

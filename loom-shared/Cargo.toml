@@ -21,8 +21,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Z3 verification (optional, feature-gated for Synth/Loom Pro)
-# Uses forked z3 with WASI support via [patch.crates-io] in workspace
-z3 = { version = "0.19", optional = true }
+# Upstream z3 from crates.io
+z3 = { version = "0.22", optional = true }
 
 [build-dependencies]
 cranelift-isle = { workspace = true }

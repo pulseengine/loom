@@ -114,8 +114,8 @@ jobs:
     name: Clippy
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
-    # provisioned on smithy hosts. Migrate once smithy ships z3 in toolchains.
+    # Stays on ubuntu-latest: the vendored Z3 build needs cmake and a C++
+    # toolchain, which are not confirmed on smithy hosts.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -123,10 +123,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Install Z3
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y z3
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -311,17 +307,13 @@ jobs:
     name: Z3 Verification Build
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: requires `sudo apt-get install z3`; Z3 is not
-    # provisioned on smithy hosts. Migrate once smithy ships z3.
+    # Stays on ubuntu-latest: the vendored Z3 build needs cmake and a C++
+    # toolchain, which are not confirmed on smithy hosts.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Install Z3
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y z3
       - name: Build with verification feature
         run: cargo build --release --features verification
       - name: Test verification
@@ -380,10 +372,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Install Z3
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y z3
       - name: Build loom with the differential gate
         run: cargo build --release -p loom-cli --features differential
       - name: Differentially gate the runnable core-module corpus
@@ -427,11 +415,9 @@ jobs:
           echo "✅ differential gate green ($certified certified)"
 
   wasm-build:
-    name: WASM Build (wasm32-wasip2 with Z3)
+    name: WASM Build (wasm32-wasip2, no Z3)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: installs wasi-sdk into /opt with sudo mkdir/tar.
-    # Could migrate by extracting into $HOME, but skipping until needed.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -453,20 +439,12 @@ jobs:
         with:
           key: wasm-z3-build-1.93.1
 
-      - name: Install wasi-sdk
-        run: |
-          WASI_SDK_VERSION=25
-          wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz -O wasi-sdk.tar.gz
-          sudo mkdir -p /opt/wasi-sdk
-          sudo tar -xzf wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
-          rm wasi-sdk.tar.gz
-
+      # Upstream z3 (crates.io) does not build for wasm32-wasip2, so the wasm
+      # artifact is built without the `verification` feature (no Z3, no ordeal).
+      # Verification runs in the native jobs.
       - name: Build loom for wasm32-wasip2
-        env:
-          # pulseengine/z3.rs wasi-sdk-support branch handles Z3 build internally
-          WASI_SDK_PREFIX: /opt/wasi-sdk
         run: |
-          cargo +1.93.1 build --release --target wasm32-wasip2 --package loom-cli
+          cargo +1.93.1 build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
