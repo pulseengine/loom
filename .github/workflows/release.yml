@@ -105,7 +105,7 @@ jobs:
 
       # Vendored Z3 (z3-src) is C++20 and includes <format>, which GCC 11 (the
       # ubuntu-22.04 default) does not ship. Keep the 22.04 image -- it sets the
-      # glibc floor (#311) -- and build with g++-13 from the toolchain PPA.
+      # glibc floor (#311) -- and build with g++-13 from the toolchain PPA, linking libstdc++ statically.
       - name: Install g++-13 for vendored Z3 (C++20 <format>)
         if: startsWith(matrix.os, 'ubuntu-22.04')
         shell: bash
@@ -116,6 +116,12 @@ jobs:
           sudo apt-get install -y g++-13
           echo "CC=gcc-13" >> "$GITHUB_ENV"
           echo "CXX=g++-13" >> "$GITHUB_ENV"
+          # g++-13's libstdc++ needs GLIBCXX_3.4.31, above stock 22.04's 3.4.30,
+          # so link libstdc++ and libgcc statically (these jobs only). Link with
+          # g++-13 so the driver adds a static -lstdc++ itself, and empty
+          # CXXSTDLIB so z3-sys does not also emit a dynamic -lstdc++.
+          echo "CXXSTDLIB=" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C linker=g++-13 -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
 
       - name: Build loom (native)
         run: cargo build --release --target ${{ matrix.target }} -p loom-cli
