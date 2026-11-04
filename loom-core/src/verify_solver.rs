@@ -1049,7 +1049,7 @@ mod reflect {
                 .map_err(|_| DeferReason::OutOfFragment("array node is not an application"))?;
             let n = node.num_children();
 
-            if decl.kind() == DeclKind::UNINTERPRETED {
+            if decl.kind() == DeclKind::Uninterpreted {
                 if n == 0 {
                     return self.intern_array(decl.name(), node);
                 }
@@ -1058,7 +1058,7 @@ mod reflect {
                 ));
             }
 
-            if decl.kind() == DeclKind::STORE {
+            if decl.kind() == DeclKind::Store {
                 if n != 3 {
                     return Err(DeferReason::OutOfFragment("store with != 3 arguments"));
                 }
@@ -1123,7 +1123,7 @@ mod reflect {
             // callee, which the sliver carries as an uninterpreted function
             // (#313 Tier-2 slice 3). The comment here used to say "slice 2";
             // the artifact has always said slice 3.
-            if kind == DeclKind::UNINTERPRETED {
+            if kind == DeclKind::Uninterpreted {
                 if n == 0 {
                     return self.intern(decl.name(), width, node);
                 }
@@ -1146,17 +1146,17 @@ mod reflect {
                 // undefined point are Z3's own business rather than
                 // something the wasm spec pins, so the seam does not reflect
                 // them.
-                DeclKind::BSMOD
-                | DeclKind::BUDIV0
-                | DeclKind::BUREM0
-                | DeclKind::BSDIV0
-                | DeclKind::BSREM0
-                | DeclKind::BSMOD0
-                | DeclKind::BUDIV_I
-                | DeclKind::BUREM_I
-                | DeclKind::BSDIV_I
-                | DeclKind::BSREM_I
-                | DeclKind::BSMOD_I => Err(DeferReason::OutOfFragment(
+                DeclKind::Bsmod
+                | DeclKind::Budiv0
+                | DeclKind::Burem0
+                | DeclKind::Bsdiv0
+                | DeclKind::Bsrem0
+                | DeclKind::Bsmod0
+                | DeclKind::BudivI
+                | DeclKind::BuremI
+                | DeclKind::BsdivI
+                | DeclKind::BsremI
+                | DeclKind::BsmodI => Err(DeferReason::OutOfFragment(
                     "floored modulo, or a Z3-internal partial-op node",
                 )),
 
@@ -1178,10 +1178,10 @@ mod reflect {
                 // the encoder produced something the wasm spec does not
                 // define, and refusing is the honest response to a term we
                 // cannot attribute to a wasm instruction.
-                DeclKind::BUDIV => self.binop(node, n, RuleTerm::Udiv),
-                DeclKind::BUREM => self.binop(node, n, RuleTerm::Urem),
-                DeclKind::BSDIV => self.binop(node, n, RuleTerm::Sdiv),
-                DeclKind::BSREM => self.binop(node, n, RuleTerm::Srem),
+                DeclKind::Budiv => self.binop(node, n, RuleTerm::Udiv),
+                DeclKind::Burem => self.binop(node, n, RuleTerm::Urem),
+                DeclKind::Bsdiv => self.binop(node, n, RuleTerm::Sdiv),
+                DeclKind::Bsrem => self.binop(node, n, RuleTerm::Srem),
 
                 // --- memory: Array theory, slice 4 ---
                 //
@@ -1190,7 +1190,7 @@ mod reflect {
                 // here; a `store` is array-sorted and is reached through
                 // `reflect_array` instead. A BV-sorted `store` cannot exist,
                 // and refusing it costs nothing.
-                DeclKind::SELECT => {
+                DeclKind::Select => {
                     if n != 2 {
                         return Err(DeferReason::OutOfFragment("select with != 2 arguments"));
                     }
@@ -1210,22 +1210,22 @@ mod reflect {
                         index: Box::new(self.reflect_bv(&index)?),
                     })
                 }
-                DeclKind::STORE => Err(DeferReason::OutOfFragment(
+                DeclKind::Store => Err(DeferReason::OutOfFragment(
                     "bitvector-sorted store (not a shape Z3 builds)",
                 )),
 
                 // --- the closed pure-BV fragment ---
-                DeclKind::BADD => self.binop(node, n, RuleTerm::Add),
-                DeclKind::BSUB => self.binop(node, n, RuleTerm::Sub),
-                DeclKind::BMUL => self.binop(node, n, RuleTerm::Mul),
-                DeclKind::BAND => self.binop(node, n, RuleTerm::And),
-                DeclKind::BOR => self.binop(node, n, RuleTerm::Or),
-                DeclKind::BXOR => self.binop(node, n, RuleTerm::Xor),
-                DeclKind::BSHL => self.binop(node, n, RuleTerm::Shl),
-                DeclKind::BLSHR => self.binop(node, n, RuleTerm::Lshr),
-                DeclKind::BASHR => self.binop(node, n, RuleTerm::Ashr),
-                DeclKind::EXT_ROTATE_RIGHT => self.binop(node, n, RuleTerm::Rotr),
-                DeclKind::EXT_ROTATE_LEFT => {
+                DeclKind::Badd => self.binop(node, n, RuleTerm::Add),
+                DeclKind::Bsub => self.binop(node, n, RuleTerm::Sub),
+                DeclKind::Bmul => self.binop(node, n, RuleTerm::Mul),
+                DeclKind::Band => self.binop(node, n, RuleTerm::And),
+                DeclKind::Bor => self.binop(node, n, RuleTerm::Or),
+                DeclKind::Bxor => self.binop(node, n, RuleTerm::Xor),
+                DeclKind::Bshl => self.binop(node, n, RuleTerm::Shl),
+                DeclKind::Blshr => self.binop(node, n, RuleTerm::Lshr),
+                DeclKind::Bashr => self.binop(node, n, RuleTerm::Ashr),
+                DeclKind::ExtRotateRight => self.binop(node, n, RuleTerm::Rotr),
+                DeclKind::ExtRotateLeft => {
                     // ordeal derives `bvrotl` as `rotr(a, 0 - b)`, which is
                     // exact only when the width is a power of two. Every WASM
                     // width is (32/64), but refuse anything else rather than
@@ -1237,11 +1237,11 @@ mod reflect {
                     }
                     self.binop(node, n, RuleTerm::Rotl)
                 }
-                DeclKind::CONCAT => self.binop(node, n, RuleTerm::Concat),
-                DeclKind::BNOT => self.unop(node, n, RuleTerm::Not),
-                DeclKind::BNEG => self.unop(node, n, RuleTerm::Neg),
+                DeclKind::Concat => self.binop(node, n, RuleTerm::Concat),
+                DeclKind::Bnot => self.unop(node, n, RuleTerm::Not),
+                DeclKind::Bneg => self.unop(node, n, RuleTerm::Neg),
 
-                DeclKind::SIGN_EXT | DeclKind::ZERO_EXT => {
+                DeclKind::SignExt | DeclKind::ZeroExt => {
                     if n != 1 {
                         return Err(DeferReason::OutOfFragment("extend with != 1 argument"));
                     }
@@ -1255,14 +1255,14 @@ mod reflect {
                     // the two sorts, and the round-trip gate re-checks it.
                     let by = width - cw;
                     let arg = Box::new(self.reflect_bv(&child)?);
-                    Ok(if kind == DeclKind::SIGN_EXT {
+                    Ok(if kind == DeclKind::SignExt {
                         RuleTerm::SignExt { by, arg }
                     } else {
                         RuleTerm::ZeroExt { by, arg }
                     })
                 }
 
-                DeclKind::EXTRACT => {
+                DeclKind::Extract => {
                     if n != 1 {
                         return Err(DeferReason::OutOfFragment("extract with != 1 argument"));
                     }
@@ -1284,7 +1284,7 @@ mod reflect {
                     })
                 }
 
-                DeclKind::ITE => {
+                DeclKind::Ite => {
                     if n != 3 {
                         return Err(DeferReason::OutOfFragment("ite with != 3 arguments"));
                     }
@@ -1317,21 +1317,21 @@ mod reflect {
             // A boolean free variable or an uninterpreted predicate has no
             // place in the slice-1 fragment (the neutral DSL has no boolean
             // leaves), so refuse it rather than invent an encoding.
-            if decl.kind() == DeclKind::UNINTERPRETED {
+            if decl.kind() == DeclKind::Uninterpreted {
                 return Err(DeferReason::OutOfFragment("uninterpreted boolean"));
             }
 
             match decl.kind() {
-                DeclKind::EQ => self.cmp(node, n, RuleBool::Eq),
-                DeclKind::ULT => self.cmp(node, n, RuleBool::Ult),
-                DeclKind::ULEQ => self.cmp(node, n, RuleBool::Ule),
-                DeclKind::UGT => self.cmp(node, n, RuleBool::Ugt),
-                DeclKind::UGEQ => self.cmp(node, n, RuleBool::Uge),
-                DeclKind::SLT => self.cmp(node, n, RuleBool::Slt),
-                DeclKind::SLEQ => self.cmp(node, n, RuleBool::Sle),
-                DeclKind::SGT => self.cmp(node, n, RuleBool::Sgt),
-                DeclKind::SGEQ => self.cmp(node, n, RuleBool::Sge),
-                DeclKind::NOT => {
+                DeclKind::Eq => self.cmp(node, n, RuleBool::Eq),
+                DeclKind::Ult => self.cmp(node, n, RuleBool::Ult),
+                DeclKind::Uleq => self.cmp(node, n, RuleBool::Ule),
+                DeclKind::Ugt => self.cmp(node, n, RuleBool::Ugt),
+                DeclKind::Ugeq => self.cmp(node, n, RuleBool::Uge),
+                DeclKind::Slt => self.cmp(node, n, RuleBool::Slt),
+                DeclKind::Sleq => self.cmp(node, n, RuleBool::Sle),
+                DeclKind::Sgt => self.cmp(node, n, RuleBool::Sgt),
+                DeclKind::Sgeq => self.cmp(node, n, RuleBool::Sge),
+                DeclKind::Not => {
                     if n != 1 {
                         return Err(DeferReason::OutOfFragment("not with != 1 argument"));
                     }
@@ -1339,7 +1339,7 @@ mod reflect {
                         self.reflect_bool(&child_bool(node, 0)?)?,
                     )))
                 }
-                DeclKind::AND | DeclKind::OR => {
+                DeclKind::And | DeclKind::Or => {
                     // Z3's and/or are n-ary. The neutral DSL is binary and the
                     // round-trip gate rebuilds a 2-ary node, so anything else
                     // could not round-trip anyway — refuse it up front.
@@ -1348,7 +1348,7 @@ mod reflect {
                     }
                     let a = Box::new(self.reflect_bool(&child_bool(node, 0)?)?);
                     let b = Box::new(self.reflect_bool(&child_bool(node, 1)?)?);
-                    Ok(if decl.kind() == DeclKind::AND {
+                    Ok(if decl.kind() == DeclKind::And {
                         RuleBool::BoolAnd(a, b)
                     } else {
                         RuleBool::BoolOr(a, b)
@@ -1365,7 +1365,7 @@ mod reflect {
                 // no constant), and encoding them via a dummy equality would be
                 // a lowering that is not a single well-defined operation in both
                 // backends. Refused; the incumbent handles those obligations.
-                DeclKind::TRUE | DeclKind::FALSE => Err(DeferReason::OutOfFragment(
+                DeclKind::True | DeclKind::False => Err(DeferReason::OutOfFragment(
                     "boolean constant (no neutral leaf)",
                 )),
                 _ => Err(DeferReason::OutOfFragment(

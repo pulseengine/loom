@@ -1138,6 +1138,13 @@ artifacts:
       history stays readable) only AFTER a re-run of the org-wide search
       confirms this repository is still its only consumer — the previously
       measured result was 2 hits, both here, but an index can lag.
+      Update: this repository no longer depends on the fork. It uses the
+      upstream `z3` crate (0.22, `vendored`) from crates.io, and the
+      wasm32-wasip2 CI job builds without `verification`. The fork-archival
+      ordering above therefore no longer waits on this item, and the
+      wasi-sdk acceptance criterion below is already met for the CI build; the
+      remaining criteria (zero z3 references, glibc floor, musl) still hold
+      only for the full retirement.
     fields:
       method: automated-test
       acceptance-criteria:
