@@ -192,11 +192,19 @@ jobs:
 
       - name: Build release
         run: cargo build --release --verbose
-      - name: Report GLIBC / GLIBCXX requirement (22.04 floor evidence)
+      - name: Assert the 22.04 runtime floor (GLIBC <= 2.35, GLIBCXX <= 3.4.30 or static libstdc++)
         if: startsWith(matrix.os, 'ubuntu-22.04')
         shell: bash
         run: |
-          readelf -V target/release/loom | grep -oE 'GLIBC(XX)?_[0-9.]+' | sort -uV | tail -4
+          set -euo pipefail
+          scripts/check_elf_floor.sh target/release/loom 2.35 3.4.30
+          # Negative control: the same check against a deliberately impossible
+          # ceiling must FAIL, or the step above could be passing vacuously.
+          if scripts/check_elf_floor.sh target/release/loom 2.0 2.0 >/dev/null 2>&1; then
+            echo "::error::negative control passed with an impossible ceiling; the floor check is vacuous"
+            exit 1
+          fi
+          echo "negative control: impossible ceiling correctly rejected"
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
