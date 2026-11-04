@@ -122,7 +122,10 @@ jobs:
           # have z3-sys emit a static -lstdc++ (rustc links with
           # -nodefaultlibs, so the driver does not add libstdc++ itself).
           echo "CXXSTDLIB=static=stdc++" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=-C linker=g++-13 -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
+          # rustc itself must find libstdc++.a for a static=stdc++ link-lib.
+          LIBSTDCXX_DIR=$(dirname "$(g++-13 -print-file-name=libstdc++.a)")
+          test -f "$LIBSTDCXX_DIR/libstdc++.a"
+          echo "RUSTFLAGS=-C linker=g++-13 -L native=$LIBSTDCXX_DIR -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
 
       - name: Build loom (native)
         run: cargo build --release --target ${{ matrix.target }} -p loom-cli
