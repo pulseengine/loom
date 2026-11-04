@@ -191,9 +191,10 @@ jobs:
           echo "CXX=g++-13" >> "$GITHUB_ENV"
           # g++-13's libstdc++ needs GLIBCXX_3.4.31, above stock 22.04's 3.4.30,
           # so link libstdc++ and libgcc statically (these jobs only). Link with
-          # g++-13 so the driver adds a static -lstdc++ itself, and empty
-          # CXXSTDLIB so z3-sys does not also emit a dynamic -lstdc++.
-          echo "CXXSTDLIB=" >> "$GITHUB_ENV"
+          # g++-13 (so the static libstdc++.a is gcc-13's, not gcc-11's) and
+          # have z3-sys emit a static -lstdc++ (rustc links with
+          # -nodefaultlibs, so the driver does not add libstdc++ itself).
+          echo "CXXSTDLIB=static=stdc++" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=-C linker=g++-13 -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
 
       - name: Build release
