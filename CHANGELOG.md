@@ -35,6 +35,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the `z3-sys` fork's build-dependency `zip = "4.3"`, which needs a
   change in pulseengine/z3.rs.
 
+## [1.5.0] - 2026-11-05
+
+The certificate-checked engine starts deciding obligations, and the first thing
+it buys back is what the #347 bound gave away.
+
+Every figure below was measured on this tree unless it names the PR it comes
+from.
+
+### Fixed
+
+- **The #347 memory-op bound refused transforms the new engine can prove
+  (#448, #477).** The bound refuses any transform of a body with more than two
+  array-modelled memory operations, because Z3's array theory is quadratic in
+  them. On a reported five-component fused module, 1.4.1 refused 96 provable
+  transforms, kept four calls to empty functions that 1.4.0 had inlined away,
+  and grew the output with no change in behaviour. Over the bound, the
+  validator now offers the obligation to the new engine first: a proof
+  accepts; a counterexample, an undecided result or a deferral refuses as
+  before, and none of them reaches Z3. Loops go through K-induction as below
+  the bound; float memory access and void bodies stay refused.
+
+  | module | build | `(#347)` refusals | output | proven | time |
+  |---|---|---|---|---|---|
+  | #448 report | 1.4.0 | 0 | 65,352 B | — | <1 s |
+  | #448 report | 1.4.1 | 96 | 65,448 B | 66.0% | 1 s |
+  | #448 report | 1.5.0 | 7 | 65,352 B | 92.2% | 1 s |
+  | #347 module | 1.4.1 | 5,378 | 660,585 B | 49.8% | 48 s |
+  | #347 module | 1.5.0 | 2,672 | 660,592 B | 72.6% | 53 s |
+
+  On the #448 module the output is byte-identical to 1.4.0's. Raising the bound
+  to 20 instead restores those bytes too, but did not finish the #347 module in
+  900 s, so the bound stays and the new engine runs in front of it.
+
+- **A query variable could be unified with the new engine's own memory read
+  (#433, #435).** ordeal before 0.32.1 named the fresh variable for a concrete
+  read `$sel:<array>:<index>` without checking the query's names, so
+  `select(memory, 5) != $sel:memory:5` — satisfiable — came back `Proven` with
+  a certificate that rechecked. loom's own variable names never start with `$`,
+  so loom's output was not exposed; the test that drives the counterexample now
+  pins the fix. Memory and pure-call obligations are now decided through
+  `Solver::from_sliver`, which runs ordeal's Lean-proven `check_sliver_lowering`
+  before answering.
+
+- **The verification gate wrote to the wrong repository, and the required check
+  could pass without testing anything (#420, #422).** Six weeks of `403`s were
+  read as a permissions problem behind `continue-on-error`.
+
+- **Four more CI checks could not fail on what they test (#426, #427, #428,
+  #432).** The integration job swallowed optimizer errors; Differential Testing
+  passed without `wasm-tools` installed; `Check API Stability` printed a
+  breaking-change warning on every run and could not fail, so it is removed.
+
+- **Two stats tests raced on a shared global (#431).** 1 failure in 400 runs
+  before, 0 in 2,000 after (measured on that PR).
+
+- **wasmtime and tokio advisories (#456).** wasmtime 49.0.4 closes
+  RUSTSEC-2026-0353 to -0364, -0378 and -0379; tokio 1.54.1 closes
+  RUSTSEC-2026-0386. loom never configures a module cache, so wasmtime's
+  `cache` feature is off.
+
+### Added
+
+- **The new engine decides memory and pure-call obligations (#313 slices 3
+  and 4: #415, #424, #425).** Linear memory is eliminated by read-over-write
+  (slice 4), and calls to provably pure functions become uninterpreted
+  functions with congruence (slice 3). Together with the pure bit-vector
+  obligations of slice 1, which shipped in 1.4.1 and is verified in this
+  release's scope, they are routed to ordeal, a certificate-checked solver,
+  under `LOOM_VERIFY_BACKEND=ordeal`, and to both engines under
+  `LOOM_VERIFY_BACKEND=both`, where any disagreement panics.
+  **The default backend is still Z3**, except over the #347 bound (#448 above).
+
+- **aarch64-unknown-linux-gnu binaries (#364).** Built natively on an arm64
+  runner; 1.4.1 shipped x86_64 Linux, both macOS architectures and Windows.
+
+- **One rule for when div/rem traps (#434).** The validator and the
+  constant-fold backstop used two hand-written copies of the div/rem trap
+  condition that had to agree on the div_s/rem_s asymmetry with nothing forcing
+  them to. There is now one, `trap_gate::div_trap_condition`, and a test proves
+  the two instantiations equivalent for all four operators at widths 1, 8,
+  32, 64 and 128.
+
+### Changed
+
+- **Z3 comes from upstream `z3` 0.22, vendored (#462)**, not a fork. The
+  wasm32-wasip2 build no longer includes the `verification` feature.
+- **wasmtime 50.0 (#458). Building loom from source now needs rustc 1.97 or
+  newer** (cranelift 0.137). Release binaries are unaffected.
+- **ordeal 0.34.0 (#458).**
+- **Dependency updates arrive grouped (#458).** 41 single-dependency PRs were
+  merged between 1.4.1 and 1.5.0. dependabot now opens one PR per ecosystem per
+  week, across all cargo directories.
+- **CI:** every action is pinned to a commit SHA (#459); fork PRs run on hosted
+  runners (#451); docs-only PRs skip the compile and test suite (#455).
+
+### Not in this release
+
+#313 slice 2 (trap equivalence for div/rem) is merged and verified, but scoped
+to 1.6.0 together with slices 5 (symbolic memory) and 6 (floats), so that this
+release carries only what was verified when its scope was cut.
+
+### Known issues
+
+The `Rocq Formal Proofs` CI job fails on this tree, as it did on main before
+it: `proofs/stack/StackSignature.v` no longer compiles under the current Rocq,
+and `//proofs:all_proofs_test` lists two targets that are not tests. No proof
+here is checked by CI until that is fixed.
+
 ## [1.4.1] - 2026-08-25
 
 Say only what you checked. Four defects of one shape: the tool reporting more
