@@ -76,10 +76,14 @@ jobs:
             os: ubuntu-22.04-arm
             archive: tar.gz
             binary: loom
-          # x86_64-apple-darwin cross-compiles on the arm64 macos-14
-          # runner — matches pulseengine/synth, rivet, witness.
+          # x86_64-apple-darwin cross-compiles on an arm64 runner. It uses the
+          # same image as aarch64-apple-darwin below: the vendored Z3
+          # (z3-src 503.2.2, since #462) does not compile with the macos-14
+          # image's clang (symbol_table.h: "no matching constructor for
+          # initialization of 'key_data'", v1.5.0 release run 42087272980),
+          # while the macos-latest image compiled the same source in that run.
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-latest
             archive: tar.gz
             binary: loom
           - target: aarch64-apple-darwin
