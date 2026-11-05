@@ -3,7 +3,9 @@
 //! This target runs optimized WASM through wasmtime and compares output
 //! against the original unoptimized version to detect semantic divergence.
 //!
-//! Requires wasmtime to be available as a library.
+//! The comparison itself lives in `fuzz/src/lib.rs` (`loom_fuzz::compare_modules`)
+//! so it can be unit-tested. Build with `--features negative-control` to inject
+//! a deliberate fault after optimization; the target must then crash.
 
 #![no_main]
 
@@ -35,6 +37,16 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
+    // Test-only fault injection (negative control for the oracle, #474).
+    #[cfg(feature = "negative-control")]
+    for f in &mut optimized.functions {
+        for i in &mut f.instructions {
+            if let loom_core::Instruction::I32Const(v) = i {
+                *v = v.wrapping_add(1);
+            }
+        }
+    }
+
     // Encode optimized
     let optimized_bytes = match encode::encode_wasm(&optimized) {
         Ok(b) => b,
@@ -60,15 +72,15 @@ fuzz_target!(|data: &[u8]| {
         // eprintln!("Warning: optimization increased size significantly");
     }
 
-    // TODO: When wasmtime is added as a dependency, compare execution results:
-    //
-    // let engine = wasmtime::Engine::default();
-    // let orig_module = wasmtime::Module::new(&engine, &original_bytes)?;
-    // let opt_module = wasmtime::Module::new(&engine, &optimized_bytes)?;
-    //
-    // For each exported function:
-    // - Generate random inputs
-    // - Call on both modules
-    // - Compare outputs
-    // - Panic if different (semantic divergence found!)
+    // Execute both under wasmtime (bounded by fuel) and compare return
+    // values, trap-vs-no-trap, and exported memory/globals.
+    // Seed argument generation from the input so runs are reproducible.
+    let seed = data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+    });
+    if let loom_fuzz::Verdict::Mismatch(why) =
+        loom_fuzz::compare_modules(&original_bytes, &optimized_bytes, seed)
+    {
+        panic!("semantic divergence between original and optimized module: {why}");
+    }
 });

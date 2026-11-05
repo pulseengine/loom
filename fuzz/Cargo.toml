@@ -17,6 +17,23 @@ arbitrary = { version = "1", features = ["derive"] }
 # Disable verification feature to avoid Z3 compilation (not needed for fuzzing)
 loom-core = { path = "../loom-core", default-features = false }
 wasmparser = { version = "0.261" }
+# Same requirement (49.0) as loom-core and loom-testing; fuzz/Cargo.lock is
+# committed and is the actual pin. Minimal feature set: no `cache` (it pulls
+# the zstd crates that carry RUSTSEC advisories, see loom-core/Cargo.toml).
+wasmtime = { version = "49.0", default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+] }
+
+[dev-dependencies]
+wat = "1.261"
+
+[features]
+# Test-only fault injection: after optimization the differential target
+# corrupts the first i32.const it finds. The target MUST then report a
+# divergence; this is the negative control for the wasmtime oracle (#474).
+negative-control = []
 
 [[bin]]
 name = "fuzz_optimize"

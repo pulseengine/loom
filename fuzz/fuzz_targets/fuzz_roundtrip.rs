@@ -11,6 +11,13 @@ use libfuzzer_sys::fuzz_target;
 use loom_core::{encode, parse};
 
 fuzz_target!(|data: &[u8]| {
+    // The parser does not validate. "Invalid output" is only a loom bug if the
+    // input was valid, so skip inputs wasmparser rejects (otherwise the fuzzer
+    // reports garbage-in/garbage-out as a crash).
+    if wasmparser::validate(data).is_err() {
+        return;
+    }
+
     // Try to parse the input as WASM
     let module = match parse::parse_wasm(data) {
         Ok(m) => m,
