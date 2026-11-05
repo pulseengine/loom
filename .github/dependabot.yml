@@ -1,4 +1,14 @@
 version: 2
+# One pull request per ecosystem per week, not one per crate per directory.
+#
+# Each dependabot PR runs the full CI matrix, and every merge leaves the
+# others behind main, so each of them then re-runs the whole matrix again.
+# On 2026-11-05 nine bumps were open at once: the wasm-tools family alone
+# came as five PRs (wasmprinter and wit-component in / and in /fuzz, plus
+# wat in /fuzz) for one upstream release. Grouping turns that into one run.
+#
+# The trade-off: one bad bump holds the whole group back. When that happens,
+# drop it from the group PR and land it on its own.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -6,12 +16,28 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    groups:
+      github-actions:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
-    directory: /
+    # Every cargo manifest dependabot watches, in one entry, so the group
+    # below spans all of them and a release that touches / and /fuzz arrives
+    # as one PR.
+    directories:
+      - /
+      - /fuzz
+      - /loom-cli
+      - /loom-core
+      - /loom-isle
     schedule:
       interval: weekly
     labels:
       - dependencies
+    groups:
+      cargo:
+        patterns:
+          - "*"
     ignore:
       # cranelift-isle is PINNED to the 0.132.x line: 0.133+ raises its MSRV to
       # rustc 1.94.0, which is not yet stable, so a wider constraint breaks the
@@ -24,57 +50,14 @@ updates:
       # time. A pin defended only by prose is not defended; this makes it
       # mechanical.
       #
+      # It used to be repeated in one entry per directory, because #318 was
+      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway: every
+      # cargo ecosystem needed the entry or the bot found the open door. With
+      # all directories in one entry, this single ignore covers all of them.
+      #
       # Remove this ignore ONLY when rustc 1.94 is stable on the CI image, or
       # when the lockfile is committed (#320) — and raise the release workflow's
       # asserted glibc ceiling in the same change if the runner image moves.
-      - dependency-name: cranelift-isle
-  - package-ecosystem: cargo
-    directory: /fuzz
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-    ignore:
-      # See the root (/) cargo entry for the full rationale. Repeated here
-      # because scoping the ignore to one ecosystem is NOT enough: #318 was
-      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
-      # cargo ecosystem needs the entry or the bot finds the open door.
-      - dependency-name: cranelift-isle
-  - package-ecosystem: cargo
-    directory: /loom-cli
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-    ignore:
-      # See the root (/) cargo entry for the full rationale. Repeated here
-      # because scoping the ignore to one ecosystem is NOT enough: #318 was
-      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
-      # cargo ecosystem needs the entry or the bot finds the open door.
-      - dependency-name: cranelift-isle
-  - package-ecosystem: cargo
-    directory: /loom-core
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-    ignore:
-      # See the root (/) cargo entry for the full rationale. Repeated here
-      # because scoping the ignore to one ecosystem is NOT enough: #318 was
-      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
-      # cargo ecosystem needs the entry or the bot finds the open door.
-      - dependency-name: cranelift-isle
-  - package-ecosystem: cargo
-    directory: /loom-isle
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-    ignore:
-      # See the root (/) cargo entry for the full rationale. Repeated here
-      # because scoping the ignore to one ecosystem is NOT enough: #318 was
-      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway. Every
-      # cargo ecosystem needs the entry or the bot finds the open door.
       - dependency-name: cranelift-isle
   - package-ecosystem: docker
     directory: /fuzz/oss-fuzz/projects/loom
