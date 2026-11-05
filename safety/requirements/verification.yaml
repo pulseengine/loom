@@ -868,7 +868,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- the_four_trapping_ops_match_a_spec_table
         - run: cargo test --release --lib -p loom-core --features verification -- slice_two_and_trap_gate_share_one_trap_rule
         - run: cargo test --release --lib -p loom-core --features verification -- tier2_slice2_div_obligations_are_routed_and_decided
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 571 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 577 passed'"
     status: verified
     release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
@@ -933,7 +933,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 571 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 577 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]
@@ -1467,6 +1467,66 @@ artifacts:
     status: verified
     release: v1.4.1
     tags: [v141, verification, performance, solver-migration]
+    links:
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-14
+      - type: verifies
+        target: REQ-3
+
+  # ============================================================================
+  # #448 — v1.5.0: the #347 bound refused transforms the new engine can prove.
+  # ============================================================================
+
+  - id: TEST-448-ROUTE-MEMORY-BEFORE-BOUND
+    type: feature
+    title: "over the #347 memory-op bound, the new engine decides the obligation before the validator refuses it (#448)"
+    description: >
+      The #347 bound refuses any transform of a body with more than two
+      array-modelled memory operations, because Z3's array theory is
+      quadratic in them. That also refused transforms that are provable:
+      on the module #448 reported, 1.4.1 refused 96 of them, kept four
+      calls to empty functions that 1.4.0 had inlined away, and grew the
+      output from 65,352 B to 65,448 B with no change in behaviour.
+      The new engine does not use Z3's array theory, so over the bound the
+      validator now offers the obligation to it first. Straight-line
+      obligations are decided by the new engine ONLY: a proof accepts the
+      transform, and a counterexample, an undecided result, or a deferral
+      refuses it exactly as before, without ever reaching Z3. Handing a
+      deferral to Z3 would bring back the cost #347 bounds. Loops go through
+      K-induction, as they do below the bound. Bodies with float memory
+      access, and void bodies (no return value, so no obligation), stay
+      refused; below the bound both are kept unproven, and keeping them
+      here would turn a refusal into an unproven acceptance.
+      Measured on the #448 module (fused with meld 0.62.0, sha256
+      89e64cbb…, the reporter's digest): 1.4.1 refuses 96, 65,448 B,
+      35 functions, 66.0% proven; with this change 7 refusals (all float
+      memory access), 65,352 B, 31 functions, 92.2% proven, and the output is
+      byte-identical to 1.4.0's. On the #347 module (662,632 B fused):
+      1.4.1 48 s and 49.8% proven; with this change 53 s and 72.6% proven.
+      Raising the bound to 20 instead was also measured and did not finish
+      the #347 module in 900 s, which is why the bound stays and the new
+      engine runs in front of it. All outputs validate.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "PROVEN: over the bound, a correct transform (x * 2 -> x << 1) is accepted, and the proof comes from the new engine"
+        - "PROVEN: over the bound, a wrong transform (x * 2 -> x << 2) is refused with a counterexample, and the refusal still names #347"
+        - "PROVEN: over the bound, an obligation the new engine defers is refused and does not reach Z3; removing that refusal turns the test red"
+        - "PROVEN: over the bound, a void body is refused"
+        - "PROVEN: over the bound, a body with float memory access is refused"
+        - "PROVEN: over the bound, a loop too large to unroll goes through K-induction and an unchanged loop is accepted"
+      steps:
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_a_correct_transform_is_proven
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_a_wrong_transform_is_refused
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_a_deferred_obligation_is_refused_without_z3
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_a_void_body_is_refused
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_an_unverifiable_body_is_refused
+        - run: cargo test --release --lib -p loom-core --features verification -- over_the_memory_bound_a_large_loop_goes_through_k_induction
+    status: verified
+    release: v1.5.0
+    tags: [v150, verification, performance, solver-migration]
     links:
       - type: verifies
         target: REQ-5

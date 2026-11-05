@@ -3142,8 +3142,13 @@ pub fn verify_function_equivalence_with_context(
     // Clear any stale note from an earlier attempt on this worker before the
     // one we are about to classify.
     let _ = take_unproven_acceptance();
-    let result =
-        verify_function_equivalence_with_context_uncounted(original, optimized, pass_name, sig_ctx);
+    let result = verify_function_equivalence_with_context_uncounted(
+        original,
+        optimized,
+        pass_name,
+        sig_ctx,
+        EngineMode::Configured,
+    );
     match (&result, take_unproven_acceptance()) {
         // Kept, but nothing was proved about it. The caller will not revert,
         // so this is exactly the outcome a revert count cannot see.
@@ -3155,12 +3160,29 @@ pub fn verify_function_equivalence_with_context(
     result
 }
 
+/// Which engine may decide an obligation.
+#[cfg(feature = "verification")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EngineMode {
+    /// The backend `LOOM_VERIFY_BACKEND` selects, with Z3 deciding anything
+    /// the new engine defers. The normal path.
+    Configured,
+    /// For bodies over the #347 memory-op bound (#448). Straight-line
+    /// obligations go to the new engine ONLY: Z3's array theory is the cost
+    /// the bound exists to avoid, so anything the new engine defers is
+    /// refused rather than handed to Z3. Loops still go through K-induction,
+    /// as below the bound; on the module #347 was measured on, that path
+    /// finished in 48 s against 43 s without it.
+    NewEngineOnly,
+}
+
 #[cfg(feature = "verification")]
 fn verify_function_equivalence_with_context_uncounted(
     original: &Function,
     optimized: &Function,
     pass_name: &str,
     sig_ctx: &VerificationSignatureContext,
+    engine: EngineMode,
 ) -> Result<bool> {
     // Quick structural checks
     if original.signature.params != optimized.signature.params
@@ -3192,6 +3214,9 @@ fn verify_function_equivalence_with_context_uncounted(
                     return Ok(false);
                 }
             }
+        } else if engine == EngineMode::NewEngineOnly {
+            // Over the memory bound an unproven loop is refused, never assumed.
+            return Err(anyhow!("loops are not verified with K-induction disabled"));
         } else {
             return Ok(true); // K-induction disabled - assume equivalent
         }
@@ -3224,6 +3249,15 @@ fn verify_function_equivalence_with_context_uncounted(
         } else {
             "unknown opcode"
         };
+        // Below the bound these are kept unproven. Over it the caller would
+        // otherwise refuse, so keeping one here would turn a refusal into an
+        // unproven acceptance.
+        if engine == EngineMode::NewEngineOnly {
+            return Err(anyhow!(
+                "unverifiable instructions ({}) are not decided by the new engine",
+                reason
+            ));
+        }
         eprintln!(
             "{}: verification skipped (unverifiable instructions: {})",
             pass_name, reason
@@ -3233,7 +3267,10 @@ fn verify_function_equivalence_with_context_uncounted(
 
     // Create Z3 context and solver using thread-local context
     // #313 Tier-2 slice 1: which engine decides a routable obligation.
-    let backend = VerifyBackend::from_env();
+    let backend = match engine {
+        EngineMode::Configured => VerifyBackend::from_env(),
+        EngineMode::NewEngineOnly => VerifyBackend::Ordeal,
+    };
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let solver = Solver::new();
@@ -3264,9 +3301,12 @@ fn verify_function_equivalence_with_context_uncounted(
                 // #313 Tier-2 slice 1: offer the obligation to the neutral
                 // seam. Under the default backend this ALWAYS defers, and the
                 // incumbent path below runs byte-identically to before.
-                if let SeamOutcome::Decided(verdict) =
-                    verify_solver::decide_bv_equivalence(orig, opt, backend)
-                {
+                let seam = verify_solver::decide_bv_equivalence(orig, opt, backend);
+                let deferred = match &seam {
+                    SeamOutcome::Deferred(reason) => Some(*reason),
+                    SeamOutcome::Decided(_) => None,
+                };
+                if let SeamOutcome::Decided(verdict) = seam {
                     return match verdict {
                         RuleVerdict::Proven => Ok(true),
                         RuleVerdict::Disproven(model) => {
@@ -3284,6 +3324,15 @@ fn verify_function_equivalence_with_context_uncounted(
                             pass_name
                         )),
                     };
+                }
+
+                // Over the memory bound a deferred obligation stops here:
+                // handing it to Z3 is the cost #347 bounds.
+                if let (EngineMode::NewEngineOnly, Some(reason)) = (engine, deferred) {
+                    return Err(anyhow!(
+                        "the new engine deferred this obligation ({:?})",
+                        reason
+                    ));
                 }
 
                 // Assert they are NOT equal (looking for counterexample)
@@ -3307,6 +3356,9 @@ fn verify_function_equivalence_with_context_uncounted(
                     )),
                 }
             }
+            (Ok(None), Ok(None)) if engine == EngineMode::NewEngineOnly => Err(anyhow!(
+                "a void body carries no obligation for the new engine to decide"
+            )),
             (Ok(None), Ok(None)) => {
                 // Both functions return no value (void). Currently auto-pass.
                 //
@@ -3671,10 +3723,13 @@ impl TranslationValidator {
         //    time goes into axiom instantiation and internalisation rather
         //    than the search the timeout guards.
         //
-        // The transform is KEPT, exactly as with the instruction bound, and
-        // recorded as kept-without-proof so `--stats` reports it against a
-        // denominator instead of it vanishing (#331). A deferral nobody can
-        // see is the failure mode this project keeps finding.
+        // Over the bound the new engine is tried first (#448, below). If it
+        // does not prove the transform, the transform is REJECTED, not kept —
+        // unlike the instruction bound above; the branch below says why. The
+        // rejection is counted by `--stats` as a revert tagged
+        // `memory-ops-over-threshold` and printed under `LOOM_VERBOSE_REVERTS`,
+        // because a deferral nobody can see is the failure mode this project
+        // keeps finding (#331).
         let max_memory_ops: usize = std::env::var("LOOM_Z3_MAX_MEMORY_OPS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -3704,13 +3759,43 @@ impl TranslationValidator {
             // The instruction bound above still keeps. That inconsistency is
             // real and is left visible rather than quietly harmonised here —
             // changing long-shipped behaviour belongs in its own change.
+            //
+            // #448: the bound exists because Z3's ARRAY theory is quadratic in
+            // memory operations, and the new engine does not use it. So before
+            // refusing, offer the obligation to the new engine alone. Only a
+            // proof accepts; a counterexample, an undecided obligation, or
+            // anything the new engine defers is refused as before, without
+            // reaching Z3.
+            let original = self.original.clone();
+            let optimized_clone = optimized.clone();
+            let pass_name = self.pass_name.clone();
+            let sig_ctx = self.sig_ctx.clone();
+            let new_engine = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                verify_function_equivalence_with_context_uncounted(
+                    &original,
+                    &optimized_clone,
+                    &pass_name,
+                    &sig_ctx,
+                    EngineMode::NewEngineOnly,
+                )
+            }));
+            let why_not = match new_engine {
+                Ok(Ok(true)) => {
+                    crate::stats::record_proven();
+                    return Ok(());
+                }
+                Ok(Ok(false)) => "the new engine found a counterexample".to_string(),
+                Ok(Err(e)) => e.to_string(),
+                Err(_panic) => "the new engine panicked".to_string(),
+            };
             note_deferral_reason("memory-ops-over-threshold");
             return Err(anyhow!(
                 "{}: {} array-modelled memory operations exceeds the limit of {} \
-                 (#347) - optimization rejected (unproven)",
+                 (#347) and {} - optimization rejected (unproven)",
                 self.pass_name,
                 n_memory_ops,
-                max_memory_ops
+                max_memory_ops,
+                why_not
             ));
         }
 
@@ -10544,6 +10629,136 @@ mod tests {
             (routed, deferred),
             (1, 0),
             "a memory obligation must now be DECIDED by ordeal, not deferred"
+        );
+    }
+
+    /// #448: a body over the #347 memory-op bound, built from real wasm.
+    ///
+    /// Three stores put it over `DEFAULT_MAX_ARRAY_MEMORY_OPS` (2), and the
+    /// padding puts it over `DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR` (16), so
+    /// the bound applies to it rather than the tiny-body exemption. `extra`
+    /// goes before the result, `result` computes it.
+    #[cfg(feature = "verification")]
+    fn over_memory_bound(result_type: &str, extra: &str, result: &str) -> String {
+        format!(
+            "(module (memory 1) (func (param i32 i32) {result_type} \
+             local.get 0 local.get 1 i32.store offset=0 \
+             local.get 0 local.get 1 i32.store offset=4 \
+             local.get 0 local.get 1 i32.store offset=8 \
+             {pad} {extra} {result}))",
+            pad = "i32.const 0 drop ".repeat(8),
+        )
+    }
+
+    /// Verify `b` as a transform of `a` through the real validator.
+    #[cfg(feature = "verification")]
+    fn validate(a: &str, b: &str) -> anyhow::Result<()> {
+        let (fa, fb) = func_pair(a, b);
+        assert!(
+            count_array_memory_ops(&fa) > DEFAULT_MAX_ARRAY_MEMORY_OPS
+                && count_function_instructions(&fa) > DEFAULT_MEMORY_BOUND_INSTRUCTION_FLOOR,
+            "the fixture must be over the #347 bound, or it proves nothing"
+        );
+        TranslationValidator::new(&fa, "test").verify(&fb)
+    }
+
+    /// The #448 regression: a correct transform of a body over the memory
+    /// bound used to be refused outright. The new engine now decides it.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_a_correct_transform_is_proven() {
+        let a = over_memory_bound("(result i32)", "", "local.get 1 i32.const 2 i32.mul");
+        let b = over_memory_bound("(result i32)", "", "local.get 1 i32.const 1 i32.shl");
+        verify_solver::reset_route_counts();
+        let verdict = validate(&a, &b);
+        let (routed, _) = verify_solver::route_counts();
+        assert!(
+            verdict.is_ok(),
+            "x * 2 == x << 1 must be accepted: {verdict:?}"
+        );
+        assert!(routed >= 1, "the proof must come from the new engine");
+    }
+
+    /// The control: over the bound, a wrong transform is still refused, and
+    /// the refusal still names #347.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_a_wrong_transform_is_refused() {
+        let a = over_memory_bound("(result i32)", "", "local.get 1 i32.const 2 i32.mul");
+        let b = over_memory_bound("(result i32)", "", "local.get 1 i32.const 2 i32.shl");
+        let err = validate(&a, &b)
+            .expect_err("x * 2 == x << 2 is false")
+            .to_string();
+        assert!(err.contains("(#347)"), "{err}");
+        assert!(err.contains("counterexample"), "{err}");
+    }
+
+    /// The kill-criterion: over the bound, an obligation the new engine
+    /// defers is refused, never handed to Z3. Z3's array theory is the cost
+    /// #347 bounds, so a fallback here would bring back the hang. A division
+    /// under an `if` is deferred by the new engine (TrapUnderConditional) and
+    /// would be decided by Z3; the refusal text shows the deferral path ran.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_a_deferred_obligation_is_refused_without_z3() {
+        let div = "local.get 1 if (result i32) local.get 1 local.get 0 i32.div_u \
+                   else i32.const 0 end";
+        let a = over_memory_bound("(result i32)", "", div);
+        let err = validate(&a, &a)
+            .expect_err("deferred over the bound")
+            .to_string();
+        assert!(err.contains("(#347)"), "{err}");
+        assert!(
+            err.contains("deferred"),
+            "the new engine's deferral must be the reason: {err}"
+        );
+    }
+
+    /// A void body has no return value, so there is no obligation to prove.
+    /// Below the bound the validator accepts it; over the bound that would
+    /// turn a refusal into an unproven acceptance.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_a_void_body_is_refused() {
+        let a = over_memory_bound("", "", "");
+        let err = validate(&a, &a).expect_err("nothing to prove").to_string();
+        assert!(err.contains("(#347)"), "{err}");
+        assert!(err.contains("void"), "{err}");
+    }
+
+    /// Float memory access is outside the verifier's model. Below the bound it
+    /// is kept unproven; over the bound it must stay refused.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_an_unverifiable_body_is_refused() {
+        let a = over_memory_bound("(result i32)", "local.get 0 f32.load drop", "local.get 1");
+        let err = validate(&a, &a)
+            .expect_err("float load is unverifiable")
+            .to_string();
+        assert!(err.contains("(#347)"), "{err}");
+        assert!(err.contains("unverifiable"), "{err}");
+    }
+
+    /// A loop too large for bounded unrolling goes through K-induction, as it
+    /// does below the bound. Measured on the #347 module: 48 s with this path
+    /// against 43 s without it, while a raised bound did not finish in 900 s.
+    #[cfg(feature = "verification")]
+    #[test]
+    fn over_the_memory_bound_a_large_loop_goes_through_k_induction() {
+        let looped = format!(
+            "block loop {} end end",
+            "nop ".repeat(MAX_LOOP_BODY_INSTRUCTIONS + 1)
+        );
+        let a = over_memory_bound("(result i32)", &looped, "local.get 1");
+        let (fa, _) = func_pair(&a, &a);
+        assert!(
+            contains_complex_loops(&fa.instructions),
+            "the loop must take the K-induction path"
+        );
+        let verdict = validate(&a, &a);
+        assert!(
+            verdict.is_ok(),
+            "an unchanged loop body must be accepted: {verdict:?}"
         );
     }
 
