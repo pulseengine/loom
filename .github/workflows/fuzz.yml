@@ -31,6 +31,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FUZZ_DURATION: ${{ github.event.inputs.duration || '300' }}
+  # Pin the triple: cargo-fuzz defaults to the host triple, and a runner whose
+  # rustup host is musl builds for x86_64-unknown-linux-musl, where the address
+  # sanitizer cannot link (crt-static). Seen on one rust-cpu runner, run 42004393650.
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
 
 jobs:
   fuzz:
@@ -66,16 +70,30 @@ jobs:
 
       - name: Build fuzz targets
         working-directory: fuzz
-        run: cargo +nightly fuzz build
+        run: cargo +nightly fuzz build --target "$FUZZ_TRIPLE"
+
+      - name: Differential oracle self-test (negative control)
+        if: matrix.target == 'fuzz_differential'
+        working-directory: fuzz
+        run: cargo +nightly test --lib
 
       - name: Run fuzzer - ${{ matrix.target }}
-        if: github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target
+        # Scheduled runs have no inputs: an empty/unset target means "all".
+        # (Do not compare against 'all' alone: that skips every scheduled run.)
+        if: github.event.inputs.target == '' || github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target
         working-directory: fuzz
         run: |
-          timeout ${FUZZ_DURATION}s cargo +nightly fuzz run ${{ matrix.target }} -- \
+          # `seeds` holds small valid modules with exports, so the differential
+          # target executes real comparisons from the first iteration instead of
+          # waiting for the mutator to find a valid module from empty.
+          # -max_total_time ends the run cleanly (exit 0); a crash exits non-zero
+          # and fails the job. The outer timeout is only a hang backstop, with
+          # headroom so it never races the fuzzer's own time limit.
+          # libFuzzer requires every corpus dir to exist; corpus/ is gitignored.
+          mkdir -p corpus/${{ matrix.target }}
+          timeout $((FUZZ_DURATION + 120))s cargo +nightly fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} corpus/${{ matrix.target }} seeds -- \
             -max_total_time=${FUZZ_DURATION} \
-            -dict=dictionaries/wasm.dict \
-            || true  # Don't fail on timeout
+            -dict=dictionaries/wasm.dict
 
       - name: Check for crashes
         working-directory: fuzz
