@@ -31,6 +31,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FUZZ_DURATION: ${{ github.event.inputs.duration || '300' }}
+  # Pin the triple: cargo-fuzz defaults to the host triple, and a runner whose
+  # rustup host is musl builds for x86_64-unknown-linux-musl, where the address
+  # sanitizer cannot link (crt-static). Seen on one rust-cpu runner, run 42004393650.
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
 
 jobs:
   fuzz:
@@ -66,7 +70,7 @@ jobs:
 
       - name: Build fuzz targets
         working-directory: fuzz
-        run: cargo +nightly fuzz build
+        run: cargo +nightly fuzz build --target "$FUZZ_TRIPLE"
 
       - name: Differential oracle self-test (negative control)
         if: matrix.target == 'fuzz_differential'
@@ -87,7 +91,7 @@ jobs:
           # headroom so it never races the fuzzer's own time limit.
           # libFuzzer requires every corpus dir to exist; corpus/ is gitignored.
           mkdir -p corpus/${{ matrix.target }}
-          timeout $((FUZZ_DURATION + 120))s cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} seeds -- \
+          timeout $((FUZZ_DURATION + 120))s cargo +nightly fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} corpus/${{ matrix.target }} seeds -- \
             -max_total_time=${FUZZ_DURATION} \
             -dict=dictionaries/wasm.dict
 
