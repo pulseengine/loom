@@ -4,23 +4,25 @@ load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
 # Core Semantic Model
 # =============================================================================
 
-# WebAssembly and Term semantics (combined for module resolution)
+# WebAssembly semantics. A rocq_library compiles each source in its own
+# action whose inputs are only the deps' .vo files, so a file cannot import
+# a sibling in the same target: TermSemantics.v imports WasmSemantics, hence
+# the split into two libraries.
+rocq_library(
+    name = "wasm_semantics",
+    srcs = ["semantics/WasmSemantics.v"],
+    visibility = ["//visibility:public"],
+)
+
+# Term semantics (imports WasmSemantics)
 rocq_library(
     name = "semantics",
-    srcs = [
-        "semantics/WasmSemantics.v",
-        "semantics/TermSemantics.v",
-    ],
+    srcs = ["semantics/TermSemantics.v"],
     visibility = ["//visibility:public"],
+    deps = [":wasm_semantics"],
 )
 
-# Aliases for backwards compatibility
-alias(
-    name = "wasm_semantics",
-    actual = ":semantics",
-    visibility = ["//visibility:public"],
-)
-
+# Alias for backwards compatibility
 alias(
     name = "term_semantics",
     actual = ":semantics",
