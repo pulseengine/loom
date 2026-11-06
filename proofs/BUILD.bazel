@@ -75,6 +75,7 @@ rocq_library(
     deps = [
         ":wasm_semantics",
         ":term_semantics",
+        ":identity",
     ],
     visibility = ["//visibility:public"],
 )
@@ -241,8 +242,7 @@ filegroup(
 test_suite(
     name = "all_proofs_test",
     tests = [
-        ":wasm_semantics_test",
-        ":term_semantics_test",
+        ":semantics_test",
         ":constant_folding_test",
         ":identity_test",
         ":bitwise_test",

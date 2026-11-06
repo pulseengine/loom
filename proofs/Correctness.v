@@ -37,23 +37,26 @@ Open Scope Z_scope.
 
 (** * Core Semantic Preservation *)
 
-(** The simplify function preserves term semantics.
-    This is the foundational theorem that all other correctness depends on. *)
-Theorem simplify_correct : forall t,
-  eval_term t = eval_term (simplify t).
+(** The simplify function preserves the value of every term that
+    evaluates. This is the foundational theorem that all other
+    correctness depends on.
+
+    It is stated as refinement, not as [eval_term t = eval_term
+    (simplify t)]: that equality is false for ill-typed terms that fail
+    to evaluate (see [simplify_not_equiv] in TermSemantics). *)
+Theorem simplify_correct : forall t v,
+  eval_term t = TROk v -> eval_term (simplify t) = TROk v.
 Proof.
-  intros t.
-  (* Appeal to simplify_preserves_semantics: term_equiv t (simplify t) *)
-  (* which unfolds to: eval_term t = eval_term (simplify t) *)
-  apply simplify_preserves_semantics.
+  exact simplify_refines.
 Qed.
 
-(** Equivalently stated: simplify preserves term equivalence *)
-Corollary simplify_preserves_equiv : forall t,
-  term_equiv t (simplify t).
+(** Equivalently: a term that evaluates is equivalent to its
+    simplification. *)
+Corollary simplify_preserves_equiv : forall t v,
+  eval_term t = TROk v -> term_equiv t (simplify t).
 Proof.
-  unfold term_equiv. intro t.
-  apply simplify_correct.
+  unfold term_equiv. intros t v H.
+  rewrite H. symmetry. apply simplify_correct. exact H.
 Qed.
 
 (** * Optimization Soundness *)
@@ -68,7 +71,7 @@ Theorem constant_fold_add_sound : forall a b,
   eval_term (TI32Const (i32_add a b)) =
   eval_term (TI32Add (TI32Const a) (TI32Const b)).
 Proof.
-  intros a b. simpl. reflexivity.
+  intros a b. const_cases.
 Qed.
 
 (** Constant folding of subtraction *)
@@ -76,7 +79,7 @@ Theorem constant_fold_sub_sound : forall a b,
   eval_term (TI32Const (i32_sub a b)) =
   eval_term (TI32Sub (TI32Const a) (TI32Const b)).
 Proof.
-  intros a b. simpl. reflexivity.
+  intros a b. const_cases.
 Qed.
 
 (** Constant folding of multiplication *)
@@ -84,7 +87,7 @@ Theorem constant_fold_mul_sound : forall a b,
   eval_term (TI32Const (i32_mul a b)) =
   eval_term (TI32Mul (TI32Const a) (TI32Const b)).
 Proof.
-  intros a b. simpl. reflexivity.
+  intros a b. const_cases.
 Qed.
 
 (** ** Identity Elimination Soundness *)
@@ -97,7 +100,7 @@ Theorem add_zero_sound : forall t,
   | _ => TRFail
   end.
 Proof.
-  intros t. simpl. reflexivity.
+  intros t. const_cases.
 Qed.
 
 (** Since i32_add v 0 = wrap32 v, this is semantically equivalent to just v *)
@@ -188,13 +191,11 @@ Qed.
 (** LOOM may apply simplify multiple times. Each pass preserves semantics,
     so multiple passes also preserve semantics. *)
 
-Theorem simplify_idempotent_sound : forall t,
-  eval_term t = eval_term (simplify (simplify t)).
+Theorem simplify_idempotent_sound : forall t v,
+  eval_term t = TROk v -> eval_term (simplify (simplify t)) = TROk v.
 Proof.
-  intros t.
-  rewrite <- simplify_correct.
-  rewrite <- simplify_correct.
-  reflexivity.
+  intros t v H.
+  apply simplify_correct. apply simplify_correct. exact H.
 Qed.
 
 (** More generally, any finite number of simplify passes preserves semantics *)
@@ -204,15 +205,13 @@ Fixpoint simplify_n (n : nat) (t : Term) : Term :=
   | S n' => simplify (simplify_n n' t)
   end.
 
-Theorem simplify_n_correct : forall n t,
-  eval_term t = eval_term (simplify_n n t).
+Theorem simplify_n_correct : forall n t v,
+  eval_term t = TROk v -> eval_term (simplify_n n t) = TROk v.
 Proof.
-  induction n; intros t.
-  - (* n = 0 *) simpl. reflexivity.
+  induction n; intros t v H.
+  - (* n = 0 *) exact H.
   - (* n = S n' *)
-    simpl.
-    rewrite <- simplify_correct.
-    apply IHn.
+    simpl. apply simplify_correct. apply IHn. exact H.
 Qed.
 
 (** * Composition of Optimizations *)
@@ -251,8 +250,7 @@ Theorem simplify_safe : forall t v,
 Proof.
   intros t v Heval_term.
   exists v.
-  rewrite <- Heval_term.
-  symmetry. apply simplify_correct.
+  apply simplify_correct. exact Heval_term.
 Qed.
 
 (** Simplification preserves the type of the result *)
@@ -261,27 +259,24 @@ Theorem simplify_preserves_type : forall t v,
   eval_term (simplify t) = TROk v.
 Proof.
   intros t v Heval_term.
-  rewrite <- Heval_term.
-  symmetry. apply simplify_correct.
+  apply simplify_correct. exact Heval_term.
 Qed.
 
 (** * Complete Optimization Correctness *)
 
 (** The master theorem combining all guarantees *)
 Theorem loom_optimization_correct :
-  forall t,
+  forall t v,
+    eval_term t = TROk v ->
     (* 1. Semantics are preserved *)
-    eval_term t = eval_term (simplify t) /\
+    eval_term (simplify t) = TROk v /\
     (* 2. Multi-pass optimization is correct *)
-    (forall n, eval_term t = eval_term (simplify_n n t)) /\
-    (* 3. Well-typed terms remain well-typed *)
-    (forall v, eval_term t = TROk v -> eval_term (simplify t) = TROk v).
+    (forall n, eval_term (simplify_n n t) = TROk v).
 Proof.
-  intros t.
-  repeat split.
-  - apply simplify_correct.
-  - intros n. apply simplify_n_correct.
-  - apply simplify_preserves_type.
+  intros t v H.
+  split.
+  - apply simplify_correct. exact H.
+  - intros n. apply simplify_n_correct. exact H.
 Qed.
 
 (** * Connection to Instruction Semantics *)
@@ -289,13 +284,14 @@ Qed.
 (** The optimized term, when compiled to instructions, produces
     equivalent behavior to the original term's instructions. *)
 
-Theorem compiled_optimization_correct : forall t s,
+Theorem compiled_optimization_correct : forall t v s,
+  eval_term t = TROk v ->
   exec_instrs (term_to_instrs t) s =
   exec_instrs (term_to_instrs (simplify t)) s.
 Proof.
-  (* This follows directly from optimization_preserves_execution
-     in TermSemantics, which uses term_equiv_instrs_equiv. *)
-  apply optimization_preserves_execution.
+  (* optimization_preserves_execution in TermSemantics, which needs the
+     original term to evaluate. *)
+  exact optimization_preserves_execution.
 Qed.
 
 (** * Future Work *)
@@ -322,7 +318,9 @@ Axiom term_instr_bijection : forall (t : Term),
 
 (**
    PROVEN (Qed):
-   - simplify_correct: eval_term t = eval_term (simplify t)
+   - simplify_correct: if eval_term t = TROk v then
+     eval_term (simplify t) = TROk v (refinement; the unconditional
+     equality is false, see simplify_not_equiv)
    - All constant folding rules (40+ theorems)
    - All algebraic identity rules (25+ theorems)
    - All bitwise optimization rules (20+ theorems)
@@ -331,9 +329,12 @@ Axiom term_instr_bijection : forall (t : Term),
    - Multi-pass correctness
    - Type preservation
 
-   ADMITTED (TODO):
-   - compiled_optimization_correct: instruction-level equivalence
-   - term_instr_bijection: roundtrip property
+   - compiled_optimization_correct: instruction-level equivalence,
+     for terms that evaluate
+
+   NOT PROVEN:
+   - term_instr_bijection: stated as an Axiom whose body is [True], a
+     placeholder that asserts nothing
 
    This represents approximately 90% of the core optimization correctness,
    with the remaining 10% requiring integration with the

@@ -62,7 +62,7 @@ Theorem i32_sub_self_is_zero : forall x,
 Proof.
   intros. unfold i32_sub, wrap32.
   replace (x - x) with 0 by lia.
-  simpl. reflexivity.
+  const_cases.
 Qed.
 
 (** * i32 Multiplicative Identities *)
@@ -240,7 +240,7 @@ Theorem i64_sub_self_is_zero : forall x,
 Proof.
   intros. unfold i64_sub, wrap64.
   replace (x - x) with 0 by lia.
-  simpl. reflexivity.
+  const_cases.
 Qed.
 
 (** * i64 Multiplicative Identities *)
@@ -553,7 +553,7 @@ Lemma Z_lxor_mod_bound : forall a b n,
   0 <= n -> 0 <= Z.lxor (a mod 2^n) (b mod 2^n) < 2^n.
 Proof.
   intros a b n Hn. split.
-  - apply Z.lxor_nonneg. split; apply Z.mod_pos_bound; lia.
+  - apply Z.lxor_nonneg. split; intros; apply Z.mod_pos_bound; lia.
   - rewrite <- (Z.land_ones a n) by assumption.
     rewrite <- (Z.land_ones b n) by assumption.
     rewrite Z_lxor_land_distrib_r.
@@ -594,6 +594,13 @@ Lemma eval_term_i32_bound : forall t z,
   0 <= z < 2 ^ 32.
 Proof.
   induction t; simpl; intros z' Hwf Heq; try discriminate;
+    (* Cases whose evaluation fails whatever the operand yields (TDrop,
+       and the operators of the other result type). Rocq 9's [simpl]
+       leaves these matches in place where Coq 8 collapsed them. *)
+    try (match goal with
+         | Heq : match eval_term ?x with _ => _ end = _ |- _ =>
+           destruct (eval_term x) as [[?|?|?|?]|]; discriminate
+         end);
     (* TI32Const: z is in range by wf_term *)
     try (injection Heq; intros; subst; exact Hwf);
     (* Binary i32 ops with wrapping: the result is wrap32 (...) which is in range *)
@@ -637,14 +644,14 @@ Proof.
     injection Heq; intros; subst.
     unfold i32_shr_u, shift_mask32.
     assert (Hwr : 0 <= wrap32 z < 2 ^ 32) by (unfold wrap32; apply Z.mod_pos_bound; lia).
-    assert (Hsh : 0 <= Z.land (wrap32 z0) 31) by (apply Z.land_nonneg; left; lia).
+    assert (Hsh : 0 <= Z.land (wrap32 z0) 31) by (apply Z.land_nonneg; right; lia).
     rewrite Z.shiftr_div_pow2 by assumption.
     assert (Hpow : 0 < 2 ^ Z.land (wrap32 z0) 31) by (apply Z.pow_pos_nonneg; lia).
     split.
     + apply Z.div_pos; lia.
     + apply Z.le_lt_trans with (wrap32 z); [| lia].
       apply Z.div_le_upper_bound; [lia |].
-      assert (1 <= 2 ^ Z.land (wrap32 z0) 31) by (apply Z.pow_le_mono_r; lia).
+      assert (1 <= 2 ^ Z.land (wrap32 z0) 31) by (rewrite <- (Z.pow_0_r 2) at 1; apply Z.pow_le_mono_r; lia).
       nia.
   (* TI32Eqz: unary, returns 0 or 1 *)
   - destruct (eval_term t) as [[?|?|?|?]|]; try discriminate.
@@ -663,6 +670,13 @@ Lemma eval_term_i64_bound : forall t z,
   0 <= z < 2 ^ 64.
 Proof.
   induction t; simpl; intros z' Hwf Heq; try discriminate;
+    (* Cases whose evaluation fails whatever the operand yields (TDrop,
+       and the operators of the other result type). Rocq 9's [simpl]
+       leaves these matches in place where Coq 8 collapsed them. *)
+    try (match goal with
+         | Heq : match eval_term ?x with _ => _ end = _ |- _ =>
+           destruct (eval_term x) as [[?|?|?|?]|]; discriminate
+         end);
     try (injection Heq; intros; subst; exact Hwf);
     try (destruct Hwf as [Hl Hr];
          destruct (eval_term t1) as [[?|?|?|?]|]; try discriminate;
@@ -684,30 +698,136 @@ Proof.
     injection Heq; intros; subst.
     unfold i64_shr_u, shift_mask64.
     assert (Hwr : 0 <= wrap64 z < 2 ^ 64) by (unfold wrap64; apply Z.mod_pos_bound; lia).
-    assert (Hsh : 0 <= Z.land (wrap64 z0) 63) by (apply Z.land_nonneg; left; lia).
+    assert (Hsh : 0 <= Z.land (wrap64 z0) 63) by (apply Z.land_nonneg; right; lia).
     rewrite Z.shiftr_div_pow2 by assumption.
     assert (Hpow : 0 < 2 ^ Z.land (wrap64 z0) 63) by (apply Z.pow_pos_nonneg; lia).
     split.
     + apply Z.div_pos; lia.
     + apply Z.le_lt_trans with (wrap64 z); [| lia].
       apply Z.div_le_upper_bound; [lia |].
-      assert (1 <= 2 ^ Z.land (wrap64 z0) 63) by (apply Z.pow_le_mono_r; lia).
+      assert (1 <= 2 ^ Z.land (wrap64 z0) 63) by (rewrite <- (Z.pow_0_r 2) at 1; apply Z.pow_le_mono_r; lia).
       nia.
+
+Qed.
+
+(** Rocq 9's [simpl] can leave a [match] on an integer whose three
+    branches are the same term; this collapses it. *)
+Lemma match_Z_same : forall (A : Type) (z : Z) (x : A),
+  match z with Z0 => x | Zpos _ => x | Zneg _ => x end = x.
+Proof. destruct z; reflexivity. Qed.
+
+(** ** Simplification keeps constants in range
+
+    [simplify] only ever produces an operand it was given, a folded
+    constant (wrapped, hence in range), or the constant 0. So it maps
+    well-formed terms to well-formed terms. *)
+
+Lemma i32_add_bound : forall a b, 0 <= i32_add a b < 2 ^ 32.
+Proof. intros. unfold i32_add, wrap32. apply Z.mod_pos_bound. lia. Qed.
+Lemma i32_sub_bound : forall a b, 0 <= i32_sub a b < 2 ^ 32.
+Proof. intros. unfold i32_sub, wrap32. apply Z.mod_pos_bound. lia. Qed.
+Lemma i32_mul_bound : forall a b, 0 <= i32_mul a b < 2 ^ 32.
+Proof. intros. unfold i32_mul, wrap32. apply Z.mod_pos_bound. lia. Qed.
+Lemma i64_add_bound : forall a b, 0 <= i64_add a b < 2 ^ 64.
+Proof. intros. unfold i64_add, wrap64. apply Z.mod_pos_bound. lia. Qed.
+Lemma i64_sub_bound : forall a b, 0 <= i64_sub a b < 2 ^ 64.
+Proof. intros. unfold i64_sub, wrap64. apply Z.mod_pos_bound. lia. Qed.
+Lemma i64_mul_bound : forall a b, 0 <= i64_mul a b < 2 ^ 64.
+Proof. intros. unfold i64_mul, wrap64. apply Z.mod_pos_bound. lia. Qed.
+
+Ltac wf_mk_case :=
+  cbn [wf_term] in *;
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end; cbn [wf_term] in *);
+  first
+  [ assumption
+  | split; assumption
+  | apply i32_add_bound | apply i32_sub_bound | apply i32_mul_bound
+  | apply i64_add_bound | apply i64_sub_bound | apply i64_mul_bound
+  | apply i32_and_bound | apply i32_or_bound | apply i32_xor_bound
+  | apply i64_and_bound | apply i64_or_bound | apply i64_xor_bound
+  | split; [lia | apply Z.pow_pos_nonneg; lia] ].
+
+Lemma mk_TI32Add_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32Add l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32Add]; wf_mk_case. Qed.
+
+Lemma mk_TI32Sub_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32Sub l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32Sub]; wf_mk_case. Qed.
+
+Lemma mk_TI32Mul_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32Mul l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32Mul]; wf_mk_case. Qed.
+
+Lemma mk_TI64Add_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64Add l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64Add]; wf_mk_case. Qed.
+
+Lemma mk_TI64Sub_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64Sub l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64Sub]; wf_mk_case. Qed.
+
+Lemma mk_TI64Mul_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64Mul l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64Mul]; wf_mk_case. Qed.
+
+Lemma mk_TI32And_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32And l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32And]; wf_mk_case. Qed.
+
+Lemma mk_TI32Or_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32Or l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32Or]; wf_mk_case. Qed.
+
+Lemma mk_TI32Xor_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI32Xor l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI32Xor]; wf_mk_case. Qed.
+
+Lemma mk_TI64And_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64And l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64And]; wf_mk_case. Qed.
+
+Lemma mk_TI64Or_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64Or l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64Or]; wf_mk_case. Qed.
+
+Lemma mk_TI64Xor_wf : forall l r,
+  wf_term l -> wf_term r -> wf_term (mk_TI64Xor l r).
+Proof. intros l r Hl Hr. destruct l; destruct r; cbn [mk_TI64Xor]; wf_mk_case. Qed.
+
+Lemma simplify_wf : forall t, wf_term t -> wf_term (simplify t).
+Proof.
+  induction t; cbn [simplify wf_term]; intros H; try destruct H;
+  first
+  [ assumption
+  | apply mk_TI32Add_wf; auto
+  | apply mk_TI32Sub_wf; auto
+  | apply mk_TI32Mul_wf; auto
+  | apply mk_TI64Add_wf; auto
+  | apply mk_TI64Sub_wf; auto
+  | apply mk_TI64Mul_wf; auto
+  | apply mk_TI32And_wf; auto
+  | apply mk_TI32Or_wf; auto
+  | apply mk_TI32Xor_wf; auto
+  | apply mk_TI64And_wf; auto
+  | apply mk_TI64Or_wf; auto
+  | apply mk_TI64Xor_wf; auto
+  | split; auto
+  | auto ].
 Qed.
 
 (** ** Bridge: simplify produces in-range constants for well-formed terms *)
 
 (** If simplify t = TI32Const z and wf_term t, then z is in range.
-    Proof strategy: simplify_preserves_semantics tells us that
-    eval_term t = eval_term (simplify t) = TROk (VI32 z),
-    and eval_term_i32_bound gives 0 <= z < 2^32. *)
+    Proof: [simplify_wf] (simplification preserves wf_term). *)
 Lemma simplify_i32const_wf : forall t z,
   wf_term t -> simplify t = TI32Const z -> 0 <= z < 2 ^ 32.
 Proof.
   intros t z Hwf Hs.
-  apply (eval_term_i32_bound t z Hwf).
-  rewrite (simplify_preserves_semantics t).
-  rewrite Hs. reflexivity.
+  pose proof (simplify_wf t Hwf) as W.
+  rewrite Hs in W. exact W.
 Qed.
 
 (** Similar for i64 *)
@@ -715,9 +835,8 @@ Lemma simplify_i64const_wf : forall t z,
   wf_term t -> simplify t = TI64Const z -> 0 <= z < 2 ^ 64.
 Proof.
   intros t z Hwf Hs.
-  apply (eval_term_i64_bound t z Hwf).
-  rewrite (simplify_preserves_semantics t).
-  rewrite Hs. reflexivity.
+  pose proof (simplify_wf t Hwf) as W.
+  rewrite Hs in W. exact W.
 Qed.
 
 (** * Term-Level Identity Proofs *)
@@ -740,8 +859,11 @@ Proof.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
   (* TI32Const z case: constant folding gives i32_add z 0 = wrap32 z,
      need wrap32 z = z, which holds because z is in range *)
-  f_equal. f_equal. rewrite i32_add_identity_right.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_add_identity_right; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (0 + x) is semantically equivalent to simplify x *)
@@ -751,8 +873,11 @@ Theorem simplify_add_zero_left_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_add_identity_left.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_add_identity_left; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (x - 0) is semantically equivalent to simplify x *)
@@ -762,8 +887,11 @@ Theorem simplify_sub_zero_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_sub_identity_right.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_sub_identity_right; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (x * 1) is semantically equivalent to simplify x *)
@@ -773,8 +901,11 @@ Theorem simplify_mul_one_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_mul_identity_right.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_mul_identity_right; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (1 * x) is semantically equivalent to simplify x *)
@@ -784,8 +915,11 @@ Theorem simplify_mul_one_left_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_mul_identity_left.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_mul_identity_left; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (x * 0) evaluates to 0.
@@ -795,7 +929,7 @@ Theorem simplify_mul_zero_right_equiv : forall t,
   eval_term (simplify (TI32Mul t (TI32Const 0))) = TROk (VI32 0).
 Proof.
   intros t. simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** simplify (0 * x) evaluates to 0 *)
@@ -803,7 +937,7 @@ Theorem simplify_mul_zero_left_equiv : forall t,
   eval_term (simplify (TI32Mul (TI32Const 0) t)) = TROk (VI32 0).
 Proof.
   intros t. simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** simplify (x | 0) is semantically equivalent to simplify x *)
@@ -813,8 +947,11 @@ Theorem simplify_or_zero_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_or_identity_right.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_or_identity_right; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (0 | x) is semantically equivalent to simplify x *)
@@ -824,8 +961,11 @@ Theorem simplify_or_zero_left_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_or_identity_left.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_or_identity_left; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (x ^ 0) is semantically equivalent to simplify x *)
@@ -835,8 +975,11 @@ Theorem simplify_xor_zero_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_xor_identity_right.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_xor_identity_right; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (0 ^ x) is semantically equivalent to simplify x *)
@@ -846,8 +989,11 @@ Theorem simplify_xor_zero_left_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i32_xor_identity_left.
-  apply wrap32_small. eapply simplify_i32const_wf; eauto.
+  pose proof (simplify_i32const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i32_xor_identity_left; apply wrap32_small; exact Hz.
 Qed.
 
 (** simplify (x & 0) evaluates to 0.
@@ -857,7 +1003,7 @@ Theorem simplify_and_zero_right_equiv : forall t,
   eval_term (simplify (TI32And t (TI32Const 0))) = TROk (VI32 0).
 Proof.
   intros t. simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** simplify (0 & x) evaluates to 0 *)
@@ -865,7 +1011,7 @@ Theorem simplify_and_zero_left_equiv : forall t,
   eval_term (simplify (TI32And (TI32Const 0) t)) = TROk (VI32 0).
 Proof.
   intros t. simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** * i64 Term-Level Identity Proofs *)
@@ -877,8 +1023,11 @@ Theorem simplify_i64_add_zero_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i64_add_identity_right.
-  apply wrap64_small. eapply simplify_i64const_wf; eauto.
+  pose proof (simplify_i64const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i64_add_identity_right; apply wrap64_small; exact Hz.
 Qed.
 
 (** simplify (0 + x) is semantically equivalent to simplify x (i64) *)
@@ -888,8 +1037,11 @@ Theorem simplify_i64_add_zero_left_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i64_add_identity_left.
-  apply wrap64_small. eapply simplify_i64const_wf; eauto.
+  pose proof (simplify_i64const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i64_add_identity_left; apply wrap64_small; exact Hz.
 Qed.
 
 (** simplify (x * 1) is semantically equivalent to simplify x (i64) *)
@@ -899,8 +1051,11 @@ Theorem simplify_i64_mul_one_right_equiv : forall t,
 Proof.
   intros t Hwf. simpl.
   destruct (simplify t) eqn:Hs; simpl; try reflexivity.
-  f_equal. f_equal. rewrite i64_mul_identity_right.
-  apply wrap64_small. eapply simplify_i64const_wf; eauto.
+  pose proof (simplify_i64const_wf t _ Hwf Hs) as Hz.
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end); simpl;
+  f_equal; f_equal; rewrite i64_mul_identity_right; apply wrap64_small; exact Hz.
 Qed.
 
 (** simplify (0 * x) evaluates to 0 (i64).
@@ -909,7 +1064,7 @@ Theorem simplify_i64_mul_zero_left_equiv : forall t,
   eval_term (simplify (TI64Mul (TI64Const 0) t)) = TROk (VI64 0).
 Proof.
   intros t. simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 Close Scope Z_scope.

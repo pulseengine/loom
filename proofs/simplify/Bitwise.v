@@ -20,6 +20,7 @@ From Stdlib Require Import ZArith.
 From Stdlib Require Import Lia.
 From proofs Require Import WasmSemantics.
 From proofs Require Import TermSemantics.
+From proofs Require Import Identity.
 Import ListNotations.
 
 Open Scope Z_scope.
@@ -118,7 +119,7 @@ Lemma lor_all_ones_32 : forall x,
 Proof.
   intros x Hx.
   replace (2 ^ 32 - 1) with (Z.ones 32) by reflexivity.
-  apply Z.bits_inj. intros n Hn.
+  apply Z.bits_inj'. intros n Hn.
   rewrite Z.lor_spec.
   destruct (Z.ltb n 32) eqn:Hlt.
   - (* n < 32: bit n of Z.ones 32 is true, so OR is true *)
@@ -133,15 +134,17 @@ Proof.
     + lia.
     + destruct (Z.eq_dec x 0) as [->|Hne].
       * simpl. lia.
-      * apply Z.log2_lt_pow2; lia.
+      * apply Z.log2_lt_pow2; [lia |].
+        apply Z.lt_le_trans with (2 ^ 32); [lia |].
+        apply Z.pow_le_mono_r; lia.
 Qed.
 
 (** x | all_ones = all_ones *)
 Theorem or32_all_ones_right : forall x,
   i32_or x all_ones_32 = all_ones_32.
 Proof.
-  intros. unfold i32_or, all_ones_32.
-  rewrite wrap32_all_ones.
+  intros. unfold i32_or.
+  rewrite wrap32_all_ones. unfold all_ones_32.
   apply lor_all_ones_32. apply wrap32_range.
 Qed.
 
@@ -149,7 +152,7 @@ Qed.
 Theorem or32_all_ones_left : forall x,
   i32_or all_ones_32 x = all_ones_32.
 Proof.
-  intros. rewrite or32_comm. apply or32_all_ones_right.
+  intros. unfold i32_or. rewrite Z.lor_comm. exact (or32_all_ones_right x).
 Qed.
 
 (** * Idempotence *)
@@ -245,7 +248,7 @@ Proof.
     + apply Z.min_lt_iff.
       destruct (Z.eq_dec x 0) as [->|Hxne]; [left; simpl; lia|].
       destruct (Z.eq_dec y 0) as [->|Hyne]; [right; simpl; lia|].
-      left. apply Z.log2_lt_pow2; lia.
+      left. rewrite Z.log2_pow2 by lia. apply Z.log2_lt_pow2; lia.
 Qed.
 
 (** Helper: wrap32 is identity on values already in range *)
@@ -267,8 +270,9 @@ Proof.
       * rewrite Z.lor_0_r. lia.
       * apply Z.log2_lt_cancel.
         apply Z.le_lt_trans with (m := Z.max (Z.log2 x) (Z.log2 y)).
-        -- apply Z.log2_lor; lia.
-        -- apply Z.max_lt_iff. split; apply Z.log2_lt_pow2; lia.
+        -- rewrite Z.log2_lor by lia. lia.
+        -- rewrite Z.log2_pow2 by lia.
+           apply Z.max_lub_lt; apply Z.log2_lt_pow2; lia.
 Qed.
 
 (** Helper: Z.lxor of values in [0, 2^32) stays in [0, 2^32) *)
@@ -285,7 +289,8 @@ Proof.
       * apply Z.log2_lt_cancel.
         apply Z.le_lt_trans with (m := Z.max (Z.log2 x) (Z.log2 y)).
         -- apply Z.log2_lxor; lia.
-        -- apply Z.max_lt_iff. split; apply Z.log2_lt_pow2; lia.
+        -- rewrite Z.log2_pow2 by lia.
+           apply Z.max_lub_lt; apply Z.log2_lt_pow2; lia.
 Qed.
 
 (** (x & y) & z = x & (y & z) *)
@@ -340,9 +345,9 @@ Lemma land_lor_absorb : forall a b,
   Z.land a (Z.lor a b) = a.
 Proof.
   intros a b Ha Hb.
-  apply Z.bits_inj. intros n Hn.
+  apply Z.bits_inj'. intros n Hn.
   rewrite Z.land_spec, Z.lor_spec.
-  destruct (Z.testbit a n); simpl; reflexivity.
+  destruct (Z.testbit a n); const_cases.
 Qed.
 
 (** Helper: a | (a & b) = a for non-negative integers (absorption) *)
@@ -351,9 +356,9 @@ Lemma lor_land_absorb : forall a b,
   Z.lor a (Z.land a b) = a.
 Proof.
   intros a b Ha Hb.
-  apply Z.bits_inj. intros n Hn.
+  apply Z.bits_inj'. intros n Hn.
   rewrite Z.lor_spec, Z.land_spec.
-  destruct (Z.testbit a n); simpl; reflexivity.
+  destruct (Z.testbit a n); const_cases.
 Qed.
 
 (** x & (x | y) = x *)
@@ -361,10 +366,10 @@ Theorem and_or_absorption : forall x y,
   i32_and (wrap32 x) (i32_or (wrap32 x) (wrap32 y)) = wrap32 x.
 Proof.
   intros. unfold i32_and, i32_or.
-  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
+  rewrite ?wrap32_idem.
   rewrite (wrap32_small (Z.lor (wrap32 x) (wrap32 y)))
     by (apply lor_range_32; apply wrap32_range).
-  apply land_lor_absorb; destruct (wrap32_range x); lia.
+  apply land_lor_absorb; apply (proj1 (wrap32_range _)).
 Qed.
 
 (** x | (x & y) = x *)
@@ -372,10 +377,10 @@ Theorem or_and_absorption : forall x y,
   i32_or (wrap32 x) (i32_and (wrap32 x) (wrap32 y)) = wrap32 x.
 Proof.
   intros. unfold i32_or, i32_and.
-  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
+  rewrite ?wrap32_idem.
   rewrite (wrap32_small (Z.land (wrap32 x) (wrap32 y)))
     by (apply land_range_32; apply wrap32_range).
-  apply lor_land_absorb; destruct (wrap32_range x); lia.
+  apply lor_land_absorb; apply (proj1 (wrap32_range _)).
 Qed.
 
 (** * XOR Properties *)
@@ -403,11 +408,10 @@ Theorem xor32_cancel_right : forall x y,
   i32_xor (i32_xor (wrap32 x) (wrap32 y)) (wrap32 y) = wrap32 x.
 Proof.
   intros. unfold i32_xor.
-  rewrite (wrap32_small (wrap32 x)) by (apply wrap32_range).
-  rewrite (wrap32_small (wrap32 y)) by (apply wrap32_range).
+  rewrite ?wrap32_idem.
   rewrite (wrap32_small (Z.lxor (wrap32 x) (wrap32 y)))
     by (apply lxor_range_32; apply wrap32_range).
-  rewrite (wrap32_small (wrap32 y)) by (apply wrap32_range).
+  rewrite ?wrap32_idem.
   rewrite Z.lxor_assoc.
   rewrite Z.lxor_nilpotent.
   rewrite Z.lxor_0_r. reflexivity.
@@ -427,7 +431,7 @@ Theorem simplify_and_annihilates : forall t,
 Proof.
   intros t.
   simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** simplify correctly handles 0 & x *)
@@ -436,25 +440,27 @@ Theorem simplify_and_annihilates_left : forall t,
 Proof.
   intros t.
   simpl.
-  destruct (simplify t); simpl; reflexivity.
+  destruct (simplify t); const_cases.
 Qed.
 
 (** simplify correctly handles x | 0 *)
 Theorem simplify_or_identity : forall t,
+  wf_term t ->
   eval_term (simplify (TI32Or t (TI32Const 0))) = eval_term (simplify t).
 Proof.
-  intros t.
-  simpl.
-  destruct (simplify t); simpl; reflexivity.
+  (* Needs [wf_term t]: without it the statement is false, e.g. for
+     t = TI32Const (2 ^ 32) the left side wraps to 0. *)
+  exact simplify_or_zero_right_equiv.
 Qed.
 
 (** simplify correctly handles x ^ 0 *)
 Theorem simplify_xor_identity : forall t,
+  wf_term t ->
   eval_term (simplify (TI32Xor t (TI32Const 0))) = eval_term (simplify t).
 Proof.
-  intros t.
-  simpl.
-  destruct (simplify t); simpl; reflexivity.
+  (* Needs [wf_term t]: without it the statement is false, e.g. for
+     t = TI32Const (2 ^ 32) the left side wraps to 0. *)
+  exact simplify_xor_zero_right_equiv.
 Qed.
 
 (** * Bitwise + Arithmetic Interactions *)

@@ -198,7 +198,7 @@ Proof.
   simpl.
   rewrite Z.mod_small by assumption.
   rewrite Z.shiftr_div_pow2 by lia.
-  simpl. reflexivity.
+  const_cases.
 Qed.
 
 (** x / 4 = x >> 2 (unsigned) *)
@@ -211,7 +211,7 @@ Proof.
   simpl.
   rewrite Z.mod_small by assumption.
   rewrite Z.shiftr_div_pow2 by lia.
-  simpl. reflexivity.
+  const_cases.
 Qed.
 
 (** General: x / 2^k = x >> k (unsigned, for valid k) *)
@@ -255,7 +255,7 @@ Lemma pow2_mask_range : forall k,
   0 <= k <= 32 -> 0 <= 2 ^ k - 1 < 2 ^ 32.
 Proof.
   intros k Hk. split.
-  - assert (1 <= 2 ^ k) by (apply Z.pow_le_mono_r; lia). lia.
+  - assert (1 <= 2 ^ k) by (rewrite <- (Z.pow_0_r 2) at 1; apply Z.pow_le_mono_r; lia). lia.
   - assert (2 ^ k <= 2 ^ 32) by (apply Z.pow_le_mono_r; lia). lia.
 Qed.
 
@@ -278,7 +278,7 @@ Theorem mod_2_is_and_1 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 2 = i32_and x 1.
 Proof.
-  intros. apply mod_pow2_is_and_mask; lia.
+  intros. apply (mod_pow2_is_and_mask x 1); lia.
 Qed.
 
 (** x % 4 = x & 3 *)
@@ -286,7 +286,7 @@ Theorem mod_4_is_and_3 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 4 = i32_and x 3.
 Proof.
-  intros. apply mod_pow2_is_and_mask; lia.
+  intros. apply (mod_pow2_is_and_mask x 2); lia.
 Qed.
 
 (** x % 8 = x & 7 *)
@@ -294,7 +294,7 @@ Theorem mod_8_is_and_7 : forall x,
   0 <= x < Z.pow 2 32 ->
   Z.modulo x 8 = i32_and x 7.
 Proof.
-  intros. apply mod_pow2_is_and_mask; lia.
+  intros. apply (mod_pow2_is_and_mask x 3); lia.
 Qed.
 
 (** * Negation to Subtraction *)
@@ -316,9 +316,10 @@ Theorem mod64_2_is_and_1 : forall x,
 Proof.
   intros x Hx.
   unfold i64_and, wrap64.
-  rewrite Z.mod_small by assumption.
-  rewrite Z.mod_small by lia.
-  rewrite mod_pow2_is_land by lia.
+  rewrite (Z.mod_small x (2 ^ 64)) by assumption.
+  rewrite (Z.mod_small 1 (2 ^ 64)) by lia.
+  change (x mod 2) with (x mod 2 ^ 1).
+  rewrite (mod_pow2_is_land x 1) by lia.
   reflexivity.
 Qed.
 
@@ -339,8 +340,7 @@ Proof.
   intros. unfold i32_mul, i32_shl, shift_mask32, wrap32.
   replace (Z.land (1 mod 2 ^ 32) 31) with 1 by reflexivity.
   rewrite Z.shiftl_mul_pow2 by lia.
-  simpl (2 ^ 1).
-  rewrite Zmult_mod_idemp_r.
+  rewrite Zmult_mod_idemp_l.
   f_equal. ring.
 Qed.
 

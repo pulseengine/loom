@@ -119,7 +119,8 @@ Proof.
   assert (Nat.ltb n 128 = true) as Hltb.
   { apply Nat.ltb_lt. exact Hlt. }
   rewrite Hltb.
-  replace (0 + n * 1) with n by lia.
+  (* [simpl] may already have reduced 0 + n * 1 to n * 1. *)
+  rewrite ?Nat.add_0_l, ?Nat.mul_1_r.
   reflexivity.
 Qed.
 
@@ -466,7 +467,9 @@ Theorem instrs_roundtrip_n : forall is rest,
 Proof.
   induction is as [|i is IH]; intros rest.
   - simpl. reflexivity.
-  - simpl. rewrite <- app_assoc.
+  - (* Unfold only the list codec: Rocq 9's [simpl] would also unfold
+       the element codec and hide the pattern [instr_roundtrip] rewrites. *)
+    cbn [decode_instrs_n encode_instrs length]. rewrite <- app_assoc.
     rewrite instr_roundtrip.
     rewrite IH. reflexivity.
 Qed.
@@ -544,7 +547,9 @@ Theorem functypes_roundtrip_n : forall fts rest,
 Proof.
   induction fts as [|ft fts IH]; intros rest.
   - simpl. reflexivity.
-  - simpl. rewrite <- app_assoc.
+  - (* Unfold only the list codec: Rocq 9's [simpl] would also unfold
+       the element codec and hide the pattern [functype_roundtrip] rewrites. *)
+    cbn [decode_functypes_n encode_functypes length]. rewrite <- app_assoc.
     rewrite functype_roundtrip.
     rewrite IH. reflexivity.
 Qed.
@@ -574,7 +579,9 @@ Theorem functions_roundtrip_n : forall fs rest,
 Proof.
   induction fs as [|f fs IH]; intros rest.
   - simpl. reflexivity.
-  - simpl. rewrite <- app_assoc.
+  - (* Unfold only the list codec: Rocq 9's [simpl] would also unfold
+       the element codec and hide the pattern [function_roundtrip] rewrites. *)
+    cbn [decode_functions_n encode_functions length]. rewrite <- app_assoc.
     rewrite function_roundtrip.
     rewrite IH. reflexivity.
 Qed.
@@ -634,7 +641,7 @@ Theorem roundtrip_identity : forall m : ScopedModule,
 Proof.
   intros [ts fs pt].
   unfold encode_scoped, decode_scoped. simpl.
-  rewrite <- !app_assoc.
+  rewrite <- ?app_assoc.
   rewrite leb128_roundtrip. simpl.
   rewrite functypes_roundtrip_n. simpl.
   rewrite leb128_roundtrip. simpl.

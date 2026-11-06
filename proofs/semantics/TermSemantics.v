@@ -672,6 +672,121 @@ Qed.
 
 (** The simplification function applies optimization rules to terms.
     This mirrors the simplify_with_env function in Rust. *)
+(** The twelve operators [simplify] rewrites. Each [mk_*] takes the two
+    already-simplified operands and applies that operator's rules in order
+    (constant folding first, then the identity and zero rules). They are
+    separate definitions so that a proof can reason about one operator's
+    rules without unfolding all of [simplify]: done inline, the kernel
+    check of that unfolding took about 70 s per operator. *)
+
+Definition mk_TI32Add (l' r' : Term) : Term :=
+  match l', r' with
+  (* Constant folding *)
+  | TI32Const a, TI32Const b => TI32Const (i32_add a b)
+  (* x + 0 = x *)
+  | _, TI32Const 0 => l'
+  (* 0 + x = x *)
+  | TI32Const 0, _ => r'
+  | _, _ => TI32Add l' r'
+  end.
+
+Definition mk_TI32Sub (l' r' : Term) : Term :=
+  match l', r' with
+  (* Constant folding *)
+  | TI32Const a, TI32Const b => TI32Const (i32_sub a b)
+  (* x - 0 = x *)
+  | _, TI32Const 0 => l'
+  | _, _ => TI32Sub l' r'
+  end.
+
+Definition mk_TI32Mul (l' r' : Term) : Term :=
+  match l', r' with
+  (* Constant folding *)
+  | TI32Const a, TI32Const b => TI32Const (i32_mul a b)
+  (* x * 0 = 0 *)
+  | _, TI32Const 0 => TI32Const 0
+  (* 0 * x = 0 *)
+  | TI32Const 0, _ => TI32Const 0
+  (* x * 1 = x *)
+  | _, TI32Const 1 => l'
+  (* 1 * x = x *)
+  | TI32Const 1, _ => r'
+  | _, _ => TI32Mul l' r'
+  end.
+
+Definition mk_TI64Add (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_add a b)
+  | _, TI64Const 0 => l'
+  | TI64Const 0, _ => r'
+  | _, _ => TI64Add l' r'
+  end.
+
+Definition mk_TI64Sub (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_sub a b)
+  | _, TI64Const 0 => l'
+  | _, _ => TI64Sub l' r'
+  end.
+
+Definition mk_TI64Mul (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_mul a b)
+  | _, TI64Const 0 => TI64Const 0
+  | TI64Const 0, _ => TI64Const 0
+  | _, TI64Const 1 => l'
+  | TI64Const 1, _ => r'
+  | _, _ => TI64Mul l' r'
+  end.
+
+Definition mk_TI32And (l' r' : Term) : Term :=
+  match l', r' with
+  | TI32Const a, TI32Const b => TI32Const (i32_and a b)
+  | _, TI32Const 0 => TI32Const 0
+  | TI32Const 0, _ => TI32Const 0
+  | _, _ => TI32And l' r'
+  end.
+
+Definition mk_TI32Or (l' r' : Term) : Term :=
+  match l', r' with
+  | TI32Const a, TI32Const b => TI32Const (i32_or a b)
+  | _, TI32Const 0 => l'
+  | TI32Const 0, _ => r'
+  | _, _ => TI32Or l' r'
+  end.
+
+Definition mk_TI32Xor (l' r' : Term) : Term :=
+  match l', r' with
+  | TI32Const a, TI32Const b => TI32Const (i32_xor a b)
+  | _, TI32Const 0 => l'
+  | TI32Const 0, _ => r'
+  | _, _ => TI32Xor l' r'
+  end.
+
+Definition mk_TI64And (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_and a b)
+  | _, TI64Const 0 => TI64Const 0
+  | TI64Const 0, _ => TI64Const 0
+  | _, _ => TI64And l' r'
+  end.
+
+Definition mk_TI64Or (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_or a b)
+  | _, TI64Const 0 => l'
+  | TI64Const 0, _ => r'
+  | _, _ => TI64Or l' r'
+  end.
+
+Definition mk_TI64Xor (l' r' : Term) : Term :=
+  match l', r' with
+  | TI64Const a, TI64Const b => TI64Const (i64_xor a b)
+  | _, TI64Const 0 => l'
+  | TI64Const 0, _ => r'
+  | _, _ => TI64Xor l' r'
+  end.
+
 Fixpoint simplify (t : Term) : Term :=
   match t with
   (* Constants are already simplified *)
@@ -679,142 +794,34 @@ Fixpoint simplify (t : Term) : Term :=
   | TI64Const v => TI64Const v
 
   (* i32.add optimizations *)
-  | TI32Add l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      (* Constant folding *)
-      | TI32Const a, TI32Const b => TI32Const (i32_add a b)
-      (* x + 0 = x *)
-      | _, TI32Const 0 => l'
-      (* 0 + x = x *)
-      | TI32Const 0, _ => r'
-      | _, _ => TI32Add l' r'
-      end
+  | TI32Add l r => mk_TI32Add (simplify l) (simplify r)
 
   (* i32.sub optimizations *)
-  | TI32Sub l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      (* Constant folding *)
-      | TI32Const a, TI32Const b => TI32Const (i32_sub a b)
-      (* x - 0 = x *)
-      | _, TI32Const 0 => l'
-      | _, _ => TI32Sub l' r'
-      end
+  | TI32Sub l r => mk_TI32Sub (simplify l) (simplify r)
 
   (* i32.mul optimizations *)
-  | TI32Mul l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      (* Constant folding *)
-      | TI32Const a, TI32Const b => TI32Const (i32_mul a b)
-      (* x * 0 = 0 *)
-      | _, TI32Const 0 => TI32Const 0
-      (* 0 * x = 0 *)
-      | TI32Const 0, _ => TI32Const 0
-      (* x * 1 = x *)
-      | _, TI32Const 1 => l'
-      (* 1 * x = x *)
-      | TI32Const 1, _ => r'
-      | _, _ => TI32Mul l' r'
-      end
+  | TI32Mul l r => mk_TI32Mul (simplify l) (simplify r)
 
   (* i64 operations - similar patterns *)
-  | TI64Add l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_add a b)
-      | _, TI64Const 0 => l'
-      | TI64Const 0, _ => r'
-      | _, _ => TI64Add l' r'
-      end
+  | TI64Add l r => mk_TI64Add (simplify l) (simplify r)
 
-  | TI64Sub l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_sub a b)
-      | _, TI64Const 0 => l'
-      | _, _ => TI64Sub l' r'
-      end
+  | TI64Sub l r => mk_TI64Sub (simplify l) (simplify r)
 
-  | TI64Mul l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_mul a b)
-      | _, TI64Const 0 => TI64Const 0
-      | TI64Const 0, _ => TI64Const 0
-      | _, TI64Const 1 => l'
-      | TI64Const 1, _ => r'
-      | _, _ => TI64Mul l' r'
-      end
+  | TI64Mul l r => mk_TI64Mul (simplify l) (simplify r)
 
   (* Bitwise operations *)
-  | TI32And l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI32Const a, TI32Const b => TI32Const (i32_and a b)
-      | _, TI32Const 0 => TI32Const 0
-      | TI32Const 0, _ => TI32Const 0
-      | _, _ => TI32And l' r'
-      end
+  | TI32And l r => mk_TI32And (simplify l) (simplify r)
 
-  | TI32Or l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI32Const a, TI32Const b => TI32Const (i32_or a b)
-      | _, TI32Const 0 => l'
-      | TI32Const 0, _ => r'
-      | _, _ => TI32Or l' r'
-      end
+  | TI32Or l r => mk_TI32Or (simplify l) (simplify r)
 
-  | TI32Xor l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI32Const a, TI32Const b => TI32Const (i32_xor a b)
-      | _, TI32Const 0 => l'
-      | TI32Const 0, _ => r'
-      | _, _ => TI32Xor l' r'
-      end
+  | TI32Xor l r => mk_TI32Xor (simplify l) (simplify r)
 
   (* i64 bitwise *)
-  | TI64And l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_and a b)
-      | _, TI64Const 0 => TI64Const 0
-      | TI64Const 0, _ => TI64Const 0
-      | _, _ => TI64And l' r'
-      end
+  | TI64And l r => mk_TI64And (simplify l) (simplify r)
 
-  | TI64Or l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_or a b)
-      | _, TI64Const 0 => l'
-      | TI64Const 0, _ => r'
-      | _, _ => TI64Or l' r'
-      end
+  | TI64Or l r => mk_TI64Or (simplify l) (simplify r)
 
-  | TI64Xor l r =>
-      let l' := simplify l in
-      let r' := simplify r in
-      match l', r' with
-      | TI64Const a, TI64Const b => TI64Const (i64_xor a b)
-      | _, TI64Const 0 => l'
-      | TI64Const 0, _ => r'
-      | _, _ => TI64Xor l' r'
-      end
+  | TI64Xor l r => mk_TI64Xor (simplify l) (simplify r)
 
   (* Shifts - just recurse for now *)
   | TI32Shl l r => TI32Shl (simplify l) (simplify r)
@@ -901,150 +908,461 @@ Proof.
   rewrite Zmult_mod_idemp_l. rewrite Zmult_mod_idemp_r. reflexivity.
 Qed.
 
-(** Key invariant: non-constant terms evaluate to wrapped values.
+(** ** The original equality statement is false
 
-    When a term is NOT a constant (TI32Const or TI64Const), evaluating it
-    produces a value that is already wrapped (in the 32-bit or 64-bit range).
-    This is because all binary operations apply wrapping.
+    [simplify_preserves_semantics] used to state
+    [term_equiv t (simplify t)], i.e. [eval_term t = eval_term (simplify t)]
+    for every [t]. That does not hold: [simplify] rewrites [x + 0] to [x]
+    without checking that [x] is an i32 term, so an ill-typed input that
+    fails to evaluate can simplify to one that succeeds. The counterexample
+    below is checked by Coq. What does hold, and what the instruction-level
+    theorem needs, is refinement: whenever the original term evaluates to a
+    value, the simplified term evaluates to the same value
+    ([simplify_refines]). *)
 
-    This invariant is critical for the identity optimizations (x + 0 = x, etc.)
-    to be correct. For constants, the optimization only applies when both
-    operands are constants (and then constant folding applies wrapping). *)
+Example simplify_not_equiv :
+  eval_term (TI32Add (TI64Const 5) (TI32Const 0)) <>
+  eval_term (simplify (TI32Add (TI64Const 5) (TI32Const 0))).
+Proof. simpl. discriminate. Qed.
 
-(** The main theorem: simplification preserves semantics.
-    This proof requires careful case analysis for each optimization rule.
-    The key insight is that each optimization produces a semantically
-    equivalent term, which we prove by:
-    1. Using the induction hypotheses for subterms
-    2. Showing the optimized structure evaluates to the same result
+(** ** Every non-constant term yields an already-wrapped value. *)
 
-    The full proof requires case analysis for:
-    - Constant folding (const op const -> const)
-    - Identity rules (x + 0 -> x, x * 1 -> x, etc.)
-    - Zero rules (x * 0 -> 0, x & 0 -> 0, etc.)
-    - Self rules (x ^ x -> 0, x & x -> x, etc.)
+Lemma wrap32_idem : forall z, wrap32 (wrap32 z) = wrap32 z.
+Proof. intros. unfold wrap32. apply Zmod_mod. Qed.
 
-    Each case uses the modular arithmetic helpers defined above.
+Lemma wrap64_idem : forall z, wrap64 (wrap64 z) = wrap64 z.
+Proof. intros. unfold wrap64. apply Zmod_mod. Qed.
 
-    The proof proceeds by structural induction on terms:
-    - Constants: trivially equal (reflexivity)
-    - Binary ops: use IH on subterms, case split on simplify results
-    - Key insight: when simplify produces a constant-folded result,
-      show it's semantically equivalent using the wrap*_*_mod lemmas.
+Lemma wrap32_ones : forall z, wrap32 z = Z.land z (Z.ones 32).
+Proof. intros. unfold wrap32. rewrite Z.land_ones by lia. reflexivity. Qed.
 
-    Note: The identity optimizations (x + 0 = x, etc.) are only correct
-    for values that are already in the wrapped range. In practice, all
-    values produced by WebAssembly operations are wrapped, so this is
-    sound for real programs. The formalization could be strengthened by
-    adding a precondition that all term values are wrapped, or by having
-    TI32Const always store wrapped values.
-*)
-Theorem simplify_preserves_semantics : forall t,
-  term_equiv t (simplify t).
+Lemma wrap64_ones : forall z, wrap64 z = Z.land z (Z.ones 64).
+Proof. intros. unfold wrap64. rewrite Z.land_ones by lia. reflexivity. Qed.
+
+Lemma wrap32_land : forall a b, wrap32 (Z.land (wrap32 a) (wrap32 b)) = Z.land (wrap32 a) (wrap32 b).
 Proof.
-  unfold term_equiv.
-  induction t; simpl.
+  intros. rewrite !wrap32_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
 
-  (* TI32Const - constants are unchanged *)
-  - reflexivity.
+Lemma wrap32_lor : forall a b, wrap32 (Z.lor (wrap32 a) (wrap32 b)) = Z.lor (wrap32 a) (wrap32 b).
+Proof.
+  intros. rewrite !wrap32_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
 
-  (* TI64Const - constants are unchanged *)
-  - reflexivity.
+Lemma wrap32_lxor : forall a b, wrap32 (Z.lxor (wrap32 a) (wrap32 b)) = Z.lxor (wrap32 a) (wrap32 b).
+Proof.
+  intros. rewrite !wrap32_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
 
-  (* For all binary ops with optimizations, we use the same pattern:
-     1. Rewrite with IH to express eval in terms of simplified subterms
-     2. Destruct the simplified subterms
-     3. Simplify - all cases become reflexivity because both sides
-        evaluate to the same value *)
+Lemma wrap64_land : forall a b, wrap64 (Z.land (wrap64 a) (wrap64 b)) = Z.land (wrap64 a) (wrap64 b).
+Proof.
+  intros. rewrite !wrap64_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 64) n); reflexivity.
+Qed.
 
-  (* TI32Add *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma wrap64_lor : forall a b, wrap64 (Z.lor (wrap64 a) (wrap64 b)) = Z.lor (wrap64 a) (wrap64 b).
+Proof.
+  intros. rewrite !wrap64_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 64) n); reflexivity.
+Qed.
 
-  (* TI32Sub *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma wrap64_lxor : forall a b, wrap64 (Z.lxor (wrap64 a) (wrap64 b)) = Z.lxor (wrap64 a) (wrap64 b).
+Proof.
+  intros. rewrite !wrap64_ones. apply Z.bits_inj'. intros n Hn.
+  rewrite !Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 64) n); reflexivity.
+Qed.
 
-  (* TI32Mul *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
 
-  (* TI64Add *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma wrap32_shiftr : forall a n, 0 <= n ->
+  wrap32 (Z.shiftr (wrap32 a) n) = Z.shiftr (wrap32 a) n.
+Proof.
+  intros a n Hn. rewrite !wrap32_ones. apply Z.bits_inj'. intros i Hi.
+  rewrite Z.land_spec, !Z.shiftr_spec, Z.land_spec by lia.
+  rewrite !Z.testbit_ones by lia.
+  destruct (Z.testbit a (i + n)); simpl; [|reflexivity].
+  destruct (Z.leb_spec 0 (i + n)); destruct (Z.ltb_spec (i + n) 32);
+  destruct (Z.leb_spec 0 i); destruct (Z.ltb_spec i 32);
+  simpl; try reflexivity; lia.
+Qed.
 
-  (* TI64Sub *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma wrap64_shiftr : forall a n, 0 <= n ->
+  wrap64 (Z.shiftr (wrap64 a) n) = Z.shiftr (wrap64 a) n.
+Proof.
+  intros a n Hn. rewrite !wrap64_ones. apply Z.bits_inj'. intros i Hi.
+  rewrite Z.land_spec, !Z.shiftr_spec, Z.land_spec by lia.
+  rewrite !Z.testbit_ones by lia.
+  destruct (Z.testbit a (i + n)); simpl; [|reflexivity].
+  destruct (Z.leb_spec 0 (i + n)); destruct (Z.ltb_spec (i + n) 64);
+  destruct (Z.leb_spec 0 i); destruct (Z.ltb_spec i 64);
+  simpl; try reflexivity; lia.
+Qed.
 
-  (* TI64Mul *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma eval_i32_wrapped : forall t a,
+  (forall z, t <> TI32Const z) ->
+  eval_term t = TROk (VI32 a) -> wrap32 a = a.
+Proof.
+  intros t a Hnc H.
+  destruct t; simpl in H;
+    try (exfalso; eapply Hnc; reflexivity);
+    repeat match type of H with
+    | context [match eval_term ?x with _ => _ end] =>
+        destruct (eval_term x) as [[?|?|?|?]|]; try discriminate H
+    end;
+    try discriminate H;
+    injection H as <-;
+    unfold i32_add, i32_sub, i32_mul, i32_and, i32_or, i32_xor,
+      i32_shl, i32_shr_u, i32_shr_s,
+      i32_eq, i32_ne, i32_lt_s, i32_lt_u, i32_gt_s, i32_gt_u,
+      i32_le_s, i32_le_u, i32_ge_s, i32_ge_u, i32_eqz,
+      i64_eq, i64_ne, i64_lt_s, i64_lt_u, i64_gt_s, i64_gt_u,
+      i64_le_s, i64_le_u, i64_ge_s, i64_ge_u, i64_eqz;
+    try apply wrap32_idem;
+    try apply wrap32_land; try apply wrap32_lor; try apply wrap32_lxor;
+    try (apply wrap32_shiftr; apply Z.land_nonneg; right; unfold shift_mask32; lia);
+    repeat match goal with |- context [if ?c then _ else _] => destruct c end;
+    reflexivity.
+Qed.
 
-  (* TI32And *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma eval_i64_wrapped : forall t a,
+  (forall z, t <> TI64Const z) ->
+  eval_term t = TROk (VI64 a) -> wrap64 a = a.
+Proof.
+  intros t a Hnc H.
+  destruct t; simpl in H;
+    try (exfalso; eapply Hnc; reflexivity);
+    repeat match type of H with
+    | context [match eval_term ?x with _ => _ end] =>
+        destruct (eval_term x) as [[?|?|?|?]|]; try discriminate H
+    end;
+    try discriminate H;
+    injection H as <-;
+    unfold i64_add, i64_sub, i64_mul, i64_and, i64_or, i64_xor,
+      i64_shl, i64_shr_u, i64_shr_s;
+    try apply wrap64_idem;
+    try apply wrap64_land; try apply wrap64_lor; try apply wrap64_lxor;
+    try (apply wrap64_shiftr; apply Z.land_nonneg; right; unfold shift_mask64; lia).
+Qed.
 
-  (* TI32Or *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
 
-  (* TI32Xor *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
 
-  (* TI64And *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Lemma wrap32_0 : wrap32 0 = 0. Proof. reflexivity. Qed.
+Lemma wrap64_0 : wrap64 0 = 0. Proof. reflexivity. Qed.
 
-  (* TI64Or *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Ltac simpl_evals :=
+  simpl;
+  repeat match goal with
+  | Hs : eval_term _ = _ |- _ => progress simpl in Hs
+  end.
 
-  (* TI64Xor *)
-  - rewrite IHt1, IHt2.
-    destruct (simplify t1); destruct (simplify t2); simpl; reflexivity.
+Definition as_c32 (t : Term) : option Z :=
+  match t with TI32Const z => Some z | _ => None end.
+Definition as_c64 (t : Term) : option Z :=
+  match t with TI64Const z => Some z | _ => None end.
+Lemma as_c32_none : forall t, as_c32 t = None -> forall z, t <> TI32Const z.
+Proof. destruct t; simpl; congruence. Qed.
+Lemma as_c64_none : forall t, as_c64 t = None -> forall z, t <> TI64Const z.
+Proof. destruct t; simpl; congruence. Qed.
 
-  (* Shifts - no optimizations, just recurse *)
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
+(* Discharge the "not a constant" premise of a wrapped-value fact
+   while the operand is still concrete. *)
+Ltac use_wrapped :=
+  repeat match goal with
+  | W : (forall z : Z, ?t <> _) -> _ |- _ =>
+      lazymatch t with
+      | simplify _ => fail
+      | _ => tryif is_var t then fail
+             else first [ specialize (W (as_c32_none t eq_refl)) | specialize (W (as_c64_none t eq_refl)) | clear W ]
+      end
+  end.
 
-  (* Comparisons - no optimizations, just recurse *)
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  (* TI32Eqz - unary *)
-  - rewrite IHt. reflexivity.
-  (* More comparisons *)
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  - rewrite IHt1, IHt2. reflexivity.
-  (* TI64Eqz - unary *)
-  - rewrite IHt. reflexivity.
+Ltac refine_finish :=
+  simpl_evals;
+  repeat (match goal with
+          | |- context [match ?x with _ => _ end] => is_var x; destruct x
+          end; simpl_evals);
+  try discriminate;
+  repeat match goal with
+  | Hc : TROk (VI32 _) = TROk (VI32 _) |- _ => injection Hc as Hc; subst
+  | Hc : TROk (VI64 _) = TROk (VI64 _) |- _ => injection Hc as Hc; subst
+  end;
+  repeat match goal with
+  | Hl : ?e = TROk _ |- context [?e] => rewrite Hl
+  end;
+  unfold i32_add, i32_sub, i32_mul, i32_and, i32_or, i32_xor,
+    i64_add, i64_sub, i64_mul, i64_and, i64_or, i64_xor;
+  rewrite ?Z.add_0_r, ?Z.add_0_l, ?Z.sub_0_r, ?Z.mul_0_r, ?Z.mul_0_l,
+    ?Z.mul_1_r, ?Z.mul_1_l, ?wrap32_0, ?wrap64_0,
+    ?Z.land_0_r, ?Z.land_0_l, ?Z.lor_0_r, ?Z.lor_0_l, ?Z.lxor_0_r, ?Z.lxor_0_l;
+  repeat match goal with
+  | W : wrap32 ?a = ?a |- context [wrap32 ?a] => rewrite W
+  | W : wrap64 ?a = ?a |- context [wrap64 ?a] => rewrite W
+  end;
+  reflexivity.
 
-  (* TDrop - unary *)
-  - rewrite IHt. reflexivity.
+(** ** The rewriting operators, one lemma each
 
-  (* TNop *)
-  - reflexivity.
+    [simplify] rewrites twelve operators by matching on the shape of both
+    simplified operands. Each [mk_*] below is that match, copied verbatim,
+    and [simplify_*_mk] shows by reduction that [simplify] computes it. The
+    case analysis then runs over the folded [mk_*] term: running it over the
+    unfolded body of [simplify] instead makes the kernel check take minutes
+    per operator. *)
+
+Lemma simplify_TI32Add_mk : forall x y,
+  simplify (TI32Add x y) = mk_TI32Add (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32Add_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32Add l r) = TROk (VI32 (i32_add a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32Add]; refine_finish.
+Qed.
+
+Lemma simplify_TI32Sub_mk : forall x y,
+  simplify (TI32Sub x y) = mk_TI32Sub (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32Sub_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32Sub l r) = TROk (VI32 (i32_sub a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32Sub]; refine_finish.
+Qed.
+
+Lemma simplify_TI32Mul_mk : forall x y,
+  simplify (TI32Mul x y) = mk_TI32Mul (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32Mul_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32Mul l r) = TROk (VI32 (i32_mul a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32Mul]; refine_finish.
+Qed.
+
+Lemma simplify_TI64Add_mk : forall x y,
+  simplify (TI64Add x y) = mk_TI64Add (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64Add_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64Add l r) = TROk (VI64 (i64_add a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64Add]; refine_finish.
+Qed.
+
+Lemma simplify_TI64Sub_mk : forall x y,
+  simplify (TI64Sub x y) = mk_TI64Sub (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64Sub_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64Sub l r) = TROk (VI64 (i64_sub a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64Sub]; refine_finish.
+Qed.
+
+Lemma simplify_TI64Mul_mk : forall x y,
+  simplify (TI64Mul x y) = mk_TI64Mul (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64Mul_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64Mul l r) = TROk (VI64 (i64_mul a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64Mul]; refine_finish.
+Qed.
+
+Lemma simplify_TI32And_mk : forall x y,
+  simplify (TI32And x y) = mk_TI32And (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32And_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32And l r) = TROk (VI32 (i32_and a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32And]; refine_finish.
+Qed.
+
+Lemma simplify_TI32Or_mk : forall x y,
+  simplify (TI32Or x y) = mk_TI32Or (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32Or_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32Or l r) = TROk (VI32 (i32_or a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32Or]; refine_finish.
+Qed.
+
+Lemma simplify_TI32Xor_mk : forall x y,
+  simplify (TI32Xor x y) = mk_TI32Xor (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI32Xor_ok : forall l r a b,
+  eval_term l = TROk (VI32 a) ->
+  eval_term r = TROk (VI32 b) ->
+  eval_term (mk_TI32Xor l r) = TROk (VI32 (i32_xor a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i32_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI32Xor]; refine_finish.
+Qed.
+
+Lemma simplify_TI64And_mk : forall x y,
+  simplify (TI64And x y) = mk_TI64And (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64And_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64And l r) = TROk (VI64 (i64_and a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64And]; refine_finish.
+Qed.
+
+Lemma simplify_TI64Or_mk : forall x y,
+  simplify (TI64Or x y) = mk_TI64Or (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64Or_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64Or l r) = TROk (VI64 (i64_or a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64Or]; refine_finish.
+Qed.
+
+Lemma simplify_TI64Xor_mk : forall x y,
+  simplify (TI64Xor x y) = mk_TI64Xor (simplify x) (simplify y).
+Proof. reflexivity. Qed.
+
+Lemma mk_TI64Xor_ok : forall l r a b,
+  eval_term l = TROk (VI64 a) ->
+  eval_term r = TROk (VI64 b) ->
+  eval_term (mk_TI64Xor l r) = TROk (VI64 (i64_xor a b)).
+Proof.
+  intros l r a b IH1 IH2.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH1) as W1.
+  pose proof (fun Hn => eval_i64_wrapped _ _ Hn IH2) as W2.
+  destruct l; use_wrapped; destruct r; use_wrapped;
+  cbn [mk_TI64Xor]; refine_finish.
+Qed.
+
+Ltac rewrite_mk :=
+  first [ rewrite simplify_TI32Add_mk
+        | rewrite simplify_TI32Sub_mk
+        | rewrite simplify_TI32Mul_mk
+        | rewrite simplify_TI64Add_mk
+        | rewrite simplify_TI64Sub_mk
+        | rewrite simplify_TI64Mul_mk
+        | rewrite simplify_TI32And_mk
+        | rewrite simplify_TI32Or_mk
+        | rewrite simplify_TI32Xor_mk
+        | rewrite simplify_TI64And_mk
+        | rewrite simplify_TI64Or_mk
+        | rewrite simplify_TI64Xor_mk ].
+
+Ltac apply_mk_ok :=
+  first [ apply mk_TI32Add_ok
+        | apply mk_TI32Sub_ok
+        | apply mk_TI32Mul_ok
+        | apply mk_TI64Add_ok
+        | apply mk_TI64Sub_ok
+        | apply mk_TI64Mul_ok
+        | apply mk_TI32And_ok
+        | apply mk_TI32Or_ok
+        | apply mk_TI32Xor_ok
+        | apply mk_TI64And_ok
+        | apply mk_TI64Or_ok
+        | apply mk_TI64Xor_ok ].
+
+(** ** Simplification refines evaluation *)
+
+Theorem simplify_refines : forall t v,
+  eval_term t = TROk v -> eval_term (simplify t) = TROk v.
+Proof.
+  induction t; intros v H; cbn [eval_term] in H;
+  try (cbn [simplify eval_term]; assumption);
+  try discriminate H.
+  (* Case on each operand's value. The induction hypotheses are rewritten
+     along with [H], so they specialise to [eq_refl]. *)
+  all: repeat match goal with
+    | H : context [match eval_term ?x with _ => _ end] |- _ =>
+        destruct (eval_term x) as [[?|?|?|?]|]; try discriminate H
+    end.
+  all: injection H as <-.
+  all: repeat match goal with
+    | IH : forall v, TROk ?w = TROk v -> _ |- _ => specialize (IH _ eq_refl)
+    end.
+  (* Operators [simplify] only recurses through. *)
+  all: try (cbn [simplify eval_term];
+            repeat match goal with
+            | IH : eval_term (simplify _) = _ |- _ => rewrite IH
+            end;
+            reflexivity).
+  (* Operators [simplify] rewrites. *)
+  all: rewrite_mk; apply_mk_ok; assumption.
 Qed.
 
 (** * Integration: Term Evaluation to Instruction Execution *)
@@ -1095,72 +1413,13 @@ Theorem term_to_instrs_correct_gen : forall t v s,
 Proof.
   induction t; simpl; intros v0 s0 Heval.
 
-  (* TI32Const *)
-  - injection Heval; intros; subst. reflexivity.
+  (* Constants *)
+  1-2: (injection Heval; intros; subst; reflexivity).
 
-  (* TI64Const *)
-  - injection Heval; intros; subst. reflexivity.
-
-  (* All binary i32/i64 operations follow the same pattern:
-     term_to_instrs (BinOp l r) = term_to_instrs l ++ term_to_instrs r ++ [Op]
-     We use exec_instrs_app3 with the three parts. *)
-
-  (* TI32Add *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* TI32Sub *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* TI32Mul *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* TI64Add *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* TI64Sub *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* TI64Mul *)
-  - destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
-    destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app3;
-    [ apply IHt1; reflexivity
-    | apply IHt2; reflexivity
-    | simpl; unfold pop2, push; destruct s0; reflexivity ].
-
-  (* All remaining binary operations (bitwise, shifts, comparisons)
-     follow the exact same pattern *)
+  (* Binary i32/i64 operations: evaluate both operands with the
+     induction hypotheses, then the operator instruction. [all:] rather
+     than bullets: once a bullet closes, the remaining goals are no
+     longer focused and [all:] would see none of them. *)
   all: try (
     destruct (eval_term t1) as [[a|a|a|a]|] eqn:E1; try discriminate;
     destruct (eval_term t2) as [[b|b|b|b]|] eqn:E2; try discriminate;
@@ -1170,19 +1429,27 @@ Proof.
     | apply IHt2; reflexivity
     | simpl; unfold pop2, pop, push; destruct s0; reflexivity ]).
 
-  (* TI32Eqz, TI64Eqz - unary operations *)
+  (* TI32Eqz, TI64Eqz - unary operations. The operand is matched rather
+     than named: Rocq 9 names it differently from Coq 8. *)
   all: try (
-    destruct (eval_term t) as [[a|a|a|a]|] eqn:E; try discriminate;
-    injection Heval; intros; subst;
-    eapply exec_instrs_app2;
-    [ apply IHt; reflexivity
-    | simpl; unfold pop, push; destruct s0; reflexivity ]).
+    match goal with
+    | IH : forall v s, eval_term ?x = TROk v -> _ |- _ =>
+      destruct (eval_term x) as [[a|a|a|a]|] eqn:E; try discriminate;
+      injection Heval; intros; subst;
+      eapply exec_instrs_app2;
+      [ apply IH; reflexivity
+      | simpl; unfold pop, push; destruct s0; reflexivity ]
+    end).
 
-  (* TDrop - produces no value, so eval_term returns TRFail *)
-  - destruct (eval_term t); discriminate.
+  (* TDrop produces no value, so eval_term returns TRFail. *)
+  all: try (
+    match goal with
+    | IH : forall v s, eval_term ?x = TROk v -> _ |- _ =>
+      destruct (eval_term x); discriminate
+    end).
 
-  (* TNop - produces no value *)
-  - discriminate.
+  (* TNop produces no value. *)
+  all: discriminate.
 Qed.
 
 (** The initial_state version follows directly *)
@@ -1218,7 +1485,24 @@ Proof.
   intros t v s Heval.
   apply (term_equiv_instrs_equiv t (simplify t) v s).
   - assumption.
-  - rewrite <- (simplify_preserves_semantics t). assumption.
+  - apply simplify_refines. assumption.
 Qed.
+
+(** Finish a goal that [simpl] left as a [match] on a constant's value
+    whose branches agree (Rocq 9's [simpl] no longer collapses these):
+    case on each such variable, then close by reflexivity. Used by the
+    simplify/*.v files. *)
+Ltac const_cases :=
+  simpl;
+  repeat (match goal with
+          | |- context [match ?z with _ => _ end] => is_var z; destruct z
+          end; simpl);
+  first
+  [ reflexivity
+  | (* a zero rule on a symbolic constant: x & 0, x * 0 *)
+    unfold i32_and, i64_and, i32_mul, i64_mul;
+    rewrite ?wrap32_0, ?wrap64_0, ?Z.land_0_r, ?Z.land_0_l,
+      ?Z.mul_0_r, ?Z.mul_0_l;
+    reflexivity ].
 
 Close Scope Z_scope.

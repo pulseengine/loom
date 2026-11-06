@@ -209,10 +209,12 @@ Proof.
     rewrite Hrev. simpl.
     (* Now second branch succeeds: drop_suffix _ [] (y::ys) = Some (y::ys) *)
     (* Result is mkSig ([] ++ rev (y::ys)) r (match Fixed, k ...) *)
-    (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps *)
-    replace (rev (y :: ys)) with (p0 :: ps)
-      by (rewrite <- Hrev; apply rev_involutive).
-    simpl.
+    (* rev (y::ys) = rev (rev (p0::ps)) = p0::ps. [simpl] has already
+       unfolded rev (y::ys) to rev ys ++ [y], so rewrite with that form. *)
+    assert (Hback : rev ys ++ [y] = p0 :: ps).
+    { change (rev ys ++ [y]) with (rev (y :: ys)).
+      rewrite <- Hrev. apply rev_involutive. }
+    rewrite Hback.
     destruct k; reflexivity.
 Qed.
 
@@ -229,11 +231,11 @@ Proof.
   - (* results = r0 :: rs *)
     (* drop_suffix _ [] (rev (r0::rs)) = Some (rev (r0::rs)) *)
     simpl.
-    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = [] *)
-    rewrite Nat.sub_0_r.
-    rewrite app_nil_r.
-    rewrite rev_involutive.
-    rewrite app_nil_r.
+    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = []. Depending on the
+       Rocq version, [simpl] may already have reduced the subtraction and
+       unfolded rev (rev (r0::rs)) to rev (rev rs ++ [r0]); normalise both
+       shapes back to r0 :: rs. *)
+    rewrite ?Nat.sub_0_r, ?app_nil_r, ?rev_unit, ?rev_involutive, ?app_nil_r.
     destruct k; reflexivity.
 Qed.
 
