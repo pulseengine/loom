@@ -68,7 +68,6 @@ From proofs Require Import WasmSemantics.
 From proofs Require Import TermSemantics.
 Import ListNotations.
 
-Open Scope Z_scope.
 
 (** * Module-Level Definitions *)
 
@@ -81,16 +80,18 @@ Record func_sig : Type := mkFuncSig {
   fs_results : list ValueType;
 }.
 
-(** Decidable equality for function signatures *)
-Definition func_sig_eqb (a b : func_sig) : bool :=
-  list_eqb valuetype_eqb (fs_params a) (fs_params b) &&
-  list_eqb valuetype_eqb (fs_results a) (fs_results b)
-where "list_eqb" := (fix list_eqb {A} (eqb : A -> A -> bool) (l1 l2 : list A) : bool :=
+(** Boolean list equality from an element equality *)
+Fixpoint list_eqb {A} (eqb : A -> A -> bool) (l1 l2 : list A) : bool :=
   match l1, l2 with
   | nil, nil => true
   | x :: xs, y :: ys => eqb x y && list_eqb eqb xs ys
   | _, _ => false
-  end).
+  end.
+
+(** Decidable equality for function signatures *)
+Definition func_sig_eqb (a b : func_sig) : bool :=
+  list_eqb valuetype_eqb (fs_params a) (fs_params b) &&
+  list_eqb valuetype_eqb (fs_results a) (fs_results b).
 
 (** A simplified WebAssembly instruction for module-level proofs *)
 Inductive module_instr : Type :=
@@ -180,6 +181,18 @@ Record exec_state : Type := mkExecState {
   es_stack : list Value;
   es_locals : list Value;
 }.
+
+(** A function is reachable if it can be reached from any export root
+    via the call graph. *)
+Inductive reachable (m : wasm_module) : func_idx -> Prop :=
+  | reach_export : forall idx,
+      In idx (wm_exports m) ->
+      reachable m idx
+  | reach_call : forall caller callee,
+      reachable m caller ->
+      (* caller's body contains a call to callee *)
+      In (MICall callee) (fd_body (nth caller (wm_funcs m) (mkFuncDef (mkFuncSig nil nil) nil 0))) ->
+      reachable m callee.
 
 (** Execute a function call in a module context.
     This is an abstract step relation: we assume that calling a function
@@ -684,17 +697,6 @@ Qed.
 
 (** * Pass 4: Dead Function Elimination Correctness *)
 
-(** A function is reachable if it can be reached from any export root
-    via the call graph. *)
-Inductive reachable (m : wasm_module) : func_idx -> Prop :=
-  | reach_export : forall idx,
-      In idx (wm_exports m) ->
-      reachable m idx
-  | reach_call : forall caller callee,
-      reachable m caller ->
-      (* caller's body contains a call to callee *)
-      In (MICall callee) (fd_body (nth caller (wm_funcs m) (mkFuncDef (mkFuncSig nil nil) nil 0))) ->
-      reachable m callee.
 
 (** Dead functions (unreachable) cannot affect the execution of live functions.
     This is because no execution path from any export root will ever invoke them. *)
