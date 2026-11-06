@@ -558,10 +558,21 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-rocq
           repository-cache: true
+      # rules_rocq_rust builds rocq-of-rust against rustc_private, which links
+      # the nightly's libLLVM. Its repository rule forwards LIBRARY_PATH to
+      # cargo; on Linux nothing sets it, so the link fails with
+      # "unable to find library -lLLVM-19-rust-1.85.0-nightly". Install the
+      # nightly the rule pins and hand its sysroot lib to the rule.
+      - name: Install rocq-of-rust nightly
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2024-12-01 --profile minimal
+          rustup component add rustc-dev rust-src --toolchain nightly-2024-12-01
+          echo "ROCQ_RUST_LIB=$(rustc +nightly-2024-12-01 --print sysroot)/lib" >> "$GITHUB_ENV"
       - name: Build proofs
-        run: bazel build //proofs/...
+        run: bazel build //proofs/... --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB"
       - name: Test proofs
-        run: bazel test //proofs/... --test_output=errors
+        run: bazel test //proofs/... --test_output=errors --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB"
 
   differential:
     name: Differential Testing (vs wasm-opt)
