@@ -12,7 +12,7 @@
       space. A defined function has a signature, a count of extra locals
       and a body.
     - Structured control flow: [block], [loop], [if], [br], [br_if],
-      [return], and [call].
+      [return], and [call]; and [nop].
     - Locals: [local.get] and [local.set].
     - Every other instruction is an [IPrim p], and its effect on the operand
       stack, the locals and the store is given by the section variable
@@ -76,6 +76,7 @@ Inductive instr : Type :=
   | IBr : nat -> instr
   | IBrIf : nat -> instr
   | IReturn : instr
+  | INop : instr
 with code : Type :=
   | CNil : code
   | CCons : instr -> code -> code.
@@ -149,6 +150,51 @@ Definition rw_module (rho : nat -> nat) (m : module) : module :=
   mkModule (m_imports m) (map (rw_func rho) (m_funcs m)).
 
 (** ** Semantics *)
+
+(** ** Trivial-call elimination
+
+    [nop_code c]: [c] consists of [nop]s only. With the trailing [End]
+    dropped, this is what [is_nop_body] in fused_optimizer.rs accepts
+    (every instruction is [Nop] or [End]; the empty body included). *)
+Inductive nop_code : code -> Prop :=
+  | nop_nil : nop_code CNil
+  | nop_cons : forall c, nop_code c -> nop_code (CCons INop c).
+
+(** [trivial_fn m f]: [f] is a defined function of type [() -> ()] whose
+    body is [nop]s only. Its number of extra locals is unrestricted, as in
+    [eliminate_trivial_calls], which does not look at locals. *)
+Definition trivial_fn (m : module) (f : nat) : Prop :=
+  length (m_imports m) <= f /\
+  exists d, nth_error (m_funcs m) (f - length (m_imports m)) = Some d /\
+            sig_params (f_sig d) = [] /\ sig_results (f_sig d) = [] /\
+            nop_code (f_body d).
+
+(** [del_code T c] deletes every [call f] with [T f = true], at any
+    nesting depth. This is [remove_trivial_calls_from_block]: it recurses
+    into block, loop and both arms of if, then drops the calls at the
+    current level. [T] plays the role of the [trivial_funcs] set. *)
+Fixpoint del_instr (T : nat -> bool) (i : instr) : instr :=
+  match i with
+  | IBlock ar b => IBlock ar (del_code T b)
+  | ILoop ar b => ILoop ar (del_code T b)
+  | IIf ar b1 b2 => IIf ar (del_code T b1) (del_code T b2)
+  | _ => i
+  end
+with del_code (T : nat -> bool) (c : code) : code :=
+  match c with
+  | CNil => CNil
+  | CCons i c' =>
+      match i with
+      | ICall f => if T f then del_code T c' else CCons (ICall f) (del_code T c')
+      | _ => CCons (del_instr T i) (del_code T c')
+      end
+  end.
+
+Definition del_func (T : nat -> bool) (d : func) : func :=
+  mkFunc (f_sig d) (f_locals d) (del_code T (f_body d)).
+
+Definition del_module (T : nat -> bool) (m : module) : module :=
+  mkModule (m_imports m) (map (del_func T) (m_funcs m)).
 
 Section Semantics.
 
@@ -285,6 +331,7 @@ Fixpoint eval_seq (m : module) (k : nat) (is : code)
             | [] => Some RTrap
             end
         | IReturn => Some (RRet stk s)
+        | INop => go rest stk locs s
         end
       end) is stk locs s
   end.
@@ -364,6 +411,7 @@ Definition step (m : module) (k' : nat)
       | [] => Some RTrap
       end
   | IReturn => Some (RRet stk s)
+  | INop => go rest stk locs s
   end.
 
 Lemma eval_seq_nil : forall m k stk locs s,
@@ -611,6 +659,10 @@ Proof.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ez. exact H0.
   - (* return *)
     exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
+  - (* nop *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+    rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
   - (* nil *)
     exists 1. exact H.
   - (* cons *)
@@ -833,6 +885,286 @@ Proof.
     exact (chain_back _ _ _ (Hrho g) _ _ _ _ E1).
 Qed.
 
+(** *** Trivial-call elimination *)
+
+Lemma nop_run : forall m k c stk locs s, nop_code c ->
+  eval_seq m (S k) c stk locs s = Some (RNormal stk locs s).
+Proof.
+  intros m k c stk locs s Hc; induction Hc as [|c _ IH]; [reflexivity|].
+  rewrite eval_seq_cons; cbn [step]. exact IH.
+Qed.
+
+(** A call to a trivial function returns the caller's stack and store
+    unchanged, given one unit of fuel for the callee's body. *)
+Lemma trivial_call_id : forall m f k stk s, trivial_fn m f ->
+  do_call (eval_seq m (S k)) m f stk s = Some (CDone stk s).
+Proof.
+  intros m f k stk s [Himp [d [Hd [Hp [Hr Hb]]]]].
+  unfold do_call.
+  destruct (f <? length (m_imports m)) eqn:Ef; [apply Nat.ltb_lt in Ef; lia|].
+  rewrite Hd, Hp, Hr. cbn [length Nat.leb firstn skipn rev app].
+  rewrite (nop_run _ _ _ _ _ _ Hb). reflexivity.
+Qed.
+
+Lemma trivial_call_inv : forall m f k stk s cr, trivial_fn m f ->
+  do_call (eval_seq m k) m f stk s = Some cr -> cr = CDone stk s.
+Proof.
+  intros m f [|k] stk s cr Ht H.
+  - destruct Ht as [Himp [d [Hd [Hp [Hr Hb]]]]].
+    unfold do_call in H.
+    destruct (f <? length (m_imports m)) eqn:Ef; [apply Nat.ltb_lt in Ef; lia|].
+    rewrite Hd, Hp in H. cbn in H. discriminate.
+  - rewrite (trivial_call_id _ _ _ _ _ Ht) in H. congruence.
+Qed.
+
+Lemma do_call_del : forall T m k1 k2 g stk s cr,
+  (forall c stk locs s r,
+     eval_seq m k1 c stk locs s = Some r ->
+     eval_seq (del_module T m) k2 (del_code T c) stk locs s = Some r) ->
+  do_call (eval_seq m k1) m g stk s = Some cr ->
+  do_call (eval_seq (del_module T m) k2) (del_module T m) g stk s = Some cr.
+Proof.
+  intros T m k1 k2 g stk s cr Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs del_module] in *.
+  destruct (g <? length (m_imports m)); [exact H|].
+  rewrite nth_error_map.
+  destruct (nth_error (m_funcs m) (g - length (m_imports m))) as [d|]; [|exact H].
+  cbn [option_map del_func f_sig f_locals f_body].
+  destruct (_ <=? _); [|exact H].
+  destruct (eval_seq m k1 (f_body d) _ _ s) as [r|] eqn:E; [|discriminate].
+  rewrite (Hsim _ _ _ _ _ E). exact H.
+Qed.
+
+Lemma do_call_del_back : forall T m k2 g stk s cr,
+  (forall c stk locs s r,
+     eval_seq (del_module T m) k2 (del_code T c) stk locs s = Some r ->
+     exists k1, eval_seq m k1 c stk locs s = Some r) ->
+  do_call (eval_seq (del_module T m) k2) (del_module T m) g stk s = Some cr ->
+  exists k1, do_call (eval_seq m k1) m g stk s = Some cr.
+Proof.
+  intros T m k2 g stk s cr Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs del_module] in *.
+  destruct (g <? length (m_imports m)); [exists 0; exact H|].
+  rewrite nth_error_map in H.
+  destruct (nth_error (m_funcs m) (g - length (m_imports m))) as [d|]; [|exists 0; exact H].
+  cbn [option_map del_func f_sig f_locals f_body] in H.
+  destruct (_ <=? _); [|exists 0; exact H].
+  destruct (eval_seq (del_module T m) k2 (del_code T (f_body d)) _ _ s) as [r|] eqn:E;
+    [|discriminate].
+  destruct (Hsim _ _ _ _ _ E) as [k1 E1].
+  exists k1. rewrite E1. exact H.
+Qed.
+
+(** Forward simulation: the rewritten module needs no more fuel. *)
+Lemma sim_del : forall T m, (forall f, T f = true -> trivial_fn m f) ->
+  forall k1 k2, k1 <= k2 ->
+  forall c stk locs s r,
+    eval_seq m k1 c stk locs s = Some r ->
+    eval_seq (del_module T m) k2 (del_code T c) stk locs s = Some r.
+Proof.
+  intros T m HT k1.
+  induction k1 as [|k1 IH]; intros k2 Hle c stk locs s r H; [discriminate|].
+  destruct k2 as [|k2]; [lia|].
+  assert (Hle' : k1 <= k2) by lia.
+  specialize (IH k2 Hle').
+  revert c stk locs s r H.
+  apply (code_mut
+    (fun i => forall rest,
+       (forall stk locs s r,
+          eval_seq m (S k1) rest stk locs s = Some r ->
+          eval_seq (del_module T m) (S k2) (del_code T rest) stk locs s = Some r) ->
+       forall stk locs s r,
+         eval_seq m (S k1) (CCons i rest) stk locs s = Some r ->
+         eval_seq (del_module T m) (S k2) (del_code T (CCons i rest)) stk locs s = Some r)
+    (fun c => forall stk locs s r,
+       eval_seq m (S k1) c stk locs s = Some r ->
+       eval_seq (del_module T m) (S k2) (del_code T c) stk locs s = Some r));
+  cbn [del_code del_instr];
+  try (intros; rewrite eval_seq_cons in *; cbn [step] in *; split_hyp; eauto; fail).
+  - (* call *)
+    intros f rest Hr stk locs s r H.
+    rewrite eval_seq_cons in H; cbn [step] in H.
+    destruct (do_call (eval_seq m k1) m f stk s) as [cr|] eqn:E; [|discriminate].
+    destruct (T f) eqn:ET.
+    + (* deleted: the call returned the stack and store unchanged *)
+      rewrite (trivial_call_inv _ _ _ _ _ _ (HT f ET) E) in H. exact (Hr _ _ _ _ H).
+    + rewrite eval_seq_cons; cbn [step].
+      rewrite (do_call_del _ _ _ _ _ _ _ _ IH E).
+      destruct cr; eauto.
+  - (* block *)
+    intros ar b Hb rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* loop *)
+    intros ar b Hb rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    apply IH in H; exact H.
+  - (* if *)
+    intros ar b1 Hb1 b2 Hb2 rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|c stk']; [exact H|].
+    destruct (Z.eqb c 0).
+    + destruct (eval_seq m (S k1) b2 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb2 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    + destruct (eval_seq m (S k1) b1 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb1 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* nil *)
+    intros; rewrite eval_seq_nil in *; exact H.
+Qed.
+
+(** Backward simulation: each deleted call costs the original one more
+    unit of fuel, so the fuel is existential. *)
+Lemma sim_del_back : forall T m, (forall f, T f = true -> trivial_fn m f) ->
+  forall k2 c stk locs s r,
+    eval_seq (del_module T m) k2 (del_code T c) stk locs s = Some r ->
+    exists k1, eval_seq m k1 c stk locs s = Some r.
+Proof.
+  intros T m HT k2.
+  induction k2 as [|k2 IH]; intros c stk locs s r H; [discriminate|].
+  revert c stk locs s r H.
+  apply (code_mut
+    (fun i => forall rest,
+       (forall stk locs s r,
+          eval_seq (del_module T m) (S k2) (del_code T rest) stk locs s = Some r ->
+          exists k1, eval_seq m k1 rest stk locs s = Some r) ->
+       forall stk locs s r,
+         eval_seq (del_module T m) (S k2) (del_code T (CCons i rest)) stk locs s = Some r ->
+         exists k1, eval_seq m k1 (CCons i rest) stk locs s = Some r)
+    (fun c => forall stk locs s r,
+       eval_seq (del_module T m) (S k2) (del_code T c) stk locs s = Some r ->
+       exists k1, eval_seq m k1 c stk locs s = Some r));
+  cbn [del_code del_instr]; intros.
+  - (* local.get *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (nth_error locs n) eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* local.set *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H0|].
+    destruct (n <? length locs) eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* call *)
+    destruct (T n) eqn:ET.
+    + (* deleted: give the callee one unit of fuel for its nop body *)
+      destruct (H _ _ _ _ H0) as [k3 E3]. exists (S (S k3)).
+      rewrite eval_seq_cons; cbn [step].
+      rewrite (trivial_call_id _ _ k3 _ _ (HT n ET)).
+      lift E3 (S (S k3)); reflexivity.
+    + rewrite eval_seq_cons in *; cbn [step] in *.
+      destruct (do_call (eval_seq (del_module T m) k2) (del_module T m) n stk s) as [cr|] eqn:E;
+        [|discriminate].
+      destruct (do_call_del_back _ _ _ _ _ _ _ IH E) as [k1 E1].
+      destruct cr as [stk' s'|].
+      * destruct (H _ _ _ _ H0) as [k3 E3]. exists (S (k1 + k3)).
+        rewrite eval_seq_cons; cbn [step].
+        rewrite (do_call_mono_le _ k1 (k1 + k3) _ _ _ _ ltac:(lia) E1).
+        lift E3 (S (k1 + k3)); reflexivity.
+      * exists (S k1). rewrite eval_seq_cons; cbn [step]. rewrite E1. exact H0.
+  - (* prim *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (prim n stk locs s) as [[[stk' locs'] s']|] eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* block *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq (del_module T m) (S k2) (del_code T c) [] locs s) as [rb|] eqn:E; [|discriminate].
+    destruct (H _ _ _ _ E) as [kb Eb].
+    destruct rb as [out l s'|[|n'] out l s'|out s'|].
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+  - (* loop *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq (del_module T m) (S k2) (del_code T c) [] locs s) as [rb|] eqn:E; [|discriminate].
+    destruct (H _ _ _ _ E) as [kb Eb].
+    destruct rb as [out l s'|[|n'] out l s'|out s'|].
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + change (eval_seq (del_module T m) k2 (del_code T (CCons (ILoop n c) rest)) stk l s' = Some r) in H1.
+      destruct (IH _ _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (kb + k3). reflexivity.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+  - (* if *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H2|].
+    destruct (Z.eqb v 0) eqn:Ez.
+    + destruct (eval_seq (del_module T m) (S k2) (del_code T c0) [] locs s) as [rb|] eqn:E; [|discriminate].
+      destruct (H0 _ _ _ _ E) as [kb Eb].
+      destruct rb as [out l s'|[|n'] out l s'|out s'|].
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+    + destruct (eval_seq (del_module T m) (S k2) (del_code T c) [] locs s) as [rb|] eqn:E; [|discriminate].
+      destruct (H _ _ _ _ E) as [kb Eb].
+      destruct rb as [out l s'|[|n'] out l s'|out s'|].
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+  - (* br *)
+    exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
+  - (* br_if *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H0|].
+    destruct (Z.eqb v 0) eqn:Ez.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ez. exact H0.
+  - (* return *)
+    exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
+  - (* nop *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+    rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
+  - (* nil *)
+    exists 1. exact H.
+  - (* cons *)
+    apply H; assumption.
+Qed.
+
+(** Trivial-call elimination is correct. If every function in [T] is a
+    defined [() -> ()] function whose body is [nop]s only, then deleting
+    every [call f] with [f] in [T] from every body leaves every function
+    observationally unchanged, for any host and any semantics of the
+    unmodelled instructions. *)
+Theorem trivial_call_elim_correct : forall m T,
+  (forall f, T f = true -> trivial_fn m f) ->
+  forall f, call_equiv m f (del_module T m) f.
+Proof.
+  intros m T HT f stk s c. split.
+  - intros [k Hk]. exists k.
+    eapply do_call_del; [|exact Hk].
+    intros; eapply sim_del; eauto.
+  - intros [k Hk].
+    eapply do_call_del_back; [|exact Hk].
+    intros; eapply sim_del_back; eauto.
+Qed.
+
 End Semantics.
 
 (** ** Concrete checks
@@ -891,5 +1223,45 @@ Proof.
       [cbn; lia | reflexivity | split; reflexivity | reflexivity | apply chain_refl].
   - apply chain_refl.
 Qed.
+
+(** Trivial-call elimination. Function 0 is a [() -> ()] nop; function 1
+    has a parameter and a nop body; function 2 is [() -> ()] but its body
+    traps. Functions 3, 4 and 5 call 0, 1 and 2 respectively. *)
+Definition unit_sig : sig := mkSig [] [].
+
+Definition ex2 : module :=
+  mkModule []
+    [ mkFunc unit_sig 0 (CCons INop CNil);
+      mkFunc (mkSig [0] []) 0 CNil;
+      mkFunc unit_sig 0 (CCons (IPrim 0) CNil);
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1)
+                          (CCons (ICall 0) (CCons (IPrim 0) CNil))));
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 1) CNil)));
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1)
+                          (CCons (ICall 2) (CCons (IPrim 0) CNil)))) ].
+
+Lemma ex2_trivial_0 : trivial_fn ex2 0.
+Proof.
+  split; [cbn; lia|]. eexists; split; [reflexivity|].
+  repeat split; repeat constructor.
+Qed.
+
+Example nop_call_deleted :
+  run (del_module (Nat.eqb 0) ex2) 3 = run ex2 3 /\ run ex2 3 = Some (CDone unit [7%Z] tt).
+Proof. split; reflexivity. Qed.
+
+(** Deleting a call to a function with a parameter changes the answer:
+    the call popped the 3. So the [() -> ()] condition is necessary. *)
+Example param_call_matters :
+  run ex2 4 = Some (CDone unit [10%Z] tt) /\
+  run (del_module (Nat.eqb 1) ex2) 4 = Some (CDone unit [3%Z] tt).
+Proof. split; reflexivity. Qed.
+
+(** Deleting a call to a [() -> ()] function whose body traps turns a
+    trap into a result. So the nop-body condition is necessary. *)
+Example trapping_call_matters :
+  run ex2 5 = Some (CTrap unit) /\
+  run (del_module (Nat.eqb 2) ex2) 5 = Some (CDone unit [7%Z] tt).
+Proof. split; reflexivity. Qed.
 
 End ConcreteCheck.
