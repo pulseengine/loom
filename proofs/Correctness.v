@@ -299,8 +299,10 @@ Qed.
 (** The following theorems represent important properties to prove
     as LOOM's verification infrastructure matures:
 
-    1. Bidirectional correctness: Both term_to_instrs and instrs_to_terms
-       form a bijection on well-formed inputs.
+    1. Bidirectional correctness: term_instr_bijection (below) proves
+       instrs_to_terms (term_to_instrs t) = Some t. The converse, that
+       every instruction sequence instrs_to_terms accepts re-encodes to
+       itself, is not yet proven.
 
     2. Z3 agreement: When Z3 reports two terms equivalent, Rocq proofs
        also establish their equivalence.
@@ -309,10 +311,111 @@ Qed.
        together preserve the observable behavior of WASM modules.
 *)
 
-(** Placeholder for bidirectional correctness *)
-Axiom term_instr_bijection : forall (t : Term),
-  (* Converting to instructions and back preserves the term *)
-  True. (* TODO: Define instrs_to_terms and prove bijection *)
+(** * Instruction-to-term decoding
+
+    [instrs_to_terms] is the inverse of [term_to_instrs]: it runs the
+    instruction sequence as a stack machine over terms. A constant or
+    [nop] pushes a leaf; a binary operator pops its right then left
+    operand; [eqz] and [drop] pop one operand. Decoding succeeds when the
+    sequence leaves exactly one term. *)
+
+Definition dec_bin (mk : Term -> Term -> Term) (stk : list Term)
+    : option (list Term) :=
+  match stk with
+  | r :: l :: rest => Some (mk l r :: rest)
+  | _ => None
+  end.
+
+Definition dec_un (mk : Term -> Term) (stk : list Term)
+    : option (list Term) :=
+  match stk with
+  | t :: rest => Some (mk t :: rest)
+  | _ => None
+  end.
+
+Definition dec_step (i : Instruction) (stk : list Term)
+    : option (list Term) :=
+  match i with
+  | Instr_I32Const v => Some (TI32Const v :: stk)
+  | Instr_I64Const v => Some (TI64Const v :: stk)
+  | Instr_I32Add => dec_bin TI32Add stk
+  | Instr_I32Sub => dec_bin TI32Sub stk
+  | Instr_I32Mul => dec_bin TI32Mul stk
+  | Instr_I64Add => dec_bin TI64Add stk
+  | Instr_I64Sub => dec_bin TI64Sub stk
+  | Instr_I64Mul => dec_bin TI64Mul stk
+  | Instr_I32And => dec_bin TI32And stk
+  | Instr_I32Or => dec_bin TI32Or stk
+  | Instr_I32Xor => dec_bin TI32Xor stk
+  | Instr_I64And => dec_bin TI64And stk
+  | Instr_I64Or => dec_bin TI64Or stk
+  | Instr_I64Xor => dec_bin TI64Xor stk
+  | Instr_I32Shl => dec_bin TI32Shl stk
+  | Instr_I32ShrS => dec_bin TI32ShrS stk
+  | Instr_I32ShrU => dec_bin TI32ShrU stk
+  | Instr_I64Shl => dec_bin TI64Shl stk
+  | Instr_I64ShrS => dec_bin TI64ShrS stk
+  | Instr_I64ShrU => dec_bin TI64ShrU stk
+  | Instr_I32Eq => dec_bin TI32Eq stk
+  | Instr_I32Ne => dec_bin TI32Ne stk
+  | Instr_I32LtS => dec_bin TI32LtS stk
+  | Instr_I32LtU => dec_bin TI32LtU stk
+  | Instr_I32GtS => dec_bin TI32GtS stk
+  | Instr_I32GtU => dec_bin TI32GtU stk
+  | Instr_I32LeS => dec_bin TI32LeS stk
+  | Instr_I32LeU => dec_bin TI32LeU stk
+  | Instr_I32GeS => dec_bin TI32GeS stk
+  | Instr_I32GeU => dec_bin TI32GeU stk
+  | Instr_I64Eq => dec_bin TI64Eq stk
+  | Instr_I64Ne => dec_bin TI64Ne stk
+  | Instr_I64LtS => dec_bin TI64LtS stk
+  | Instr_I64LtU => dec_bin TI64LtU stk
+  | Instr_I64GtS => dec_bin TI64GtS stk
+  | Instr_I64GtU => dec_bin TI64GtU stk
+  | Instr_I64LeS => dec_bin TI64LeS stk
+  | Instr_I64LeU => dec_bin TI64LeU stk
+  | Instr_I64GeS => dec_bin TI64GeS stk
+  | Instr_I64GeU => dec_bin TI64GeU stk
+  | Instr_I32Eqz => dec_un TI32Eqz stk
+  | Instr_I64Eqz => dec_un TI64Eqz stk
+  | Instr_Drop => dec_un TDrop stk
+  | Instr_Nop => Some (TNop :: stk)
+  end.
+
+Fixpoint dec_instrs (is : list Instruction) (stk : list Term)
+    : option (list Term) :=
+  match is with
+  | [] => Some stk
+  | i :: rest =>
+      match dec_step i stk with
+      | Some stk' => dec_instrs rest stk'
+      | None => None
+      end
+  end.
+
+Definition instrs_to_terms (is : list Instruction) : option Term :=
+  match dec_instrs is [] with
+  | Some [t] => Some t
+  | _ => None
+  end.
+
+(** Decoding the instructions of [t] pushes [t]. *)
+Lemma dec_instrs_term : forall t rest stk,
+  dec_instrs (term_to_instrs t ++ rest) stk = dec_instrs rest (t :: stk).
+Proof.
+  induction t; intros rest stk; simpl;
+    rewrite <- ?app_assoc; simpl;
+    rewrite ?IHt, ?IHt1; simpl; rewrite ?IHt2; reflexivity.
+Qed.
+
+(** Converting a term to instructions and back yields the term. *)
+Theorem term_instr_bijection : forall (t : Term),
+  instrs_to_terms (term_to_instrs t) = Some t.
+Proof.
+  intros t. unfold instrs_to_terms.
+  rewrite <- (app_nil_r (term_to_instrs t)), dec_instrs_term.
+  reflexivity.
+Qed.
 
 (** * Summary of Proven Properties *)
 
@@ -332,13 +435,13 @@ Axiom term_instr_bijection : forall (t : Term),
    - compiled_optimization_correct: instruction-level equivalence,
      for terms that evaluate
 
-   NOT PROVEN:
-   - term_instr_bijection: stated as an Axiom whose body is [True], a
-     placeholder that asserts nothing
+   - term_instr_bijection: instrs_to_terms (term_to_instrs t) = Some t
+     for every term (term_to_instrs is injective with a computable
+     inverse)
 
-   This represents approximately 90% of the core optimization correctness,
-   with the remaining 10% requiring integration with the
-   instruction encoding/decoding machinery.
+   NOT COVERED HERE: the relation between this Term model and LOOM's
+   Rust implementation (ISLE rules, parser, encoder). The theorems above
+   are about the model.
 *)
 
 Close Scope Z_scope.

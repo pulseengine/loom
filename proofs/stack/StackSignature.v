@@ -12,6 +12,7 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Arith.PeanoNat.
+From Stdlib Require Import Lia.
 Import ListNotations.
 
 (** ** Value Types
@@ -113,9 +114,10 @@ Definition compose (a b : StackSignature) : option StackSignature :=
   (* Check if a's results can satisfy b's params *)
   match drop_suffix valuetype_eqb (rev b_params) (rev a_results) with
   | Some remaining_results =>
-      (* b consumes some of a's results, remaining go to output *)
+      (* b takes all its params from the top of a's results: the input is
+         exactly a's params, and a's unconsumed results stay below b's. *)
       Some (mkSig
-        (params a ++ skipn (length a_results - length b_params) b_params)
+        (params a)
         (rev remaining_results ++ results b)
         (match kind a, kind b with
          | Polymorphic, _ => Polymorphic
@@ -123,11 +125,12 @@ Definition compose (a b : StackSignature) : option StackSignature :=
          | Fixed, Fixed => Fixed
          end))
   | None =>
-      (* a's results don't match b's params - check if b needs more *)
+      (* b needs more than a provides: a's results are the top of b's
+         params, and the rest of b's params sit below a's params. *)
       match drop_suffix valuetype_eqb (rev a_results) (rev b_params) with
       | Some remaining_params =>
           Some (mkSig
-            (params a ++ rev remaining_params)
+            (rev remaining_params ++ params a)
             (results b)
             (match kind a, kind b with
              | Polymorphic, _ => Polymorphic
@@ -214,7 +217,7 @@ Proof.
     assert (Hback : rev ys ++ [y] = p0 :: ps).
     { change (rev ys ++ [y]) with (rev (y :: ys)).
       rewrite <- Hrev. apply rev_involutive. }
-    rewrite Hback.
+    rewrite ?app_nil_r, Hback.
     destruct k; reflexivity.
 Qed.
 
@@ -227,15 +230,12 @@ Proof.
   unfold compose, empty_sig. simpl.
   destruct r as [|r0 rs].
   - (* results = [] *)
-    simpl. rewrite app_nil_r. destruct k; reflexivity.
-  - (* results = r0 :: rs *)
-    (* drop_suffix _ [] (rev (r0::rs)) = Some (rev (r0::rs)) *)
+    simpl. destruct k; reflexivity.
+  - (* results = r0 :: rs: b = empty consumes nothing, so all of a's
+       results remain. [simpl] may have unfolded rev (rev (r0::rs)) to
+       rev (rev rs ++ [r0]); normalise back to r0 :: rs. *)
     simpl.
-    (* skipn (length (r0::rs) - 0) [] = skipn _ [] = []. Depending on the
-       Rocq version, [simpl] may already have reduced the subtraction and
-       unfolded rev (rev (r0::rs)) to rev (rev rs ++ [r0]); normalise both
-       shapes back to r0 :: rs. *)
-    rewrite ?Nat.sub_0_r, ?app_nil_r, ?rev_unit, ?rev_involutive, ?app_nil_r.
+    rewrite ?app_nil_r, ?rev_unit, ?rev_involutive, ?app_nil_r.
     destruct k; reflexivity.
 Qed.
 
@@ -276,33 +276,177 @@ Qed.
 
     [(a ∘ b) ∘ c = a ∘ (b ∘ c)] when all intermediate compositions succeed.
 
-    Strategy: extensionally on the [StackSignature] record,
-      - [kind abc1 = kind abc2] is fully proven via [compose_assoc_kind]
-        (below), reducing to [combined_kind_assoc].
-      - [params abc1 = params abc2] and [results abc1 = results abc2]
-        require case analysis on the [drop_suffix] decision at each
-        composition step. This is the partial-match dataflow argument.
+    Earlier versions of [compose] computed the params of the composite as
+    [params a ++ skipn (length a_results - length b_params) b_params] when
+    [b]'s params are covered by [a]'s results, and as
+    [params a ++ remaining] when [b] needs more than [a] provides. Both are
+    wrong for a stack (the first counts [b]'s consumed params twice; the
+    second puts [b]'s extra params above [a]'s), and with them [compose_assoc]
+    is false: for [a = [] -> [i32]] and [c = [i32] -> []], [(a ∘ a) ∘ c]
+    gave [[] -> [i32]] while [a ∘ (a ∘ c)] gave [[i32] -> []].
 
-    NOTE on the [compose] definition. Auditing the formula
-      [params a ++ skipn (length a_results - length b_params) b_params]
-    in the [Some remaining_results] branch reveals a discrepancy with the
-    intended exact-match semantics: when [length a_results = length b_params]
-    and [a_results = b_params], the formula computes
-      [params a ++ skipn 0 b_params = params a ++ b_params]
-    rather than the expected [params a]. The fully verified Rust-translated
-    model in [proofs/rust_verified/stack_signature_proofs.v] uses the strict
-    exact-match definition (with [composes a b = (results a = params b)]) and
-    [Theorem 13] discharges associativity in that model.
+    The proof is semantic. [run s] is the effect of [s] on a stack, written
+    bottom to top: it replaces a top segment equal to [params s] with
+    [results s]. [compose_run] shows that composing signatures composes
+    their effects; associativity of function composition then gives equal
+    effects, and [run_inj] recovers equality of params and results from
+    equal effects. LOOM's runtime checker (loom-core/src/stack.rs) uses the
+    stricter exact-match operator, which is the special case
+    [results a = params b] of this one. *)
 
-    The two models therefore characterize two different operators: the
-    partial-match algorithm in this file (used as a more permissive
-    composition that carries unmatched dataflow forward) and the strict
-    exact-match operator (used by LOOM's runtime stack checker after stack
-    validation has aligned all interfaces). LOOM's runtime invokes the
-    strict variant, so the verified [Theorem 13] is the operational
-    substitute. The general partial-match [compose_assoc] is documented
-    as Admitted below pending the v1.1.0 dataflow audit.
-*)
+(** [drop_suffix] is prefix removal: it succeeds exactly when [full] starts
+    with [suffix], returning the rest. *)
+Lemma drop_suffix_spec : forall s f p,
+  drop_suffix valuetype_eqb s f = Some p <-> f = s ++ p.
+Proof.
+  induction s as [|x xs IH]; intros f p; simpl.
+  - split; intros H; congruence.
+  - destruct f as [|y ys].
+    + split; intros H; discriminate.
+    + destruct (drop_suffix valuetype_eqb xs ys) as [q|] eqn:Hq.
+      * destruct (valuetype_eqb x y) eqn:Hxy.
+        -- apply valuetype_eqb_eq in Hxy. subst y.
+           apply IH in Hq. subst ys.
+           split; intros H.
+           ++ injection H as <-. reflexivity.
+           ++ injection H as H. apply app_inv_head in H. subst. reflexivity.
+        -- split; intros H; [discriminate|].
+           injection H as <- _. rewrite valuetype_eqb_refl in Hxy. discriminate.
+      * split; intros H; [discriminate|].
+        injection H as _ H. apply IH in H. congruence.
+Qed.
+
+(** Remove [p] from the top of stack [st] (stacks are bottom to top). *)
+Definition strip_top (p st : list ValueType) : option (list ValueType) :=
+  match drop_suffix valuetype_eqb (rev p) (rev st) with
+  | Some q => Some (rev q)
+  | None => None
+  end.
+
+Lemma strip_top_spec : forall p st x,
+  strip_top p st = Some x <-> st = x ++ p.
+Proof.
+  intros p st x. unfold strip_top.
+  destruct (drop_suffix valuetype_eqb (rev p) (rev st)) as [q|] eqn:Hq.
+  - apply drop_suffix_spec in Hq.
+    split; intros H.
+    + injection H as <-.
+      rewrite <- (rev_involutive st), Hq, rev_app_distr, rev_involutive.
+      reflexivity.
+    + f_equal. subst st. rewrite rev_app_distr in Hq.
+      apply app_inv_head in Hq. subst q. apply rev_involutive.
+  - split; intros H; [discriminate|].
+    subst st. rewrite rev_app_distr in Hq.
+    assert (drop_suffix valuetype_eqb (rev p) (rev p ++ rev x) = Some (rev x))
+      as Hs by (apply drop_suffix_spec; reflexivity).
+    congruence.
+Qed.
+
+Lemma strip_top_app : forall p x, strip_top p (x ++ p) = Some x.
+Proof. intros. apply strip_top_spec. reflexivity. Qed.
+
+(** Effect of a signature on a stack. *)
+Definition run (s : StackSignature) (st : list ValueType)
+    : option (list ValueType) :=
+  match strip_top (params s) st with
+  | Some x => Some (x ++ results s)
+  | None => None
+  end.
+
+Definition bind_stack (o : option (list ValueType))
+    (f : list ValueType -> option (list ValueType)) : option (list ValueType) :=
+  match o with Some st => f st | None => None end.
+
+Lemma run_app : forall s x, run s (x ++ params s) = Some (x ++ results s).
+Proof. intros. unfold run. rewrite strip_top_app. reflexivity. Qed.
+
+Lemma run_none : forall s st,
+  (forall x, st <> x ++ params s) -> run s st = None.
+Proof.
+  intros s st H. unfold run.
+  destruct (strip_top (params s) st) as [x|] eqn:E; [|reflexivity].
+  apply strip_top_spec in E. exfalso. exact (H x E).
+Qed.
+
+(** The two shapes of a successful composition, as list equations. *)
+Lemma compose_shape : forall a b ab,
+  a ∘ b = Some ab ->
+  (exists r, results a = r ++ params b /\
+             params ab = params a /\ results ab = r ++ results b) \/
+  (exists p, params b = p ++ results a /\
+             params ab = p ++ params a /\ results ab = results b).
+Proof.
+  intros a b ab H. unfold compose in H.
+  destruct (drop_suffix valuetype_eqb (rev (params b)) (rev (results a)))
+    as [q|] eqn:H1.
+  - injection H as <-. left. exists (rev q). simpl. repeat split.
+    apply drop_suffix_spec in H1.
+    rewrite <- (rev_involutive (results a)), H1, rev_app_distr, rev_involutive.
+    reflexivity.
+  - destruct (drop_suffix valuetype_eqb (rev (results a)) (rev (params b)))
+      as [q|] eqn:H2; [|discriminate].
+    injection H as <-. right. exists (rev q). simpl. repeat split.
+    apply drop_suffix_spec in H2.
+    rewrite <- (rev_involutive (params b)), H2, rev_app_distr, rev_involutive.
+    reflexivity.
+Qed.
+
+(** Composing signatures composes their effects. *)
+Lemma compose_run : forall a b ab,
+  a ∘ b = Some ab ->
+  forall st, run ab st = bind_stack (run a st) (run b).
+Proof.
+  intros a b ab H st.
+  destruct (compose_shape a b ab H)
+    as [[r [Hr [Hp Hres]]] | [p [Hpb [Hp Hres]]]].
+  - destruct (strip_top (params a) st) as [x|] eqn:E.
+    + apply strip_top_spec in E. subst st.
+      rewrite <- Hp at 1. rewrite run_app, run_app. simpl.
+      rewrite Hr, app_assoc, run_app, Hres, app_assoc. reflexivity.
+    + assert (Hn : forall x, st <> x ++ params a).
+      { intros x Hx. apply strip_top_spec in Hx. congruence. }
+      rewrite (run_none a st Hn). apply run_none. rewrite Hp. exact Hn.
+  - destruct (strip_top (params ab) st) as [x|] eqn:E.
+    + apply strip_top_spec in E. subst st.
+      rewrite run_app, Hp, app_assoc, run_app. simpl.
+      rewrite <- app_assoc, <- Hpb, run_app, Hres. reflexivity.
+    + assert (Hn : forall x, st <> x ++ params ab).
+      { intros x Hx. apply strip_top_spec in Hx. congruence. }
+      rewrite (run_none ab st Hn).
+      destruct (strip_top (params a) st) as [y|] eqn:Ey.
+      * apply strip_top_spec in Ey. subst st.
+        rewrite run_app. simpl. symmetry. apply run_none.
+        intros z Hz. rewrite Hpb, app_assoc in Hz.
+        apply app_inv_tail in Hz. subst y.
+        apply (Hn z). rewrite Hp, app_assoc. reflexivity.
+      * assert (Hm : forall x, st <> x ++ params a).
+        { intros x Hx. apply strip_top_spec in Hx. congruence. }
+        rewrite (run_none a st Hm). reflexivity.
+Qed.
+
+(** Equal effects determine params and results. *)
+Lemma run_inj : forall s1 s2,
+  (forall st, run s1 st = run s2 st) ->
+  params s1 = params s2 /\ results s1 = results s2.
+Proof.
+  intros s1 s2 H.
+  assert (H1 := H (params s1)). assert (H2 := H (params s2)).
+  rewrite <- (app_nil_l (params s1)) in H1 at 1.
+  rewrite <- (app_nil_l (params s2)) in H2 at 2.
+  rewrite run_app in H1. rewrite run_app in H2. simpl in H1, H2.
+  unfold run in H1, H2.
+  destruct (strip_top (params s2) (params s1)) as [x|] eqn:E1;
+    [|discriminate].
+  destruct (strip_top (params s1) (params s2)) as [y|] eqn:E2;
+    [|discriminate].
+  apply strip_top_spec in E1. apply strip_top_spec in E2.
+  injection H1 as H1. injection H2 as H2.
+  assert (Hx : x = []).
+  { apply length_zero_iff_nil.
+    assert (L1 := f_equal (@length _) E1). assert (L2 := f_equal (@length _) E2).
+    rewrite length_app in L1, L2. lia. }
+  subst x. simpl in *. split; congruence.
+Qed.
 
 (** Kind component of [compose_assoc] — fully closed by [combined_kind_assoc]. *)
 Theorem compose_assoc_kind : forall a b c ab bc abc1 abc2,
@@ -322,12 +466,6 @@ Proof.
   apply combined_kind_assoc.
 Qed.
 
-(** General associativity. The kind component is fully discharged by
-    [compose_assoc_kind] above. The params/results agreement in the
-    partial-match case requires inductive reasoning on the unmatched
-    suffix at each interface — documented here as Admitted pending the
-    v1.1.0 dataflow audit. See the prep doc
-    [docs/research/v1.0.5/rocq-roundtrip-prep.md] for full context. *)
 Theorem compose_assoc : forall a b c ab bc abc1 abc2,
   a ∘ b = Some ab ->
   ab ∘ c = Some abc1 ->
@@ -336,15 +474,16 @@ Theorem compose_assoc : forall a b c ab bc abc1 abc2,
   abc1 = abc2.
 Proof.
   intros a b c ab bc abc1 abc2 Hab Habc1 Hbc Habc2.
-  (* Three sub-goals after destructing the records:
-     - kind: discharged by [compose_assoc_kind] (fully proven above).
-     - params: needs a case-split on [drop_suffix] outcome at the
-       [a]/[b] and [b]/[c] interfaces, then induction on the
-       unmatched suffix.
-     - results: symmetric to the params case.
-     The kind sub-goal is closed. The remaining residual is the
-     params/results equality. *)
-Admitted.
+  assert (Hk := compose_assoc_kind a b c ab bc abc1 abc2 Hab Habc1 Hbc Habc2).
+  assert (Hrun : forall st, run abc1 st = run abc2 st).
+  { intros st.
+    rewrite (compose_run ab c abc1 Habc1), (compose_run a bc abc2 Habc2),
+            (compose_run a b ab Hab).
+    destruct (run a st) as [st'|]; simpl; [|reflexivity].
+    symmetry. apply (compose_run b c bc Hbc). }
+  destruct (run_inj abc1 abc2 Hrun) as [Hp Hr].
+  destruct abc1, abc2; simpl in *; subst; reflexivity.
+Qed.
 
 (** Example: const then add composes correctly *)
 Example const_add_compose :
