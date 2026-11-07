@@ -251,8 +251,8 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `null_guard_collapse_correct` | **Proven** | Pass 0b |
 | `store_discard_collapse_correct` | **Proven** | Pass 0b |
 | `generalized_same_memory_collapse_correct` | **Proven** | Pass 0b |
-| `adapter_devirtualization_correct` | **Proven** | Pass 1 |
-| `devirtualization_preserves_module_semantics` | **Proven** | Pass 1 |
+| `trivial_adapter_equiv` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
+| `devirtualize_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `trivial_call_is_nop` | **Proven** | Pass 2 |
 | `trivial_call_elimination_preserves_semantics` | **Proven** | Pass 2 |
 | `type_dedup_preserves_semantics` | **Proven** | Pass 3 |
@@ -263,17 +263,26 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-All 17 theorems are proven (Qed). Zero Admitted proofs remain.
+Every row closes with Qed, but only the Pass 1 rows are semantic evidence.
+They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
+interpreter, and `Print Assumptions` reports them closed under the global
+context. The rest still depend on the abstract `exec_call` of
+`FusedOptimization.v`, and several hold for reasons unrelated to wasm. Three
+take their conclusion as a hypothesis (`memory_import_dedup_preserves_semantics`,
+`dead_function_removal_preserves_semantics`, `fused_optimization_correct`).
+`dead_function_elim_correct` concludes `x = x`. The five collapse theorems hold
+because the collapse is modelled as the identity, and the same-memory predicate
+is `locals > 0 /\ True`. Moving them to the concrete semantics, pass by pass,
+is tracked in #169.
 
 ### Proof Architecture
 
-The proofs rely on five well-justified semantic axioms from the WASM spec:
+The remaining `FusedOptimization.v` proofs rely on these axioms (Pass 1's former axiom `A1` is now a theorem):
 
 ```mermaid
 flowchart TD
     subgraph axioms["Semantic Axioms (WASM Spec)"]
         A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
-        A1["trivial_adapter_equiv\n(Spec §4.4.8: call semantics)"]
         A2["identical_import_equiv\n(Spec §2.5.10: import resolution)"]
         A3["trivial_call_nop\n(Spec §4.4.8: void call = no-op)"]
         A4["identical_memory_import_equiv\n(Spec §2.5.10: import resolution)"]
@@ -287,7 +296,6 @@ flowchart TD
         NG["null_guard_collapse_correct"]
         SD["store_discard_collapse_correct"]
         GS["generalized_same_memory_collapse_correct"]
-        AD["adapter_devirtualization_correct"]
         TC["trivial_call_is_nop"]
         TP["type_dedup_preserves_semantics"]
         TI["type_dedup_idempotent"]
@@ -304,7 +312,6 @@ flowchart TD
     A0 --> NG
     A0 --> SD
     A4b --> GS
-    A1 --> AD
     A2 --> IP
     A3 --> TC
     MD --> FC
@@ -313,7 +320,6 @@ flowchart TD
     NG --> FC
     SD --> FC
     GS --> FC
-    AD --> FC
     TC --> FC
     TP --> FC
     DE --> FC
@@ -321,9 +327,11 @@ flowchart TD
     FC --> FS
 ```
 
-**Adapter Devirtualization** uses a direct equivalence proof:
-- The adapter body `local.get 0; ...; local.get N; call T; end` reconstructs the parameter stack and delegates to the target
-- Operationally equivalent to calling the target directly
+**Adapter Devirtualization** is proven against a concrete semantics (`FusedSemantics.v`):
+- The interpreter covers calls, locals, block/loop/if, br/br_if/return. Every other instruction is an arbitrary `prim`, the store is an abstract type, and imports are an arbitrary `host`, so the theorems hold for every choice of these.
+- `trivial_adapter_equiv`: the body `local.get 0; ...; local.get N-1; call T` (no extra locals, `T` with the same signature), which is exactly what `is_trivial_adapter` accepts, behaves as `T`. Equivalence means equal results, traps included, for every input, and divergence matches too.
+- `devirtualize_correct`: rewriting every call, at any nesting depth as `rewrite_calls` does, with a map `rho` preserves every function, provided `rho f` is reachable from `f` along trivial adapters. Adapter cycles satisfy this too.
+- Not yet proven: that the map built by `resolve_adapter_chains` meets this condition. Each step of that function moves an entry one adapter hop further along its chain, which suggests it does, but that is an argument about the Rust code, not a proof.
 
 **Type Deduplication** uses structural equality:
 - If `params(T_i) = params(T_j)` and `results(T_i) = results(T_j)`, any instruction referencing `T_i` behaves identically when referencing `T_j`
