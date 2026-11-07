@@ -215,7 +215,7 @@ flowchart TD
 
 **Transformation**: Remove every `call $trivial` instruction from all function bodies.
 
-**Why this is correct**: A function with `() -> ()` signature and an empty body is a no-op per the WASM spec. Calling it and not calling it produce identical execution states.
+**Why this is correct**: A function with `() -> ()` signature and a body of `Nop`s only takes nothing from the stack, pushes nothing, and touches neither locals of the caller nor the store. This is proven as `trivial_call_elim_correct` in `FusedSemantics.v`; see Proof Architecture below.
 
 ### Pass 3: Function Type Deduplication
 
@@ -253,8 +253,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `generalized_same_memory_collapse_correct` | **Proven** | Pass 0b |
 | `trivial_adapter_equiv` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `devirtualize_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
-| `trivial_call_is_nop` | **Proven** | Pass 2 |
-| `trivial_call_elimination_preserves_semantics` | **Proven** | Pass 2 |
+| `trivial_call_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 2 |
 | `type_dedup_preserves_semantics` | **Proven** | Pass 3 |
 | `type_dedup_idempotent` | **Proven** | Pass 3 |
 | `dead_function_elim_correct` | **Proven** | Pass 4 |
@@ -263,7 +262,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 1 rows are semantic evidence.
+Every row closes with Qed, but only the Pass 1 and Pass 2 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
 context. The rest still depend on the abstract `exec_call` of
@@ -277,14 +276,13 @@ is tracked in #169.
 
 ### Proof Architecture
 
-The remaining `FusedOptimization.v` proofs rely on these axioms (Pass 1's former axiom `A1` is now a theorem):
+The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, and `A3`, Pass 2, are now theorems):
 
 ```mermaid
 flowchart TD
     subgraph axioms["Semantic Axioms (WASM Spec)"]
         A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
         A2["identical_import_equiv\n(Spec §2.5.10: import resolution)"]
-        A3["trivial_call_nop\n(Spec §4.4.8: void call = no-op)"]
         A4["identical_memory_import_equiv\n(Spec §2.5.10: import resolution)"]
         A4b["same_memory_adapter_general_equiv\n(Generalized: any consistent memory N)"]
     end
@@ -296,7 +294,6 @@ flowchart TD
         NG["null_guard_collapse_correct"]
         SD["store_discard_collapse_correct"]
         GS["generalized_same_memory_collapse_correct"]
-        TC["trivial_call_is_nop"]
         TP["type_dedup_preserves_semantics"]
         TI["type_dedup_idempotent"]
         DE["dead_function_elim_correct"]
@@ -313,14 +310,12 @@ flowchart TD
     A0 --> SD
     A4b --> GS
     A2 --> IP
-    A3 --> TC
     MD --> FC
     SM --> FC
     SP --> FC
     NG --> FC
     SD --> FC
     GS --> FC
-    TC --> FC
     TP --> FC
     DE --> FC
     IP --> FC
@@ -332,6 +327,12 @@ flowchart TD
 - `trivial_adapter_equiv`: the body `local.get 0; ...; local.get N-1; call T` (no extra locals, `T` with the same signature), which is exactly what `is_trivial_adapter` accepts, behaves as `T`. Equivalence means equal results, traps included, for every input, and divergence matches too.
 - `devirtualize_correct`: rewriting every call, at any nesting depth as `rewrite_calls` does, with a map `rho` preserves every function, provided `rho f` is reachable from `f` along trivial adapters. Adapter cycles satisfy this too.
 - Not yet proven: that the map built by `resolve_adapter_chains` meets this condition. Each step of that function moves an entry one adapter hop further along its chain, which suggests it does, but that is an argument about the Rust code, not a proof.
+
+**Trivial Call Elimination** is proven against the same semantics (`FusedSemantics.v`):
+- `trivial_call_elim_correct`: deleting every `call f`, at any nesting depth as `remove_trivial_calls_from_block` does, where each `f` in the set is a defined `() -> ()` function whose body is `nop`s only (what `is_nop_body` accepts, any number of extra locals), preserves every function.
+- Each deleted call saves the callee's unit of fuel, so the forward direction holds at the same fuel and the backward direction needs one extra unit per deleted call.
+- Concrete checks show both conditions are needed: deleting a call to a nop function that takes a parameter changes the result (the call popped it), and deleting a call to a `() -> ()` function whose body traps turns a trap into a result.
+- Not modelled: Phase 3, which also removes such calls from global initializers. A valid constant expression cannot contain `call`, so it has nothing to remove.
 
 **Type Deduplication** uses structural equality:
 - If `params(T_i) = params(T_j)` and `results(T_i) = results(T_j)`, any instruction referencing `T_i` behaves identically when referencing `T_j`
