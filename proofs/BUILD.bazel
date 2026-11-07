@@ -122,6 +122,19 @@ rocq_proof_test(
     deps = [":fused_optimization"],
 )
 
+# Concrete call semantics for the fused passes (issue #169). Self-contained:
+# no deps, so it does not wait on the slow TermSemantics build.
+rocq_library(
+    name = "fused_semantics",
+    srcs = ["simplify/FusedSemantics.v"],
+    visibility = ["//visibility:public"],
+)
+
+rocq_proof_test(
+    name = "fused_semantics_test",
+    deps = [":fused_semantics"],
+)
+
 # =============================================================================
 # Master Correctness Theorem
 # =============================================================================
@@ -198,6 +211,7 @@ filegroup(
         ":bitwise",
         ":strength_reduction",
         ":fused_optimization",
+        ":fused_semantics",
     ],
     visibility = ["//visibility:public"],
 )
@@ -224,6 +238,7 @@ filegroup(
         ":bitwise",
         ":strength_reduction",
         ":fused_optimization",
+        ":fused_semantics",
         ":correctness",
         # Existing proofs
         ":stack_proofs",
@@ -250,6 +265,7 @@ test_suite(
         ":bitwise_test",
         ":strength_reduction_test",
         ":fused_optimization_test",
+        ":fused_semantics_test",
         ":correctness_test",
         ":stack_proofs_test",
         ":codec_proofs_test",

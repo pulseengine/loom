@@ -14,7 +14,7 @@
        single consistent memory index are equivalent to direct forwarding
        trampolines (works for any memory index N, not just single-memory modules).
 
-    1. Adapter devirtualization: replacing call-to-adapter with call-to-target
+    1. Adapter devirtualization (proven in FusedSemantics.v): replacing call-to-adapter with call-to-target
        preserves execution semantics when the adapter is a trivial forwarder.
 
     2. Trivial call elimination: removing calls to void->void no-op functions
@@ -39,14 +39,24 @@
       allocate+copy within the same memory are equivalent to the target.
     - same_memory_adapter_general_equiv: Generalized to any consistent
       memory index N in multi-memory modules.
-    - trivial_adapter_equiv: Adapter bodies that reconstruct parameters
-      and call the target are equivalent to calling the target directly.
     - identical_import_equiv: Imports with the same (module, name, type)
       resolve to the same external binding per the WASM spec.
 
-    These axioms are minimal and well-justified by the WebAssembly
-    specification (Section 5.4.7 for memory.copy, Section 4.5.4 for
-    call semantics, Section 2.5.10 for import resolution).
+    ## Status (issue #169)
+
+    This file is being replaced, pass by pass, by FusedSemantics.v, which
+    proves each pass against a concrete call semantics. Until a pass moves
+    there, its statement here is not semantic evidence:
+    - [is_same_memory_adapter] is [fd_num_locals f > 0 /\ True] and
+      [single_memory] is [True], so [same_memory_adapter_equiv] equates any
+      two same-signature functions that have locals. That is false for wasm.
+    - [collapse_same_memory_adapter m _ _] is [m], so the five collapse
+      theorems hold by reflexivity.
+    - [memory_import_dedup_preserves_semantics],
+      [dead_function_removal_preserves_semantics] and
+      [fused_optimization_correct] take their conclusion as a hypothesis.
+    - [dead_function_elim_correct] concludes [x = x].
+    Pass 1 (adapter devirtualization) has moved: see FusedSemantics.v.
 
     ## Connection to Meld
 
@@ -206,26 +216,9 @@ Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
     specification that cannot be derived from our abstract exec_call.
     Each axiom is minimal and directly motivated by the WASM spec. *)
 
-(** Axiom 1: Trivial adapter equivalence.
-
-    A trivial adapter body (local.get 0; ...; local.get N; call target; end)
-    reconstructs exactly the parameter stack and delegates to the target.
-    Per WASM spec Section 4.4.8 (call), when a function is entered, its
-    parameters become locals 0..N. The local.get sequence re-pushes these
-    in order, reconstructing the original argument frame. The call to the
-    target then consumes these arguments identically to how the adapter's
-    caller would have called the target directly.
-
-    This is equivalent to saying: a function whose body is a pure
-    forwarding trampoline behaves identically to its target. *)
-Axiom trivial_adapter_equiv :
-  forall (m : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def) (st : exec_state),
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_trivial_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    exec_call m adapter_idx st = exec_call m target_idx st.
+(** Axiom 1 (trivial adapter equivalence) is no longer assumed. It is the
+    theorem [trivial_adapter_equiv] in FusedSemantics.v, proven against a
+    concrete call semantics (issue #169). *)
 
 (** Axiom 2: Identical import equivalence.
 
@@ -384,8 +377,8 @@ Proof.
   (* The collapsed module m' replaces the adapter body with a forwarding
      trampoline. By same_memory_adapter_equiv, the adapter was already
      equivalent to calling the target. The forwarding trampoline is also
-     equivalent to calling the target (by trivial_adapter_equiv on the
-     rewritten body). Therefore m and m' are equivalent. *)
+     equivalent to calling the target (by FusedSemantics.trivial_adapter_equiv
+     on the rewritten body). Therefore m and m' are equivalent. *)
   subst m'.
   (* collapse_same_memory_adapter is defined as identity in our abstract model *)
   reflexivity.
@@ -562,48 +555,25 @@ Proof.
   (* By same_memory_adapter_general_equiv, the adapter is equivalent to the
      target when all memory operations target a consistent index. The
      forwarding trampoline is also equivalent to the target by
-     trivial_adapter_equiv. Therefore m and m' are equivalent.
+     FusedSemantics.trivial_adapter_equiv. Therefore m and m' are equivalent.
      In our abstract model, collapse_same_memory_adapter is identity. *)
   subst m'.
   reflexivity.
 Qed.
 
-(** * Pass 1: Adapter Devirtualization Correctness *)
+(** * Pass 1: Adapter Devirtualization Correctness
 
-(** If function [adapter_idx] is a trivial adapter to [target_idx],
-    then calling [adapter_idx] is semantically equivalent to calling [target_idx]. *)
-Theorem adapter_devirtualization_correct :
-  forall (m : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def) (st : exec_state),
-    (* Precondition: adapter_idx resolves to adapter in the module *)
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    (* Precondition: adapter is a trivial forwarder to target *)
-    is_trivial_adapter adapter target_idx ->
-    (* Precondition: adapter and target have the same signature *)
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    (* Conclusion: calling adapter = calling target *)
-    exec_call m adapter_idx st = exec_call m target_idx st.
-Proof.
-  intros m adapter_idx target_idx adapter st Hlookup Hadapter Hsig.
-  apply trivial_adapter_equiv with (adapter := adapter); assumption.
-Qed.
+    Proven in FusedSemantics.v, against a concrete interpreter and with no
+    axioms:
+    - [trivial_adapter_equiv]: a trivial adapter is observationally
+      equivalent to its target;
+    - [devirtualize_correct]: rewriting every [call f] to [call (rho f)],
+      at any nesting depth, preserves every function, provided [rho f] is
+      reachable from [f] along trivial adapters.
 
-(** Adapter devirtualization preserves module semantics.
-    Rewriting all call sites from [call adapter] to [call target]
-    does not change the observable behavior of any function in the module. *)
-Corollary devirtualization_preserves_module_semantics :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx),
-    (* m' is m with all calls to adapter_idx rewritten to target_idx *)
-    (forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st) ->
-    (* Module-level equivalence *)
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx Hequiv f_idx st.
-  apply Hequiv.
-Qed.
+    The two statements that used to stand here were removed: one restated
+    the axiom, and the other ([devirtualization_preserves_module_semantics])
+    assumed its own conclusion. *)
 
 (** * Pass 2: Trivial Call Elimination Correctness *)
 
