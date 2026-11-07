@@ -10,28 +10,24 @@
       - sections passed through unchanged (custom, data) are modelled
         opaquely as byte blobs.
 
-    The encoder/decoder pair is built from a [Coq.Strings.Byte]-based
-    LEB128 codec for natural numbers, then layered into a section-by-
-    section module codec.
-
-    Closing the round-trip theorem for the full module structure is
-    estimated at ~1200 LOC of Rocq (per the v1.0.5 prep doc). This file
-    delivers:
+    The encoder/decoder pair is built from a LEB128 codec for natural
+    numbers (bytes modelled as [nat]), then layered into a section-by-
+    section module codec. This file delivers:
       1. The complete [ScopedModule] inductive (matches LOOM's Module
          subset).
       2. A LEB128 codec for [nat] + round-trip theorem [leb128_roundtrip]
-         (fully proven by induction on [nat]).
+         for every [nat] (proven by induction on the encoder's fuel,
+         [leb128_roundtrip_fuel]).
       3. A byte-blob section codec + round-trip theorem
          [bytes_roundtrip] (fully proven).
       4. An [encode_scoped] / [decode_scoped] pair structured as a
          section-by-section foldr/foldl, with the headline theorem
-         [roundtrip_identity] proven for the empty module and for
-         single-function modules, with the general-induction case
-         Admitted with a detailed proof sketch.
+         [roundtrip_identity] proven for every [ScopedModule].
 
-    The Admitted general-induction step is the residual work item for
-    closing #48 (parser/encoder round-trip identity), tracked in
-    [docs/research/v1.0.5/rocq-roundtrip-prep.md].
+    Scope: this is a round trip for the model codec in this file, over
+    the [ScopedModule] subset. It does not by itself prove anything about
+    LOOM's Rust parser and encoder; relating those to this model is the
+    remaining part of #48.
 *)
 
 From Stdlib Require Import Bool.
@@ -98,8 +94,7 @@ Definition decode_uleb128 (bs : Bytes) : option (nat * Bytes) :=
 
     We prove the round-trip property pointwise for the small-value
     domain that arises in WebAssembly section headers (lengths,
-    type indices, etc.). The general unbounded-[nat] proof follows by
-    well-founded induction on [n / 128]; we admit it here with a sketch. *)
+    type indices, etc.). The general case is [leb128_roundtrip] below. *)
 
 Lemma encode_uleb128_small : forall n,
   n < 128 -> encode_uleb128 n = [n].
@@ -133,35 +128,50 @@ Proof.
   simpl. apply decode_uleb128_small. assumption.
 Qed.
 
-(** General LEB128 round-trip — proof by well-founded induction on [n].
-    Sketch:
-      - Base: [n < 128] handled above.
-      - Step: [n >= 128]. Then [encode_uleb128 n = ((n mod 128) + 128) :: encode_uleb128 (n / 128)].
-        Decoding consumes the continuation byte ([n mod 128]), recurses
-        on the tail with [acc = (n mod 128) * 1] and [shift = 128].
-        The IH on [n / 128] (which is strictly smaller because [n >= 128])
-        gives [decode_uleb128_fuel _ (encode (n / 128) ++ rest) ((n mod 128)) 128 = Some (n, rest)].
-        Closing the arithmetic uses [n = (n / 128) * 128 + n mod 128]. *)
+(** General LEB128 round-trip.
+
+    [leb128_roundtrip_fuel] generalises over the decoder state: decoding the
+    encoding of [n] with accumulator [acc] and place value [shift] yields
+    [acc + n * shift], provided the decoder has at least as much fuel as the
+    encoding has bytes. The encoder's fuel [S f] with [n <= f] never runs
+    out, because [n >= 128] implies [n / 128 < n]. Induction is on [f]. *)
+Lemma leb128_roundtrip_fuel : forall f n,
+  n <= f ->
+  forall fuel rest acc shift,
+  length (encode_uleb128_fuel (S f) n) <= fuel ->
+  decode_uleb128_fuel fuel (encode_uleb128_fuel (S f) n ++ rest) acc shift
+    = Some (acc + n * shift, rest).
+Proof.
+  induction f as [|f IH]; intros n Hn fuel rest acc shift Hfuel.
+  - assert (n = 0) by lia. subst n.
+    destruct fuel as [|fuel]; [simpl in Hfuel; lia|]. reflexivity.
+  - cbn [encode_uleb128_fuel] in *.
+    destruct (Nat.ltb n 128) eqn:Hlt.
+    + destruct fuel as [|fuel]; [simpl in Hfuel; lia|].
+      cbn [app decode_uleb128_fuel]. rewrite Hlt. reflexivity.
+    + apply Nat.ltb_ge in Hlt.
+      destruct fuel as [|fuel]; [simpl in Hfuel; lia|].
+      cbn [app decode_uleb128_fuel length] in *.
+      assert (Hb : Nat.ltb (n mod 128 + 128) 128 = false)
+        by (apply Nat.ltb_ge; lia).
+      rewrite Hb.
+      assert (Hdiv : n / 128 <= f).
+      { assert (n / 128 < n) by (apply Nat.div_lt; lia). lia. }
+      rewrite (IH (n / 128) Hdiv fuel rest) by lia.
+      f_equal. f_equal.
+      replace (n mod 128 + 128 - 128) with (n mod 128) by lia.
+      rewrite (Nat.div_mod_eq n 128) at 3.
+      nia.
+Qed.
+
 Theorem leb128_roundtrip : forall n rest,
   decode_uleb128 (encode_uleb128 n ++ rest) = Some (n, rest).
 Proof.
   intros n rest.
-  destruct (Nat.ltb n 128) eqn:Hltb.
-  - apply Nat.ltb_lt in Hltb.
-    apply leb128_roundtrip_small. exact Hltb.
-  - apply Nat.ltb_ge in Hltb.
-    (* General case: [n >= 128].
-       Sketch:
-         [encode_uleb128 n = ((n mod 128) + 128) :: encode_uleb128_fuel n (n / 128)].
-       After consuming the leading continuation byte, [decode_uleb128_fuel]
-       enters its recursive case with [acc = (n mod 128)] and [shift = 128].
-       Strong induction on [n] then applies the IH at [n / 128] (strictly
-       smaller since [n >= 128]). The arithmetic closure is
-         [(n mod 128) + (n / 128) * 128 = n]   (Nat.div_mod_eq).
-       Documented as the remaining proof obligation; everything downstream
-       (functype/function/module round-trips) is conditioned on this lemma
-       and closes mechanically when it does. *)
-Admitted.
+  unfold decode_uleb128, encode_uleb128.
+  rewrite leb128_roundtrip_fuel by (rewrite ?length_app; lia).
+  f_equal. f_equal. lia.
+Qed.
 
 (** * Byte-blob section codec
 
@@ -632,10 +642,7 @@ Definition decode_scoped (bs : Bytes) : option ScopedModule :=
     elements to consume, and the trailing bytes after the last section
     are discarded by [decode_bytes].
 
-    The proof is fully discharged below — provided [leb128_roundtrip]
-    closes (which currently has its general-[nat] case Admitted with a
-    sketch). When [leb128_roundtrip] closes, this theorem closes
-    transitively. *)
+    The proof is fully discharged below. *)
 Theorem roundtrip_identity : forall m : ScopedModule,
   decode_scoped (encode_scoped m) = Some m.
 Proof.
