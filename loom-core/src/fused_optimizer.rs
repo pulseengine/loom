@@ -2392,6 +2392,23 @@ pub fn deduplicate_imports(module: &mut Module) -> Result<usize> {
         return Ok(0);
     }
 
+    // Removing an import shifts every defined function's index down. Two places
+    // hold function indices that this pass does NOT remap, so it must decline
+    // when either may be present (valid wasm, wrong behaviour otherwise):
+    // - the raw global section, re-emitted verbatim: a `ref.func N` there would
+    //   name a different function after the shift (the #326 hazard);
+    //   unparseable counts as present, as in `eliminate_dead_functions`;
+    // - a function-referencing element section. Callers already skip such
+    //   modules (#196), but this function is public.
+    if let Some(ref global_bytes) = module.global_section_bytes {
+        if global_section_has_func_refs(global_bytes).unwrap_or(true) {
+            return Ok(0);
+        }
+    }
+    if element_section_references_functions(module) {
+        return Ok(0);
+    }
+
     let num_old_imports = count_imported_functions(module);
 
     // Only deduplicate function imports (memory/table/global imports are rare and
@@ -3254,6 +3271,100 @@ mod tests {
                 .instructions
                 .contains(&Instruction::Call(0))
         );
+    }
+
+    /// Import dedup shifts every defined function's index down by the number
+    /// of imports removed. A `ref.func N` frozen in the raw global section is
+    /// re-emitted verbatim, so after the shift it names a different function:
+    /// valid wasm, wrong behaviour (the #326 hazard, here in import dedup).
+    /// The pass must decline.
+    #[test]
+    fn import_dedup_declines_on_funcref_global() {
+        let mut module = empty_module();
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![],
+        };
+        module.types.push(sig.clone());
+        for name in ["f", "f", "g"] {
+            module.imports.push(Import {
+                module: "env".to_string(),
+                name: name.to_string(),
+                kind: ImportKind::Func(0),
+            });
+        }
+        for name in ["d", "e"] {
+            module.functions.push(Function {
+                name: Some(name.to_string()),
+                signature: sig.clone(),
+                locals: vec![],
+                instructions: vec![Instruction::End],
+            });
+        }
+        // Raw global section: one `(global funcref (ref.func 3))`, i.e. "d".
+        module.global_section_bytes = Some(vec![0x01, 0x70, 0x00, 0xD2, 0x03, 0x0B]);
+
+        let removed = deduplicate_imports(&mut module).unwrap();
+        assert_eq!(
+            removed, 0,
+            "import dedup must decline: ref.func 3 in the raw global section would name `e` after the shift"
+        );
+        assert_eq!(module.imports.len(), 3);
+    }
+
+    /// Import dedup does not remap the element section either. Its callers
+    /// skip such modules (#196), but the pass is public, so it must decline
+    /// on its own.
+    #[test]
+    fn import_dedup_declines_on_function_element_segment() {
+        let mut module = empty_module();
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![],
+        };
+        module.types.push(sig.clone());
+        for name in ["f", "f"] {
+            module.imports.push(Import {
+                module: "env".to_string(),
+                name: name.to_string(),
+                kind: ImportKind::Func(0),
+            });
+        }
+        module.functions.push(Function {
+            name: Some("d".to_string()),
+            signature: sig.clone(),
+            locals: vec![],
+            instructions: vec![Instruction::End],
+        });
+        // Element section: one active segment, table 0, offset i32.const 0, funcs [2].
+        module.element_section_bytes = Some(vec![0x01, 0x00, 0x41, 0x00, 0x0B, 0x01, 0x02]);
+
+        assert_eq!(deduplicate_imports(&mut module).unwrap(), 0);
+        assert_eq!(module.imports.len(), 2);
+    }
+
+    /// Control: numeric-only globals carry no function index, so import dedup
+    /// must still run. Without this, a guard that always declines would pass
+    /// the two tests above.
+    #[test]
+    fn import_dedup_runs_with_numeric_only_globals() {
+        let mut module = empty_module();
+        let sig = FunctionSignature {
+            params: vec![],
+            results: vec![],
+        };
+        module.types.push(sig.clone());
+        for name in ["f", "f"] {
+            module.imports.push(Import {
+                module: "env".to_string(),
+                name: name.to_string(),
+                kind: ImportKind::Func(0),
+            });
+        }
+        // Raw global section: one `(global i32 (i32.const 0))`.
+        module.global_section_bytes = Some(vec![0x01, 0x7F, 0x00, 0x41, 0x00, 0x0B]);
+
+        assert_eq!(deduplicate_imports(&mut module).unwrap(), 1);
     }
 
     /// #326: a funcref global holding `ref.func N` must stop the sweep.
