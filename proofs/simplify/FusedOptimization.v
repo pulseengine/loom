@@ -26,7 +26,8 @@
     4. Dead function elimination: removing unreachable functions cannot affect
        observable program behavior.
 
-    5. Import deduplication: merging identical imports (same module+name+type)
+    5. Import deduplication (proven in FusedSemantics.v): merging identical
+       imports (same module+name+type)
        and remapping references preserves binding semantics.
 
     ## Proof Architecture
@@ -39,8 +40,6 @@
       allocate+copy within the same memory are equivalent to the target.
     - same_memory_adapter_general_equiv: Generalized to any consistent
       memory index N in multi-memory modules.
-    - identical_import_equiv: Imports with the same (module, name, type)
-      resolve to the same external binding per the WASM spec.
 
     ## Status (issue #169)
 
@@ -56,8 +55,11 @@
       [dead_function_removal_preserves_semantics] and
       [fused_optimization_correct] take their conclusion as a hypothesis.
     - [dead_function_elim_correct] concludes [x = x].
-    Pass 1 (adapter devirtualization) and Pass 2 (trivial call elimination)
-    have moved: see FusedSemantics.v.
+    - [identical_memory_import_equiv] has no hypotheses: it states
+      [exec_call m f st = exec_call m' f st] for any two modules, so under
+      it no call depends on the module it runs in.
+    Pass 1 (adapter devirtualization), Pass 2 (trivial call elimination)
+    and Pass 5 (import deduplication) have moved: see FusedSemantics.v.
 
     ## Connection to Meld
 
@@ -170,21 +172,6 @@ Definition is_same_memory_adapter (f : func_def) (target : func_idx) : Prop :=
 Definition collapse_same_memory_adapter (m : wasm_module) (adapter_idx target_idx : func_idx) : wasm_module :=
   m.  (** Abstract: returns module with adapter body replaced by forwarding trampoline *)
 
-(** * Import Key Definition *)
-
-(** Two imports are identical if they have the same module name, field name,
-    and type index. Defined here because the semantic axioms reference it. *)
-Record import_key : Type := mkImportKey {
-  ik_module : nat;   (** Module name (represented as index for simplicity) *)
-  ik_name : nat;     (** Field name (represented as index for simplicity) *)
-  ik_type : nat;     (** Type index *)
-}.
-
-Definition import_key_eqb (a b : import_key) : bool :=
-  Nat.eqb (ik_module a) (ik_module b) &&
-  Nat.eqb (ik_name a) (ik_name b) &&
-  Nat.eqb (ik_type a) (ik_type b).
-
 (** * Execution Semantics (Module Level) *)
 
 (** Simplified execution state for module-level reasoning *)
@@ -221,24 +208,12 @@ Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
     theorem [trivial_adapter_equiv] in FusedSemantics.v, proven against a
     concrete call semantics (issue #169). *)
 
-(** Axiom 2: Identical import equivalence.
-
-    Per WASM spec Section 2.5.10 (imports), an import is uniquely
-    determined by its (module, name, type) triple. If two import entries
-    have the same triple, they resolve to the same external function.
-    Therefore calling either import index produces identical results.
-
-    The [imports] parameter represents the module's import section
-    (the concrete description of each import entry). *)
-Axiom identical_import_equiv :
-  forall (m : wasm_module) (i j : func_idx) (st : exec_state)
-         (imports : list import_key),
-    length imports = wm_num_imports m ->
-    i < wm_num_imports m ->
-    j < wm_num_imports m ->
-    import_key_eqb (nth i imports (mkImportKey 0 0 0))
-                    (nth j imports (mkImportKey 0 0 0)) = true ->
-    exec_call m i st = exec_call m j st.
+(** Axiom 2 (identical import equivalence) is no longer assumed. Import
+    deduplication is the theorem [import_dedup_correct] in FusedSemantics.v.
+    The axiom attributed "same (module, name, type) resolves to the same
+    function" to the wasm specification; the specification leaves import
+    binding to the embedder, so FusedSemantics.v states it as part of the
+    model instead: the host is looked up by import key (issue #169). *)
 
 (** Axiom 3 (trivial call elimination) is no longer assumed. The pass is
     the theorem [trivial_call_elim_correct] in FusedSemantics.v (issue #169). *)
@@ -656,29 +631,15 @@ Proof.
   apply Hpreserve. exact Hlive.
 Qed.
 
-(** * Pass 5: Import Deduplication Correctness *)
+(** * Pass 5: Import Deduplication Correctness
 
-(** Import deduplication: identical imports resolve to the same external binding.
-    Merging them and remapping references is semantically transparent. *)
-Theorem import_dedup_preserves_semantics :
-  forall (m : wasm_module) (imports : list import_key) (i j : nat),
-    length imports = wm_num_imports m ->
-    i < length imports ->
-    j < length imports ->
-    import_key_eqb (nth i imports (mkImportKey 0 0 0))
-                    (nth j imports (mkImportKey 0 0 0)) = true ->
-    (* If imports i and j are identical, they resolve to the same binding.
-       Therefore, all references to import j can be replaced with references
-       to import i without changing program behavior. *)
-    forall (st : exec_state),
-      exec_call m i st = exec_call m j st.
-Proof.
-  intros m imports i j Hlen Hi Hj Heq st.
-  apply (identical_import_equiv m i j st imports Hlen).
-  - rewrite <- Hlen. exact Hi.
-  - rewrite <- Hlen. exact Hj.
-  - exact Heq.
-Qed.
+    Proven in FusedSemantics.v, against a concrete interpreter and with no
+    axioms: [import_dedup_correct] says that replacing the imports by the
+    deduplicated list and remapping every call (and so every export and the
+    start function) with [rho] preserves every function, provided each
+    import maps to one with the same key and signature and every defined
+    function moves down by the number of imports removed. The statement
+    that stood here only restated the axiom. *)
 
 (** * Combined Correctness *)
 
