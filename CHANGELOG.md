@@ -7,33 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [1.5.1] - 2026-11-10
 
-- **Back on the upstream `z3` crate (0.22.0, `vendored`), off the pulseengine/z3.rs
-  fork.** The fork existed only for a wasi-sdk build of Z3 that is no longer
-  needed. Removed the `[patch.crates-io]` git override; `z3` 0.19 -> 0.22.0
-  (z3-sys 0.14.0, z3-src 503.2.2), still built from source via the `vendored`
-  feature. `DeclKind` variants in `verify_solver.rs` are renamed upstream
-  (`DeclKind::BSDIV_I` -> `DeclKind::BsdivI`, etc.); no logic changed. The
-  `wasm32-wasip2` CI job now builds without the `verification` feature (upstream
-  z3 does not target wasm), and no longer installs wasi-sdk.
-  This closes the zip 4.6 / zstd 0.13 advisories that reached the lock only
-  through the fork's `z3-sys` build-dependency (see the "Still open" note under
-  Fixed below).
+A patch release whose signature names its own tag. v1.5.0's tag-push release
+run failed to build x86_64-apple-darwin (vendored Z3, z3-src 503.2.2, did not
+compile with the macos-14 image's clang), and v1.5.0 was rebuilt by a
+`workflow_dispatch` run from main after #481. Its binaries are v1.5.0's code,
+but `SHA256SUMS.txt` is signed as `release.yml@refs/heads/main`. v1.5.1 is
+released by the tag-push run of its own tag, so the signing identity is
+`release.yml@refs/tags/v1.5.1`.
+
+The only change to the shipped binary since v1.5.0 is the fix below.
 
 ### Fixed
 
-- **wasmtime advisories, and the wasmtime path to zstd.** wasmtime 49.0.2 ->
-  49.0.4 (`cargo update`, within the existing `49.0` requirement) closes
-  RUSTSEC-2026-0353 through -0364, -0378 and -0379. wasmtime's default `cache`
-  feature pulled `wasmtime-internal-cache` -> zstd 0.13; loom never configures a
-  module cache, so both wasmtime declarations (loom-core dev-dependency,
-  loom-testing optional) take `default-features = false` with wasmtime 49's full
-  default set minus `cache`. tokio 1.53.1 -> 1.54.1 (RUSTSEC-2026-0386) and
-  chacha20 0.10.1 -> 0.10.2 (yanked). Still open: zstd 0.13 and zip 4.6
-  (RUSTSEC-2026-0367/-0368/-0369/-0391/-0398/-0403/-0410) also reach the lock
-  through the `z3-sys` fork's build-dependency `zip = "4.3"`, which needs a
-  change in pulseengine/z3.rs.
+- **Import deduplication could re-point a `ref.func` held in a global
+  (#486).** `deduplicate_imports` moves every defined function down by the
+  number of imports it removes, but the raw global section is re-emitted
+  verbatim. On a module with two identical imports and
+  `(global (export "gf") funcref (ref.func $d))`, `gf` named the next function
+  after the pass, and `wasm-tools validate` accepted the output. The pass now
+  declines when the global section holds a `ref.func` (or cannot be parsed),
+  as dead-function elimination already does (#326), and when the element
+  section references functions. These passes run on the component path and in
+  `optimize_module`, not on the CLI's core-module path.
+
+### Release process
+
+- `release.yml` builds x86_64-apple-darwin on the same image as
+  aarch64-apple-darwin (#481).
+- `sigstore/cosign-installer` 3.9.1 -> 4.1.2 (#472); cosign itself stays
+  pinned at v2.4.1. This release run is the first to use the new installer.
+- When a tag's release run fails, the fix is the next patch tag, not a
+  `workflow_dispatch` rebuild of the old tag from main.
+
+### Verification (not in the binary)
+
+- The Rocq proofs compile under Rocq 9 and gate CI (#482); both `Admitted`
+  are closed and the `True` placeholder axiom is gone (#483).
+- Adapter devirtualization (#484) and trivial-call elimination (#485) are
+  proven against a concrete call semantics with no axioms, replacing two
+  axioms and the statements that restated them.
+- The nightly fuzz gate executes and compares the optimized module (#476).
 
 ## [1.5.0] - 2026-11-05
 
@@ -142,6 +157,35 @@ The `Rocq Formal Proofs` CI job fails on this tree, as it did on main before
 it: `proofs/stack/StackSignature.v` no longer compiles under the current Rocq,
 and `//proofs:all_proofs_test` lists two targets that are not tests. No proof
 here is checked by CI until that is fixed.
+
+### Dependencies
+
+These shipped in 1.5.0 but were listed under Unreleased until 1.5.1. The 1.5.0
+lockfile has z3 0.22.0 (z3-src 503.2.2) and wasmtime 50.0.1.
+
+- **Back on the upstream `z3` crate (0.22.0, `vendored`), off the pulseengine/z3.rs
+  fork.** The fork existed only for a wasi-sdk build of Z3 that is no longer
+  needed. Removed the `[patch.crates-io]` git override; `z3` 0.19 -> 0.22.0
+  (z3-sys 0.14.0, z3-src 503.2.2), still built from source via the `vendored`
+  feature. `DeclKind` variants in `verify_solver.rs` are renamed upstream
+  (`DeclKind::BSDIV_I` -> `DeclKind::BsdivI`, etc.); no logic changed. The
+  `wasm32-wasip2` CI job now builds without the `verification` feature (upstream
+  z3 does not target wasm), and no longer installs wasi-sdk.
+  This closes the zip 4.6 / zstd 0.13 advisories that reached the lock only
+  through the fork's `z3-sys` build-dependency (the "Still open" note in the
+  next item).
+
+- **wasmtime advisories, and the wasmtime path to zstd.** wasmtime 49.0.2 ->
+  49.0.4 (`cargo update`, within the existing `49.0` requirement) closes
+  RUSTSEC-2026-0353 through -0364, -0378 and -0379. wasmtime's default `cache`
+  feature pulled `wasmtime-internal-cache` -> zstd 0.13; loom never configures a
+  module cache, so both wasmtime declarations (loom-core dev-dependency,
+  loom-testing optional) take `default-features = false` with wasmtime 49's full
+  default set minus `cache`. tokio 1.53.1 -> 1.54.1 (RUSTSEC-2026-0386) and
+  chacha20 0.10.1 -> 0.10.2 (yanked). Still open: zstd 0.13 and zip 4.6
+  (RUSTSEC-2026-0367/-0368/-0369/-0391/-0398/-0403/-0410) also reach the lock
+  through the `z3-sys` fork's build-dependency `zip = "4.3"`, which needs a
+  change in pulseengine/z3.rs.
 
 ## [1.4.1] - 2026-08-25
 
