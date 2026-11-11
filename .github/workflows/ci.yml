@@ -555,8 +555,6 @@ jobs:
     # The listed assumptions themselves are still open under #169.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Trust ledger
-        run: python3 scripts/proof-trust-ledger.py --check
       - name: Install Nix
         uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
         with:
@@ -609,6 +607,10 @@ jobs:
             grep -v '^Axioms: \(Corelib\|RocqOfRust\|loom\)\.' "$f" || true
             echo "   ($(grep -c '^Axioms: ' "$f") axioms in total)"
           done
+      # Runs even when a Bazel step failed, so one run reports both gates.
+      - name: Trust ledger
+        if: ${{ !cancelled() }}
+        run: python3 scripts/proof-trust-ledger.py --check
 
   differential:
     name: Differential Testing (vs wasm-opt)
