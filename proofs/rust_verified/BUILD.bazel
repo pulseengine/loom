@@ -5,6 +5,7 @@
 
 load("@rules_rocq_rust//coq_of_rust:defs.bzl", "coq_of_rust_library", "rocq_rust_verified_library")
 load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library")
+load("//proofs:kernel_check.bzl", "rocq_kernel_check")
 
 # RocqOfRust library - provides the core types needed by translated code
 alias(
@@ -111,3 +112,34 @@ rocq_library(
     srcs = ["isle_conversion_proofs.v"],
     visibility = ["//proofs:__pkg__"],
 )
+
+# =============================================================================
+# Kernel re-check of the translated code (see //proofs:BUILD.bazel)
+# =============================================================================
+# Compiled with -impredicative-set on top of RocqOfRust, so rocqchk needs the
+# same flag; RocqOfRust is re-checked with them.
+
+rocq_kernel_check(
+    name = "kernel_check_value_types_translated_proofs",
+    allowlist = "//proofs:ASSUMPTIONS_ALLOWLIST.txt",
+    flags = ["-impredicative-set"],
+    library = ":value_types_translated_proofs",
+    library_deps = [
+        ":value_types",
+        ":rocq_of_rust_lib",
+    ],
+)
+
+[
+    rocq_kernel_check(
+        name = "kernel_check_" + lib,
+        allowlist = "//proofs:ASSUMPTIONS_ALLOWLIST.txt",
+        flags = ["-impredicative-set"],
+        library = ":" + lib,
+        library_deps = [":rocq_of_rust_lib"],
+    )
+    for lib in [
+        "stack_signature",
+        "isle_conversion",
+    ]
+]
