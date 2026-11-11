@@ -18,7 +18,7 @@
 #   LS-10: Not yet code-verified (encoder dual paths)
 #   LS-11: Not yet code-verified (Z3 signed encoding)
 #   LS-12: PARTIALLY CONFIRMED — main path rejects, loop K-induction silent
-#   LS-13: Not yet code-verified (adapter collapse check)
+#   LS-13: CONFIRMED — the collapse check passed adapters whose target writes to or returns its argument; pass removed (DD-7)
 #   LS-14: PARTIALLY CONFIRMED — dogfooding exists, no combinatorial testing
 #   LS-15: CONFIRMED — lib.rs:9868 + fused_optimizer.rs:899 HashMap iteration
 
@@ -235,6 +235,9 @@ loss-scenarios:
       - Same-memory is necessary but not sufficient for collapse
       - Adapter semantics depend on more than memory identity
       - The check was designed for simple pass-through adapters
+      - Collapse gives the target the caller's buffer instead of a private
+        copy, so a target that writes to or returns its argument behaves
+        differently even without any data transformation
 
   # ── Cross-cutting scenarios ──────────────────────────────────────────
   - id: LS-14

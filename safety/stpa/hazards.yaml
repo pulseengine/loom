@@ -305,4 +305,6 @@ sub-hazards:
       The fused component optimizer detects that two adapters share the
       same linear memory and collapses them into a direct call. But the
       adapters performed necessary data transformation (string encoding
-      conversion, list element reinterpretation) that the collapse skips.
+      conversion, list element reinterpretation) that the collapse skips,
+      or the target writes to or returns the buffer it was given, which
+      after the collapse is the caller's own buffer.

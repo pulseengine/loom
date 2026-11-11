@@ -153,21 +153,32 @@ artifacts:
 
   - id: DD-7
     type: design-decision
-    title: Same-memory adapter collapse for fused components
+    title: Do not collapse same-memory adapters in fused components
     status: approved
     description: >
-      When two component adapters share the same linear memory and
-      perform no data transformation, collapse them to a direct call
-      eliminating the adapter overhead.
+      An adapter that calls cabi_realloc, copies the caller's bytes into
+      the new buffer with memory.copy {N, N} and calls the target with the
+      new pointer is kept. It is not rewritten into a forwarding trampoline
+      that passes the caller's pointer.
     fields:
       rationale: >
-        In Meld-fused single-memory modules, most adapters are trivial
-        pass-throughs. Collapsing them significantly reduces code size
-        and call overhead. The safety constraint is that collapse only
-        occurs when adapters perform no data transformation.
+        The rewrite hands the target the caller's buffer instead of a
+        private copy, so it is not semantics-preserving even when no data
+        is transformed. Counterexamples, both valid wasm before and after:
+        a target that writes 99 into its argument makes a caller that wrote
+        7 read 99 instead of 7; a target that returns its argument returns
+        the caller's pointer (16) instead of the allocated one (1024).
+        Tests same_memory_adapter_keeps_callee_writes_private and
+        same_memory_adapter_keeps_the_new_pointer in
+        loom-core/src/fused_optimizer.rs. The detector checked only the
+        adapter's shape, not what the target does with the buffer.
       alternatives: >
-        Alternative: Never collapse adapters (rejected: leaves significant
-        optimization on the table for the common single-memory case).
+        Collapse when the adapter's memory operations use one memory index
+        and it performs no data transformation (implemented until this
+        decision; removed because the counterexamples satisfy those
+        conditions). Collapse only when the target provably never writes,
+        frees or depends on the address of its argument (not pursued:
+        needs a callee analysis and a proof).
     links:
       - type: satisfies
         target: REQ-11

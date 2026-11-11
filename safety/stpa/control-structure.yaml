@@ -181,9 +181,6 @@ controllers:
       functions, import/export bindings, and fused module structure.
     source-file: loom-core/src/component_optimizer.rs
     control-actions:
-      - ca: CA-18
-        target: CP-1
-        action: Collapse same-memory adapter
       - ca: CA-19
         target: CP-1
         action: Devirtualize adapter calls in fused modules
@@ -192,7 +189,7 @@ controllers:
         info: Adapter analysis results, memory identity checks
     process-model:
       - Component external interface must be preserved
-      - Adapter collapse only valid for same-memory, no-transform cases
+      - Same-memory adapters are not collapsed (DD-7)
       - Fused modules retain Meld/Kiln ABI compatibility
     links:
       - type: acts-on

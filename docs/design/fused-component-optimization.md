@@ -126,8 +126,7 @@ Multiple components may import the same external function. These are merged and 
 ```mermaid
 flowchart TD
     Input[Fused Module from meld] --> P0a
-    P0a["Pass 0a: Memory Import Dedup"] --> P0b
-    P0b["Pass 0b: Same-Memory Adapter Collapse"] --> P1
+    P0a["Pass 0a: Memory Import Dedup"] --> P1
     P1["Pass 1: Adapter Devirtualization"] --> P2
     P2["Pass 2: Trivial Call Elimination"] --> P3
     P3["Pass 3: Function Type Deduplication"] --> P4
@@ -140,51 +139,20 @@ flowchart TD
 
 **What**: Merge identical memory imports and remap all memory references to index 0.
 
-**When**: Meld fuses components that share the same host memory, producing a module with multiple memory imports that all reference the same underlying linear memory (identical `(module, name)` pair). Per WASM spec §2.5.10, the same import key resolves to the same binding.
+**When**: Meld fuses components that share the same host memory, producing a module with multiple memory imports that all reference the same underlying linear memory (identical `(module, name)` pair). An embedder that links by name binds them to the same memory; the wasm specification leaves import binding to the embedder.
 
 **Transformation**: Remove duplicate memory imports, remap all memory-indexed instructions (`memory.copy`, `memory.size`, `memory.grow`, `memory.fill`, `memory.init`), data segment memory indices, and memory exports to index 0.
 
 **Safety (all-or-nothing)**: This pass only fires when ALL memory imports are identical and there are no local memories. Partial dedup could leave references to removed memory indices, so all-or-nothing is the only safe strategy.
 
-**Synergy with Pass 0b**: After dedup, a previously multi-memory module becomes single-memory, enabling Pass 0b (same-memory adapter collapse) to fire on adapters that were previously skipped.
+### Pass 0b: Same-Memory Adapter Collapse (removed)
 
-### Pass 0b: Same-Memory Adapter Collapse
+This pass rewrote meld adapters that call `cabi_realloc`, `memory.copy {N, N}` the caller's bytes into the new buffer and call the target with the new pointer, into forwarding trampolines that pass the caller's original pointer. It was not semantics-preserving: the target then operates on the caller's buffer instead of a private copy. Two tests in `loom-core/src/fused_optimizer.rs` record counterexamples, both valid wasm before and after the rewrite:
 
-**What**: Collapse same-memory adapters (realloc + memory.copy within one linear memory) into trivial forwarding trampolines.
+- `same_memory_adapter_keeps_callee_writes_private`: the target writes 99 into its argument; the caller wrote 7 and reads it back. 7 before the rewrite, 99 after.
+- `same_memory_adapter_keeps_the_new_pointer`: the target returns its argument. The adapter returns the allocated pointer (1024) before the rewrite and the caller's pointer (16) after.
 
-**Pattern detected**: Functions where all memory operations target a single consistent memory index:
-- Have locals (temporary pointers for the copy)
-- Contain `memory.copy {N, N}` (same-memory copy, any consistent index N) with no cross-memory copies
-- All load/store instructions target the same memory index N
-- Call `cabi_realloc` at least once
-- Call exactly one non-realloc target function
-- Have no unsafe control flow (null-guard `If` blocks with empty/nop else bodies and safe-to-discard then bodies are allowed; `Block`, `Loop`, `Br`, `BrIf`, `BrTable` are rejected; balanced single-global save/restore is allowed; memory stores are allowed — they target the discarded realloc'd buffer)
-- Have the same signature as the target
-
-**Transformation**: Replace the function body with a forwarding trampoline:
-```wasm
-;; Before: allocate + copy + call target
-(func $adapter (param i32 i32) (result i32)
-  ... cabi_realloc ... memory.copy 0 0 ... call $target ...)
-
-;; After: trivial forwarding (Pass 1 then devirtualizes)
-(func $adapter (param i32 i32) (result i32)
-  local.get 0
-  local.get 1
-  call $target)
-```
-
-**Why this is correct**: When all memory operations target the same linear memory (index N), `memory.copy {N, N}` copies within a single address space. The adapter allocates a buffer, copies argument data to it, then calls the target with the new pointer. Since both pointers reference the same memory, the target can read the data at the original pointer directly. The allocation and copy are semantically redundant. This holds for any memory index N, not just 0 — the key invariant is consistency within the adapter.
-
-**Stack pointer save/restore**: Meld-generated adapters for non-trivial types often include a stack pointer prologue/epilogue (`global.get $sp; sub; global.set $sp` ... `global.set $sp` to restore). These balanced single-global writes are safe to collapse because the entire body is replaced by a forwarding trampoline — the global is never modified in the collapsed function (net-zero effect). The predicate `has_unsafe_global_writes` allows this pattern while still rejecting writes to multiple globals or write-only globals.
-
-**Memory stores**: Meld-generated adapters for complex types (records, lists) perform field-by-field copying via load+store pairs alongside `memory.copy`. These stores target the freshly realloc'd buffer, which is discarded when the adapter body is replaced by a forwarding trampoline. The target reads from the original pointer in the same address space, so the stores are semantically redundant.
-
-**Null-guard If blocks**: Meld-generated adapters for optional/nullable types wrap the realloc+copy in a null-guard `if` block. These are safe to collapse because: if the condition is true (Some), the copy is same-memory redundant — skipping it is equivalent; if false (None), the copy never ran anyway. The then_body must contain only safe-to-discard instructions (locals, constants, arithmetic, loads, stores, realloc calls, `memory.copy {0, 0}`). Nested `If` inside `If`, non-empty else bodies, `Block`, `Loop`, `Br`, `BrIf`, and `BrTable` remain rejected.
-
-**Cross-memory adapters**: Adapters where memory operations target different indices (e.g., `memory.copy {0, 1}` or loads from memory 0 mixed with stores to memory 1) are NOT collapsed. These represent genuine cross-component data transfer between distinct linear memories, where the copy is semantically necessary. Such adapters are detected and counted as `cross_memory_adapters_detected` for diagnostic visibility, but no optimization is applied.
-
-**Synergy with Pass 1**: After collapse, the adapter is a trivial forwarding trampoline. Pass 1 detects this and rewrites all callers to call the target directly, eliminating both the adapter overhead AND the unnecessary allocation/copy.
+The detector checked the adapter's shape (locals, a realloc call, same-index copies and loads/stores, one target call), not what the target does with the buffer. The pass, its axioms (`same_memory_adapter_equiv`, `same_memory_adapter_general_equiv`) and the five collapse theorems built on them are removed. `cross_memory_adapters_detected` is still reported as a diagnostic.
 
 ### Pass 1: Adapter Devirtualization
 
@@ -246,11 +214,6 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | Theorem | Status | Pass |
 |---|---|---|
 | `memory_import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 0a |
-| `same_memory_collapse_correct` | **Proven** | Pass 0b |
-| `sp_save_restore_collapse_correct` | **Proven** | Pass 0b |
-| `null_guard_collapse_correct` | **Proven** | Pass 0b |
-| `store_discard_collapse_correct` | **Proven** | Pass 0b |
-| `generalized_same_memory_collapse_correct` | **Proven** | Pass 0b |
 | `trivial_adapter_equiv` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `devirtualize_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `trivial_call_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 2 |
@@ -269,28 +232,16 @@ context. The rest still depend on the abstract `exec_call` of
 `FusedOptimization.v`, and several hold for reasons unrelated to wasm. Two
 take their conclusion as a hypothesis (`dead_function_removal_preserves_semantics`,
 `fused_optimization_correct`).
-`dead_function_elim_correct` concludes `x = x`. The five collapse theorems hold
-because the collapse is modelled as the identity, and the same-memory predicate
-is `locals > 0 /\ True`. Moving them to the concrete semantics, pass by pass,
+`dead_function_elim_correct` concludes `x = x`. Moving them to the concrete semantics, pass by pass,
 is tracked in #169.
 
 ### Proof Architecture
 
-The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, `A2`, Pass 5, `A3`, Pass 2, and `A4`, Pass 0a, are now theorems):
+The remaining `FusedOptimization.v` proofs rely on no axiom besides the abstract `exec_call`. The former axioms `A1` (Pass 1), `A2` (Pass 5), `A3` (Pass 2) and `A4` (Pass 0a) are now theorems; `A0` and `A4b` (Pass 0b) were false and were removed with the pass:
 
 ```mermaid
 flowchart TD
-    subgraph axioms["Semantic Axioms (WASM Spec)"]
-        A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
-        A4b["same_memory_adapter_general_equiv\n(Generalized: any consistent memory N)"]
-    end
-
     subgraph proven["Proven Theorems (Qed)"]
-        SM["same_memory_collapse_correct"]
-        SP["sp_save_restore_collapse_correct"]
-        NG["null_guard_collapse_correct"]
-        SD["store_discard_collapse_correct"]
-        GS["generalized_same_memory_collapse_correct"]
         TP["type_dedup_preserves_semantics"]
         TI["type_dedup_idempotent"]
         DE["dead_function_elim_correct"]
@@ -299,16 +250,6 @@ flowchart TD
         FS["fused_then_standard_correct"]
     end
 
-    A0 --> SM
-    A0 --> SP
-    A0 --> NG
-    A0 --> SD
-    A4b --> GS
-    SM --> FC
-    SP --> FC
-    NG --> FC
-    SD --> FC
-    GS --> FC
     TP --> FC
     DE --> FC
     FC --> FS
@@ -355,13 +296,12 @@ flowchart TD
 
     subgraph Fused["Fused Component Optimization"]
         F0a["0a. Memory import dedup"]
-        F0b["0b. Same-memory adapter collapse"]
         F1["1. Adapter devirtualization"]
         F2["2. Trivial call elimination"]
         F3["3. Type deduplication"]
         F4["4. Dead function elimination"]
         F5["5. Import deduplication"]
-        F0a --> F0b --> F1 --> F2 --> F3 --> F4 --> F5
+        F0a --> F1 --> F2 --> F3 --> F4 --> F5
     end
 
     Fused --> Standard
@@ -411,7 +351,6 @@ let mut module: Module = parse_wasm(&bytes)?;
 // Apply fused-specific optimizations first
 let stats: FusedOptimizationStats = optimize_fused_module(&mut module)?;
 println!("Memory imports deduplicated: {}", stats.memory_imports_deduplicated);
-println!("Same-memory adapters collapsed: {}", stats.same_memory_adapters_collapsed);
 println!("Adapters devirtualized: {}", stats.calls_devirtualized);
 println!("Trivial calls eliminated: {}", stats.trivial_calls_eliminated);
 println!("Types deduplicated: {}", stats.types_deduplicated);
@@ -431,14 +370,14 @@ optimize_module(&mut module)?;
 | Feature | Status | Coverage |
 |---|---|---|
 | Memory import deduplication | Done | Identical memory imports (aliased host memory) |
-| Same-memory adapter collapse | Done | Any module with same-memory realloc+copy adapters (any consistent memory index) |
+| Same-memory adapter collapse | Removed | Not semantics-preserving (see Pass 0b) |
 | Trivial adapter devirtualization | Done | All direct adapters |
 | Trivial call elimination | Done | () -> () no-op functions |
 | Function type deduplication | Done | Basic types (skips GC) |
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
 | Cross-memory adapter diagnostics | Done | Detection and counting (not collapsed) |
-| Correctness proofs | Done | All 17 theorems proven (Qed) |
+| Correctness proofs | Partial | Passes 0a, 1, 2, 5 proven against FusedSemantics.v; Passes 3, 4 still abstract (#169) |
 
 ### Planned
 
@@ -483,12 +422,6 @@ flowchart TD
 **Decision**: Run import deduplication early to normalize the index space.
 
 **Rationale**: Every import affects all function indices (local functions are numbered after imports). Removing duplicate imports shifts indices, which is cleaner to do once before the standard pipeline runs multiple analysis passes.
-
-### Why Memory Import Dedup Before Adapter Collapse?
-
-**Decision**: Run memory import deduplication (Pass 0a) before same-memory adapter collapse (Pass 0b).
-
-**Rationale**: When meld fuses components sharing the same host memory, it emits multiple identical memory imports. While Pass 0b now handles multi-memory modules (collapsing adapters that use a consistent memory index), running Pass 0a first normalizes memory indices and may expose additional same-memory adapters. For example, adapters using `memory.copy {1, 1}` that are aliased to memory 0 become `memory.copy {0, 0}` after dedup, simplifying the index space for all subsequent passes.
 
 ### Why Only Function and Memory Import Deduplication?
 

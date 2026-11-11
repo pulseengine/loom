@@ -14,9 +14,8 @@
        memory imports with the same key and remapping every memory index
        preserves execution semantics.
 
-    0. Same-memory adapter collapse: adapters that allocate+copy within a
-       single consistent memory index are equivalent to direct forwarding
-       trampolines (works for any memory index N, not just single-memory modules).
+    0b. Same-memory adapter collapse: removed. It is not
+       semantics-preserving; see the Pass 0b note below.
 
     1. Adapter devirtualization (proven in FusedSemantics.v): replacing call-to-adapter with call-to-target
        preserves execution semantics when the adapter is a trivial forwarder.
@@ -36,25 +35,14 @@
 
     ## Proof Architecture
 
-    Since exec_call is axiomatized (we reason about module-level execution
-    abstractly), certain theorems require semantic axioms that capture
-    well-justified properties of the WebAssembly specification:
-
-    - same_memory_adapter_equiv: In single-memory modules, adapters that
-      allocate+copy within the same memory are equivalent to the target.
-    - same_memory_adapter_general_equiv: Generalized to any consistent
-      memory index N in multi-memory modules.
+    exec_call is axiomatized: the remaining statements here reason about
+    module-level execution abstractly, and no other axiom is assumed.
 
     ## Status (issue #169)
 
     This file is being replaced, pass by pass, by FusedSemantics.v, which
     proves each pass against a concrete call semantics. Until a pass moves
     there, its statement here is not semantic evidence:
-    - [is_same_memory_adapter] is [fd_num_locals f > 0 /\ True] and
-      [single_memory] is [True], so [same_memory_adapter_equiv] equates any
-      two same-signature functions that have locals. That is false for wasm.
-    - [collapse_same_memory_adapter m _ _] is [m], so the five collapse
-      theorems hold by reflexivity.
     - [dead_function_removal_preserves_semantics] and
       [fused_optimization_correct] take their conclusion as a hypothesis.
     - [dead_function_elim_correct] concludes [x = x].
@@ -146,33 +134,6 @@ Definition is_trivial_adapter (f : func_def) (target : func_idx) : Prop :=
   fd_num_locals f = 0 /\
   is_trivial_adapter_body (length (fs_params (fd_sig f))) target (fd_body f).
 
-(** * Same-Memory Adapter Definition *)
-
-(** A module has a single memory (including imported memories).
-    In the Rust implementation this is checked by count_total_memories(module) == 1. *)
-Definition single_memory (m : wasm_module) : Prop :=
-  True.  (** Abstract predicate: module has exactly one linear memory. *)
-
-(** A function is a same-memory adapter if:
-    1. It has locals beyond parameters (used for temporary pointers)
-    2. Its body contains memory.copy {0, 0} (same-memory copy)
-    3. Its body contains calls to cabi_realloc
-    4. Its body contains exactly one call to a non-realloc target
-    5. No unsafe control flow, no unsafe global writes
-       (memory stores are allowed — they target the discarded realloc'd buffer)
-    6. The target has the same signature as the adapter
-
-    This is an abstract predicate capturing the detection criteria
-    from the Rust implementation's is_same_memory_adapter function. *)
-Definition is_same_memory_adapter (f : func_def) (target : func_idx) : Prop :=
-  fd_num_locals f > 0 /\   (** Has locals beyond parameters *)
-  True.  (** Remaining criteria are structural properties of the body *)
-
-(** Collapsing a same-memory adapter replaces its body with a trivial
-    forwarding trampoline and clears its locals. *)
-Definition collapse_same_memory_adapter (m : wasm_module) (adapter_idx target_idx : func_idx) : wasm_module :=
-  m.  (** Abstract: returns module with adapter body replaced by forwarding trampoline *)
-
 (** * Execution Semantics (Module Level) *)
 
 (** Simplified execution state for module-level reasoning *)
@@ -219,63 +180,6 @@ Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
 (** Axiom 3 (trivial call elimination) is no longer assumed. The pass is
     the theorem [trivial_call_elim_correct] in FusedSemantics.v (issue #169). *)
 
-(** Axiom 4: Same-memory adapter equivalence.
-
-    In a single-memory module, an adapter that allocates a buffer via
-    cabi_realloc, copies data within the same linear memory (memory.copy
-    {0, 0}), and calls the target with the new pointer is semantically
-    equivalent to calling the target with the original pointer.
-
-    This holds because both pointers reference the same linear memory.
-    The target can read the data at the original pointer directly. The
-    allocation and copy are semantically redundant:
-    - The allocated buffer is only used as a temporary for the copy
-    - After the target call, the buffer is dead
-    - The Canonical ABI does not require callers to observe realloc
-      side effects on temporary buffers
-
-    Per WASM spec Section 5.4.7 (memory.copy), when src_mem = dst_mem = 0,
-    the copy operates within the same address space. The target function
-    reads the same bytes regardless of their address. *)
-Axiom same_memory_adapter_equiv :
-  forall (m : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def) (st : exec_state),
-    single_memory m ->
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    exec_call m adapter_idx st = exec_call m target_idx st.
-
-(** Predicate: all memory operations in a function target a single memory index.
-    This generalizes the single-memory check to per-adapter verification:
-    a load from memory 0 at offset X is NOT the same as memory 1 at offset X,
-    so we require all operations in the adapter to target the same index. *)
-Definition adapter_uses_single_memory (f : func_def) (mem_idx : nat) : Prop :=
-  True.  (** Abstract: all memory ops in f target mem_idx *)
-
-(** Axiom 4b: Generalized same-memory adapter equivalence (multi-memory).
-
-    In a module with multiple memories, an adapter that allocates a buffer
-    via cabi_realloc, copies data within a single consistent memory index N
-    (memory.copy {N, N}), and where all load/store instructions also target
-    memory N, is semantically equivalent to calling the target directly.
-
-    This generalizes Axiom 4 by replacing the single_memory module-level
-    constraint with a per-adapter consistency check on the memory index.
-    The correctness argument is identical: both pointers reference the same
-    linear memory (memory N), so the target can read the data at the
-    original pointer directly. *)
-Axiom same_memory_adapter_general_equiv :
-  forall (m : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def) (mem_idx : nat) (st : exec_state),
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    adapter_uses_single_memory adapter mem_idx ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    exec_call m adapter_idx st = exec_call m target_idx st.
-
 (** * Pass 0a: Memory Import Deduplication Correctness
 
     Proven in FusedSemantics.v, against a concrete interpreter and with no
@@ -287,212 +191,20 @@ Axiom same_memory_adapter_general_equiv :
     [identical_memory_import_equiv], had no hypotheses, and the theorem
     after it restated its own hypothesis. *)
 
-(** * Pass 0b: Same-Memory Adapter Collapse Correctness *)
+(** * Pass 0b: Same-Memory Adapter Collapse (removed)
 
-(** If function [adapter_idx] is a same-memory adapter to [target_idx]
-    in a single-memory module, calling the adapter is semantically
-    equivalent to calling the target. *)
-Theorem same_memory_collapse_correct :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def),
-    single_memory m ->
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    collapse_same_memory_adapter m adapter_idx target_idx = m' ->
-    (* Module equivalence: all functions produce the same results *)
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx adapter
-         Hsingle Hlookup Hadapter Hsig Hcollapse f_idx st.
-  (* The collapsed module m' replaces the adapter body with a forwarding
-     trampoline. By same_memory_adapter_equiv, the adapter was already
-     equivalent to calling the target. The forwarding trampoline is also
-     equivalent to calling the target (by FusedSemantics.trivial_adapter_equiv
-     on the rewritten body). Therefore m and m' are equivalent. *)
-  subst m'.
-  (* collapse_same_memory_adapter is defined as identity in our abstract model *)
-  reflexivity.
-Qed.
-
-(** Relaxed predicate: balanced single-global save/restore is safe.
-
-    Meld-generated adapters for non-trivial types include a stack pointer
-    prologue/epilogue: global.get $sp; sub; global.set $sp ... global.set $sp.
-    When the adapter body is replaced by a forwarding trampoline, the global
-    writes are removed entirely (net-zero effect on the global).
-
-    A global write pattern is safe to collapse when:
-    - All GlobalSet instructions target a single global index G, AND
-    - At least one GlobalGet reads from the same index G
-    (i.e., the save/restore pattern).
-
-    The collapsed trampoline contains no global instructions at all, so the
-    global is left in its original state — identical to the net effect of the
-    balanced prologue/epilogue. *)
-Theorem sp_save_restore_collapse_correct :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def),
-    single_memory m ->
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    collapse_same_memory_adapter m adapter_idx target_idx = m' ->
-    (* Balanced single-global writes do not affect collapse correctness:
-       the adapter is still equivalent to calling the target directly. *)
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx adapter
-         Hsingle Hlookup Hadapter Hsig Hcollapse f_idx st.
-  (* The balanced global writes (save/restore of a single SP global) are
-     contained entirely within the adapter body. When the body is replaced
-     by a forwarding trampoline, these writes are removed. Since the net
-     effect of the prologue/epilogue is zero (the global is restored to its
-     original value), removing them preserves semantics.
-     In our abstract model, collapse_same_memory_adapter is identity. *)
-  subst m'.
-  reflexivity.
-Qed.
-
-(** Relaxed predicate: null-guard control flow is safe to collapse.
-
-    Meld-generated adapters for optional/nullable types wrap the
-    realloc+copy machinery in a null-guard [if] block:
-
-      (if (local.get $ptr)
-        (then  ;; Some: allocate + copy
-          ... cabi_realloc ... memory.copy {0,0} ...)
-        (else  ;; None: no-op
-        ))
-
-    When the adapter body is replaced by a forwarding trampoline:
-    - If condition was true (Some): the copy was same-memory redundant,
-      so discarding it is equivalent to the original behavior.
-    - If condition was false (None): the copy never ran anyway,
-      so discarding it is trivially equivalent.
-
-    Safety constraints on the If:
-    - The else_body must be empty or nop-only (true null-guard pattern)
-    - The then_body must contain only safe-to-discard instructions
-      (locals, constants, arithmetic, loads, realloc calls, memory.copy {0,0})
-    - No nested If inside If (not a simple null-guard)
-    - No Block, Loop, Br, BrIf, BrTable (unsafe control flow)
-
-    The collapsed trampoline contains no control flow at all, so the
-    conditional is simply removed — the forwarding call is unconditional
-    and equivalent to the target. *)
-Theorem null_guard_collapse_correct :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def),
-    single_memory m ->
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    collapse_same_memory_adapter m adapter_idx target_idx = m' ->
-    (* Null-guard If blocks with safe bodies do not affect collapse correctness:
-       the adapter is still equivalent to calling the target directly. *)
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx adapter
-         Hsingle Hlookup Hadapter Hsig Hcollapse f_idx st.
-  (* The null-guard If wraps instructions that are all safe to discard:
-     - If condition true (Some): the then_body contains only realloc calls
-       and memory.copy {0,0}, which are same-memory redundant.
-     - If condition false (None): the then_body never executes.
-     In either case, the entire If block has no observable effect beyond
-     what the forwarding trampoline achieves.
-     By same_memory_adapter_equiv, the adapter is equivalent to the target.
-     In our abstract model, collapse_same_memory_adapter is identity. *)
-  subst m'.
-  reflexivity.
-Qed.
-
-(** Relaxed predicate: memory stores are safe to discard.
-
-    Meld-generated adapters for complex types (records, lists) perform
-    field-by-field copying via load+store pairs instead of (or alongside)
-    memory.copy:
-
-      (i32.store offset=0 (local.get $buf) (i32.load offset=0 (local.get $src)))
-      (i32.store offset=4 (local.get $buf) (i32.load offset=4 (local.get $src)))
-      (memory.copy 0 0 ...)
-
-    In same-memory adapters, these stores target a freshly realloc'd buffer
-    which is discarded when the adapter body is replaced by a forwarding
-    trampoline. The target reads from the original pointer in the same
-    address space, so the stores are semantically redundant.
-
-    Safety argument:
-    - Stores write to the realloc'd buffer (dead after collapse)
-    - The target receives the original pointer (same address space)
-    - No aliasing concern: the buffer was freshly allocated
-    - The collapsed trampoline contains no stores at all *)
-Theorem store_discard_collapse_correct :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def),
-    single_memory m ->
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    collapse_same_memory_adapter m adapter_idx target_idx = m' ->
-    (* Memory stores targeting the realloc'd buffer do not affect
-       collapse correctness: the adapter is still equivalent to
-       calling the target directly. *)
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx adapter
-         Hsingle Hlookup Hadapter Hsig Hcollapse f_idx st.
-  (* The stores write to a freshly realloc'd buffer. When the adapter body
-     is replaced by a forwarding trampoline:
-     - The buffer is never allocated (realloc call is removed)
-     - The stores are removed (they targeted the dead buffer)
-     - The target reads from the original pointer in the same memory
-     Since both the original and copied data are in the same address space,
-     and the buffer was only used as a temporary for the copy, discarding
-     the stores preserves semantics.
-     By same_memory_adapter_equiv, the adapter is equivalent to the target.
-     In our abstract model, collapse_same_memory_adapter is identity. *)
-  subst m'.
-  reflexivity.
-Qed.
-
-(** Generalized same-memory collapse: works for any consistent memory index N,
-    not just single-memory modules. An adapter that uses memory index N
-    consistently (all memory.copy, load, and store instructions target N)
-    can be collapsed even in a multi-memory module.
-
-    This removes the module-level single_memory precondition and replaces it
-    with a per-adapter adapter_uses_single_memory check. *)
-Theorem generalized_same_memory_collapse_correct :
-  forall (m m' : wasm_module) (adapter_idx target_idx : func_idx)
-         (adapter : func_def) (mem_idx : nat),
-    nth_error (wm_funcs m) adapter_idx = Some adapter ->
-    adapter_uses_single_memory adapter mem_idx ->
-    is_same_memory_adapter adapter target_idx ->
-    (exists target, nth_error (wm_funcs m) target_idx = Some target /\
-                    fd_sig target = fd_sig adapter) ->
-    collapse_same_memory_adapter m adapter_idx target_idx = m' ->
-    forall f_idx st,
-      exec_call m f_idx st = exec_call m' f_idx st.
-Proof.
-  intros m m' adapter_idx target_idx adapter mem_idx
-         Hlookup Hmem Hadapter Hsig Hcollapse f_idx st.
-  (* By same_memory_adapter_general_equiv, the adapter is equivalent to the
-     target when all memory operations target a consistent index. The
-     forwarding trampoline is also equivalent to the target by
-     FusedSemantics.trivial_adapter_equiv. Therefore m and m' are equivalent.
-     In our abstract model, collapse_same_memory_adapter is identity. *)
-  subst m'.
-  reflexivity.
-Qed.
+    The axioms [same_memory_adapter_equiv] and
+    [same_memory_adapter_general_equiv] stated that an adapter which
+    allocates a buffer, copies the caller's bytes into it within one memory
+    and calls the target with the new pointer behaves as the target called
+    with the original pointer. That is false: the target then works on the
+    caller's buffer instead of a private copy. With a target that writes 99
+    into its argument, a caller that wrote 7 reads 7 back before the
+    collapse and 99 after; with a target that returns its argument, the
+    adapter returns the allocated pointer before and the caller's pointer
+    after. Both are tests in loom-core/src/fused_optimizer.rs
+    ([same_memory_adapter_keeps_*]). The axioms, the five collapse theorems
+    that rested on them, and the pass itself have been removed. *)
 
 (** * Pass 1: Adapter Devirtualization Correctness
 
@@ -623,7 +335,6 @@ Theorem fused_optimization_correct :
   forall (m m' : wasm_module),
     (* m' is the result of applying the fused optimization pipeline to m:
        0a. Memory import deduplication
-       0b. Same-memory adapter collapse (generalized: any consistent memory index)
        1. Adapter devirtualization
        2. Trivial call elimination
        3. Type deduplication

@@ -127,9 +127,9 @@ artifacts:
     status: approved
     description: >
       Supports optimizing Meld-fused component modules. Includes adapter
-      devirtualization, same-memory adapter collapse (with guard for
-      no-transformation cases), type/import deduplication, and dead
-      function elimination.
+      devirtualization, trivial call elimination, memory/type/import
+      deduplication, and dead function elimination. Same-memory adapter
+      collapse was removed (DD-7).
     fields:
       phase: phase-1
     links:
