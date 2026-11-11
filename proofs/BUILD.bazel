@@ -278,36 +278,11 @@ test_suite(
 # Kernel re-check (rocqchk) and assumption allowlist
 # =============================================================================
 #
-# Every rocq_library under //proofs is the `library` or a `library_deps`
-# entry of a check below; CI asserts that with a bazel query, so a library
-# that nothing re-checks fails the job. rocqchk re-checks each listed
-# library and everything it loads, and the action fails on any axiom,
-# theory flag or unchecked definition that ASSUMPTIONS_ALLOWLIST.txt does
-# not list.
-
-rocq_kernel_check(
-    name = "kernel_check_correctness",
-    allowlist = "ASSUMPTIONS_ALLOWLIST.txt",
-    library = ":correctness",
-    library_deps = [
-        ":wasm_semantics",
-        ":semantics",
-        ":constant_folding",
-        ":identity",
-        ":bitwise",
-        ":strength_reduction",
-    ],
-)
-
-rocq_kernel_check(
-    name = "kernel_check_fused_optimization",
-    allowlist = "ASSUMPTIONS_ALLOWLIST.txt",
-    library = ":fused_optimization",
-    library_deps = [
-        ":wasm_semantics",
-        ":semantics",
-    ],
-)
+# Every rocq_library under //proofs is a check's `library` or one of its
+# transitive deps; CI asserts that with a bazel query, so a library that
+# nothing re-checks fails the job. rocqchk re-checks each listed library
+# and everything it loads, and the action fails on any axiom, theory flag
+# or unchecked definition that ASSUMPTIONS_ALLOWLIST.txt does not list.
 
 [
     rocq_kernel_check(
@@ -316,6 +291,8 @@ rocq_kernel_check(
         library = ":" + lib,
     )
     for lib in [
+        "correctness",
+        "fused_optimization",
         "fused_semantics",
         "stack_proofs",
         "codec_proofs",

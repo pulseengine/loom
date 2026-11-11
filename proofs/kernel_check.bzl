@@ -23,6 +23,31 @@ The summary is written to <name>.summary.txt and the normalised lines to
 
 load("@rules_rocq_rust//rocq/private:rocq.bzl", "RocqInfo")
 
+_TransitiveVo = provider(
+    doc = "Every .vo file a rocq_library and its deps compiled",
+    fields = {"vo": "depset of .vo files"},
+)
+
+def _transitive_vo_impl(target, ctx):
+    # RocqInfo.compiled holds a library's own .vo files only, so the deps'
+    # are collected here. Without them as declared inputs, rocqchk could
+    # start before a dependency's .vo exists.
+    deps = []
+    for attr in ("deps", "actual"):
+        value = getattr(ctx.rule.attr, attr, None)
+        if value == None:
+            continue
+        for d in (value if type(value) == "list" else [value]):
+            if _TransitiveVo in d:
+                deps.append(d[_TransitiveVo].vo)
+    own = [target[RocqInfo].compiled] if RocqInfo in target else []
+    return [_TransitiveVo(vo = depset(transitive = own + deps))]
+
+_transitive_vo = aspect(
+    implementation = _transitive_vo_impl,
+    attr_aspects = ["deps", "actual"],
+)
+
 def _logical_name(vo, paths):
     """Module name for `vo` under the -Q pairs `paths` (longest dir wins)."""
     best = None
@@ -109,10 +134,10 @@ def _impl(ctx):
     ctx.actions.write(own_paths, "\n".join([vo.path for vo in own]) + "\n")
 
     ctx.actions.run_shell(
-        inputs = depset(inputs + [own_paths], transitive = [lib.compiled] + [
-            d[RocqInfo].compiled
-            for d in ctx.attr.library_deps
-        ]),
+        inputs = depset(
+            inputs + [own_paths],
+            transitive = [lib.compiled, ctx.attr.library[_TransitiveVo].vo],
+        ),
         outputs = [log_out, norm_out],
         arguments = [args],
         env = {"OCAMLPATH": info.ocaml_path} if info.ocaml_path else {},
@@ -198,12 +223,9 @@ rocq_kernel_check = rule(
     attrs = {
         "library": attr.label(
             providers = [[RocqInfo]],
+            aspects = [_transitive_vo],
             mandatory = True,
             doc = "The rocq_library whose .vo files are re-checked",
-        ),
-        "library_deps": attr.label_list(
-            providers = [[RocqInfo]],
-            doc = "Its transitive rocq_library deps, so their .vo are inputs",
         ),
         "allowlist": attr.label(
             allow_single_file = True,
