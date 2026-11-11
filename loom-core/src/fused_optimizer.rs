@@ -1540,6 +1540,19 @@ fn eliminate_dead_functions_inner(module: &mut Module) -> Result<usize> {
         remap.insert(i as u32, i as u32);
     }
 
+    // Rebuild the element section BEFORE removing anything. The encoder emits
+    // `element_section_bytes` verbatim, so a segment that is not rewritten
+    // keeps its old function indices, which after the shift name different
+    // functions: valid wasm, wrong callee. If any segment cannot be rewritten,
+    // remove nothing.
+    let new_element_section = match &module.element_section_bytes {
+        Some(bytes) => match remapped_element_section(bytes, &remap) {
+            Ok(rebuilt) => Some(rebuilt),
+            Err(_) => return Ok(0),
+        },
+        None => None,
+    };
+
     // Remove dead functions (in reverse to maintain indices)
     for &local_idx in dead_indices.iter().rev() {
         module.functions.remove(local_idx);
@@ -1576,17 +1589,9 @@ fn eliminate_dead_functions_inner(module: &mut Module) -> Result<usize> {
         remap_func_refs_in_block(&mut segment.offset, &remap);
     }
 
-    // Remap function indices in element section
-    if module.element_section_bytes.is_some() {
-        match remap_element_section_refs(module, &remap) {
-            Ok(()) => {}
-            Err(_) => {
-                // If remapping fails, the element section is inconsistent.
-                // This should not happen since we successfully parsed it above,
-                // but if it does, we have already removed the functions.
-                // The module may be invalid - this is caught by validation.
-            }
-        }
+    // The element section was rebuilt before anything was removed.
+    if let Some(bytes) = new_element_section {
+        module.element_section_bytes = Some(bytes);
     }
 
     // #242: keep debug info honest across the changed function index space.
@@ -2136,89 +2141,144 @@ pub(crate) fn element_section_references_functions(module: &Module) -> bool {
     false
 }
 
+/// Rewrite the element section in place through `remap`. Errors (and leaves
+/// the section untouched) when any segment cannot be rewritten; see
+/// [`remapped_element_section`].
+#[cfg(test)]
 fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) -> Result<()> {
+    if let Some(bytes) = &module.element_section_bytes {
+        let rebuilt = remapped_element_section(bytes, remap)?;
+        module.element_section_bytes = Some(rebuilt);
+    }
+    Ok(())
+}
+
+/// Re-encode an element section payload with every function index mapped
+/// through `remap`, slot order unchanged.
+///
+/// The encoder emits `element_section_bytes` verbatim, so a function index
+/// this does not rewrite stays as it was and, once indices shift, names a
+/// different function. That is valid wasm with the wrong callee, the class
+/// of #196. So this returns `Err` instead of leaving anything stale:
+/// - an index with no entry in `remap`;
+/// - an expression item other than `ref.func N` or `ref.null func`, or an
+///   expression list whose type is not `funcref`;
+/// - an active offset other than a single `i32.const`, `i64.const` or
+///   `global.get`.
+///
+/// Callers must check the result before changing the function index space.
+fn remapped_element_section(element_bytes: &[u8], remap: &HashMap<u32, u32>) -> Result<Vec<u8>> {
     use wasmparser::{BinaryReader, ElementItems, ElementKind, FromReader};
 
-    let element_bytes = match &module.element_section_bytes {
-        Some(bytes) => bytes.clone(),
-        None => return Ok(()),
+    let map = |idx: u32| -> Result<u32> {
+        remap
+            .get(&idx)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("element references function {idx} with no remap entry"))
     };
 
-    let mut reader = BinaryReader::new(&element_bytes, 0);
+    let mut reader = BinaryReader::new(element_bytes, 0);
     let count = reader
         .read_var_u32()
         .map_err(|e| anyhow::anyhow!("failed to read element count: {}", e))?;
 
-    // First pass: check if all elements use simple function index lists.
-    // If any use expressions, bail out and keep original bytes.
-    let save_pos = reader.clone();
-    for _ in 0..count {
-        let element = wasmparser::Element::from_reader(&mut reader)
-            .map_err(|e| anyhow::anyhow!("failed to parse element: {}", e))?;
-
-        if matches!(&element.items, ElementItems::Expressions(_, _)) {
-            // Expression-based elements are too complex to remap.
-            // Keep original bytes - indices may be stale but this is the
-            // conservative fallback. Validation will catch issues.
-            return Ok(());
-        }
-    }
-
-    // Second pass: all elements use Functions lists. Parse and rebuild.
-    let mut reader = save_pos;
     let mut new_section = wasm_encoder::ElementSection::new();
 
     for _ in 0..count {
         let element = wasmparser::Element::from_reader(&mut reader)
             .map_err(|e| anyhow::anyhow!("failed to parse element: {}", e))?;
 
-        if let ElementItems::Functions(func_reader) = &element.items {
-            let mut indices: Vec<u32> = Vec::new();
-            for func_idx in func_reader.clone() {
-                let idx =
-                    func_idx.map_err(|e| anyhow::anyhow!("failed to read func idx: {}", e))?;
-                indices.push(remap.get(&idx).copied().unwrap_or(idx));
+        let mut indices: Vec<u32> = Vec::new();
+        let mut exprs: Vec<wasm_encoder::ConstExpr> = Vec::new();
+        let is_exprs = match &element.items {
+            ElementItems::Functions(func_reader) => {
+                for func_idx in func_reader.clone() {
+                    let idx =
+                        func_idx.map_err(|e| anyhow::anyhow!("failed to read func idx: {}", e))?;
+                    indices.push(map(idx)?);
+                }
+                false
             }
-
-            let elements = wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices));
-
-            match element.kind {
-                ElementKind::Active {
-                    table_index,
-                    offset_expr,
-                } => {
-                    // Re-encode the offset expression
-                    let mut ops_reader = offset_expr.get_operators_reader();
-                    let mut const_expr = wasm_encoder::ConstExpr::empty();
-                    while let Ok(op) = ops_reader.read() {
-                        match op {
-                            wasmparser::Operator::I32Const { value } => {
-                                const_expr = wasm_encoder::ConstExpr::i32_const(value);
-                            }
-                            wasmparser::Operator::I64Const { value } => {
-                                const_expr = wasm_encoder::ConstExpr::i64_const(value);
-                            }
-                            wasmparser::Operator::GlobalGet { global_index } => {
-                                const_expr = wasm_encoder::ConstExpr::global_get(global_index);
-                            }
-                            wasmparser::Operator::End => break,
-                            _ => {
-                                // Unsupported offset expression - bail out
-                                return Ok(());
-                            }
+            ElementItems::Expressions(ty, expr_reader) => {
+                if *ty != wasmparser::RefType::FUNCREF {
+                    anyhow::bail!("element expression list of type {ty:?} is not remapped");
+                }
+                for expr in expr_reader.clone() {
+                    let expr =
+                        expr.map_err(|e| anyhow::anyhow!("failed to read const expr: {}", e))?;
+                    let mut ops = expr.get_operators_reader();
+                    let first = ops
+                        .read()
+                        .map_err(|e| anyhow::anyhow!("failed to read element item: {}", e))?;
+                    let item = match first {
+                        wasmparser::Operator::RefFunc { function_index } => {
+                            wasm_encoder::ConstExpr::ref_func(map(function_index)?)
                         }
+                        wasmparser::Operator::RefNull {
+                            hty:
+                                wasmparser::HeapType::Abstract {
+                                    shared: false,
+                                    ty: wasmparser::AbstractHeapType::Func,
+                                },
+                        } => wasm_encoder::ConstExpr::ref_null(wasm_encoder::HeapType::FUNC),
+                        other => anyhow::bail!("element item {other:?} is not remapped"),
+                    };
+                    match ops.read() {
+                        Ok(wasmparser::Operator::End) if ops.eof() => {}
+                        _ => anyhow::bail!("element item is not a single ref.func/ref.null"),
                     }
+                    exprs.push(item);
+                }
+                true
+            }
+        };
 
-                    new_section.active(table_index, &const_expr, elements);
+        let elements = if is_exprs {
+            wasm_encoder::Elements::Expressions(
+                wasm_encoder::RefType::FUNCREF,
+                std::borrow::Cow::Owned(exprs),
+            )
+        } else {
+            wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices))
+        };
+
+        match element.kind {
+            ElementKind::Active {
+                table_index,
+                offset_expr,
+            } => {
+                let mut ops = offset_expr.get_operators_reader();
+                let first = ops
+                    .read()
+                    .map_err(|e| anyhow::anyhow!("failed to read element offset: {}", e))?;
+                let const_expr = match first {
+                    wasmparser::Operator::I32Const { value } => {
+                        wasm_encoder::ConstExpr::i32_const(value)
+                    }
+                    wasmparser::Operator::I64Const { value } => {
+                        wasm_encoder::ConstExpr::i64_const(value)
+                    }
+                    wasmparser::Operator::GlobalGet { global_index } => {
+                        wasm_encoder::ConstExpr::global_get(global_index)
+                    }
+                    other => anyhow::bail!("element offset {other:?} is not remapped"),
+                };
+                match ops.read() {
+                    Ok(wasmparser::Operator::End) if ops.eof() => {}
+                    _ => anyhow::bail!("element offset is not a single constant"),
                 }
-                ElementKind::Passive => {
-                    new_section.passive(elements);
-                }
-                ElementKind::Declared => {
-                    new_section.declared(elements);
-                }
+                new_section.active(table_index, &const_expr, elements);
+            }
+            ElementKind::Passive => {
+                new_section.passive(elements);
+            }
+            ElementKind::Declared => {
+                new_section.declared(elements);
             }
         }
+    }
+    if !reader.eof() {
+        anyhow::bail!("trailing bytes after element segments");
     }
 
     // Extract the section *payload* (`<segment-count><segments>`) to store in
@@ -2228,11 +2288,7 @@ fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) ->
     // #172: `wasm_encoder`'s `Encode::encode` for a section builder writes the
     // length-prefixed BODY (`<LEB128 len><payload>`) — it does NOT emit a
     // section-id byte (the id is supplied separately via the `Section` trait).
-    // The previous code assumed `id + len + payload` and skipped a phantom id
-    // byte first, which stripped the `<segment-count>` prefix off the payload —
-    // leaving a count-less segment that re-validates as "section size mismatch:
-    // unexpected data at the end of the section". Strip ONLY the leading LEB128
-    // length, from offset 0.
+    // Strip ONLY the leading LEB128 length, from offset 0.
     use wasm_encoder::Encode;
     let mut encoded = Vec::new();
     new_section.encode(&mut encoded);
@@ -2241,11 +2297,10 @@ fn remap_element_section_refs(module: &mut Module, remap: &HashMap<u32, u32>) ->
         pos += 1; // LEB128 length continuation bytes
     }
     pos += 1; // final LEB128 length byte
-    if pos <= encoded.len() {
-        module.element_section_bytes = Some(encoded[pos..].to_vec());
+    if pos > encoded.len() {
+        anyhow::bail!("re-encoded element section is truncated");
     }
-
-    Ok(())
+    Ok(encoded[pos..].to_vec())
 }
 
 /// Parse raw element section bytes and extract all referenced function indices.
@@ -4203,5 +4258,102 @@ mod tests {
             1024,
             "the target received the caller's pointer instead of the copy"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Dead-function elimination must rewrite `ref.func` element items.
+    //
+    // `$dead` is removed, so `$f42` moves from index 2 to 1 and `$f7` from 3
+    // to 2. The element item `ref.func 2` must become `ref.func 1`; left as it
+    // was, slot 0 names `$f7` and `run(0)` returns 7. The output validates
+    // either way.
+    // ------------------------------------------------------------------
+
+    const REF_FUNC_ELEMENT_WAT: &str = r#"
+        (module
+          (type $t (func (result i32)))
+          (table 1 funcref)
+          (elem (table 0) (i32.const 0) funcref (ref.func $f42))
+          (func $dead (result i32) i32.const 1000)
+          (func $run (export "run") (param i32) (result i32)
+            local.get 0 call_indirect (type $t))
+          (func $f42 (result i32) i32.const 42)
+          (func $f7 (export "seven") (result i32) i32.const 7))
+    "#;
+
+    fn run_i32(bytes: &[u8], export: &str, arg: i32) -> i32 {
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, bytes).expect("module compiles");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate");
+        let f = instance
+            .get_typed_func::<i32, i32>(&mut store, export)
+            .expect("export");
+        f.call(&mut store, arg).expect("call")
+    }
+
+    #[test]
+    fn dead_function_elimination_remaps_ref_func_element_items() {
+        let bytes = wat::parse_str(REF_FUNC_ELEMENT_WAT).unwrap();
+        assert_eq!(run_i32(&bytes, "run", 0), 42);
+        let mut m = crate::parse::parse_wasm(&bytes).expect("parse");
+        assert_eq!(eliminate_dead_functions(&mut m).expect("dce"), 1);
+        let out = crate::encode::encode_wasm(&m).expect("encode");
+        wasmparser::validate(&out).expect("output validates");
+        assert_eq!(
+            run_i32(&out, "run", 0),
+            42,
+            "the element item kept its old index and now names another function"
+        );
+    }
+
+    /// An active segment whose offset is not a single constant is not
+    /// rewritten, so the function index space must not change.
+    #[test]
+    fn remapped_element_section_rejects_what_it_cannot_rewrite() {
+        use std::collections::HashMap;
+        let remap: HashMap<u32, u32> = [(0, 0), (2, 1)].into_iter().collect();
+
+        // offset: i32.const 0; i32.const 0; i32.add; end — func list [2]
+        let add_offset: Vec<u8> = vec![0x01, 0x00, 0x41, 0x00, 0x41, 0x00, 0x6a, 0x0b, 0x01, 0x02];
+        assert!(remapped_element_section(&add_offset, &remap).is_err());
+
+        // func list [3]: index 3 has no remap entry.
+        let unmapped: Vec<u8> = vec![0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 0x03];
+        assert!(remapped_element_section(&unmapped, &remap).is_err());
+
+        // flags 4: active table 0, expressions, funcref; item ref.func 2.
+        let expr: Vec<u8> = vec![0x01, 0x04, 0x41, 0x00, 0x0b, 0x01, 0xd2, 0x02, 0x0b];
+        let rebuilt = remapped_element_section(&expr, &remap).expect("ref.func item rewrites");
+        let reader =
+            wasmparser::ElementSectionReader::new(wasmparser::BinaryReader::new(&rebuilt, 0))
+                .expect("rebuilt payload parses");
+        let mut got = Vec::new();
+        for elem in reader {
+            if let wasmparser::ElementItems::Expressions(_, exprs) = elem.unwrap().items {
+                for e in exprs {
+                    for op in e.unwrap().get_operators_reader() {
+                        if let wasmparser::Operator::RefFunc { function_index } = op.unwrap() {
+                            got.push(function_index);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(got, vec![1]);
+    }
+
+    /// When the element section cannot be rewritten, nothing is removed.
+    #[test]
+    fn dead_function_elimination_declines_when_elements_cannot_be_rewritten() {
+        let bytes = wat::parse_str(REF_FUNC_ELEMENT_WAT).unwrap();
+        let mut m = crate::parse::parse_wasm(&bytes).expect("parse");
+        // Same segment, offset `i32.const 0; i32.const 0; i32.add`.
+        m.element_section_bytes = Some(vec![
+            0x01, 0x04, 0x41, 0x00, 0x41, 0x00, 0x6a, 0x0b, 0x01, 0xd2, 0x02, 0x0b,
+        ]);
+        let before = m.functions.len();
+        assert_eq!(eliminate_dead_functions(&mut m).expect("dce"), 0);
+        assert_eq!(m.functions.len(), before);
     }
 }

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimization (7 before); with a target that returns its argument, the
   adapter returned 16 instead of 1024. Both outputs were valid wasm. The pass
   is removed; `same_memory_adapters_collapsed` is always 0.
+- Dead-function elimination (`loom optimize`'s `dce-functions` pass) no
+  longer leaves `ref.func` items in expression-form element segments with
+  their old function indices (#494). After a lower-indexed function was
+  removed, `ref.func N` named whichever function inherited N; on the #494
+  module, `run(0)` returned 7 instead of 42 with the 1.5.0 and 1.5.1
+  binaries, and the output validated. The element section is now rebuilt
+  before anything is removed, and the pass removes nothing when a segment
+  cannot be rewritten.
 
 ### Verification
 
