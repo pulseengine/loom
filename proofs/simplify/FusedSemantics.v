@@ -14,12 +14,15 @@
     - Structured control flow: [block], [loop], [if], [br], [br_if],
       [return], and [call]; and [nop].
     - Locals: [local.get] and [local.set].
+    - Memory instructions: [IMem op ks] names memories by index; the
+      indices resolve, through the module's memory imports, to keys, and
+      the effect is the section variable [mprim] applied to those keys.
     - Every other instruction is an [IPrim p], and its effect on the operand
       stack, the locals and the store is given by the section variable
       [prim]. The store (linear memories, globals, tables) is the abstract
       section type [store], and imported functions are the section variable
       [host]. Every theorem below therefore holds for every choice of
-      [prim], [host] and [store]: no instruction outside the list above,
+      [prim], [mprim], [host] and [store]: no instruction outside the list above,
       and no host behaviour, is assumed.
 
     ## Stack convention
@@ -77,6 +80,7 @@ Inductive instr : Type :=
   | IBrIf : nat -> instr
   | IReturn : instr
   | INop : instr
+  | IMem : nat -> list nat -> instr        (** operation, memory indices *)
 with code : Type :=
   | CNil : code
   | CCons : instr -> code -> code.
@@ -101,9 +105,16 @@ Record import : Type := mkImport {
   imp_sig : sig;
 }.
 
+(** A module's memories are imported memories only, each given by the
+    key it is resolved by: memory index [k] is the [k]-th entry of
+    [m_mems]. As with functions, the store is given the key, so two
+    memory imports with the same key are the same memory. A module with a
+    defined memory is outside this model; [deduplicate_memory_imports]
+    declines such modules. *)
 Record module : Type := mkModule {
   m_imports : list import; (** imported functions, indices 0.. *)
   m_funcs : list func;     (** defined functions follow the imports *)
+  m_mems : list nat;       (** keys of the imported memories, indices 0.. *)
 }.
 
 (** ** Call rewriting
@@ -158,7 +169,7 @@ Definition rw_func (rho : nat -> nat) (d : func) : func :=
   mkFunc (f_sig d) (f_locals d) (rw_code rho (f_body d)).
 
 Definition rw_module (rho : nat -> nat) (m : module) : module :=
-  mkModule (m_imports m) (map (rw_func rho) (m_funcs m)).
+  mkModule (m_imports m) (map (rw_func rho) (m_funcs m)) (m_mems m).
 
 (** ** Semantics *)
 
@@ -205,7 +216,7 @@ Definition del_func (T : nat -> bool) (d : func) : func :=
   mkFunc (f_sig d) (f_locals d) (del_code T (f_body d)).
 
 Definition del_module (T : nat -> bool) (m : module) : module :=
-  mkModule (m_imports m) (map (del_func T) (m_funcs m)).
+  mkModule (m_imports m) (map (del_func T) (m_funcs m)) (m_mems m).
 
 (** ** Import deduplication
 
@@ -216,13 +227,89 @@ Definition del_module (T : nat -> bool) (m : module) : module :=
     first import with that [ImportKey]), and every defined function moves
     down by the number of imports removed. *)
 Definition dedup_module (rho : nat -> nat) (imps' : list import) (m : module) : module :=
-  mkModule imps' (map (rw_func rho) (m_funcs m)).
+  mkModule imps' (map (rw_func rho) (m_funcs m)) (m_mems m).
 
 Definition dedup_ok (m : module) (imps' : list import) (rho : nat -> nat) : Prop :=
   (forall i, i < length (m_imports m) ->
      rho i < length imps' /\ nth_error imps' (rho i) = nth_error (m_imports m) i) /\
   (forall f, length (m_imports m) <= f ->
      rho f = f - length (m_imports m) + length imps').
+
+(** ** Memory import deduplication
+
+    [mrw_code sg c] replaces every memory index [k] named by a memory
+    instruction in [c], at any nesting depth, by [sg k]. This is
+    [remap_memory_indices] in fused_optimizer.rs: it covers every
+    instruction of loom's IR that carries a memory index (the 23 loads and
+    stores, memory.size, .grow, .fill, .copy with both indices, and .init)
+    and recurses into block, loop and both arms of if. *)
+Fixpoint mrw_instr (sg : nat -> nat) (i : instr) : instr :=
+  match i with
+  | IMem p ks => IMem p (map sg ks)
+  | IBlock ar b => IBlock ar (mrw_code sg b)
+  | ILoop ar b => ILoop ar (mrw_code sg b)
+  | IIf ar b1 b2 => IIf ar (mrw_code sg b1) (mrw_code sg b2)
+  | _ => i
+  end
+with mrw_code (sg : nat -> nat) (c : code) : code :=
+  match c with
+  | CNil => CNil
+  | CCons i c' => CCons (mrw_instr sg i) (mrw_code sg c')
+  end.
+
+Definition mrw_func (sg : nat -> nat) (d : func) : func :=
+  mkFunc (f_sig d) (f_locals d) (mrw_code sg (f_body d)).
+
+(** [mdedup_module sg mems' m] replaces the memory imports by [mems'] and
+    remaps every memory index by [sg]. Function indices do not move. *)
+Definition mdedup_module (sg : nat -> nat) (mems' : list nat) (m : module) : module :=
+  mkModule (m_imports m) (map (mrw_func sg) (m_funcs m)) mems'.
+
+(** [mdedup_ok]: every memory index, in range or not, names the same key
+    (or no memory) before and after. *)
+Definition mdedup_ok (m : module) (mems' : list nat) (sg : nat -> nat) : Prop :=
+  forall k, nth_error mems' (sg k) = nth_error (m_mems m) k.
+
+(** The remap [deduplicate_memory_imports] builds for [n] memory imports:
+    indices [1 .. n-1] go to [0], every other index is left alone. *)
+Definition rust_mem_remap (n k : nat) : nat :=
+  if (0 <? k) && (k <? n) then 0 else k.
+
+(** What [deduplicate_memory_imports] checks is enough: if every memory
+    import has the key of the first one, keeping only the first and
+    remapping by [rust_mem_remap] satisfies [mdedup_ok]. Rust compares the
+    import's module and field name, which is the key, and also the
+    limits, sharedness and index type, which the proof does not need. *)
+Lemma rust_mem_remap_ok : forall m key rest,
+  m_mems m = key :: rest ->
+  Forall (fun x => x = key) rest ->
+  mdedup_ok m [key] (rust_mem_remap (S (length rest))).
+Proof.
+  intros m key rest Hm Hall k. rewrite Hm. unfold rust_mem_remap.
+  destruct k as [|k]; [reflexivity|].
+  replace ((0 <? S k) && (S k <? S (length rest))) with (S k <? S (length rest))
+    by reflexivity.
+  destruct (S k <? S (length rest)) eqn:E.
+  - apply Nat.ltb_lt in E. cbn.
+    destruct (nth_error rest k) as [x|] eqn:En.
+    + rewrite Forall_forall in Hall. rewrite (Hall x (nth_error_In _ _ En)). reflexivity.
+    + apply nth_error_None in En. lia.
+  - apply Nat.ltb_ge in E. cbn.
+    assert (En : nth_error rest k = None) by (apply nth_error_None; lia).
+    rewrite En. destruct k; reflexivity.
+Qed.
+
+(** [mem_keys ms ks] resolves each memory index in [ks] to its key, or is
+    [None] if one is out of range. *)
+Fixpoint mem_keys (ms : list nat) (ks : list nat) : option (list nat) :=
+  match ks with
+  | [] => Some []
+  | k :: ks' =>
+      match nth_error ms k, mem_keys ms ks' with
+      | Some a, Some r => Some (a :: r)
+      | _, _ => None
+      end
+  end.
 
 Section Semantics.
 
@@ -234,6 +321,12 @@ Variable prim : nat -> list Z -> list Z -> store -> option (list Z * list Z * st
 (** Behaviour of the host function bound to import key [k] on its
     arguments. [None] is a trap. *)
 Variable host : nat -> list Z -> store -> option (list Z * store).
+
+(** Effect of a memory instruction (load, store, memory.size, .grow,
+    .fill, .copy, .init) given the keys of the memories it names. [None]
+    is a trap. *)
+Variable mprim : nat -> list nat -> list Z -> list Z -> store
+                 -> option (list Z * list Z * store).
 
 (** Result of running an instruction sequence. *)
 Inductive res : Type :=
@@ -361,6 +454,15 @@ Fixpoint eval_seq (m : module) (k : nat) (is : code)
             end
         | IReturn => Some (RRet stk s)
         | INop => go rest stk locs s
+        | IMem p ks =>
+            match mem_keys (m_mems m) ks with
+            | None => Some RTrap
+            | Some ys =>
+                match mprim p ys stk locs s with
+                | None => Some RTrap
+                | Some (stk', locs', s') => go rest stk' locs' s'
+                end
+            end
         end
       end) is stk locs s
   end.
@@ -441,6 +543,15 @@ Definition step (m : module) (k' : nat)
       end
   | IReturn => Some (RRet stk s)
   | INop => go rest stk locs s
+  | IMem p ks =>
+      match mem_keys (m_mems m) ks with
+      | None => Some RTrap
+      | Some ys =>
+          match mprim p ys stk locs s with
+          | None => Some RTrap
+          | Some (stk', locs', s') => go rest stk' locs' s'
+          end
+      end
   end.
 
 Lemma eval_seq_nil : forall m k stk locs s,
@@ -463,6 +574,7 @@ Ltac split_hyp :=
     then every sequence [c] run in [m1] is matched by [rw_code rho c]
     run in [m2]. *)
 Lemma sim_gen : forall (m1 m2 : module) (rho : nat -> nat),
+  m_mems m1 = m_mems m2 ->
   (forall k1 k2, k1 <= k2 ->
      (forall c stk locs s r,
         eval_seq m1 k1 c stk locs s = Some r ->
@@ -475,7 +587,7 @@ Lemma sim_gen : forall (m1 m2 : module) (rho : nat -> nat),
     eval_seq m1 k1 c stk locs s = Some r ->
     eval_seq m2 k2 (rw_code rho c) stk locs s = Some r.
 Proof.
-  intros m1 m2 rho Hcall k1.
+  intros m1 m2 rho Hmem Hcall k1.
   induction k1 as [|k1 IH]; intros k2 Hle c stk locs s r H; [discriminate|].
   destruct k2 as [|k2]; [lia|].
   assert (Hle' : k1 <= k2) by lia.
@@ -493,7 +605,8 @@ Proof.
        eval_seq m1 (S k1) c stk locs s = Some r ->
        eval_seq m2 (S k2) (rw_code rho c) stk locs s = Some r));
   cbn [rw_code rw_instr];
-  try (intros; rewrite eval_seq_cons in *; cbn [step] in *; split_hyp; eauto; fail).
+  try (intros; rewrite eval_seq_cons in *; cbn [step] in *; rewrite ?Hmem in *;
+       split_hyp; eauto; fail).
   - (* call *)
     intros f rest Hr stk locs s r H.
     rewrite eval_seq_cons in *; cbn [step] in *.
@@ -549,7 +662,7 @@ Proof.
   intros m k1 k2 Hle c stk locs s r H.
   rewrite <- (rw_code_id c).
   revert k1 k2 Hle c stk locs s r H.
-  apply (sim_gen m m (fun f => f)).
+  apply (sim_gen m m (fun f => f) eq_refl).
   intros k1 k2 _ IH f stk s cr H.
   eapply do_call_mono; [|exact H].
   intros c st l s0 r Hc. rewrite <- (rw_code_id c). exact (IH _ _ _ _ _ Hc).
@@ -573,6 +686,7 @@ Ltac lift E K :=
 
 (** The generic backward simulation, with fuel existentially quantified. *)
 Lemma sim_back_gen : forall (m1 m2 : module) (rho : nat -> nat),
+  m_mems m1 = m_mems m2 ->
   (forall k2,
      (forall c stk locs s r,
         eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
@@ -584,7 +698,7 @@ Lemma sim_back_gen : forall (m1 m2 : module) (rho : nat -> nat),
     eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
     exists k1, eval_seq m1 k1 c stk locs s = Some r.
 Proof.
-  intros m1 m2 rho Hback k2.
+  intros m1 m2 rho Hmem Hback k2.
   induction k2 as [|k2 IH]; intros c stk locs s r H; [discriminate|].
   revert c stk locs s r H.
   apply (code_mut
@@ -692,6 +806,15 @@ Proof.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
     rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
+  - (* mem *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    rewrite <- Hmem in H0.
+    destruct (mem_keys (m_mems m1) l) as [ys|] eqn:Ek.
+    + destruct (mprim n ys stk locs s) as [[[stk' locs'] s']|] eqn:E.
+      * destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. lift E3 (S k3); reflexivity.
+      * exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. exact H0.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek. exact H0.
   - (* nil *)
     exists 1. exact H.
   - (* cons *)
@@ -905,13 +1028,13 @@ Proof.
   intros m rho Hrho f stk s c. split.
   - intros [k Hk]. exists k.
     eapply do_call_rw; [|exact Hk].
-    apply sim_gen; [|lia].
+    apply sim_gen; [reflexivity| |lia].
     intros k1 k2 Hle IH g stk' s' cr H.
     eapply do_call_rw; [exact IH|].
     exact (chain_fwd _ _ _ (Hrho g) _ _ _ _ H).
   - intros [k Hk].
     eapply do_call_rw_back; [|exact Hk].
-    apply sim_back_gen.
+    apply sim_back_gen; [reflexivity|].
     intros k2 IH g stk' s' cr H.
     destruct (do_call_rw_back _ _ _ _ _ _ _ IH H) as [k1 E1].
     exact (chain_back _ _ _ (Hrho g) _ _ _ _ E1).
@@ -1012,7 +1135,8 @@ Proof.
        eval_seq m (S k1) c stk locs s = Some r ->
        eval_seq (del_module T m) (S k2) (del_code T c) stk locs s = Some r));
   cbn [del_code del_instr];
-  try (intros; rewrite eval_seq_cons in *; cbn [step] in *; split_hyp; eauto; fail).
+  try (intros; rewrite eval_seq_cons in *; cbn [step m_mems del_module] in *;
+       split_hyp; eauto; fail).
   - (* call *)
     intros f rest Hr stk locs s r H.
     rewrite eval_seq_cons in H; cbn [step] in H.
@@ -1173,6 +1297,15 @@ Proof.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
     rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
+  - (* mem *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    cbn [m_mems del_module] in H0.
+    destruct (mem_keys (m_mems m) l) as [ys|] eqn:Ek.
+    + destruct (mprim n ys stk locs s) as [[[stk' locs'] s']|] eqn:E.
+      * destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. lift E3 (S k3); reflexivity.
+      * exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. exact H0.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek. exact H0.
   - (* nil *)
     exists 1. exact H.
   - (* cons *)
@@ -1269,14 +1402,284 @@ Proof.
   intros m imps' rho Hok f stk s c. split.
   - intros [k Hk]. exists k.
     eapply do_call_dedup; [exact Hok| |exact Hk].
-    apply sim_gen; [|lia].
+    apply sim_gen; [reflexivity| |lia].
     intros k1 k2 _ IH g stk' s' cr H.
     exact (do_call_dedup _ _ _ _ _ _ _ _ _ Hok IH H).
   - intros [k Hk].
     eapply do_call_dedup_back; [exact Hok| |exact Hk].
-    apply sim_back_gen.
+    apply sim_back_gen; [reflexivity|].
     intros k2 IH g stk' s' cr H.
     exact (do_call_dedup_back _ _ _ _ _ _ _ _ Hok IH H).
+Qed.
+
+(** *** Memory import deduplication *)
+
+Lemma mem_keys_map : forall m mems' sg, mdedup_ok m mems' sg ->
+  forall ks, mem_keys mems' (map sg ks) = mem_keys (m_mems m) ks.
+Proof.
+  intros m mems' sg Hok ks; induction ks as [|k ks IH]; cbn; [reflexivity|].
+  rewrite Hok, IH. reflexivity.
+Qed.
+
+Lemma do_call_mdedup : forall sg mems' m k1 k2 f stk s cr,
+  (forall c stk locs s r,
+     eval_seq m k1 c stk locs s = Some r ->
+     eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg c) stk locs s = Some r) ->
+  do_call (eval_seq m k1) m f stk s = Some cr ->
+  do_call (eval_seq (mdedup_module sg mems' m) k2) (mdedup_module sg mems' m) f stk s = Some cr.
+Proof.
+  intros sg mems' m k1 k2 f stk s cr Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs mdedup_module] in *.
+  destruct (f <? length (m_imports m)); [exact H|].
+  rewrite nth_error_map.
+  destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|]; [|exact H].
+  cbn [option_map mrw_func f_sig f_locals f_body].
+  destruct (_ <=? _); [|exact H].
+  destruct (eval_seq m k1 (f_body d) _ _ s) as [r|] eqn:E; [|discriminate].
+  rewrite (Hsim _ _ _ _ _ E). exact H.
+Qed.
+
+Lemma do_call_mdedup_back : forall sg mems' m k2 f stk s cr,
+  (forall c stk locs s r,
+     eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg c) stk locs s = Some r ->
+     exists k1, eval_seq m k1 c stk locs s = Some r) ->
+  do_call (eval_seq (mdedup_module sg mems' m) k2) (mdedup_module sg mems' m) f stk s = Some cr ->
+  exists k1, do_call (eval_seq m k1) m f stk s = Some cr.
+Proof.
+  intros sg mems' m k2 f stk s cr Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs mdedup_module] in *.
+  destruct (f <? length (m_imports m)); [exists 0; exact H|].
+  rewrite nth_error_map in H.
+  destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|]; [|exists 0; exact H].
+  cbn [option_map mrw_func f_sig f_locals f_body] in H.
+  destruct (_ <=? _); [|exists 0; exact H].
+  destruct (eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg (f_body d)) _ _ s)
+    as [r|] eqn:E; [|discriminate].
+  destruct (Hsim _ _ _ _ _ E) as [k1 E1].
+  exists k1. rewrite E1. exact H.
+Qed.
+
+(** Forward simulation for memory import deduplication. *)
+Lemma sim_mdedup : forall m mems' sg, mdedup_ok m mems' sg ->
+  forall k1 k2, k1 <= k2 ->
+  forall c stk locs s r,
+    eval_seq m k1 c stk locs s = Some r ->
+    eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg c) stk locs s = Some r.
+Proof.
+  intros m mems' sg Hok k1.
+  induction k1 as [|k1 IH]; intros k2 Hle c stk locs s r H; [discriminate|].
+  destruct k2 as [|k2]; [lia|].
+  assert (Hle' : k1 <= k2) by lia.
+  specialize (IH k2 Hle').
+  revert c stk locs s r H.
+  apply (code_mut
+    (fun i => forall rest,
+       (forall stk locs s r,
+          eval_seq m (S k1) rest stk locs s = Some r ->
+          eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg rest) stk locs s = Some r) ->
+       forall stk locs s r,
+         eval_seq m (S k1) (CCons i rest) stk locs s = Some r ->
+         eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg (CCons i rest)) stk locs s
+         = Some r)
+    (fun c => forall stk locs s r,
+       eval_seq m (S k1) c stk locs s = Some r ->
+       eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c) stk locs s = Some r));
+  cbn [mrw_code mrw_instr];
+  try (intros; rewrite eval_seq_cons in *; cbn [step] in *;
+       try change (m_mems (mdedup_module sg mems' m)) with mems' in *;
+       rewrite ?(mem_keys_map _ _ _ Hok) in *; split_hyp; eauto; fail).
+  - (* call *)
+    intros f rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (do_call (eval_seq m k1) m f stk s) as [cr|] eqn:E; [|discriminate].
+    rewrite (do_call_mdedup _ _ _ _ _ _ _ _ _ IH E).
+    destruct cr; eauto.
+  - (* block *)
+    intros ar b Hb rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* loop *)
+    intros ar b Hb rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    apply IH in H; exact H.
+  - (* if *)
+    intros ar b1 Hb1 b2 Hb2 rest Hr stk locs s r H.
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|c stk']; [exact H|].
+    destruct (Z.eqb c 0).
+    + destruct (eval_seq m (S k1) b2 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb2 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    + destruct (eval_seq m (S k1) b1 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb1 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* nil *)
+    intros; rewrite eval_seq_nil in *; exact H.
+Qed.
+
+(** Backward simulation for memory import deduplication. *)
+Lemma sim_mdedup_back : forall m mems' sg, mdedup_ok m mems' sg ->
+  forall k2 c stk locs s r,
+    eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg c) stk locs s = Some r ->
+    exists k1, eval_seq m k1 c stk locs s = Some r.
+Proof.
+  intros m mems' sg Hok k2.
+  induction k2 as [|k2 IH]; intros c stk locs s r H; [discriminate|].
+  revert c stk locs s r H.
+  apply (code_mut
+    (fun i => forall rest,
+       (forall stk locs s r,
+          eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg rest) stk locs s = Some r ->
+          exists k1, eval_seq m k1 rest stk locs s = Some r) ->
+       forall stk locs s r,
+         eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg (CCons i rest)) stk locs s = Some r ->
+         exists k1, eval_seq m k1 (CCons i rest) stk locs s = Some r)
+    (fun c => forall stk locs s r,
+       eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c) stk locs s = Some r ->
+       exists k1, eval_seq m k1 c stk locs s = Some r));
+  cbn [mrw_code mrw_instr]; intros.
+  - (* local.get *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (nth_error locs n) eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* local.set *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H0|].
+    destruct (n <? length locs) eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* call *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (do_call (eval_seq (mdedup_module sg mems' m) k2) (mdedup_module sg mems' m) n stk s) as [cr|] eqn:E; [|discriminate].
+    destruct (do_call_mdedup_back _ _ _ _ _ _ _ _ IH E) as [k1 E1].
+    destruct cr as [stk' s'|].
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S (k1 + k3)).
+      rewrite eval_seq_cons; cbn [step].
+      rewrite (do_call_mono_le _ k1 (k1 + k3) _ _ _ _ ltac:(lia) E1).
+      lift E3 (S (k1 + k3)); reflexivity.
+    + exists (S k1). rewrite eval_seq_cons; cbn [step]. rewrite E1. exact H0.
+  - (* prim *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (prim n stk locs s) as [[[stk' locs'] s']|] eqn:E.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
+  - (* block *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c) [] locs s) as [rb|] eqn:E; [|discriminate].
+    destruct (H _ _ _ _ E) as [kb Eb].
+    destruct rb as [out l s'|[|n'] out l s'|out s'|].
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+  - (* loop *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c) [] locs s) as [rb|] eqn:E; [|discriminate].
+    destruct (H _ _ _ _ E) as [kb Eb].
+    destruct rb as [out l s'|[|n'] out l s'|out s'|].
+    + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+    + change (eval_seq (mdedup_module sg mems' m) k2 (mrw_code sg (CCons (ILoop n c) rest)) stk l s' = Some r) in H1.
+      destruct (IH _ _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (kb + k3). reflexivity.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+    + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
+  - (* if *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H2|].
+    destruct (Z.eqb v 0) eqn:Ez.
+    + destruct (eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c0) [] locs s) as [rb|] eqn:E; [|discriminate].
+      destruct (H0 _ _ _ _ E) as [kb Eb].
+      destruct rb as [out l s'|[|n'] out l s'|out s'|].
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+    + destruct (eval_seq (mdedup_module sg mems' m) (S k2) (mrw_code sg c) [] locs s) as [rb|] eqn:E; [|discriminate].
+      destruct (H _ _ _ _ E) as [kb Eb].
+      destruct rb as [out l s'|[|n'] out l s'|out s'|].
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * destruct (H1 _ _ _ _ H2) as [k3 E3]. exists (S (kb + k3)).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+      * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
+  - (* br *)
+    exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
+  - (* br_if *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|v stk']; [exists 1; exact H0|].
+    destruct (Z.eqb v 0) eqn:Ez.
+    + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+      rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift E3 (S k3); reflexivity.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ez. exact H0.
+  - (* return *)
+    exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
+  - (* nop *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+    rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
+  - (* mem *)
+    rewrite eval_seq_cons in *; cbn [step] in *.
+    change (m_mems (mdedup_module sg mems' m)) with mems' in H0.
+    rewrite (mem_keys_map _ _ _ Hok) in H0.
+    destruct (mem_keys (m_mems m) l) as [ys|] eqn:Ek.
+    + destruct (mprim n ys stk locs s) as [[[stk' locs'] s']|] eqn:E.
+      * destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
+        rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. lift E3 (S k3); reflexivity.
+      * exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. exact H0.
+    + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek. exact H0.
+  - (* nil *)
+    exists 1. exact H.
+  - (* cons *)
+    apply H; assumption.
+Qed.
+
+(** Memory import deduplication is correct. If [mdedup_ok m mems' sg],
+    every function of [m] and the same function of the deduplicated
+    module are observationally equivalent, for any host, any semantics of
+    the unmodelled and the memory instructions, and any store. Memories
+    are bound by key; see [module]. *)
+Theorem memory_import_dedup_correct : forall m mems' sg,
+  mdedup_ok m mems' sg ->
+  forall f, call_equiv m f (mdedup_module sg mems' m) f.
+Proof.
+  intros m mems' sg Hok f stk s c. split.
+  - intros [k Hk]. exists k.
+    eapply do_call_mdedup; [|exact Hk].
+    intros; eapply sim_mdedup; eauto.
+  - intros [k Hk].
+    eapply do_call_mdedup_back; [|exact Hk].
+    intros; eapply sim_mdedup_back; eauto.
+Qed.
+
+(** The instance [deduplicate_memory_imports] runs: all memory imports
+    carry the first one's key, only the first is kept, and indices
+    [1 .. n-1] are remapped to [0]. *)
+Corollary memory_import_dedup_rust : forall m key rest,
+  m_mems m = key :: rest ->
+  Forall (fun x => x = key) rest ->
+  forall f, call_equiv m f (mdedup_module (rust_mem_remap (S (length rest))) [key] m) f.
+Proof.
+  intros m key rest Hm Hall.
+  apply memory_import_dedup_correct, rust_mem_remap_ok; assumption.
 Qed.
 
 End Semantics.
@@ -1299,6 +1702,9 @@ Definition ex_prim (p : nat) (stk locs : list Z) (s : unit)
 
 Definition ex_host (_ : nat) (_ : list Z) (_ : unit) : option (list Z * unit) := None.
 
+Definition ex_mprim (_ : nat) (_ : list nat) (_ _ : list Z) (_ : unit)
+  : option (list Z * list Z * unit) := None.
+
 Definition two_to_one : sig := mkSig [0; 0] [0].
 
 Definition ex_module : module :=
@@ -1306,10 +1712,10 @@ Definition ex_module : module :=
     [ mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (IPrim 0) CNil)));
       mkFunc two_to_one 0 (gets 0 2 (CCons (ICall 0) CNil));
       mkFunc two_to_one 0 (CCons (ILocalGet 1) (CCons (ILocalGet 0) (CCons (ICall 0) CNil)));
-      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 1) CNil))) ].
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 1) CNil))) ] [].
 
 Definition run (m : module) (f : nat) :=
-  eval_call unit ex_prim ex_host m 10 f [3%Z; 10%Z] tt.
+  eval_call unit ex_prim ex_host ex_mprim m 10 f [3%Z; 10%Z] tt.
 
 (** The caller's stack is [3; 10] with 3 on top, so parameter 0 is 10 and
     parameter 1 is 3: the target returns 10 - 3. *)
@@ -1352,7 +1758,7 @@ Definition ex2 : module :=
                           (CCons (ICall 0) (CCons (IPrim 0) CNil))));
       mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 1) CNil)));
       mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1)
-                          (CCons (ICall 2) (CCons (IPrim 0) CNil)))) ].
+                          (CCons (ICall 2) (CCons (IPrim 0) CNil)))) ] [].
 
 Lemma ex2_trivial_0 : trivial_fn ex2 0.
 Proof.
@@ -1391,7 +1797,7 @@ Definition one_one : sig := mkSig [0] [0].
 
 Definition ex3 : module :=
   mkModule [mkImport 0 one_one; mkImport 0 one_one; mkImport 1 one_one]
-    [ mkFunc one_one 0 (CCons (ILocalGet 0) (CCons (ICall 1) CNil)) ].
+    [ mkFunc one_one 0 (CCons (ILocalGet 0) (CCons (ICall 1) CNil)) ] [].
 
 Definition ex3_imps : list import := [mkImport 0 one_one; mkImport 1 one_one].
 
@@ -1401,7 +1807,7 @@ Definition ex3_rho (f : nat) : nat :=
   match f with 0 | 1 => 0 | 2 => 1 | _ => f - 1 end.
 
 Definition run2 (m : module) (f : nat) :=
-  eval_call unit ex_prim ex_host2 m 10 f [3%Z; 10%Z] tt.
+  eval_call unit ex_prim ex_host2 ex_mprim m 10 f [3%Z; 10%Z] tt.
 
 Lemma ex3_ok : dedup_ok ex3 ex3_imps ex3_rho.
 Proof.
@@ -1422,5 +1828,69 @@ Definition bad_rho (f : nat) : nat :=
 Example wrong_key_matters :
   run2 (dedup_module bad_rho ex3_imps ex3) (bad_rho 3) = Some (CDone unit [103%Z; 10%Z] tt).
 Proof. reflexivity. Qed.
+
+(** Memory import deduplication. The store maps a memory key to one cell.
+    Operation 0 stores the top of the stack into the named memory,
+    operation 1 loads from it. Function 0 stores its parameter through
+    memory 1 and loads through memory 0. *)
+Definition mstore := nat -> Z.
+
+Definition m_prim (_ : nat) (_ _ : list Z) (_ : mstore)
+  : option (list Z * list Z * mstore) := None.
+
+Definition m_host (_ : nat) (_ : list Z) (_ : mstore) : option (list Z * mstore) := None.
+
+Definition m_mprim (p : nat) (ys : list nat) (stk locs : list Z) (s : mstore)
+  : option (list Z * list Z * mstore) :=
+  match p, ys, stk with
+  | 0, [y], v :: r => Some (r, locs, fun k => if Nat.eqb k y then v else s k)
+  | 1, [y], r => Some (s y :: r, locs, s)
+  | _, _, _ => None
+  end.
+
+Definition alias_body : code :=
+  CCons (ILocalGet 0) (CCons (IMem 0 [1]) (CCons (IMem 1 [0]) CNil)).
+
+Definition ex4 (mems : list nat) : module :=
+  mkModule [] [mkFunc one_one 0 alias_body] mems.
+
+(** [Some (Some out)]: returned [out]; [Some None]: trapped. *)
+Definition run3 (m : module) : option (option (list Z)) :=
+  match eval_call mstore m_prim m_host m_mprim m 10 0 [5%Z] (fun _ => 0%Z) with
+  | Some (CDone _ out _) => Some (Some out)
+  | Some (CTrap _) => Some None
+  | None => None
+  end.
+
+(** Two imports of key 7 are one memory: the load sees the store. *)
+Example same_key_aliases : run3 (ex4 [7; 7]) = Some (Some [5%Z]).
+Proof. reflexivity. Qed.
+
+Lemma ex4_ok : mdedup_ok (ex4 [7; 7]) [7] (rust_mem_remap 2).
+Proof. apply (rust_mem_remap_ok _ 7 [7]); [reflexivity | repeat constructor]. Qed.
+
+Example same_key_dedup :
+  run3 (mdedup_module (rust_mem_remap 2) [7] (ex4 [7; 7])) = Some (Some [5%Z]).
+Proof. reflexivity. Qed.
+
+(** Red control: with keys 7 and 8 the memories are distinct and the load
+    sees 0. Merging them anyway would return 5, so the key check that
+    [deduplicate_memory_imports] makes is needed, and [mdedup_ok] fails. *)
+Example distinct_keys : run3 (ex4 [7; 8]) = Some (Some [0%Z]).
+Proof. reflexivity. Qed.
+
+Example distinct_keys_merged :
+  run3 (mdedup_module (rust_mem_remap 2) [7] (ex4 [7; 8])) = Some (Some [5%Z]).
+Proof. reflexivity. Qed.
+
+Lemma distinct_keys_not_ok : ~ mdedup_ok (ex4 [7; 8]) [7] (rust_mem_remap 2).
+Proof. intro H. specialize (H 1). discriminate. Qed.
+
+(** An index past the last memory traps before and after. *)
+Example out_of_range_traps :
+  run3 (mkModule [] [mkFunc one_one 0 (CCons (IMem 1 [2]) CNil)] [7; 7]) = Some None /\
+  run3 (mdedup_module (rust_mem_remap 2) [7]
+          (mkModule [] [mkFunc one_one 0 (CCons (IMem 1 [2]) CNil)] [7; 7])) = Some None.
+Proof. split; reflexivity. Qed.
 
 End ConcreteCheck.

@@ -10,6 +10,10 @@
 
     ## Proven Properties
 
+    0a. Memory import deduplication (proven in FusedSemantics.v): merging
+       memory imports with the same key and remapping every memory index
+       preserves execution semantics.
+
     0. Same-memory adapter collapse: adapters that allocate+copy within a
        single consistent memory index are equivalent to direct forwarding
        trampolines (works for any memory index N, not just single-memory modules).
@@ -51,15 +55,12 @@
       two same-signature functions that have locals. That is false for wasm.
     - [collapse_same_memory_adapter m _ _] is [m], so the five collapse
       theorems hold by reflexivity.
-    - [memory_import_dedup_preserves_semantics],
-      [dead_function_removal_preserves_semantics] and
+    - [dead_function_removal_preserves_semantics] and
       [fused_optimization_correct] take their conclusion as a hypothesis.
     - [dead_function_elim_correct] concludes [x = x].
-    - [identical_memory_import_equiv] has no hypotheses: it states
-      [exec_call m f st = exec_call m' f st] for any two modules, so under
-      it no call depends on the module it runs in.
-    Pass 1 (adapter devirtualization), Pass 2 (trivial call elimination)
-    and Pass 5 (import deduplication) have moved: see FusedSemantics.v.
+    Pass 0a (memory import deduplication), Pass 1 (adapter
+    devirtualization), Pass 2 (trivial call elimination) and Pass 5
+    (import deduplication) have moved: see FusedSemantics.v.
 
     ## Connection to Meld
 
@@ -275,43 +276,16 @@ Axiom same_memory_adapter_general_equiv :
                     fd_sig target = fd_sig adapter) ->
     exec_call m adapter_idx st = exec_call m target_idx st.
 
-(** Axiom 5: Identical memory import equivalence.
+(** * Pass 0a: Memory Import Deduplication Correctness
 
-    Per WASM spec Section 2.5.10 (imports), an import is uniquely
-    determined by its (module, name) pair. If two memory import entries
-    have the same (module, name, limits, shared, memory64), they resolve
-    to the same linear memory binding. Therefore all references to either
-    memory index access the same address space.
-
-    When ALL memory imports are identical and there are no local memories,
-    remapping all memory indices to 0 and removing duplicate imports
-    produces a module that accesses the same memory at every point. *)
-Axiom identical_memory_import_equiv :
-  forall (m m' : wasm_module) (f_idx : func_idx) (st : exec_state),
-    (* All memory imports have the same (module, name, limits) *)
-    (* No local memories *)
-    (* m' is m with duplicate memory imports removed and indices remapped *)
-    exec_call m f_idx st = exec_call m' f_idx st.
-
-(** * Pass 0a: Memory Import Deduplication Correctness *)
-
-(** If all memory imports in a module have the same (module, name, limits),
-    deduplicating them to a single import and remapping all memory references
-    preserves execution semantics of all reachable functions. *)
-Theorem memory_import_dedup_preserves_semantics :
-  forall (m m' : wasm_module),
-    (* m' is m with duplicate identical memory imports removed
-       and all memory indices remapped to 0 *)
-    (forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st) ->
-    forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st.
-Proof.
-  intros m m' Hpreserve live_idx st Hlive.
-  apply Hpreserve. exact Hlive.
-Qed.
+    Proven in FusedSemantics.v, against a concrete interpreter and with no
+    axioms: [memory_import_dedup_correct] says that replacing the memory
+    imports and remapping every memory index with [sg] preserves every
+    function, provided each index names the same memory key (or no memory)
+    before and after; [memory_import_dedup_rust] is the instance that
+    [deduplicate_memory_imports] runs. The axiom that stood here,
+    [identical_memory_import_equiv], had no hypotheses, and the theorem
+    after it restated its own hypothesis. *)
 
 (** * Pass 0b: Same-Memory Adapter Collapse Correctness *)
 

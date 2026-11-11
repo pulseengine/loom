@@ -245,7 +245,7 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 
 | Theorem | Status | Pass |
 |---|---|---|
-| `memory_import_dedup_preserves_semantics` | **Proven** | Pass 0a |
+| `memory_import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 0a |
 | `same_memory_collapse_correct` | **Proven** | Pass 0b |
 | `sp_save_restore_collapse_correct` | **Proven** | Pass 0b |
 | `null_guard_collapse_correct` | **Proven** | Pass 0b |
@@ -262,13 +262,13 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 1, Pass 2 and Pass 5 rows are semantic evidence.
+Every row closes with Qed, but only the Pass 0a, Pass 1, Pass 2 and Pass 5 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
 context. The rest still depend on the abstract `exec_call` of
-`FusedOptimization.v`, and several hold for reasons unrelated to wasm. Three
-take their conclusion as a hypothesis (`memory_import_dedup_preserves_semantics`,
-`dead_function_removal_preserves_semantics`, `fused_optimization_correct`).
+`FusedOptimization.v`, and several hold for reasons unrelated to wasm. Two
+take their conclusion as a hypothesis (`dead_function_removal_preserves_semantics`,
+`fused_optimization_correct`).
 `dead_function_elim_correct` concludes `x = x`. The five collapse theorems hold
 because the collapse is modelled as the identity, and the same-memory predicate
 is `locals > 0 /\ True`. Moving them to the concrete semantics, pass by pass,
@@ -276,18 +276,16 @@ is tracked in #169.
 
 ### Proof Architecture
 
-The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, `A2`, Pass 5, and `A3`, Pass 2, are now theorems):
+The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, `A2`, Pass 5, `A3`, Pass 2, and `A4`, Pass 0a, are now theorems):
 
 ```mermaid
 flowchart TD
     subgraph axioms["Semantic Axioms (WASM Spec)"]
         A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
-        A4["identical_memory_import_equiv\n(Spec §2.5.10: import resolution)"]
         A4b["same_memory_adapter_general_equiv\n(Generalized: any consistent memory N)"]
     end
 
     subgraph proven["Proven Theorems (Qed)"]
-        MD["memory_import_dedup_preserves"]
         SM["same_memory_collapse_correct"]
         SP["sp_save_restore_collapse_correct"]
         NG["null_guard_collapse_correct"]
@@ -301,13 +299,11 @@ flowchart TD
         FS["fused_then_standard_correct"]
     end
 
-    A4 --> MD
     A0 --> SM
     A0 --> SP
     A0 --> NG
     A0 --> SD
     A4b --> GS
-    MD --> FC
     SM --> FC
     SP --> FC
     NG --> FC
@@ -340,6 +336,13 @@ flowchart TD
 - `import_dedup_correct`: replacing the imports by the deduplicated list and remapping every call (and so every export and the start function) with `rho` preserves every function, provided each import maps to one with the same key and signature, and every defined function moves down by the number of imports removed. This is what `deduplicate_imports` computes.
 - A concrete check shows the same-key condition is needed: merging a call into an import with a different key changes the result from 4 to 103.
 - Not modelled: function indices held outside code, exports and start. `deduplicate_imports` declines when a `ref.func` sits in the raw global section or the element section references functions (#486).
+
+**Memory Import Deduplication** is proven against the same semantics (`FusedSemantics.v`):
+- A module's memories are imported only, each with a key standing for (module, name), and the store is reached by key, so two memory imports with the same key are one memory. As for function imports, this is how a linker that resolves by name behaves, not something the WebAssembly specification fixes. Modules with a defined memory are outside the model; `deduplicate_memory_imports` declines them.
+- Memory instructions are `IMem op [indices]` whose effect is an arbitrary `mprim` over the keys of the memories they name. `remap_memory_indices` rewrites the index of every loom IR instruction that carries one: the 23 loads and stores, `memory.size`, `.grow`, `.fill`, `.copy` (both indices) and `.init`. loom's parser has no fallback that would keep an unrecognised memory instruction as opaque bytes: an unsupported opcode fails the parse.
+- `memory_import_dedup_correct`: replacing the memory imports and remapping every index with `sg` preserves every function, provided every index names the same key, or no memory, before and after. `memory_import_dedup_rust` is the instance `deduplicate_memory_imports` runs: all imports carry the first one's key, only the first is kept, indices `1..n-1` go to 0.
+- Concrete checks: with two imports of one key, a store through memory 1 is seen by a load through memory 0, before and after. With two different keys the load sees 0, and merging them anyway returns 5, so the key check is needed.
+- Not modelled: data segments and memory exports, which Rust also remaps, act at instantiation, outside the call semantics.
 
 ---
 
@@ -487,8 +490,8 @@ flowchart TD
 
 **Rationale**: When meld fuses components sharing the same host memory, it emits multiple identical memory imports. While Pass 0b now handles multi-memory modules (collapsing adapters that use a consistent memory index), running Pass 0a first normalizes memory indices and may expose additional same-memory adapters. For example, adapters using `memory.copy {1, 1}` that are aliased to memory 0 become `memory.copy {0, 0}` after dedup, simplifying the index space for all subsequent passes.
 
-### Why Only Function Import Deduplication?
+### Why Only Function and Memory Import Deduplication?
 
-**Decision**: Only deduplicate function imports, not memory/table/global imports.
+**Decision**: Deduplicate function imports (Pass 5) and memory imports (Pass 0a, only when every memory import is identical and there is no defined memory), not table or global imports.
 
-**Rationale**: Memory, table, and global imports have richer semantics (mutability, limits, element types). Deduplicating them requires deeper analysis to verify they are truly identical. Function imports are the most common duplicates after fusion and are safe to merge when module+name+type match.
+**Rationale**: Table and global imports have richer semantics (mutability, element types). Deduplicating them requires deeper analysis to verify they are truly identical. Function imports are the most common duplicates after fusion and are safe to merge when module+name+type match; meld emits identical memory imports when fused components share one host memory.
