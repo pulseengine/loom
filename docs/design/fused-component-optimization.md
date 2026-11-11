@@ -258,11 +258,11 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `type_dedup_idempotent` | **Proven** | Pass 3 |
 | `dead_function_elim_correct` | **Proven** | Pass 4 |
 | `dead_function_removal_preserves_semantics` | **Proven** | Pass 4 |
-| `import_dedup_preserves_semantics` | **Proven** | Pass 5 |
+| `import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 5 |
 | `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 1 and Pass 2 rows are semantic evidence.
+Every row closes with Qed, but only the Pass 1, Pass 2 and Pass 5 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
 context. The rest still depend on the abstract `exec_call` of
@@ -276,13 +276,12 @@ is tracked in #169.
 
 ### Proof Architecture
 
-The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, and `A3`, Pass 2, are now theorems):
+The remaining `FusedOptimization.v` proofs rely on these axioms (the former axioms `A1`, Pass 1, `A2`, Pass 5, and `A3`, Pass 2, are now theorems):
 
 ```mermaid
 flowchart TD
     subgraph axioms["Semantic Axioms (WASM Spec)"]
         A0["same_memory_adapter_equiv\n(Spec §5.4.7: memory.copy same-mem)"]
-        A2["identical_import_equiv\n(Spec §2.5.10: import resolution)"]
         A4["identical_memory_import_equiv\n(Spec §2.5.10: import resolution)"]
         A4b["same_memory_adapter_general_equiv\n(Generalized: any consistent memory N)"]
     end
@@ -298,7 +297,6 @@ flowchart TD
         TI["type_dedup_idempotent"]
         DE["dead_function_elim_correct"]
         DR["dead_function_removal_preserves"]
-        IP["import_dedup_preserves_semantics"]
         FC["fused_optimization_correct"]
         FS["fused_then_standard_correct"]
     end
@@ -309,7 +307,6 @@ flowchart TD
     A0 --> NG
     A0 --> SD
     A4b --> GS
-    A2 --> IP
     MD --> FC
     SM --> FC
     SP --> FC
@@ -318,7 +315,6 @@ flowchart TD
     GS --> FC
     TP --> FC
     DE --> FC
-    IP --> FC
     FC --> FS
 ```
 
@@ -339,7 +335,11 @@ flowchart TD
 
 **Dead Function Elimination**: Unreachable code cannot affect observable behavior.
 
-**Import Deduplication**: Same module + name + type resolve to the same external binding per the WebAssembly specification.
+**Import Deduplication** is proven against the same semantics (`FusedSemantics.v`):
+- Each import carries a key, standing for (module, name, type index), and the host is looked up by key. Two imports with the same key are therefore bound to the same host function. This is how a linker that resolves by name behaves; the WebAssembly specification itself leaves import binding to the embedder, so it is an assumption of the model, not a fact about wasm.
+- `import_dedup_correct`: replacing the imports by the deduplicated list and remapping every call (and so every export and the start function) with `rho` preserves every function, provided each import maps to one with the same key and signature, and every defined function moves down by the number of imports removed. This is what `deduplicate_imports` computes.
+- A concrete check shows the same-key condition is needed: merging a call into an import with a different key changes the result from 4 to 103.
+- Not modelled: function indices held outside code, exports and start. `deduplicate_imports` declines when a `ref.func` sits in the raw global section or the element section references functions (#486).
 
 ---
 

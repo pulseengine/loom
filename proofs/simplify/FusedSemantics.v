@@ -90,8 +90,19 @@ Record func : Type := mkFunc {
   f_body : code;
 }.
 
+(** An imported function: the key it is resolved by and its signature.
+    The key stands for loom's [ImportKey] (module name, field name, type
+    index). The host is given the key, not the import's position, so two
+    imports with the same key are bound to the same host function. This is
+    how an embedder that links by name behaves; the wasm specification
+    itself leaves the binding to the embedder. *)
+Record import : Type := mkImport {
+  imp_key : nat;
+  imp_sig : sig;
+}.
+
 Record module : Type := mkModule {
-  m_imports : list sig;    (** import function signatures, indices 0.. *)
+  m_imports : list import; (** imported functions, indices 0.. *)
   m_funcs : list func;     (** defined functions follow the imports *)
 }.
 
@@ -196,6 +207,23 @@ Definition del_func (T : nat -> bool) (d : func) : func :=
 Definition del_module (T : nat -> bool) (m : module) : module :=
   mkModule (m_imports m) (map (del_func T) (m_funcs m)).
 
+(** ** Import deduplication
+
+    [dedup_module rho imps' m] replaces the import list by [imps'] and
+    rewrites every [call f] to [call (rho f)]. [dedup_ok] is what
+    [deduplicate_imports] in fused_optimizer.rs establishes: every import
+    [i] maps to an import of [imps'] with the same key and signature (the
+    first import with that [ImportKey]), and every defined function moves
+    down by the number of imports removed. *)
+Definition dedup_module (rho : nat -> nat) (imps' : list import) (m : module) : module :=
+  mkModule imps' (map (rw_func rho) (m_funcs m)).
+
+Definition dedup_ok (m : module) (imps' : list import) (rho : nat -> nat) : Prop :=
+  (forall i, i < length (m_imports m) ->
+     rho i < length imps' /\ nth_error imps' (rho i) = nth_error (m_imports m) i) /\
+  (forall f, length (m_imports m) <= f ->
+     rho f = f - length (m_imports m) + length imps').
+
 Section Semantics.
 
 Variable store : Type.
@@ -203,7 +231,8 @@ Variable store : Type.
 (** Effect of every instruction not modelled above. [None] is a trap. *)
 Variable prim : nat -> list Z -> list Z -> store -> option (list Z * list Z * store).
 
-(** Behaviour of imported function [i] on its arguments. [None] is a trap. *)
+(** Behaviour of the host function bound to import key [k] on its
+    arguments. [None] is a trap. *)
 Variable host : nat -> list Z -> store -> option (list Z * store).
 
 (** Result of running an instruction sequence. *)
@@ -223,7 +252,7 @@ Definition replace_nth (l : list Z) (i : nat) (v : Z) : list Z :=
 
 (** Signature of function index [f], import or defined. *)
 Definition sig_of (m : module) (f : nat) : option sig :=
-  if f <? length (m_imports m) then nth_error (m_imports m) f
+  if f <? length (m_imports m) then option_map imp_sig (nth_error (m_imports m) f)
   else option_map f_sig (nth_error (m_funcs m) (f - length (m_imports m))).
 
 (** One call, given an interpreter [run] for the callee's body.
@@ -234,11 +263,11 @@ Definition do_call (run : code -> list Z -> list Z -> store -> option res)
   if f <? length (m_imports m) then
     match nth_error (m_imports m) f with
     | None => Some CTrap
-    | Some sg =>
-        let n := length (sig_params sg) in
-        let nr := length (sig_results sg) in
+    | Some im =>
+        let n := length (sig_params (imp_sig im)) in
+        let nr := length (sig_results (imp_sig im)) in
         if n <=? length stk then
-          match host f (firstn n stk) s with
+          match host (imp_key im) (firstn n stk) s with
           | None => Some CTrap
           | Some (out, s') => Some (CDone (firstn nr out ++ skipn n stk) s')
           end
@@ -710,11 +739,12 @@ Proof.
   assert (Hsk : skipn n (firstn n stk) = []) by (apply skipn_all2; lia).
   unfold sig_of, do_call in *.
   destruct (t <? length (m_imports m)).
-  - rewrite Hsig. fold n.
+  - destruct (nth_error (m_imports m) t) as [im|]; [|discriminate].
+    cbn in Hsig. injection Hsig as <-. fold n.
     destruct (n <=? length stk) eqn:E1; [|apply Nat.leb_gt in E1; lia].
     destruct (n <=? length (firstn n stk)) eqn:E2; [|apply Nat.leb_gt in E2; lia].
     rewrite Hff, Hsk.
-    destruct (host t (firstn n stk) s) as [[out s']|]; [|reflexivity].
+    destruct (host (imp_key im) (firstn n stk) s) as [[out s']|]; [|reflexivity].
     rewrite app_nil_r, firstn_firstn, Nat.min_id. reflexivity.
   - destruct (nth_error (m_funcs m) (t - length (m_imports m))) as [d|]; [|discriminate].
     cbn in Hsig. injection Hsig as <-. fold n.
@@ -732,7 +762,9 @@ Lemma do_call_underflow : forall run m t sg stk s,
 Proof.
   intros run m t sg stk s Hsig Hlen. unfold sig_of, do_call in *.
   destruct (t <? length (m_imports m)).
-  - rewrite Hsig. destruct (_ <=? _) eqn:E; [apply Nat.leb_le in E; lia|reflexivity].
+  - destruct (nth_error (m_imports m) t) as [im|]; [|discriminate].
+    cbn in Hsig. injection Hsig as <-.
+    destruct (_ <=? _) eqn:E; [apply Nat.leb_le in E; lia|reflexivity].
   - destruct (nth_error (m_funcs m) (t - length (m_imports m))) as [d|]; [|discriminate].
     cbn in Hsig. injection Hsig as <-.
     destruct (_ <=? _) eqn:E; [apply Nat.leb_le in E; lia|reflexivity].
@@ -1165,6 +1197,88 @@ Proof.
     intros; eapply sim_del_back; eauto.
 Qed.
 
+(** *** Import deduplication *)
+
+Lemma do_call_dedup : forall rho imps' m k1 k2 f stk s cr,
+  dedup_ok m imps' rho ->
+  (forall c stk locs s r,
+     eval_seq m k1 c stk locs s = Some r ->
+     eval_seq (dedup_module rho imps' m) k2 (rw_code rho c) stk locs s = Some r) ->
+  do_call (eval_seq m k1) m f stk s = Some cr ->
+  do_call (eval_seq (dedup_module rho imps' m) k2) (dedup_module rho imps' m) (rho f) stk s
+  = Some cr.
+Proof.
+  intros rho imps' m k1 k2 f stk s cr [Himp Hdef] Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs dedup_module] in *.
+  destruct (f <? length (m_imports m)) eqn:Ef.
+  - apply Nat.ltb_lt in Ef. destruct (Himp f Ef) as [Hlt Hnth].
+    apply Nat.ltb_lt in Hlt. rewrite Hlt, Hnth. exact H.
+  - apply Nat.ltb_ge in Ef. rewrite (Hdef f Ef).
+    destruct (f - length (m_imports m) + length imps' <? length imps') eqn:E';
+      [apply Nat.ltb_lt in E'; lia|].
+    replace (f - length (m_imports m) + length imps' - length imps')
+      with (f - length (m_imports m)) by lia.
+    rewrite nth_error_map.
+    destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|]; [|exact H].
+    cbn [option_map rw_func f_sig f_locals f_body].
+    destruct (_ <=? _); [|exact H].
+    destruct (eval_seq m k1 (f_body d) _ _ s) as [r|] eqn:E; [|discriminate].
+    rewrite (Hsim _ _ _ _ _ E). exact H.
+Qed.
+
+Lemma do_call_dedup_back : forall rho imps' m k2 f stk s cr,
+  dedup_ok m imps' rho ->
+  (forall c stk locs s r,
+     eval_seq (dedup_module rho imps' m) k2 (rw_code rho c) stk locs s = Some r ->
+     exists k1, eval_seq m k1 c stk locs s = Some r) ->
+  do_call (eval_seq (dedup_module rho imps' m) k2) (dedup_module rho imps' m) (rho f) stk s
+  = Some cr ->
+  exists k1, do_call (eval_seq m k1) m f stk s = Some cr.
+Proof.
+  intros rho imps' m k2 f stk s cr [Himp Hdef] Hsim H.
+  unfold do_call in *; cbn [m_imports m_funcs dedup_module] in *.
+  destruct (f <? length (m_imports m)) eqn:Ef.
+  - apply Nat.ltb_lt in Ef. destruct (Himp f Ef) as [Hlt Hnth].
+    apply Nat.ltb_lt in Hlt. rewrite Hlt, Hnth in H. exists 0. exact H.
+  - apply Nat.ltb_ge in Ef. rewrite (Hdef f Ef) in H.
+    destruct (f - length (m_imports m) + length imps' <? length imps') eqn:E';
+      [apply Nat.ltb_lt in E'; lia|].
+    replace (f - length (m_imports m) + length imps' - length imps')
+      with (f - length (m_imports m)) in H by lia.
+    rewrite nth_error_map in H.
+    destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|]; [|exists 0; exact H].
+    cbn [option_map rw_func f_sig f_locals f_body] in H.
+    destruct (_ <=? _); [|exists 0; exact H].
+    destruct (eval_seq (dedup_module rho imps' m) k2 (rw_code rho (f_body d)) _ _ s)
+      as [r|] eqn:E; [|discriminate].
+    destruct (Hsim _ _ _ _ _ E) as [k1 E1].
+    exists k1. rewrite E1. exact H.
+Qed.
+
+(** Import deduplication is correct. If [dedup_ok m imps' rho], then
+    function [f] of [m] and function [rho f] of the deduplicated module
+    are observationally equivalent, imports and defined functions alike,
+    for any host and any semantics of the unmodelled instructions. Exports
+    and the start function are remapped by [rho] in Rust, so this is the
+    statement about every exported function. The host binds by key; see
+    [import]. *)
+Theorem import_dedup_correct : forall m imps' rho,
+  dedup_ok m imps' rho ->
+  forall f, call_equiv m f (dedup_module rho imps' m) (rho f).
+Proof.
+  intros m imps' rho Hok f stk s c. split.
+  - intros [k Hk]. exists k.
+    eapply do_call_dedup; [exact Hok| |exact Hk].
+    apply sim_gen; [|lia].
+    intros k1 k2 _ IH g stk' s' cr H.
+    exact (do_call_dedup _ _ _ _ _ _ _ _ _ Hok IH H).
+  - intros [k Hk].
+    eapply do_call_dedup_back; [exact Hok| |exact Hk].
+    apply sim_back_gen.
+    intros k2 IH g stk' s' cr H.
+    exact (do_call_dedup_back _ _ _ _ _ _ _ _ Hok IH H).
+Qed.
+
 End Semantics.
 
 (** ** Concrete checks
@@ -1263,5 +1377,50 @@ Example trapping_call_matters :
   run ex2 5 = Some (CTrap unit) /\
   run (del_module (Nat.eqb 2) ex2) 5 = Some (CDone unit [7%Z] tt).
 Proof. split; reflexivity. Qed.
+
+(** Import deduplication. Host key 0 adds 1, key 1 adds 100. Imports 0
+    and 1 both have key 0, import 2 has key 1; function 3 calls import 1. *)
+Definition ex_host2 (k : nat) (args : list Z) (s : unit) : option (list Z * unit) :=
+  match k, args with
+  | 0, [a] => Some ([(a + 1)%Z], s)
+  | 1, [a] => Some ([(a + 100)%Z], s)
+  | _, _ => None
+  end.
+
+Definition one_one : sig := mkSig [0] [0].
+
+Definition ex3 : module :=
+  mkModule [mkImport 0 one_one; mkImport 0 one_one; mkImport 1 one_one]
+    [ mkFunc one_one 0 (CCons (ILocalGet 0) (CCons (ICall 1) CNil)) ].
+
+Definition ex3_imps : list import := [mkImport 0 one_one; mkImport 1 one_one].
+
+(** What [deduplicate_imports] computes: 0 and 1 to 0, 2 to 1, and the
+    defined function 3 down to 2. *)
+Definition ex3_rho (f : nat) : nat :=
+  match f with 0 | 1 => 0 | 2 => 1 | _ => f - 1 end.
+
+Definition run2 (m : module) (f : nat) :=
+  eval_call unit ex_prim ex_host2 m 10 f [3%Z; 10%Z] tt.
+
+Lemma ex3_ok : dedup_ok ex3 ex3_imps ex3_rho.
+Proof.
+  split.
+  - intros i Hi. cbn in Hi. destruct i as [|[|[|i]]]; [..| lia]; split; cbn; auto.
+  - intros f Hf. cbn in Hf. destruct f as [|[|[|f]]]; cbn; lia.
+Qed.
+
+Example dedup_caller : run2 ex3 3 = Some (CDone unit [4%Z; 10%Z] tt) /\
+  run2 (dedup_module ex3_rho ex3_imps ex3) (ex3_rho 3) = run2 ex3 3.
+Proof. split; reflexivity. Qed.
+
+(** Merging import 1 into the import with key 1 instead changes the
+    answer, so the same-key condition of [dedup_ok] is necessary. *)
+Definition bad_rho (f : nat) : nat :=
+  match f with 0 => 0 | 1 | 2 => 1 | _ => f - 1 end.
+
+Example wrong_key_matters :
+  run2 (dedup_module bad_rho ex3_imps ex3) (bad_rho 3) = Some (CDone unit [103%Z; 10%Z] tt).
+Proof. reflexivity. Qed.
 
 End ConcreteCheck.
