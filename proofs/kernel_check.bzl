@@ -166,18 +166,30 @@ while IFS= read -r vo; do
   fi
 done < "$own"
 # Normalise the summary to one "<section>: <item>" line per assumption.
-awk '
+# Every non-empty section, known or not, becomes allowlist lines, so a
+# positivity, guard or type-in-type entry (or a section a later rocqchk
+# adds) fails unless listed. A line in the summary that is neither a
+# section header, an item nor blank makes the parse fail.
+if ! awk '
   /^CONTEXT SUMMARY/ {{ on = 1; next }}
   !on {{ next }}
-  /^\\* / {{
+  /^=+$/ || /^[ \\t]*$/ {{ next }}
+  /^\\* [^:]+:/ {{
     line = substr($0, 3); i = index(line, ":")
     sec = substr(line, 1, i - 1); val = substr(line, i + 1)
     gsub(/^[ \\t]+|[ \\t]+$/, "", val)
     if (val != "" && val != "<none>") print sec ": " val
     next
   }}
-  /^    [^ ]/ {{ v = $0; gsub(/^[ \\t]+|[ \\t]+$/, "", v); print sec ": " v }}
-' "$full" | sort -u > "$norm"
+  /^    [^ ]/ && sec != "" {{ v = $0; gsub(/^[ \\t]+|[ \\t]+$/, "", v); print sec ": " v; next }}
+  {{ print "unparsed summary line: " $0 > "/dev/stderr"; bad = 1 }}
+  END {{ exit bad }}
+' "$full" > "$norm.raw"; then
+  echo "$label: could not parse the rocqchk context summary" >&2
+  exit 1
+fi
+sort -u "$norm.raw" > "$norm"
+rm -f "$norm.raw"
 if ! grep -q '^Theory: ' "$norm"; then
   echo "$label: could not parse the rocqchk context summary" >&2
   tail -40 "$full" >&2
