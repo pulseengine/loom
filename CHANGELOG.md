@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The fused optimizer no longer collapses same-memory adapters (former
+  Pass 0b). An adapter that allocates with `cabi_realloc`, copies the
+  caller's bytes with `memory.copy {N, N}` and calls the target with the new
+  pointer was rewritten to pass the caller's pointer instead, so the target
+  worked on the caller's buffer rather than a private copy. With a target
+  that writes 99 into its argument, a caller that wrote 7 read back 99 after
+  optimization (7 before); with a target that returns its argument, the
+  adapter returned 16 instead of 1024. Both outputs were valid wasm. The pass
+  is removed; `same_memory_adapters_collapsed` is always 0.
+
+### Verification
+
+- Pass 0a (memory import deduplication) is proven against the concrete call
+  semantics in `proofs/simplify/FusedSemantics.v` (#491). The two
+  same-memory-adapter axioms and the five collapse theorems built on them are
+  removed from `FusedOptimization.v`; its only remaining axiom is the
+  abstract `exec_call`.
+
 ## [1.5.1] - 2026-11-10
 
 A patch release whose signature names its own tag. v1.5.0's tag-push release
