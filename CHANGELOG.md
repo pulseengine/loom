@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binaries, and the output validated. The element section is now rebuilt
   before anything is removed, and the pass removes nothing when a segment
   cannot be rewritten.
+- The parser refuses value types its IR does not represent (externref,
+  funcref, v128 and other reference types) instead of reading them as `i32`
+  (#496). The encoder re-derives each function's type from its parsed
+  signature, so a function of type `(externref) -> externref` was emitted as
+  `(i32) -> i32`; on the #496 module a `call_indirect` that trapped on the
+  type mismatch returned 5 after optimization, and the output validated.
+  `loom optimize` now exits with an error on such modules; inside a
+  component, the module keeps its original bytes.
 
 ### Verification
 

@@ -822,6 +822,36 @@ artifacts:
       - type: verifies
         target: REQ-12
 
+  - id: TEST-496-UNSUPPORTED-VALTYPE-REFUSED
+    type: feature
+    title: parser refuses value types the IR cannot represent instead of reading them as i32 (#496)
+    description: >
+      Verifies that parse_wasm returns an error for a function signature or
+      local of a value type other than i32, i64, f32 or f64. convert_valtype
+      previously returned I32 for every other type, and the encoder re-derives
+      each function's type index from its parsed signature, so a function of
+      type (externref) -> externref was emitted as (i32) -> i32. On the #496
+      module a call_indirect that trapped with "indirect call type mismatch"
+      returned 5 after loom 1.5.1, and the output validated. Two tests failed
+      on main (the module parsed); a control asserts the same module with i32
+      in place of externref still parses, so the refusal is about the value
+      type only.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- unsupported_valtype_tests
+    status: verified
+    release: v1.5.2
+    tags: [verification, safety, parser]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-12
+
   # ============================================================================
   # #313 — the REMAINDER of the v1.5.0 scope, recorded BEFORE it is built.
   #
@@ -910,7 +940,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- the_four_trapping_ops_match_a_spec_table
         - run: cargo test --release --lib -p loom-core --features verification -- slice_two_and_trap_gate_share_one_trap_rule
         - run: cargo test --release --lib -p loom-core --features verification -- tier2_slice2_div_obligations_are_routed_and_decided
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 556 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 559 passed'"
     status: verified
     release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
@@ -975,7 +1005,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 556 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 559 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]
