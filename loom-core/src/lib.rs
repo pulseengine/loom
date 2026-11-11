@@ -1034,7 +1034,7 @@ pub mod parse {
                                 memory64: mem_type.memory64,
                             }),
                             wasmparser::TypeRef::Global(global_type) => ImportKind::Global {
-                                value_type: convert_valtype(global_type.content_type),
+                                value_type: convert_valtype(global_type.content_type)?,
                                 mutable: global_type.mutable,
                             },
                             wasmparser::TypeRef::Table(table_type) => {
@@ -1110,7 +1110,7 @@ pub mod parse {
                             let (init_instructions, _) = parse_instructions(&mut init_reader)?;
 
                             globals.push(super::Global {
-                                value_type: convert_valtype(global.ty.content_type),
+                                value_type: convert_valtype(global.ty.content_type)?,
                                 mutable: global.ty.mutable,
                                 init: init_instructions,
                             });
@@ -1128,7 +1128,7 @@ pub mod parse {
                     let locals_reader = body.get_locals_reader()?;
                     for local in locals_reader {
                         let (count, val_type) = local?;
-                        locals.push((count, convert_valtype(val_type)));
+                        locals.push((count, convert_valtype(val_type)?));
                     }
 
                     // Parse instructions recursively to handle control flow
@@ -1150,12 +1150,12 @@ pub mod parse {
                             .params()
                             .iter()
                             .map(|t| convert_valtype(*t))
-                            .collect(),
+                            .collect::<Result<_>>()?,
                         results: func_type
                             .results()
                             .iter()
                             .map(|t| convert_valtype(*t))
-                            .collect(),
+                            .collect::<Result<_>>()?,
                     };
 
                     // Store function signature for type section reconstruction
@@ -1242,19 +1242,21 @@ pub mod parse {
         // Convert all types from wasmparser::FuncType to FunctionSignature
         let all_types: Vec<FunctionSignature> = types
             .iter()
-            .map(|func_type| FunctionSignature {
-                params: func_type
-                    .params()
-                    .iter()
-                    .map(|t| convert_valtype(*t))
-                    .collect(),
-                results: func_type
-                    .results()
-                    .iter()
-                    .map(|t| convert_valtype(*t))
-                    .collect(),
+            .map(|func_type| -> Result<FunctionSignature> {
+                Ok(FunctionSignature {
+                    params: func_type
+                        .params()
+                        .iter()
+                        .map(|t| convert_valtype(*t))
+                        .collect::<Result<_>>()?,
+                    results: func_type
+                        .results()
+                        .iter()
+                        .map(|t| convert_valtype(*t))
+                        .collect::<Result<_>>()?,
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         Ok(Module {
             functions,
@@ -1854,14 +1856,24 @@ pub mod parse {
         parse_wasm(&wasm_bytes)
     }
 
-    /// Convert wasmparser::ValType to our ValueType
-    fn convert_valtype(vt: ValType) -> ValueType {
+    /// Convert wasmparser::ValType to our ValueType.
+    ///
+    /// The IR has no reference or vector value types, so anything else is an
+    /// error. It used to become `I32`, and the encoder re-derives each
+    /// function's type index from its converted signature, so a function of
+    /// type `(externref) -> externref` was re-emitted as `(i32) -> i32`:
+    /// valid output in which a `call_indirect (type (i32) -> i32)` that
+    /// trapped on the type mismatch now succeeds (#496).
+    fn convert_valtype(vt: ValType) -> Result<ValueType> {
         match vt {
-            ValType::I32 => ValueType::I32,
-            ValType::I64 => ValueType::I64,
-            ValType::F32 => ValueType::F32,
-            ValType::F64 => ValueType::F64,
-            _ => ValueType::I32, // Default to I32 for unsupported types in Phase 2
+            ValType::I32 => Ok(ValueType::I32),
+            ValType::I64 => Ok(ValueType::I64),
+            ValType::F32 => Ok(ValueType::F32),
+            ValType::F64 => Ok(ValueType::F64),
+            other => Err(anyhow!(
+                "unsupported value type {other:?}: loom's IR represents i32, i64, \
+                 f32 and f64 only"
+            )),
         }
     }
 
@@ -1869,7 +1881,7 @@ pub mod parse {
     fn convert_blocktype(bt: wasmparser::BlockType) -> Result<BlockType> {
         match bt {
             wasmparser::BlockType::Empty => Ok(BlockType::Empty),
-            wasmparser::BlockType::Type(vt) => Ok(BlockType::Value(convert_valtype(vt))),
+            wasmparser::BlockType::Type(vt) => Ok(BlockType::Value(convert_valtype(vt)?)),
             wasmparser::BlockType::FuncType(_) => {
                 // Function type blocks require looking up the type in the type section
                 // For now, we'll return an error as this is complex
@@ -22710,5 +22722,47 @@ mod wsc_facts_under_p_tests {
             !verdict.is_accepted(),
             "x<=2^30 must NOT discharge x<2^24 — the fact must be load-bearing"
         );
+    }
+}
+
+/// #496: value types the IR cannot represent must be refused at parse time.
+/// They used to become `I32`, and the encoder re-derived each function's type
+/// from that, so `(externref) -> externref` was emitted as `(i32) -> i32`.
+#[cfg(test)]
+mod unsupported_valtype_tests {
+    const RETYPE_WAT: &str = r#"
+        (module
+          (type $tr (func (param externref) (result externref)))
+          (type $ti (func (param i32) (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $idr)
+          (func $idr (type $tr) local.get 0)
+          (func (export "probe") (param i32) (result i32)
+            local.get 0 i32.const 0 call_indirect (type $ti)))
+    "#;
+
+    #[test]
+    fn externref_signature_is_refused() {
+        let bytes = wat::parse_str(RETYPE_WAT).unwrap();
+        let err = crate::parse::parse_wasm(&bytes).expect_err("must not parse");
+        assert!(
+            format!("{err:#}").contains("unsupported value type"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn externref_local_is_refused() {
+        let wat = r#"(module (func (export "f") (local externref)))"#;
+        let bytes = wat::parse_str(wat).unwrap();
+        assert!(crate::parse::parse_wasm(&bytes).is_err());
+    }
+
+    /// Control: the same shape with i32 in place of externref parses, so the
+    /// refusal above is about the value type and nothing else.
+    #[test]
+    fn numeric_signature_still_parses() {
+        let bytes = wat::parse_str(RETYPE_WAT.replace("externref", "i32")).unwrap();
+        crate::parse::parse_wasm(&bytes).expect("numeric module parses");
     }
 }

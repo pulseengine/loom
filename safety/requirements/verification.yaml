@@ -758,7 +758,8 @@ artifacts:
       was therefore swept while the frozen index kept designating whichever
       function inherited it — valid wasm, wrong behaviour, invisible to
       structural validation. This is the same hazard #196 shipped through the
-      element section (remapped since); the global section was never covered.
+      element section (function-index lists remapped since; `ref.func` element
+      items only since #494); the global section was never covered.
       An unparseable global section is treated as hazard-present. Paired with a
       control asserting numeric-only globals still permit the sweep, so the
       guard cannot degrade into a blanket disable without failing a test.
@@ -777,6 +778,77 @@ artifacts:
         target: REQ-3
       - type: verifies
         target: REQ-5
+      - type: verifies
+        target: REQ-12
+
+  # ============================================================================
+  # #494 — dead-function elimination left `ref.func` element items with their
+  # old indices. Shipped in 1.5.0 and 1.5.1 through the CLI `dce-functions`
+  # pass: valid output, wrong callee.
+  # ============================================================================
+
+  - id: TEST-494-REF-FUNC-ELEMENT-REMAP
+    type: feature
+    title: dead-function sweep rewrites ref.func element items or removes nothing (#494)
+    description: >
+      Verifies that eliminate_dead_functions rewrites every function index in
+      the element section, including `ref.func N` items of expression-form
+      segments, and removes nothing when a segment cannot be rewritten. The
+      encoder emits `element_section_bytes` verbatim; the remap previously
+      returned without rewriting expression-form segments or segments whose
+      offset was not a single constant, so after renumbering `ref.func N`
+      named whichever function inherited N. On the module in #494,
+      `run(0)` returned 42 before and 7 after `loom optimize` with the 1.5.0
+      and 1.5.1 release binaries; both outputs validated. The behavioural test
+      runs the module in wasmtime before and after the sweep and failed on
+      main (7, expected 42). Two further tests pin the decline path: the
+      rebuild rejects an `i32.add` offset and an index with no remap entry, and
+      the sweep then leaves the function count unchanged.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- dead_function_elimination_remaps_ref_func_element_items remapped_element_section_rejects_what_it_cannot_rewrite dead_function_elimination_declines_when_elements_cannot_be_rewritten
+    status: verified
+    release: v1.5.2
+    tags: [verification, safety, dead-code]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-3
+      - type: verifies
+        target: REQ-5
+      - type: verifies
+        target: REQ-12
+
+  - id: TEST-496-UNSUPPORTED-VALTYPE-REFUSED
+    type: feature
+    title: parser refuses value types the IR cannot represent instead of reading them as i32 (#496)
+    description: >
+      Verifies that parse_wasm returns an error for a function signature or
+      local of a value type other than i32, i64, f32 or f64. convert_valtype
+      previously returned I32 for every other type, and the encoder re-derives
+      each function's type index from its parsed signature, so a function of
+      type (externref) -> externref was emitted as (i32) -> i32. On the #496
+      module a call_indirect that trapped with "indirect call type mismatch"
+      returned 5 after loom 1.5.1, and the output validated. Two tests failed
+      on main (the module parsed); a control asserts the same module with i32
+      in place of externref still parses, so the refusal is about the value
+      type only.
+    fields:
+      method: automated-test
+      steps:
+        - run: |
+            cargo test --release --lib -p loom-core --features verification -- unsupported_valtype_tests
+    status: verified
+    release: v1.5.2
+    tags: [verification, safety, parser]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-3
       - type: verifies
         target: REQ-12
 
@@ -868,7 +940,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- the_four_trapping_ops_match_a_spec_table
         - run: cargo test --release --lib -p loom-core --features verification -- slice_two_and_trap_gate_share_one_trap_rule
         - run: cargo test --release --lib -p loom-core --features verification -- tier2_slice2_div_obligations_are_routed_and_decided
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 553 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 559 passed'"
     status: verified
     release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
@@ -933,7 +1005,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 553 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 559 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]
