@@ -219,21 +219,20 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `trivial_call_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 2 |
 | `type_dedup_preserves_semantics` | **Proven** | Pass 3 |
 | `type_dedup_idempotent` | **Proven** | Pass 3 |
-| `dead_function_elim_correct` | **Proven** | Pass 4 |
-| `dead_function_removal_preserves_semantics` | **Proven** | Pass 4 |
+| `dead_function_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 4 |
 | `import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 5 |
-| `fused_optimization_correct` | **Proven** | Combined |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 0a, Pass 1, Pass 2 and Pass 5 rows are semantic evidence.
+Every row closes with Qed, but only the Pass 0a, Pass 1, Pass 2, Pass 4 and Pass 5 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
-context. The rest still depend on the abstract `exec_call` of
-`FusedOptimization.v`, and several hold for reasons unrelated to wasm. Two
-take their conclusion as a hypothesis (`dead_function_removal_preserves_semantics`,
-`fused_optimization_correct`).
-`dead_function_elim_correct` concludes `x = x`. Moving them to the concrete semantics, pass by pass,
-is tracked in #169.
+context. The Pass 3 rows restate their own hypotheses, and
+`fused_then_standard_correct` composes two assumed per-pipeline statements
+over the abstract `exec_call` of `FusedOptimization.v`. There is no theorem
+about the whole fused pipeline: `fused_optimization_correct` assumed its own
+conclusion and was removed, as were the earlier Pass 4 statements (one
+concluded `x = x`, the other assumed its conclusion). Moving the rest to the
+concrete semantics is tracked in #169.
 
 ### Proof Architecture
 
@@ -244,15 +243,8 @@ flowchart TD
     subgraph proven["Proven Theorems (Qed)"]
         TP["type_dedup_preserves_semantics"]
         TI["type_dedup_idempotent"]
-        DE["dead_function_elim_correct"]
-        DR["dead_function_removal_preserves"]
-        FC["fused_optimization_correct"]
         FS["fused_then_standard_correct"]
     end
-
-    TP --> FC
-    DE --> FC
-    FC --> FS
 ```
 
 **Adapter Devirtualization** is proven against a concrete semantics (`FusedSemantics.v`):
@@ -270,7 +262,11 @@ flowchart TD
 **Type Deduplication** uses structural equality:
 - If `params(T_i) = params(T_j)` and `results(T_i) = results(T_j)`, any instruction referencing `T_i` behaves identically when referencing `T_j`
 
-**Dead Function Elimination**: Unreachable code cannot affect observable behavior.
+**Dead Function Elimination** is proven against the same semantics (`FusedSemantics.v`):
+- `dead_function_elim_correct`: given which defined functions are kept, imports keep their indices, a kept function moves down by the number of removed functions before it (the `remap` that `eliminate_dead_functions_inner` builds), and every call in a kept body is rewritten through that map. If every call in a kept body names an import or a kept function, every import and every kept function behaves as it did. The worklist in Rust computes exactly such a call-closed set, starting from exports, the start function and the functions named in element segments.
+- Concrete checks show both conditions are needed: removing functions without rewriting the calls leaves `call 2` past the end of the function list (a trap where the original returned 7), and dropping a function that a kept function calls also turns 7 into a trap.
+- The forward and backward simulations used by the earlier passes now take the set of allowed callees as a parameter (`sim_gen_on`, `sim_back_gen_on`); the earlier lemmas are the instance where every callee is allowed.
+- Not modelled: tables and `call_indirect`. The element section is rewritten through the same map, or the pass removes nothing; that is checked by the #494 tests in `fused_optimizer.rs`, not by this theorem. Data-segment offsets and globals are outside the model; a global section holding a `ref.func` makes the pass decline (#326).
 
 **Import Deduplication** is proven against the same semantics (`FusedSemantics.v`):
 - Each import carries a key, standing for (module, name, type index), and the host is looked up by key. Two imports with the same key are therefore bound to the same host function. This is how a linker that resolves by name behaves; the WebAssembly specification itself leaves import binding to the embedder, so it is an assumption of the model, not a fact about wasm.

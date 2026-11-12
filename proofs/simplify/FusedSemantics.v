@@ -311,6 +311,89 @@ Fixpoint mem_keys (ms : list nat) (ks : list nat) : option (list nat) :=
       end
   end.
 
+(** ** Dead function elimination
+
+    [calls_c P c] holds when every [call f] in [c], at any nesting depth,
+    has [P f]. *)
+Fixpoint calls_i (P : nat -> Prop) (i : instr) : Prop :=
+  match i with
+  | ICall f => P f
+  | IBlock _ b | ILoop _ b => calls_c P b
+  | IIf _ b1 b2 => calls_c P b1 /\ calls_c P b2
+  | _ => True
+  end
+with calls_c (P : nat -> Prop) (c : code) : Prop :=
+  match c with
+  | CNil => True
+  | CCons i rest => calls_i P i /\ calls_c P rest
+  end.
+
+Lemma calls_true : forall c, calls_c (fun _ => True) c.
+Proof.
+  apply (code_mut (fun i => calls_i (fun _ => True) i)
+                  (fun c => calls_c (fun _ => True) c));
+    intros; cbn; auto.
+Qed.
+
+(** [keep_from kf j0 l] keeps the [j]-th element of [l] when [kf (j0 + j)];
+    [cnt kf j0 j] counts the kept positions among [j0 .. j0 + j - 1]. *)
+Fixpoint keep_from (kf : nat -> bool) (j0 : nat) (l : list func) : list func :=
+  match l with
+  | [] => []
+  | d :: l' => if kf j0 then d :: keep_from kf (S j0) l' else keep_from kf (S j0) l'
+  end.
+
+Fixpoint cnt (kf : nat -> bool) (j0 j : nat) : nat :=
+  match j with
+  | 0 => 0
+  | S j' => (if kf j0 then 1 else 0) + cnt kf (S j0) j'
+  end.
+
+(** [eliminate_dead_functions] in fused_optimizer.rs. [kf j] says whether
+    defined function [j] (index [length (m_imports m) + j]) is kept. Imports
+    are kept and keep their indices; a kept defined function moves down by
+    the number of removed functions before it ([remap]); every call in a kept
+    body is rewritten through that map. *)
+Definition dfe_rho (kf : nat -> bool) (ni : nat) (f : nat) : nat :=
+  if f <? ni then f else ni + cnt kf 0 (f - ni).
+
+Definition dfe_module (kf : nat -> bool) (m : module) : module :=
+  let ni := length (m_imports m) in
+  mkModule (m_imports m) (map (rw_func (dfe_rho kf ni)) (keep_from kf 0 (m_funcs m)))
+           (m_mems m).
+
+(** The live set: every import, and every kept defined function. *)
+Definition live (kf : nat -> bool) (ni : nat) (f : nat) : Prop :=
+  f < ni \/ kf (f - ni) = true.
+
+(** What the worklist in [eliminate_dead_functions_inner] establishes: the
+    live set is closed under calls. Every call in a kept body names an
+    import or a kept function. *)
+Definition dfe_ok (kf : nat -> bool) (m : module) : Prop :=
+  forall j d, kf j = true -> nth_error (m_funcs m) j = Some d ->
+    calls_c (live kf (length (m_imports m))) (f_body d).
+
+Lemma keep_nth : forall kf l j0 j d,
+  kf (j0 + j) = true -> nth_error l j = Some d ->
+  nth_error (keep_from kf j0 l) (cnt kf j0 j) = Some d.
+Proof.
+  intros kf l; induction l as [|d0 l IH]; intros j0 j d Hk H;
+    [destruct j; discriminate|].
+  destruct j as [|j]; cbn in H |- *.
+  - rewrite Nat.add_0_r in Hk. rewrite Hk. exact H.
+  - replace (j0 + S j) with (S j0 + j) in Hk by lia.
+    destruct (kf j0); cbn; apply IH; assumption.
+Qed.
+
+Lemma keep_out : forall kf l j0 j, length l <= j ->
+  nth_error (keep_from kf j0 l) (cnt kf j0 j) = None.
+Proof.
+  intros kf l; induction l as [|d0 l IH]; intros j0 j Hj;
+    [destruct (cnt kf j0 j); reflexivity|].
+  destruct j as [|j]; cbn in Hj; [lia|]. cbn.
+  destruct (kf j0); cbn; apply IH; lia.
+Qed.
+
 Section Semantics.
 
 Variable store : Type.
@@ -569,10 +652,100 @@ Ltac split_hyp :=
       let E := fresh "E" in destruct x eqn:E; try discriminate
   end.
 
-(** The generic forward simulation. If every call in [m1] at fuel [k1]
-    can be matched by a call to [rho f] in [m2] at fuel [k2 >= k1],
-    then every sequence [c] run in [m1] is matched by [rw_code rho c]
-    run in [m2]. *)
+(** The generic forward simulation, restricted to code whose calls all
+    satisfy [P]. If every call to an [f] with [P f] in [m1] at fuel [k1]
+    can be matched by a call to [rho f] in [m2] at fuel [k2 >= k1], then
+    every such sequence [c] run in [m1] is matched by [rw_code rho c] run
+    in [m2]. *)
+Lemma sim_gen_on : forall (P : nat -> Prop) (m1 m2 : module) (rho : nat -> nat),
+  m_mems m1 = m_mems m2 ->
+  (forall k1 k2, k1 <= k2 ->
+     (forall c stk locs s r, calls_c P c ->
+        eval_seq m1 k1 c stk locs s = Some r ->
+        eval_seq m2 k2 (rw_code rho c) stk locs s = Some r) ->
+     forall f stk s cr, P f ->
+       do_call (eval_seq m1 k1) m1 f stk s = Some cr ->
+       do_call (eval_seq m2 k2) m2 (rho f) stk s = Some cr) ->
+  forall k1 k2, k1 <= k2 ->
+  forall c stk locs s r, calls_c P c ->
+    eval_seq m1 k1 c stk locs s = Some r ->
+    eval_seq m2 k2 (rw_code rho c) stk locs s = Some r.
+Proof.
+  intros P m1 m2 rho Hmem Hcall k1.
+  induction k1 as [|k1 IH]; intros k2 Hle c stk locs s r Hc H; [discriminate|].
+  destruct k2 as [|k2]; [lia|].
+  assert (Hle' : k1 <= k2) by lia.
+  specialize (IH k2 Hle').
+  revert stk locs s r H. revert c Hc.
+  apply (code_mut
+    (fun i => forall rest, calls_i P i -> calls_c P rest ->
+       (forall stk locs s r,
+          eval_seq m1 (S k1) rest stk locs s = Some r ->
+          eval_seq m2 (S k2) (rw_code rho rest) stk locs s = Some r) ->
+       forall stk locs s r,
+         eval_seq m1 (S k1) (CCons i rest) stk locs s = Some r ->
+         eval_seq m2 (S k2) (rw_code rho (CCons i rest)) stk locs s = Some r)
+    (fun c => calls_c P c -> forall stk locs s r,
+       eval_seq m1 (S k1) c stk locs s = Some r ->
+       eval_seq m2 (S k2) (rw_code rho c) stk locs s = Some r)).
+  - (* local.get *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *;
+      split_hyp; eauto.
+  - (* local.set *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *;
+      split_hyp; eauto.
+  - (* call *)
+    intros f rest Hf _ Hr stk locs s r H.
+    cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (do_call (eval_seq m1 k1) m1 f stk s) as [cr|] eqn:E; [|discriminate].
+    rewrite (Hcall _ _ Hle' IH _ _ _ _ Hf E).
+    destruct cr; eauto.
+  - (* prim *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *;
+      split_hyp; eauto.
+  - (* block *)
+    intros ar b Hb rest Hcb _ Hr stk locs s r H.
+    cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m1 (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb Hcb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* loop *)
+    intros ar b Hb rest Hcb Hcr Hr stk locs s r H.
+    cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct (eval_seq m1 (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
+    rewrite (Hb Hcb _ _ _ _ E).
+    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    exact (IH (CCons (ILoop ar b) rest) _ _ _ _ (conj Hcb Hcr) H).
+  - (* if *)
+    intros ar b1 Hb1 b2 Hb2 rest [Hc1 Hc2] _ Hr stk locs s r H.
+    cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *.
+    destruct stk as [|c stk']; [exact H|].
+    destruct (Z.eqb c 0).
+    + destruct (eval_seq m1 (S k1) b2 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb2 Hc2 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+    + destruct (eval_seq m1 (S k1) b1 [] locs s) as [rb|] eqn:E; [|discriminate].
+      rewrite (Hb1 Hc1 _ _ _ _ E).
+      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
+  - (* br *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *; eauto.
+  - (* br_if *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *;
+      split_hyp; eauto.
+  - (* return *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *; eauto.
+  - (* nop *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *; eauto.
+  - (* mem *)
+    intros; cbn [rw_code rw_instr] in *; rewrite eval_seq_cons in *; cbn [step] in *; rewrite ?Hmem in *;
+      split_hyp; eauto.
+  - (* nil *)
+    intros _ stk locs s r H; rewrite eval_seq_nil in *; exact H.
+  - (* cons *)
+    intros i Hi rest Hrest [Hci Hcr]. exact (Hi rest Hci Hcr (Hrest Hcr)).
+Qed.
+
+(** The unrestricted forward simulation: [sim_gen_on] with every call allowed. *)
 Lemma sim_gen : forall (m1 m2 : module) (rho : nat -> nat),
   m_mems m1 = m_mems m2 ->
   (forall k1 k2, k1 <= k2 ->
@@ -587,58 +760,12 @@ Lemma sim_gen : forall (m1 m2 : module) (rho : nat -> nat),
     eval_seq m1 k1 c stk locs s = Some r ->
     eval_seq m2 k2 (rw_code rho c) stk locs s = Some r.
 Proof.
-  intros m1 m2 rho Hmem Hcall k1.
-  induction k1 as [|k1 IH]; intros k2 Hle c stk locs s r H; [discriminate|].
-  destruct k2 as [|k2]; [lia|].
-  assert (Hle' : k1 <= k2) by lia.
-  specialize (IH k2 Hle').
-  revert c stk locs s r H.
-  apply (code_mut
-    (fun i => forall rest,
-       (forall stk locs s r,
-          eval_seq m1 (S k1) rest stk locs s = Some r ->
-          eval_seq m2 (S k2) (rw_code rho rest) stk locs s = Some r) ->
-       forall stk locs s r,
-         eval_seq m1 (S k1) (CCons i rest) stk locs s = Some r ->
-         eval_seq m2 (S k2) (rw_code rho (CCons i rest)) stk locs s = Some r)
-    (fun c => forall stk locs s r,
-       eval_seq m1 (S k1) c stk locs s = Some r ->
-       eval_seq m2 (S k2) (rw_code rho c) stk locs s = Some r));
-  cbn [rw_code rw_instr];
-  try (intros; rewrite eval_seq_cons in *; cbn [step] in *; rewrite ?Hmem in *;
-       split_hyp; eauto; fail).
-  - (* call *)
-    intros f rest Hr stk locs s r H.
-    rewrite eval_seq_cons in *; cbn [step] in *.
-    destruct (do_call (eval_seq m1 k1) m1 f stk s) as [cr|] eqn:E; [|discriminate].
-    rewrite (Hcall _ _ Hle' IH _ _ _ _ E).
-    destruct cr; eauto.
-  - (* block *)
-    intros ar b Hb rest Hr stk locs s r H.
-    rewrite eval_seq_cons in *; cbn [step] in *.
-    destruct (eval_seq m1 (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
-    rewrite (Hb _ _ _ _ E).
-    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
-  - (* loop *)
-    intros ar b Hb rest Hr stk locs s r H.
-    rewrite eval_seq_cons in *; cbn [step] in *.
-    destruct (eval_seq m1 (S k1) b [] locs s) as [rb|] eqn:E; [|discriminate].
-    rewrite (Hb _ _ _ _ E).
-    destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
-    apply IH in H; exact H.
-  - (* if *)
-    intros ar b1 Hb1 b2 Hb2 rest Hr stk locs s r H.
-    rewrite eval_seq_cons in *; cbn [step] in *.
-    destruct stk as [|c stk']; [exact H|].
-    destruct (Z.eqb c 0).
-    + destruct (eval_seq m1 (S k1) b2 [] locs s) as [rb|] eqn:E; [|discriminate].
-      rewrite (Hb2 _ _ _ _ E).
-      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
-    + destruct (eval_seq m1 (S k1) b1 [] locs s) as [rb|] eqn:E; [|discriminate].
-      rewrite (Hb1 _ _ _ _ E).
-      destruct rb as [? ? ?|[|?] ? ? ?|? ?|]; eauto.
-  - (* nil *)
-    intros; rewrite eval_seq_nil in *; exact H.
+  intros m1 m2 rho Hmem Hcall k1 k2 Hle c stk locs s r H.
+  apply (sim_gen_on (fun _ => True) m1 m2 rho Hmem) with (k1 := k1);
+    [|exact Hle|apply calls_true|exact H].
+  intros k1' k2' Hle' IH f stk' s' cr _ Hd.
+  apply (Hcall k1' k2' Hle'); [|exact Hd].
+  intros c' stk'' locs' s'' r' Hc'. exact (IH c' stk'' locs' s'' r' (calls_true c') Hc').
 Qed.
 
 Lemma do_call_mono : forall (run1 run2 : code -> list Z -> list Z -> store -> option res)
@@ -684,42 +811,45 @@ Ltac lift E K :=
       rewrite (mono_le m k K Hk _ _ _ _ _ E); clear Hk
   end.
 
-(** The generic backward simulation, with fuel existentially quantified. *)
-Lemma sim_back_gen : forall (m1 m2 : module) (rho : nat -> nat),
+(** The generic backward simulation, with fuel existentially quantified,
+    restricted to code whose calls all satisfy [P]. *)
+Lemma sim_back_gen_on : forall (P : nat -> Prop) (m1 m2 : module) (rho : nat -> nat),
   m_mems m1 = m_mems m2 ->
   (forall k2,
-     (forall c stk locs s r,
+     (forall c stk locs s r, calls_c P c ->
         eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
         exists k1, eval_seq m1 k1 c stk locs s = Some r) ->
-     forall f stk s cr,
+     forall f stk s cr, P f ->
        do_call (eval_seq m2 k2) m2 (rho f) stk s = Some cr ->
        exists k1, do_call (eval_seq m1 k1) m1 f stk s = Some cr) ->
-  forall k2 c stk locs s r,
+  forall k2 c stk locs s r, calls_c P c ->
     eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
     exists k1, eval_seq m1 k1 c stk locs s = Some r.
 Proof.
-  intros m1 m2 rho Hmem Hback k2.
-  induction k2 as [|k2 IH]; intros c stk locs s r H; [discriminate|].
-  revert c stk locs s r H.
+  intros P m1 m2 rho Hmem Hback k2.
+  induction k2 as [|k2 IH]; intros c stk locs s r Hc H; [discriminate|].
+  revert stk locs s r H. revert c Hc.
   apply (code_mut
-    (fun i => forall rest,
+    (fun i => forall rest, calls_i P i -> calls_c P rest ->
        (forall stk locs s r,
           eval_seq m2 (S k2) (rw_code rho rest) stk locs s = Some r ->
           exists k1, eval_seq m1 k1 rest stk locs s = Some r) ->
        forall stk locs s r,
          eval_seq m2 (S k2) (rw_code rho (CCons i rest)) stk locs s = Some r ->
          exists k1, eval_seq m1 k1 (CCons i rest) stk locs s = Some r)
-    (fun c => forall stk locs s r,
+    (fun c => calls_c P c -> forall stk locs s r,
        eval_seq m2 (S k2) (rw_code rho c) stk locs s = Some r ->
        exists k1, eval_seq m1 k1 c stk locs s = Some r));
-  cbn [rw_code rw_instr]; intros.
+  cbn [rw_code rw_instr].
   - (* local.get *)
+    intros n rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (nth_error locs n) eqn:E.
     + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
       rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
   - (* local.set *)
+    intros n rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct stk as [|v stk']; [exists 1; exact H0|].
     destruct (n <? length locs) eqn:E.
@@ -727,9 +857,10 @@ Proof.
       rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
   - (* call *)
+    intros n rest Hn _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (do_call (eval_seq m2 k2) m2 (rho n) stk s) as [cr|] eqn:E; [|discriminate].
-    destruct (Hback k2 IH _ _ _ _ E) as [k1 E1].
+    destruct (Hback k2 IH _ _ _ _ Hn E) as [k1 E1].
     destruct cr as [stk' s'|].
     + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S (k1 + k3)).
       rewrite eval_seq_cons; cbn [step].
@@ -737,12 +868,14 @@ Proof.
       lift E3 (S (k1 + k3)); reflexivity.
     + exists (S k1). rewrite eval_seq_cons; cbn [step]. rewrite E1. exact H0.
   - (* prim *)
+    intros n rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (prim n stk locs s) as [[[stk' locs'] s']|] eqn:E.
     + destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
       rewrite eval_seq_cons; cbn [step]; rewrite E. lift E3 (S k3); reflexivity.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite E. exact H0.
   - (* block *)
+    intros n c H rest Hcb _ H0 stk locs s r H1. specialize (H Hcb).
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (eval_seq m2 (S k2) (rw_code rho c) [] locs s) as [rb|] eqn:E; [|discriminate].
     destruct (H _ _ _ _ E) as [kb Eb].
@@ -755,6 +888,7 @@ Proof.
     + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
     + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
   - (* loop *)
+    intros n c H rest Hcb Hcr H0 stk locs s r H1. specialize (H Hcb).
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (eval_seq m2 (S k2) (rw_code rho c) [] locs s) as [rb|] eqn:E; [|discriminate].
     destruct (H _ _ _ _ E) as [kb Eb].
@@ -762,12 +896,13 @@ Proof.
     + destruct (H0 _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
       rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (S (kb + k3)). reflexivity.
     + change (eval_seq m2 k2 (rw_code rho (CCons (ILoop n c) rest)) stk l s' = Some r) in H1.
-      destruct (IH _ _ _ _ _ H1) as [k3 E3]. exists (S (kb + k3)).
+      destruct (IH (CCons (ILoop n c) rest) _ _ _ _ (conj Hcb Hcr) H1) as [k3 E3]. exists (S (kb + k3)).
       rewrite eval_seq_cons; cbn [step]. lift Eb (S (kb + k3)). lift E3 (kb + k3). reflexivity.
     + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
     + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
     + exists (S kb). rewrite eval_seq_cons; cbn [step]. lift Eb (S kb). exact H1.
   - (* if *)
+    intros n c H c0 H0 rest [Hc1 Hc2] _ H1 stk locs s r H2. specialize (H Hc1). specialize (H0 Hc2).
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct stk as [|v stk']; [exists 1; exact H2|].
     destruct (Z.eqb v 0) eqn:Ez.
@@ -792,8 +927,10 @@ Proof.
       * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
       * exists (S kb). rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift Eb (S kb). exact H2.
   - (* br *)
+    intros n rest _ _ H stk locs s r H0.
     exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
   - (* br_if *)
+    intros n rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct stk as [|v stk']; [exists 1; exact H0|].
     destruct (Z.eqb v 0) eqn:Ez.
@@ -801,12 +938,15 @@ Proof.
       rewrite eval_seq_cons; cbn [step]; rewrite Ez. lift E3 (S k3); reflexivity.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ez. exact H0.
   - (* return *)
+    intros rest _ _ H stk locs s r H0.
     exists 1. rewrite eval_seq_cons in *; cbn [step] in *. exact H0.
   - (* nop *)
+    intros rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     destruct (H _ _ _ _ H0) as [k3 E3]. exists (S k3).
     rewrite eval_seq_cons; cbn [step]. lift E3 (S k3); reflexivity.
   - (* mem *)
+    intros n l rest _ _ H stk locs s r H0.
     rewrite eval_seq_cons in *; cbn [step] in *.
     rewrite <- Hmem in H0.
     destruct (mem_keys (m_mems m1) l) as [ys|] eqn:Ek.
@@ -816,9 +956,33 @@ Proof.
       * exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek, E. exact H0.
     + exists 1. rewrite eval_seq_cons; cbn [step]; rewrite Ek. exact H0.
   - (* nil *)
+    intros _ stk locs s r H.
     exists 1. exact H.
   - (* cons *)
-    apply H; assumption.
+    intros i Hi rest Hrest [Hci Hcr]. exact (Hi rest Hci Hcr (Hrest Hcr)).
+Qed.
+
+(** The unrestricted backward simulation: [sim_back_gen_on] with every call
+    allowed. *)
+Lemma sim_back_gen : forall (m1 m2 : module) (rho : nat -> nat),
+  m_mems m1 = m_mems m2 ->
+  (forall k2,
+     (forall c stk locs s r,
+        eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
+        exists k1, eval_seq m1 k1 c stk locs s = Some r) ->
+     forall f stk s cr,
+       do_call (eval_seq m2 k2) m2 (rho f) stk s = Some cr ->
+       exists k1, do_call (eval_seq m1 k1) m1 f stk s = Some cr) ->
+  forall k2 c stk locs s r,
+    eval_seq m2 k2 (rw_code rho c) stk locs s = Some r ->
+    exists k1, eval_seq m1 k1 c stk locs s = Some r.
+Proof.
+  intros m1 m2 rho Hmem Hback k2 c stk locs s r H.
+  apply (sim_back_gen_on (fun _ => True) m1 m2 rho Hmem) with (k2 := k2);
+    [|apply calls_true|exact H].
+  intros k2' IH f stk' s' cr _ Hd.
+  apply (Hback k2'); [|exact Hd].
+  intros c' stk'' locs' s'' r' Hc'. exact (IH c' stk'' locs' s'' r' (calls_true c') Hc').
 Qed.
 
 (** *** Lemmas about calls *)
@@ -1682,6 +1846,122 @@ Proof.
   apply memory_import_dedup_correct, rust_mem_remap_ok; assumption.
 Qed.
 
+(** *** Dead function elimination *)
+
+Lemma dfe_rho_imp : forall kf ni f, f < ni -> dfe_rho kf ni f = f.
+Proof. intros kf ni f H. unfold dfe_rho. apply Nat.ltb_lt in H. rewrite H. reflexivity. Qed.
+
+Lemma dfe_rho_def : forall kf ni f, ni <= f -> dfe_rho kf ni f = ni + cnt kf 0 (f - ni).
+Proof. intros kf ni f H. unfold dfe_rho. apply Nat.ltb_ge in H. rewrite H. reflexivity. Qed.
+
+Lemma do_call_dfe : forall kf m k1 k2 f stk s cr,
+  dfe_ok kf m ->
+  live kf (length (m_imports m)) f ->
+  (forall c stk locs s r, calls_c (live kf (length (m_imports m))) c ->
+     eval_seq m k1 c stk locs s = Some r ->
+     eval_seq (dfe_module kf m) k2 (rw_code (dfe_rho kf (length (m_imports m))) c) stk locs s
+     = Some r) ->
+  do_call (eval_seq m k1) m f stk s = Some cr ->
+  do_call (eval_seq (dfe_module kf m) k2) (dfe_module kf m)
+          (dfe_rho kf (length (m_imports m)) f) stk s = Some cr.
+Proof.
+  intros kf m k1 k2 f stk s cr Hok Hf Hsim H.
+  destruct (f <? length (m_imports m)) eqn:Ef.
+  { apply Nat.ltb_lt in Ef as Ef'. rewrite (dfe_rho_imp _ _ _ Ef').
+    unfold do_call in *; cbn [m_imports m_funcs dfe_module] in *. rewrite Ef in *. exact H. }
+  apply Nat.ltb_ge in Ef. rewrite (dfe_rho_def _ _ _ Ef).
+  unfold do_call in *; cbn [m_imports m_funcs dfe_module] in *.
+  assert (Ef2 : (f <? length (m_imports m)) = false) by (apply Nat.ltb_ge; exact Ef).
+  rewrite Ef2 in H.
+  destruct (length (m_imports m) + cnt kf 0 (f - length (m_imports m)) <? length (m_imports m))
+    eqn:E'; [apply Nat.ltb_lt in E'; lia|].
+  replace (length (m_imports m) + cnt kf 0 (f - length (m_imports m)) - length (m_imports m))
+    with (cnt kf 0 (f - length (m_imports m))) by lia.
+  rewrite nth_error_map.
+  destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|] eqn:Ed.
+  - destruct Hf as [Hf|Hf]; [lia|].
+    rewrite (keep_nth kf (m_funcs m) 0 _ d Hf Ed).
+    cbn [option_map rw_func f_sig f_locals f_body].
+    destruct (_ <=? _); [|exact H].
+    destruct (eval_seq m k1 (f_body d) _ _ s) as [r|] eqn:E; [|discriminate].
+    rewrite (Hsim _ _ _ _ _ (Hok _ _ Hf Ed) E). exact H.
+  - apply nth_error_None in Ed.
+    rewrite (keep_out kf (m_funcs m) 0 _ Ed). exact H.
+Qed.
+
+Lemma do_call_dfe_back : forall kf m k2 f stk s cr,
+  dfe_ok kf m ->
+  live kf (length (m_imports m)) f ->
+  (forall c stk locs s r, calls_c (live kf (length (m_imports m))) c ->
+     eval_seq (dfe_module kf m) k2 (rw_code (dfe_rho kf (length (m_imports m))) c) stk locs s
+     = Some r ->
+     exists k1, eval_seq m k1 c stk locs s = Some r) ->
+  do_call (eval_seq (dfe_module kf m) k2) (dfe_module kf m)
+          (dfe_rho kf (length (m_imports m)) f) stk s = Some cr ->
+  exists k1, do_call (eval_seq m k1) m f stk s = Some cr.
+Proof.
+  intros kf m k2 f stk s cr Hok Hf Hsim H.
+  destruct (f <? length (m_imports m)) eqn:Ef.
+  { apply Nat.ltb_lt in Ef as Ef'. rewrite (dfe_rho_imp _ _ _ Ef') in H.
+    unfold do_call in *; cbn [m_imports m_funcs dfe_module] in *. rewrite Ef in H.
+    exists 0. rewrite Ef. exact H. }
+  apply Nat.ltb_ge in Ef. rewrite (dfe_rho_def _ _ _ Ef) in H.
+  unfold do_call in *; cbn [m_imports m_funcs dfe_module] in *.
+  assert (Ef2 : (f <? length (m_imports m)) = false) by (apply Nat.ltb_ge; exact Ef).
+  rewrite Ef2.
+  destruct (length (m_imports m) + cnt kf 0 (f - length (m_imports m)) <? length (m_imports m))
+    eqn:E'; [apply Nat.ltb_lt in E'; lia|].
+  replace (length (m_imports m) + cnt kf 0 (f - length (m_imports m)) - length (m_imports m))
+    with (cnt kf 0 (f - length (m_imports m))) in H by lia.
+  rewrite nth_error_map in H.
+  destruct (nth_error (m_funcs m) (f - length (m_imports m))) as [d|] eqn:Ed.
+  - destruct Hf as [Hf|Hf]; [lia|].
+    rewrite (keep_nth kf (m_funcs m) 0 _ d Hf Ed) in H.
+    cbn [option_map rw_func f_sig f_locals f_body] in H.
+    destruct (_ <=? _); [|exists 0; exact H].
+    destruct (eval_seq (dfe_module kf m) k2 (rw_code _ (f_body d)) _ _ s)
+      as [r|] eqn:E; [|discriminate].
+    destruct (Hsim _ _ _ _ _ (Hok _ _ Hf Ed) E) as [k1 E1].
+    exists k1. rewrite E1. exact H.
+  - apply nth_error_None in Ed.
+    rewrite (keep_out kf (m_funcs m) 0 _ Ed) in H. exists 0. exact H.
+Qed.
+
+(** Dead function elimination is correct. If the live set is closed under
+    calls ([dfe_ok]), then every live function [f] of [m] (every import and
+    every kept defined function) and function [dfe_rho kf ni f] of the
+    module with the dead functions removed are observationally equivalent,
+    for any host and any semantics of the unmodelled instructions.
+
+    In fused_optimizer.rs, exports, the start function and the functions
+    named by element segments are roots of the live set, and are remapped
+    through the same map, so this is the statement about each of them. The
+    model has no tables: that the element section is rewritten through the
+    same map is checked by the tests of #494, not by this theorem. *)
+Theorem dead_function_elim_correct : forall kf m,
+  dfe_ok kf m ->
+  forall f, live kf (length (m_imports m)) f ->
+  call_equiv m f (dfe_module kf m) (dfe_rho kf (length (m_imports m)) f).
+Proof.
+  intros kf m Hok f Hf stk s c. split.
+  - intros [k Hk]. exists k.
+    eapply do_call_dfe; [exact Hok|exact Hf| |exact Hk].
+    intros c' stk' locs s' r Hc' E.
+    apply (sim_gen_on (live kf (length (m_imports m))) m (dfe_module kf m)
+                      (dfe_rho kf (length (m_imports m))) eq_refl)
+      with (k1 := k); [|lia|exact Hc'|exact E].
+    intros k1 k2 _ IH g stk'' s'' cr Hg H.
+    exact (do_call_dfe _ _ _ _ _ _ _ _ Hok Hg IH H).
+  - intros [k Hk].
+    eapply do_call_dfe_back; [exact Hok|exact Hf| |exact Hk].
+    intros c' stk' locs s' r Hc' E.
+    apply (sim_back_gen_on (live kf (length (m_imports m))) m (dfe_module kf m)
+                           (dfe_rho kf (length (m_imports m))) eq_refl)
+      with (k2 := k); [|exact Hc'|exact E].
+    intros k2 IH g stk'' s'' cr Hg H.
+    exact (do_call_dfe_back _ _ _ _ _ _ _ Hok Hg IH H).
+Qed.
+
 End Semantics.
 
 (** ** Concrete checks
@@ -1892,5 +2172,58 @@ Example out_of_range_traps :
   run3 (mdedup_module (rust_mem_remap 2) [7]
           (mkModule [] [mkFunc one_one 0 (CCons (IMem 1 [2]) CNil)] [7; 7])) = Some None.
 Proof. split; reflexivity. Qed.
+
+(** Dead function elimination. Function 0 calls function 2; function 1
+    is dead and computes [local1 - local0]; function 2 computes
+    [local0 - local1]. Keeping 0 and 2 moves 2 down to 1, and the call in
+    0 is rewritten to [call 1]. *)
+Definition ex5 : module :=
+  mkModule []
+    [ mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 2) CNil)));
+      mkFunc two_to_one 0 (CCons (ILocalGet 1) (CCons (ILocalGet 0) (CCons (IPrim 0) CNil)));
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (IPrim 0) CNil))) ] [].
+
+Definition ex5_keep (j : nat) : bool := negb (Nat.eqb j 1).
+
+Lemma ex5_ok : dfe_ok ex5_keep ex5.
+Proof.
+  intros j d Hk Hn.
+  destruct j as [|[|[|j]]]; cbn in Hn; try discriminate; inversion Hn; subst; cbn;
+    repeat split; unfold live; cbn; auto.
+  destruct j; discriminate.
+Qed.
+
+Example dead_function_removed :
+  run (dfe_module ex5_keep ex5) (dfe_rho ex5_keep 0 0) = run ex5 0 /\
+  run ex5 0 = Some (CDone unit [7%Z] tt) /\
+  length (m_funcs (dfe_module ex5_keep ex5)) = 2.
+Proof. repeat split; reflexivity. Qed.
+
+(** The theorem applies to this instance. *)
+Example dead_function_removed_equiv :
+  call_equiv unit ex_prim ex_host ex_mprim ex5 0 (dfe_module ex5_keep ex5) (dfe_rho ex5_keep 0 0).
+Proof.
+  apply dead_function_elim_correct; [exact ex5_ok|]. right. reflexivity.
+Qed.
+
+(** Removing the functions without rewriting the calls leaves [call 2]
+    pointing past the end of the function list: the call traps. So the
+    rewrite is necessary. *)
+Example stale_index_matters :
+  run (mkModule [] (keep_from ex5_keep 0 (m_funcs ex5)) []) 0 = Some (CTrap unit).
+Proof. reflexivity. Qed.
+
+(** Removing a function that a kept function calls changes the answer.
+    So the closure condition [dfe_ok] is necessary. *)
+Definition ex5_keep_bad (j : nat) : bool := Nat.eqb j 0.
+
+Example live_callee_matters :
+  ~ dfe_ok ex5_keep_bad ex5 /\
+  run (dfe_module ex5_keep_bad ex5) 0 = Some (CTrap unit).
+Proof.
+  split; [|reflexivity].
+  intros H. specialize (H 0 _ eq_refl eq_refl). cbn in H.
+  destruct H as [_ [_ [[H|H] _]]]; [lia|discriminate].
+Qed.
 
 End ConcreteCheck.
