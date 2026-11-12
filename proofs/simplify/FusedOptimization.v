@@ -26,8 +26,9 @@
     3. Type deduplication: merging structurally identical types and remapping
        references preserves all instruction semantics.
 
-    4. Dead function elimination: removing unreachable functions cannot affect
-       observable program behavior.
+    4. Dead function elimination (proven in FusedSemantics.v): removing the
+       defined functions outside a call-closed live set, and renumbering the
+       rest, preserves every live function.
 
     5. Import deduplication (proven in FusedSemantics.v): merging identical
        imports (same module+name+type)
@@ -42,13 +43,11 @@
 
     This file is being replaced, pass by pass, by FusedSemantics.v, which
     proves each pass against a concrete call semantics. Until a pass moves
-    there, its statement here is not semantic evidence:
-    - [dead_function_removal_preserves_semantics] and
-      [fused_optimization_correct] take their conclusion as a hypothesis.
-    - [dead_function_elim_correct] concludes [x = x].
-    Pass 0a (memory import deduplication), Pass 1 (adapter
-    devirtualization), Pass 2 (trivial call elimination) and Pass 5
-    (import deduplication) have moved: see FusedSemantics.v.
+    there, its statement here is not semantic evidence: the Pass 3
+    statements restate their own hypotheses. Pass 0a (memory import
+    deduplication), Pass 1 (adapter devirtualization), Pass 2 (trivial call
+    elimination), Pass 4 (dead function elimination) and Pass 5 (import
+    deduplication) have moved: see FusedSemantics.v.
 
     ## Connection to Meld
 
@@ -282,40 +281,16 @@ Proof.
   apply Hcanon. exact Hi.
 Qed.
 
-(** * Pass 4: Dead Function Elimination Correctness *)
+(** * Pass 4: Dead Function Elimination Correctness
 
-
-(** Dead functions (unreachable) cannot affect the execution of live functions.
-    This is because no execution path from any export root will ever invoke them. *)
-Theorem dead_function_elim_correct :
-  forall (m : wasm_module) (dead_idx : func_idx) (st : exec_state),
-    (* Precondition: dead_idx is not reachable from any export *)
-    ~ reachable m dead_idx ->
-    (* Conclusion: removing dead_idx does not affect any reachable function *)
-    forall live_idx,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m live_idx st.
-Proof.
-  intros m dead_idx st Hdead live_idx Hlive.
-  reflexivity.
-Qed.
-
-(** Stronger version: removing a dead function and remapping indices preserves
-    the behavior of all reachable functions. *)
-Theorem dead_function_removal_preserves_semantics :
-  forall (m m' : wasm_module) (dead_idx : func_idx),
-    ~ reachable m dead_idx ->
-    (* m' is m with dead_idx removed and indices remapped *)
-    (forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st) ->
-    forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st.
-Proof.
-  intros m m' dead_idx Hdead Hpreserve live_idx st Hlive.
-  apply Hpreserve. exact Hlive.
-Qed.
+    Proven in FusedSemantics.v, against a concrete interpreter and with no
+    axioms: [dead_function_elim_correct] says that removing the defined
+    functions outside a live set that is closed under calls, moving each kept
+    function down by the number removed before it and rewriting every call
+    through that map, preserves every live function. The two statements that
+    used to stand here were removed: [dead_function_elim_correct] concluded
+    [exec_call m f st = exec_call m f st], and
+    [dead_function_removal_preserves_semantics] assumed its own conclusion. *)
 
 (** * Pass 5: Import Deduplication Correctness
 
@@ -327,30 +302,12 @@ Qed.
     function moves down by the number of imports removed. The statement
     that stood here only restated the axiom. *)
 
-(** * Combined Correctness *)
+(** * Combined Correctness
 
-(** The full fused optimization pipeline preserves module semantics.
-    This combines all six pass correctness theorems. *)
-Theorem fused_optimization_correct :
-  forall (m m' : wasm_module),
-    (* m' is the result of applying the fused optimization pipeline to m:
-       0a. Memory import deduplication
-       1. Adapter devirtualization
-       2. Trivial call elimination
-       3. Type deduplication
-       4. Dead function elimination
-       5. Import deduplication *)
-    (forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st) ->
-    (* The optimized module preserves behavior of all reachable functions *)
-    forall live_idx st,
-      reachable m live_idx ->
-      exec_call m live_idx st = exec_call m' live_idx st.
-Proof.
-  intros m m' Hpreserve live_idx st Hlive.
-  apply Hpreserve. exact Hlive.
-Qed.
+    No statement about the whole pipeline is made here. The one that stood
+    here, [fused_optimization_correct], assumed its own conclusion. Each pass
+    that loom runs is proven in FusedSemantics.v, except Pass 3 (type
+    deduplication). *)
 
 (** * Integration with loom Correctness *)
 
