@@ -543,9 +543,16 @@ jobs:
     # Stays on ubuntu-latest: requires Nix + Bazel; both are out-of-scope for
     # smithy phase 1 (see migration playbook "What's currently out of scope").
     runs-on: ubuntu-latest
-    # A proof that stops compiling fails this job (loom#169). Still open
-    # under #169: the proofs' pre-existing Admitted/Axiom. This job checks
-    # that the proven parts keep compiling; it does not close those gaps.
+    # Fails when (loom#169):
+    #   - a proof stops compiling;
+    #   - a .v file gains an Axiom/Parameter/Conjecture/Admitted/admit, or
+    #     Rust gains a Verus external_body/assume/admit, that
+    #     proofs/TRUST_LEDGER.txt does not list (removals always pass);
+    #   - rocqchk, re-checking every compiled library from its .vo files,
+    #     reports an axiom or theory flag proofs/ASSUMPTIONS_ALLOWLIST.txt
+    #     does not list (proofs/kernel_check.bzl), or a rocq_library is not
+    #     re-checked at all.
+    # The listed assumptions themselves are still open under #169.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Nix
@@ -573,6 +580,37 @@ jobs:
         run: bazel build //proofs/... --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB"
       - name: Test proofs
         run: bazel test //proofs/... --test_output=errors --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB"
+      # The rocqchk checks are build targets, so "Build proofs" already ran
+      # them; this step asserts none is missing and prints what they found.
+      - name: Kernel re-check (rocqchk) coverage and assumptions
+        run: |
+          set -euo pipefail
+          libs=$(bazel query 'kind("rocq_library rule", //proofs/...)')
+          checks=$(bazel query 'kind("rocq_kernel_check rule", //proofs/...)')
+          [ -n "$libs" ] || { echo "no rocq_library targets found"; exit 1; }
+          [ -n "$checks" ] || { echo "no rocq_kernel_check targets found"; exit 1; }
+          unchecked=$(bazel query 'kind("rocq_library rule", //proofs/...) except deps(kind("rocq_kernel_check rule", //proofs/...))')
+          if [ -n "$unchecked" ]; then
+            echo "rocq_library targets no rocq_kernel_check re-checks:"
+            echo "$unchecked"
+            exit 1
+          fi
+          echo "$(echo "$libs" | wc -l) libraries, $(echo "$checks" | wc -l) kernel checks"
+          # shellcheck disable=SC2086
+          bazel build $checks --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB"
+          bin=$(bazel info bazel-bin --repo_env=LIBRARY_PATH="$ROCQ_RUST_LIB")
+          for c in $checks; do
+            pkg=${c#//}; pkg=${pkg%%:*}; name=${c##*:}
+            f="$bin/$pkg/$name.assumptions.txt"
+            [ -s "$f" ] || { echo "missing $f"; exit 1; }
+            echo "== $c"
+            grep -v '^Axioms: \(Corelib\|RocqOfRust\|loom\)\.' "$f" || true
+            echo "   ($(grep -c '^Axioms: ' "$f") axioms in total)"
+          done
+      # Runs even when a Bazel step failed, so one run reports both gates.
+      - name: Trust ledger
+        if: ${{ !cancelled() }}
+        run: python3 scripts/proof-trust-ledger.py --check
 
   differential:
     name: Differential Testing (vs wasm-opt)

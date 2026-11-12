@@ -1,0 +1,226 @@
+# Assumptions rocqchk may report for loom's proofs (proofs/kernel_check.bzl).
+# Each line is "<section>: <item>" as in a check's .assumptions.txt output.
+# "[//pkg:target] line" accepts the line for that check only.
+# Generated from the checks' output. Remove lines as assumptions are
+# proven; adding a line needs a reviewed reason.
+
+# Axioms stated in loom's own proofs (also in proofs/TRUST_LEDGER.txt), and
+# the impredicative Set the translated code is compiled with.
+[//proofs:fused_optimization] Axioms: proofs.FusedOptimization.exec_call
+[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.discriminant_correspondence
+[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.is_integer_correspondence
+[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.size_bytes_correspondence
+[//proofs/rust_verified:isle_conversion] Theory: Set is impredicative
+[//proofs/rust_verified:stack_signature] Theory: Set is impredicative
+[//proofs/rust_verified:value_types_translated_proofs] Theory: Set is impredicative
+
+# Theory flags every library is checked under.
+Theory: Rewrite rules are not allowed
+Theory: Set is predicative
+
+# Primitive integers, floats and strings: Corelib declares their
+# operations and specifications as axioms that the kernel implements.
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.add
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.addc
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.addcarryc
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.addmuldiv
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.asr
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.compare
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.compares
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.div
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.diveucl
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.diveucl_21
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.divs
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.eqb
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.head0
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.int
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.land
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.leb
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.lesb
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.lor
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.lsl
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.lsr
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.ltb
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.ltsb
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.lxor
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.mod
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.mods
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.mul
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.mulc
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.sub
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.subc
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.subcarryc
+Axioms: Corelib.Numbers.Cyclic.Int63.PrimInt63.tail0
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.add_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.addc_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.addcarryc_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.addmuldiv_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.compare_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.div_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.diveucl_21_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.diveucl_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.eqb_correct
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.eqb_refl
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.head0_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.land_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.leb_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.lor_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.lsl_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.lsr_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.ltb_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.lxor_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.mod_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.mul_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.mulc_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.of_to_Z
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.sub_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.subc_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.subcarryc_def_spec
+Axioms: Corelib.Numbers.Cyclic.Int63.Uint63Axioms.tail0_spec
+Axioms: Corelib.Strings.PrimString.cat
+Axioms: Corelib.Strings.PrimString.compare
+Axioms: Corelib.Strings.PrimString.get
+Axioms: Corelib.Strings.PrimString.length
+Axioms: Corelib.Strings.PrimString.make
+Axioms: Corelib.Strings.PrimString.string
+Axioms: Corelib.Strings.PrimString.sub
+
+# Stdlib axioms reached through RocqOfRust.
+Axioms: Stdlib.Logic.Eqdep.Eq_rect_eq.eq_rect_eq
+
+# The RocqOfRust library's own axioms (its monad and type encoding).
+Axioms: RocqOfRust.M.IsAssociatedFunction.t
+Axioms: RocqOfRust.M.IsDiscriminant
+Axioms: RocqOfRust.M.IsFunction.t
+Axioms: RocqOfRust.M.IsProvidedMethod
+Axioms: RocqOfRust.M.IsTraitInstance
+Axioms: RocqOfRust.M.SubPointer.get_slice_rest
+Axioms: RocqOfRust.M.SubPointer.get_slice_rev_index
+Axioms: RocqOfRust.M.Ty.function
+Axioms: RocqOfRust.M.Ty.path
+Axioms: RocqOfRust.M.Ty.t
+Axioms: RocqOfRust.M.Ty.tuple
+Axioms: RocqOfRust.M.cast
+Axioms: RocqOfRust.M.pointer_coercion_intrinsic
+Axioms: RocqOfRust.M.run
+Axioms: RocqOfRust.M.struct_record_update
+Axioms: RocqOfRust.M.unevaluated_const
+Axioms: RocqOfRust.M.yield
+Axioms: RocqOfRust.RocqOfRust.InlineAssembly
+Axioms: RocqOfRust.RocqOfRust.UnsupportedLiteral
+Axioms: RocqOfRust.RocqOfRust.pointer_coercion
+Axioms: RocqOfRust.lib.lib.FunctionTraitAutomaticImpl.FunctionImplementsFn
+Axioms: RocqOfRust.lib.lib.FunctionTraitAutomaticImpl.FunctionImplementsFnMut
+Axioms: RocqOfRust.lib.lib.FunctionTraitAutomaticImpl.FunctionImplementsFnOnce
+Axioms: RocqOfRust.lib.lib.Ty.apply
+Axioms: RocqOfRust.lib.lib.Ty.associated_in_trait
+Axioms: RocqOfRust.lib.lib.Ty.associated_unknown
+Axioms: RocqOfRust.lib.lib.Ty.dyn
+
+# Axioms rocq-of-rust generates for the translated Rust items in
+# proofs/rust_verified/*.rs (trait implementations, function and
+# discriminant registrations). They are not in any tracked .v file.
+Axioms: loom.isle_conversion.Impl_core_clone_Clone_for_isle_conversion_ConversionError.Implements
+Axioms: loom.isle_conversion.Impl_core_clone_Clone_for_isle_conversion_Instruction.Implements
+Axioms: loom.isle_conversion.Impl_core_clone_Clone_for_isle_conversion_Term.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_Eq_for_isle_conversion_ConversionError.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_Eq_for_isle_conversion_Instruction.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_Eq_for_isle_conversion_Term.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_PartialEq_isle_conversion_ConversionError_for_isle_conversion_ConversionError.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_PartialEq_isle_conversion_Instruction_for_isle_conversion_Instruction.Implements
+Axioms: loom.isle_conversion.Impl_core_cmp_PartialEq_isle_conversion_Term_for_isle_conversion_Term.Implements
+Axioms: loom.isle_conversion.Impl_core_fmt_Debug_for_isle_conversion_ConversionError.Implements
+Axioms: loom.isle_conversion.Impl_core_fmt_Debug_for_isle_conversion_Instruction.Implements
+Axioms: loom.isle_conversion.Impl_core_fmt_Debug_for_isle_conversion_Term.Implements
+Axioms: loom.isle_conversion.Impl_core_marker_StructuralPartialEq_for_isle_conversion_ConversionError.Implements
+Axioms: loom.isle_conversion.Impl_core_marker_StructuralPartialEq_for_isle_conversion_Instruction.Implements
+Axioms: loom.isle_conversion.Impl_core_marker_StructuralPartialEq_for_isle_conversion_Term.Implements
+Axioms: loom.isle_conversion.Instance_IsFunction_instructions_to_terms
+Axioms: loom.isle_conversion.Instance_IsFunction_term_to_instructions_recursive
+Axioms: loom.isle_conversion.Instance_IsFunction_terms_to_instructions
+Axioms: loom.isle_conversion.IsDiscriminant_ConversionError_InvalidTerm
+Axioms: loom.isle_conversion.IsDiscriminant_ConversionError_StackUnderflow
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_Drop
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I32Add
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I32Const
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I32Mul
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I32Sub
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I64Add
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I64Const
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I64Mul
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_I64Sub
+Axioms: loom.isle_conversion.IsDiscriminant_Instruction_Nop
+Axioms: loom.isle_conversion.IsDiscriminant_Term_Drop
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I32Add
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I32Const
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I32Mul
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I32Sub
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I64Add
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I64Const
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I64Mul
+Axioms: loom.isle_conversion.IsDiscriminant_Term_I64Sub
+Axioms: loom.isle_conversion.IsDiscriminant_Term_Nop
+Axioms: loom.isle_conversion.tests.Instance_IsFunction_test_roundtrip_add
+Axioms: loom.isle_conversion.tests.Instance_IsFunction_test_roundtrip_complex
+Axioms: loom.isle_conversion.tests.Instance_IsFunction_test_roundtrip_const
+Axioms: loom.stack_signature.Impl_core_clone_Clone_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_clone_Clone_for_stack_signature_StackSignature.Implements
+Axioms: loom.stack_signature.Impl_core_clone_Clone_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_Eq_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_Eq_for_stack_signature_StackSignature.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_Eq_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_PartialEq_stack_signature_SignatureKind_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_PartialEq_stack_signature_StackSignature_for_stack_signature_StackSignature.Implements
+Axioms: loom.stack_signature.Impl_core_cmp_PartialEq_stack_signature_ValueType_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_core_fmt_Debug_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_fmt_Debug_for_stack_signature_StackSignature.Implements
+Axioms: loom.stack_signature.Impl_core_fmt_Debug_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_core_marker_Copy_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_marker_Copy_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_core_marker_StructuralPartialEq_for_stack_signature_SignatureKind.Implements
+Axioms: loom.stack_signature.Impl_core_marker_StructuralPartialEq_for_stack_signature_StackSignature.Implements
+Axioms: loom.stack_signature.Impl_core_marker_StructuralPartialEq_for_stack_signature_ValueType.Implements
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_composes
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_empty
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_is_identity
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_is_polymorphic_bottom
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_new
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_polymorphic_empty
+Axioms: loom.stack_signature.Impl_stack_signature_StackSignature.AssociatedFunction_stack_effect
+Axioms: loom.stack_signature.Instance_IsFunction_compose
+Axioms: loom.stack_signature.Instance_IsFunction_is_subtype
+Axioms: loom.stack_signature.IsDiscriminant_SignatureKind_Fixed
+Axioms: loom.stack_signature.IsDiscriminant_SignatureKind_Polymorphic
+Axioms: loom.stack_signature.IsDiscriminant_ValueType_F32
+Axioms: loom.stack_signature.IsDiscriminant_ValueType_F64
+Axioms: loom.stack_signature.IsDiscriminant_ValueType_I32
+Axioms: loom.stack_signature.IsDiscriminant_ValueType_I64
+Axioms: loom.stack_signature.instructions.Instance_IsFunction_drop_i32
+Axioms: loom.stack_signature.instructions.Instance_IsFunction_i32_add
+Axioms: loom.stack_signature.instructions.Instance_IsFunction_i32_const
+Axioms: loom.stack_signature.instructions.Instance_IsFunction_nop
+Axioms: loom.stack_signature.instructions.Instance_IsFunction_unreachable
+Axioms: loom.stack_signature.tests.Instance_IsFunction_test_compose_identity
+Axioms: loom.stack_signature.tests.Instance_IsFunction_test_subtype_reflexive
+Axioms: loom.value_types.Impl_core_clone_Clone_for_value_types_StackSignature.Implements
+Axioms: loom.value_types.Impl_core_clone_Clone_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_core_cmp_Eq_for_value_types_StackSignature.Implements
+Axioms: loom.value_types.Impl_core_cmp_Eq_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_core_cmp_PartialEq_value_types_StackSignature_for_value_types_StackSignature.Implements
+Axioms: loom.value_types.Impl_core_cmp_PartialEq_value_types_ValueType_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_core_fmt_Debug_for_value_types_StackSignature.Implements
+Axioms: loom.value_types.Impl_core_fmt_Debug_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_core_marker_Copy_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_core_marker_StructuralPartialEq_for_value_types_StackSignature.Implements
+Axioms: loom.value_types.Impl_core_marker_StructuralPartialEq_for_value_types_ValueType.Implements
+Axioms: loom.value_types.Impl_value_types_StackSignature.AssociatedFunction_empty
+Axioms: loom.value_types.Impl_value_types_StackSignature.AssociatedFunction_net_effect
+Axioms: loom.value_types.Impl_value_types_StackSignature.AssociatedFunction_new
+Axioms: loom.value_types.Impl_value_types_ValueType.AssociatedFunction_is_float
+Axioms: loom.value_types.Impl_value_types_ValueType.AssociatedFunction_is_integer
+Axioms: loom.value_types.Impl_value_types_ValueType.AssociatedFunction_same_repr
+Axioms: loom.value_types.Impl_value_types_ValueType.AssociatedFunction_size_bytes
+Axioms: loom.value_types.IsDiscriminant_ValueType_F32
+Axioms: loom.value_types.IsDiscriminant_ValueType_F64
+Axioms: loom.value_types.IsDiscriminant_ValueType_I32
+Axioms: loom.value_types.IsDiscriminant_ValueType_I64
