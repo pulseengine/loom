@@ -23,8 +23,8 @@
     2. Trivial call elimination (proven in FusedSemantics.v): removing calls
        to void->void no-op functions preserves execution semantics.
 
-    3. Type deduplication: merging structurally identical types and remapping
-       references preserves all instruction semantics.
+    3. Type deduplication: removed. It had no proof and never changed a
+       parsed module; see the Pass 3 note below.
 
     4. Dead function elimination (proven in FusedSemantics.v): removing the
        defined functions outside a call-closed live set, and renumbering the
@@ -43,11 +43,12 @@
 
     This file is being replaced, pass by pass, by FusedSemantics.v, which
     proves each pass against a concrete call semantics. Until a pass moves
-    there, its statement here is not semantic evidence: the Pass 3
-    statements restate their own hypotheses. Pass 0a (memory import
-    deduplication), Pass 1 (adapter devirtualization), Pass 2 (trivial call
-    elimination), Pass 4 (dead function elimination) and Pass 5 (import
-    deduplication) have moved: see FusedSemantics.v.
+    there, its statement here is not semantic evidence. Pass 0a (memory
+    import deduplication), Pass 1 (adapter devirtualization), Pass 2
+    (trivial call elimination), Pass 4 (dead function elimination) and
+    Pass 5 (import deduplication) have moved: see FusedSemantics.v. Two
+    passes that loom runs have no proof in either file: Pass 1.1 (scalar
+    adapter inlining) and Pass 1.2 (function body deduplication).
 
     ## Connection to Meld
 
@@ -232,54 +233,16 @@ Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
     conclusion. The axiom also covered only the bodies [[End]] and [[]],
     while [is_nop_body] in Rust accepts any number of [Nop]s. *)
 
-(** * Pass 3: Type Deduplication Correctness *)
+(** * Pass 3: Type Deduplication (removed)
 
-(** Two function signatures are structurally equal *)
-Definition sig_equiv (s1 s2 : func_sig) : Prop :=
-  fs_params s1 = fs_params s2 /\ fs_results s1 = fs_results s2.
-
-(** Type deduplication maps duplicate type indices to canonical ones.
-    A canonical remap satisfies two properties:
-    1. It maps valid indices to valid indices with equivalent signatures
-    2. It is idempotent: canonical representatives map to themselves *)
-Definition is_valid_type_remap (types : list func_sig) (remap : func_idx -> func_idx) : Prop :=
-  forall i,
-    i < length types ->
-    remap i < length types /\
-    sig_equiv (nth i types (mkFuncSig nil nil)) (nth (remap i) types (mkFuncSig nil nil)).
-
-(** A canonical remap is additionally idempotent *)
-Definition is_canonical_type_remap (types : list func_sig) (remap : func_idx -> func_idx) : Prop :=
-  is_valid_type_remap types remap /\
-  forall i, i < length types -> remap (remap i) = remap i.
-
-(** Type deduplication preserves instruction semantics.
-    If type T_i and T_j are structurally equal, any instruction
-    referencing T_i behaves identically when referencing T_j. *)
-Theorem type_dedup_preserves_semantics :
-  forall (types : list func_sig) (remap : func_idx -> func_idx),
-    is_valid_type_remap types remap ->
-    forall i,
-      i < length types ->
-      sig_equiv (nth i types (mkFuncSig nil nil))
-                (nth (remap i) types (mkFuncSig nil nil)).
-Proof.
-  intros types remap Hvalid i Hi.
-  apply Hvalid. exact Hi.
-Qed.
-
-(** Type deduplication is idempotent: applying it twice gives the same result.
-    This follows directly from the canonical remap definition. *)
-Theorem type_dedup_idempotent :
-  forall (types : list func_sig) (remap : func_idx -> func_idx),
-    is_canonical_type_remap types remap ->
-    forall i,
-      i < length types ->
-      remap (remap i) = remap i.
-Proof.
-  intros types remap [_ Hcanon] i Hi.
-  apply Hcanon. exact Hi.
-Qed.
+    [deduplicate_function_types] merged structurally identical function
+    types and remapped the type indices of imports and [call_indirect]. It
+    returned 0 whenever the raw type section was present, which the parser
+    sets for every module with a type section, so it never changed a parsed
+    module; it ran only on modules built in memory. The two statements that
+    stood here, [type_dedup_preserves_semantics] and [type_dedup_idempotent],
+    restated their hypotheses, and this model has no type indices. The pass
+    has been removed from fused_optimizer.rs (issue #169). *)
 
 (** * Pass 4: Dead Function Elimination Correctness
 
@@ -305,9 +268,9 @@ Qed.
 (** * Combined Correctness
 
     No statement about the whole pipeline is made here. The one that stood
-    here, [fused_optimization_correct], assumed its own conclusion. Each pass
-    that loom runs is proven in FusedSemantics.v, except Pass 3 (type
-    deduplication). *)
+    here, [fused_optimization_correct], assumed its own conclusion. Passes
+    0a, 1, 2, 4 and 5 are proven in FusedSemantics.v; Passes 1.1 and 1.2
+    run and are not proven. *)
 
 (** * Integration with loom Correctness *)
 

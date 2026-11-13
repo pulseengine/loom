@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Function type deduplication (fused Pass 3) is no longer run (#169). It
+  returned 0 whenever the raw type section was present, which the parser
+  sets for every module with a type section, so it never changed a parsed
+  module; it ran only on modules built in memory through the API. It had no
+  proof: its two Rocq statements restated their own hypotheses.
+  `FusedOptimizationStats::types_deduplicated` is always 0.
+
+### Verification
+
+- Dead-function elimination (fused Pass 4) is proven against the concrete
+  call semantics in `proofs/simplify/FusedSemantics.v`
+  (`dead_function_elim_correct`, #500). The statements it replaces in
+  `FusedOptimization.v` concluded `x = x` or assumed their conclusion, as did
+  `fused_optimization_correct`; all three are removed.
+
 ## [1.5.2] - 2026-11-11
 
 Shipped-binary changes since 1.5.1: #492 and #495 (fixes for #494 and

@@ -33,10 +33,11 @@
 //! compliance. When these are empty no-ops (`() -> ()`), calls to them are
 //! eliminated.
 //!
-//! ### 3. Function Type Deduplication
-//! Each source component contributes its own type section. After fusion, many
-//! identical function types exist. Deduplication merges them and remaps all
-//! type references.
+//! ### 3. Function Type Deduplication (removed)
+//! Merging identical function types and remapping import and `call_indirect`
+//! type indices is not run. It never changed a parsed module (the parser keeps
+//! the raw type section, and the pass returned 0 when it was present), and it
+//! had no proof: its two Rocq statements restated their hypotheses (#169).
 //!
 //! ### 4. Dead Function Elimination
 //! After adapter devirtualization, adapter functions may become unreachable.
@@ -77,7 +78,9 @@ pub struct FusedOptimizationStats {
     pub adapters_detected: usize,
     /// Number of call sites devirtualized (adapter call -> direct call)
     pub calls_devirtualized: usize,
-    /// Number of duplicate function types merged
+    /// Number of duplicate function types merged. Always 0: type
+    /// deduplication was removed because it was unproven (see the module
+    /// documentation, 3).
     pub types_deduplicated: usize,
     /// Number of dead functions eliminated
     pub dead_functions_eliminated: usize,
@@ -120,8 +123,9 @@ pub(crate) struct AdapterInfo {
 /// Run all fused module optimization passes.
 ///
 /// This is the main entry point for optimizing modules produced by component
-/// fusion. It runs adapter devirtualization, type deduplication, dead function
-/// elimination, and import deduplication in sequence.
+/// fusion. It runs memory import deduplication, adapter devirtualization,
+/// trivial call elimination, dead function elimination and import
+/// deduplication in sequence.
 ///
 /// Returns optimization statistics.
 pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationStats> {
@@ -169,8 +173,8 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
     // Pass 2: Eliminate trivial no-op function calls (e.g. empty cabi_post_return)
     stats.trivial_calls_eliminated = eliminate_trivial_calls(module)?;
 
-    // Pass 3: Deduplicate function types
-    stats.types_deduplicated = deduplicate_function_types(module)?;
+    // Pass 3 (function type deduplication) is not run: it had no proof, and
+    // it never changed a parsed module. See the module docs.
 
     // Pass 4: Eliminate dead functions (after devirtualization may create dead adapters)
     stats.dead_functions_eliminated = eliminate_dead_functions(module)?;
@@ -1250,124 +1254,6 @@ fn dedupe_function_bodies(module: &mut Module) -> Result<usize> {
 /// it (only `Eq` is missing).
 fn functions_body_equal(a: &Function, b: &Function) -> bool {
     a.signature == b.signature && a.locals == b.locals && a.instructions == b.instructions
-}
-
-// ============================================================================
-// Pass 2: Function Type Deduplication
-// ============================================================================
-
-/// Deduplicate identical function types and remap all references.
-///
-/// After component fusion, the type section contains types from all source
-/// components, many of which are identical (e.g., `(func (param i32) (result i32))`
-/// appears once per component that uses it).
-///
-/// This pass:
-/// 1. Hashes each function type
-/// 2. Builds a canonical mapping (duplicate -> first occurrence)
-/// 3. Remaps all type references (imports, functions, call_indirect)
-/// 4. Removes duplicate types
-///
-/// Returns the number of types removed.
-pub fn deduplicate_function_types(module: &mut Module) -> Result<usize> {
-    if module.types.len() <= 1 {
-        return Ok(0);
-    }
-
-    // Skip if raw type section bytes are present (GC/reference types)
-    // Deduplication would require re-encoding which is complex for these types
-    if module.type_section_bytes.is_some() {
-        return Ok(0);
-    }
-
-    // Phase 1: Find canonical mapping
-    // Map each unique type to its first index
-    let mut canonical: HashMap<TypeKey, u32> = HashMap::new();
-    let mut old_to_new: Vec<u32> = Vec::with_capacity(module.types.len());
-    let mut new_types: Vec<FunctionSignature> = Vec::new();
-
-    for ty in module.types.iter() {
-        let key = TypeKey::from_signature(ty);
-        if let Some(&canonical_idx) = canonical.get(&key) {
-            // This type is a duplicate; map to canonical
-            old_to_new.push(canonical_idx);
-        } else {
-            // New unique type
-            let new_idx = new_types.len() as u32;
-            canonical.insert(key, new_idx);
-            old_to_new.push(new_idx);
-            new_types.push(ty.clone());
-        }
-    }
-
-    let dedup_count = module.types.len() - new_types.len();
-    if dedup_count == 0 {
-        return Ok(0);
-    }
-
-    // Phase 2: Remap all type references
-    // Remap imports that reference type indices
-    for import in &mut module.imports {
-        if let ImportKind::Func(ref mut type_idx) = import.kind {
-            if let Some(&new_idx) = old_to_new.get(*type_idx as usize) {
-                *type_idx = new_idx;
-            }
-        }
-    }
-
-    // Remap function bodies (CallIndirect uses type indices)
-    for func in &mut module.functions {
-        remap_type_refs_in_block(&mut func.instructions, &old_to_new);
-    }
-
-    // Phase 3: Replace type section
-    module.types = new_types;
-
-    Ok(dedup_count)
-}
-
-/// Hash key for function type deduplication.
-#[derive(Hash, PartialEq, Eq)]
-struct TypeKey {
-    params: Vec<crate::ValueType>,
-    results: Vec<crate::ValueType>,
-}
-
-impl TypeKey {
-    fn from_signature(sig: &FunctionSignature) -> Self {
-        TypeKey {
-            params: sig.params.clone(),
-            results: sig.results.clone(),
-        }
-    }
-}
-
-/// Remap type references in call_indirect instructions within a block.
-fn remap_type_refs_in_block(instructions: &mut [Instruction], old_to_new: &[u32]) {
-    for instr in instructions.iter_mut() {
-        match instr {
-            Instruction::CallIndirect {
-                type_idx,
-                table_idx: _,
-            } => {
-                if let Some(&new_idx) = old_to_new.get(*type_idx as usize) {
-                    *type_idx = new_idx;
-                }
-            }
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                remap_type_refs_in_block(body, old_to_new);
-            }
-            Instruction::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                remap_type_refs_in_block(then_body, old_to_new);
-                remap_type_refs_in_block(else_body, old_to_new);
-            }
-            _ => {}
-        }
-    }
 }
 
 // ============================================================================
@@ -2705,10 +2591,12 @@ mod tests {
         );
     }
 
+    /// #169: type deduplication is not run. An in-memory module with
+    /// duplicate types (no raw type section, the only case the pass used to
+    /// change) keeps every type.
     #[test]
-    fn test_deduplicate_function_types() {
+    fn duplicate_types_are_kept() {
         let mut module = empty_module();
-
         let sig_a = FunctionSignature {
             params: vec![ValueType::I32],
             results: vec![ValueType::I32],
@@ -2717,18 +2605,41 @@ mod tests {
             params: vec![ValueType::I32, ValueType::I64],
             results: vec![],
         };
+        module.types.push(sig_a.clone());
+        module.types.push(sig_b.clone());
+        module.types.push(sig_a.clone());
+        module.types.push(sig_a);
+        module.types.push(sig_b);
+        assert!(module.type_section_bytes.is_none());
 
-        // Add duplicate types
-        module.types.push(sig_a.clone()); // 0: (i32) -> i32
-        module.types.push(sig_b.clone()); // 1: (i32, i64) -> ()
-        module.types.push(sig_a.clone()); // 2: duplicate of 0
-        module.types.push(sig_a.clone()); // 3: duplicate of 0
-        module.types.push(sig_b.clone()); // 4: duplicate of 1
+        let before = module.types.clone();
+        let stats = optimize_fused_module(&mut module).unwrap();
 
-        let dedup_count = deduplicate_function_types(&mut module).unwrap();
+        assert_eq!(stats.types_deduplicated, 0);
+        assert_eq!(module.types, before);
+    }
 
-        assert_eq!(dedup_count, 3); // Removed 3 duplicates
-        assert_eq!(module.types.len(), 2); // Only 2 unique types remain
+    /// #169: a parsed module with duplicate function types comes out of the
+    /// fused pipeline with its type section byte-identical.
+    #[test]
+    fn parsed_duplicate_types_are_unchanged() {
+        let wasm = wat::parse_str(
+            r#"(module
+                 (type (func (param i32) (result i32)))
+                 (type (func (param i32) (result i32)))
+                 (func (export "a") (type 0) local.get 0)
+                 (func (export "b") (type 1) local.get 0))"#,
+        )
+        .unwrap();
+        let mut module = crate::parse::parse_wasm(&wasm).unwrap();
+        let before = module.type_section_bytes.clone();
+        assert!(before.is_some());
+
+        let stats = optimize_fused_module(&mut module).unwrap();
+
+        assert_eq!(stats.types_deduplicated, 0);
+        assert_eq!(module.type_section_bytes, before);
+        assert_eq!(module.types.len(), 2);
     }
 
     #[test]
@@ -3358,8 +3269,9 @@ mod tests {
 
         // Adapter detected and devirtualized
         assert!(stats.adapters_detected >= 1);
-        // Type duplicates removed
-        assert!(stats.types_deduplicated >= 1);
+        // Type deduplication is not run (#169): both types are kept.
+        assert_eq!(stats.types_deduplicated, 0);
+        assert_eq!(module.types.len(), 2);
     }
 
     // ========================================================================
