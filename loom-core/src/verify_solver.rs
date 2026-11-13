@@ -786,6 +786,13 @@ fn prove(lhs: &RuleTerm, rhs: &RuleTerm, backend: VerifyBackend) -> RuleVerdict 
         VerifyBackend::Both => {
             let z3 = Z3RuleSolver.prove_rule_equiv(lhs, rhs);
             let ordeal = BoundedOrdealSolver::from_env().prove_rule_equiv(lhs, rhs);
+            // Both engines run under a wall-clock budget, so one can give up
+            // where the other decides. That is not a disagreement about the
+            // obligation: the combined verdict is Unknown, which the callers
+            // report as undecided. Only Proven against Disproven contradicts.
+            if matches!(z3, RuleVerdict::Unknown) || matches!(ordeal, RuleVerdict::Unknown) {
+                return RuleVerdict::Unknown;
+            }
             assert!(
                 z3.agrees_with(&ordeal),
                 "LOOM_VERIFY_BACKEND=both: translation-validation solver disagreement!\n  \

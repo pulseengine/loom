@@ -2,14 +2,14 @@
 
 # Loom
 
-<sup>Translation-validated WebAssembly optimizer</sup>
+<sup>WebAssembly optimizer with per-pass translation validation (partial)</sup>
 
 &nbsp;
 
 [![CI](https://github.com/pulseengine/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/loom/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
-![Translation-Validated](https://img.shields.io/badge/Translation--Validated_(Z3)-00C853?style=flat-square&logoColor=white&labelColor=1a1b27)
+![Translation validation: partial](https://img.shields.io/badge/Translation_validation_(Z3)-partial-F9A825?style=flat-square&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
 
 &nbsp;
@@ -32,7 +32,7 @@
 
 Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
 
-WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination — each pass **translation-validated** by Z3 SMT: semantic equivalence is proved per function, per run (this validates each output, not a once-and-for-all proof of the optimizer itself). Includes a fused mode purpose-built for Meld output.
+WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination. After each pass a Z3 SMT translation validator compares each changed function with its previous version and reverts it on a counterexample. The validator covers a subset of instructions: it compares return values and globals, approximates branches (`br_if`, `br_table`, an early `return`), and does not compare final linear memory or traps. Memory- and control-flow-heavy functions are therefore not fully compared, and a passing check is not a proof that the output is equivalent. Includes a fused mode purpose-built for Meld output.
 
 Loom consistently achieves 80-95% binary size reduction with 10-30 microsecond optimization times. The entire pipeline is pure Rust with minimal dependencies.
 
@@ -80,16 +80,16 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline design.
 - **Stateful dataflow analysis** — Track locals and memory state across passes
 - **Idempotent passes** — Safe to run multiple times without degradation
 
-## Formal Verification
+## Translation Validation
 
-Z3 SMT translation validation is **on by default** (`default = ["verification", "attestation"]` in loom-core / loom-cli Cargo.toml). Each optimization pass proves semantic equivalence per function before accepting the transform; on counterexample, the function is reverted to its pre-pass state.
+Z3 SMT translation validation is **on by default** (`default = ["verification", "attestation"]` in loom-core / loom-cli Cargo.toml). After each optimization pass the validator searches for an input on which the original and the optimized function differ; on a counterexample, the function is reverted to its pre-pass state. The validator covers a subset of instructions: it compares return values and globals, approximates branches (`br_if`, `br_table`, an early `return`), and does not compare final linear memory or traps. Memory- and control-flow-heavy functions are therefore not fully compared, and a passing check is not a proof that the output is equivalent. Functions over the solver size threshold are kept without a check. `--stats` reports how many accepted transforms were proven and how many were kept without a proof, with the reason.
 
 ```bash
 # Default build — Z3 verification on
 cargo build --release
 loom optimize input.wasm -o output.wasm --verify
 
-# Disable Z3 (faster, no semantic proofs)
+# Disable Z3 (faster, no translation validation)
 cargo build --release --no-default-features
 ```
 
@@ -103,7 +103,7 @@ See [docs/guides/formal-verification.md](docs/guides/formal-verification.md) for
 - [Usage Guide](docs/guides/usage.md) — Complete CLI reference and best practices
 - [Quick Reference](docs/guides/quick-reference.md) — Cheat sheet for common tasks
 - [Architecture](docs/architecture.md) — Deep dive into the optimization pipeline
-- [Formal Verification](docs/guides/formal-verification.md) — Z3 SMT verification internals
+- [Formal Verification](docs/guides/formal-verification.md) — verification approaches and Z3 SMT internals
 - [WASM Build](docs/guides/wasm-build.md) — Building Loom to WebAssembly
 - [Fused Component Optimization](docs/design/fused-component-optimization.md) — Meld-Loom pipeline
 - [Contributing](CONTRIBUTING.md) — How to contribute

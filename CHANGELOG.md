@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proof: its two Rocq statements restated their own hypotheses.
   `FusedOptimizationStats::types_deduplicated` is always 0.
 
+### Changed
+
+- `--stats` counts an accepted transform as proven only when the validator
+  compared everything the function can change. An acceptance of a function
+  that writes memory, may trap, or branches (the main encoder approximates
+  `br_if`, `br_table` and an early `return`) is listed as kept without a
+  proof, with that reason.
+- `LOOM_VERIFY_BACKEND=both`: when one engine returns unknown and the other
+  decides, the obligation is reported as unknown instead of failing as a
+  solver disagreement. Only proven against disproven is a disagreement.
+- The README, the `--verify` output and the docs state what translation
+  validation compares: return values and globals. Branches are approximated,
+  and final linear memory and traps are not compared.
+
 ### Verification
 
 - Translation validation now covers side-effect ordering on globals: the

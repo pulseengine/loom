@@ -3108,6 +3108,108 @@ fn take_unproven_acceptance() -> Option<&'static str> {
     UNPROVEN_ACCEPTANCE.with(|c| c.take())
 }
 
+/// What an accepted obligation did NOT compare, if anything.
+///
+/// An `Ok(true)` from the encoders means the compared state agreed; it says
+/// nothing about state they do not compare. This names the first such gap in
+/// either body so the acceptance is counted as kept-unproven rather than as a
+/// proof. `exact_branches` is true for the acyclic executor, which models
+/// `br`/`br_if`/`br_table`/`return` exactly; the main encoder approximates
+/// them.
+#[cfg(feature = "verification")]
+fn unmodelled_observable(
+    original: &Function,
+    optimized: &Function,
+    exact_branches: bool,
+) -> Option<&'static str> {
+    fn scan(body: &[Instruction], exact_branches: bool, top: bool) -> Option<&'static str> {
+        use Instruction as I;
+        let last = body.len().saturating_sub(1);
+        for (i, instr) in body.iter().enumerate() {
+            let gap = match instr {
+                I::Block { body, .. } | I::Loop { body, .. } => scan(body, exact_branches, false),
+                I::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => scan(then_body, exact_branches, false)
+                    .or_else(|| scan(else_body, exact_branches, false)),
+                I::Br(_) | I::BrIf(_) | I::BrTable { .. } if !exact_branches => {
+                    Some("branches approximated")
+                }
+                I::Return if !exact_branches && !(top && i == last) => {
+                    Some("branches approximated")
+                }
+                I::Unknown(_) => Some("unknown instruction"),
+                I::I32Store { .. }
+                | I::I64Store { .. }
+                | I::F32Store { .. }
+                | I::F64Store { .. }
+                | I::I32Store8 { .. }
+                | I::I32Store16 { .. }
+                | I::I64Store8 { .. }
+                | I::I64Store16 { .. }
+                | I::I64Store32 { .. }
+                | I::MemoryGrow(_)
+                | I::MemoryFill(_)
+                | I::MemoryCopy { .. }
+                | I::MemoryInit { .. }
+                | I::DataDrop(_)
+                | I::Call(_)
+                | I::CallIndirect { .. } => Some("final memory not compared"),
+                I::I32Load { .. }
+                | I::I64Load { .. }
+                | I::F32Load { .. }
+                | I::F64Load { .. }
+                | I::I32Load8S { .. }
+                | I::I32Load8U { .. }
+                | I::I32Load16S { .. }
+                | I::I32Load16U { .. }
+                | I::I64Load8S { .. }
+                | I::I64Load8U { .. }
+                | I::I64Load16S { .. }
+                | I::I64Load16U { .. }
+                | I::I64Load32S { .. }
+                | I::I64Load32U { .. }
+                | I::I32DivS
+                | I::I32DivU
+                | I::I32RemS
+                | I::I32RemU
+                | I::I64DivS
+                | I::I64DivU
+                | I::I64RemS
+                | I::I64RemU
+                | I::I32TruncF32S
+                | I::I32TruncF32U
+                | I::I32TruncF64S
+                | I::I32TruncF64U
+                | I::I64TruncF32S
+                | I::I64TruncF32U
+                | I::I64TruncF64S
+                | I::I64TruncF64U
+                | I::Unreachable => Some("traps not compared"),
+                _ => None,
+            };
+            if gap.is_some() {
+                return gap;
+            }
+        }
+        None
+    }
+    scan(&original.instructions, exact_branches, true)
+        .or_else(|| scan(&optimized.instructions, exact_branches, true))
+}
+
+/// Count an accepted obligation: as proven only when nothing observable was
+/// left out of the comparison.
+#[cfg(feature = "verification")]
+fn record_acceptance(original: &Function, optimized: &Function, exact_branches: bool) {
+    match unmodelled_observable(original, optimized, exact_branches) {
+        Some(reason) => crate::stats::record_kept_unproven(reason),
+        None => crate::stats::record_proven(),
+    }
+}
+
 /// The reason this pair cannot be proven by the SMT encoder, if any.
 ///
 /// This is the structural pre-check both verification paths already applied
@@ -3164,7 +3266,7 @@ pub fn verify_function_equivalence_with_context(
         // Kept, but nothing was proved about it. The caller will not revert,
         // so this is exactly the outcome a revert count cannot see.
         (Ok(true), Some(reason)) => crate::stats::record_kept_unproven(reason),
-        (Ok(true), None) => crate::stats::record_proven(),
+        (Ok(true), None) => record_acceptance(original, optimized, false),
         // Ok(false) / Err: the caller reverts and records that itself.
         _ => {}
     }
@@ -3801,7 +3903,7 @@ impl TranslationValidator {
             }));
             let why_not = match new_engine {
                 Ok(Ok(true)) => {
-                    crate::stats::record_proven();
+                    record_acceptance(&self.original, optimized, false);
                     return Ok(());
                 }
                 Ok(Ok(false)) => "the new engine found a counterexample".to_string(),
@@ -3839,10 +3941,10 @@ impl TranslationValidator {
                 verify_acyclic_equivalence(&original, &optimized_clone, &sig_ctx)
             }));
             if let Ok(Ok(true)) = acyclic {
-                // A real proof: the acyclic executor is EXACT for acyclic
-                // control flow with by-body calls, so this counts as proven
-                // rather than as a bypass.
-                crate::stats::record_proven();
+                // The acyclic executor models control flow and by-body calls
+                // exactly, but compares only the return value, so this counts
+                // as proven only when nothing else is observable.
+                record_acceptance(&self.original, optimized, true);
                 return Ok(());
             }
             // else: fall through to the existing encoder (no behavior change).
@@ -3949,7 +4051,7 @@ impl TranslationValidator {
         let result = verify_function_equivalence_with_result(&self.original, func, &self.pass_name);
         match result {
             VerificationResult::Verified => {
-                crate::stats::record_proven();
+                record_acceptance(&self.original, func, false);
                 true
             }
             VerificationResult::Failed(reason) => {
