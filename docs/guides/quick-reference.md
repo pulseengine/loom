@@ -40,7 +40,7 @@ order:
 | Coalesce Locals | Merge non-interfering locals (must run last) | |
 
 Plus a fused-component prelude (memory-import dedup, dead-function elim,
-type dedup) when input is a fused Component-Model module.
+import dedup) when input is a fused Component-Model module.
 
 ## Strength Reduction Patterns
 

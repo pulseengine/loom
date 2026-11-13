@@ -128,8 +128,7 @@ flowchart TD
     Input[Fused Module from meld] --> P0a
     P0a["Pass 0a: Memory Import Dedup"] --> P1
     P1["Pass 1: Adapter Devirtualization"] --> P2
-    P2["Pass 2: Trivial Call Elimination"] --> P3
-    P3["Pass 3: Function Type Deduplication"] --> P4
+    P2["Pass 2: Trivial Call Elimination"] --> P4
     P4["Pass 4: Dead Function Elimination"] --> P5
     P5["Pass 5: Import Deduplication"] --> Output
     Output[Cleaned Module] --> Standard["loom 12-Phase Pipeline"]
@@ -185,13 +184,13 @@ The detector checked the adapter's shape (locals, a realloc call, same-index cop
 
 **Why this is correct**: A function with `() -> ()` signature and a body of `Nop`s only takes nothing from the stack, pushes nothing, and touches neither locals of the caller nor the store. This is proven as `trivial_call_elim_correct` in `FusedSemantics.v`; see Proof Architecture below.
 
-### Pass 3: Function Type Deduplication
+### Pass 3: Function Type Deduplication (removed)
 
-**What**: Merge structurally identical function types and remap all references.
+The pass merged structurally identical function types and remapped the type indices of imports and `call_indirect`. It is not run any more (#169):
+- It returned 0 whenever the raw type section bytes were present. The parser stores them for every module that has a type section, so the pass never changed a parsed module; it ran only on modules built in memory through the API.
+- It had no proof. Its two Rocq statements restated their own hypotheses, and the concrete semantics has no type indices.
 
-**How**: Hash each type by its parameter and result lists. Build a canonical mapping. Update all type references (imports, `call_indirect`).
-
-**Safety**: Skipped when raw type section bytes are present (GC/reference types) since those require complex re-encoding.
+`types_deduplicated` is always 0. Tests pin that duplicate types are kept, both for an in-memory module and for a parsed one, whose type section comes out byte-identical.
 
 ### Pass 4: Dead Function Elimination
 
@@ -217,8 +216,6 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `trivial_adapter_equiv` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `devirtualize_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `trivial_call_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 2 |
-| `type_dedup_preserves_semantics` | **Proven** | Pass 3 |
-| `type_dedup_idempotent` | **Proven** | Pass 3 |
 | `dead_function_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 4 |
 | `import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 5 |
 | `fused_then_standard_correct` | **Proven** | Composition |
@@ -226,13 +223,14 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 Every row closes with Qed, but only the Pass 0a, Pass 1, Pass 2, Pass 4 and Pass 5 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
-context. The Pass 3 rows restate their own hypotheses, and
-`fused_then_standard_correct` composes two assumed per-pipeline statements
-over the abstract `exec_call` of `FusedOptimization.v`. There is no theorem
-about the whole fused pipeline: `fused_optimization_correct` assumed its own
-conclusion and was removed, as were the earlier Pass 4 statements (one
-concluded `x = x`, the other assumed its conclusion). Moving the rest to the
-concrete semantics is tracked in #169.
+context. `fused_then_standard_correct` composes two assumed per-pipeline
+statements over the abstract `exec_call` of `FusedOptimization.v`. There is
+no theorem about the whole fused pipeline: `fused_optimization_correct`
+assumed its own conclusion and was removed, as were the earlier Pass 4
+statements (one concluded `x = x`, the other assumed its conclusion) and the
+Pass 3 statements (they restated their hypotheses; the pass is removed).
+Two passes that run have no proof: Pass 1.1 (scalar adapter inlining) and
+Pass 1.2 (function body deduplication). This is tracked in #169.
 
 ### Proof Architecture
 
@@ -241,8 +239,6 @@ The remaining `FusedOptimization.v` proofs rely on no axiom besides the abstract
 ```mermaid
 flowchart TD
     subgraph proven["Proven Theorems (Qed)"]
-        TP["type_dedup_preserves_semantics"]
-        TI["type_dedup_idempotent"]
         FS["fused_then_standard_correct"]
     end
 ```
@@ -258,9 +254,6 @@ flowchart TD
 - Each deleted call saves the callee's unit of fuel, so the forward direction holds at the same fuel and the backward direction needs one extra unit per deleted call.
 - Concrete checks show both conditions are needed: deleting a call to a nop function that takes a parameter changes the result (the call popped it), and deleting a call to a `() -> ()` function whose body traps turns a trap into a result.
 - Not modelled: Phase 3, which also removes such calls from global initializers. A valid constant expression cannot contain `call`, so it has nothing to remove.
-
-**Type Deduplication** uses structural equality:
-- If `params(T_i) = params(T_j)` and `results(T_i) = results(T_j)`, any instruction referencing `T_i` behaves identically when referencing `T_j`
 
 **Dead Function Elimination** is proven against the same semantics (`FusedSemantics.v`):
 - `dead_function_elim_correct`: given which defined functions are kept, imports keep their indices, a kept function moves down by the number of removed functions before it (the `remap` that `eliminate_dead_functions_inner` builds), and every call in a kept body is rewritten through that map. If every call in a kept body names an import or a kept function, every import and every kept function behaves as it did. The worklist in Rust computes exactly such a call-closed set, starting from exports, the start function and the functions named in element segments.
@@ -369,11 +362,11 @@ optimize_module(&mut module)?;
 | Same-memory adapter collapse | Removed | Not semantics-preserving (see Pass 0b) |
 | Trivial adapter devirtualization | Done | All direct adapters |
 | Trivial call elimination | Done | () -> () no-op functions |
-| Function type deduplication | Done | Basic types (skips GC) |
+| Function type deduplication | Removed | Unproven, and never changed a parsed module (see Pass 3) |
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
 | Cross-memory adapter diagnostics | Done | Detection and counting (not collapsed) |
-| Correctness proofs | Partial | Passes 0a, 1, 2, 5 proven against FusedSemantics.v; Passes 3, 4 still abstract (#169) |
+| Correctness proofs | Partial | Passes 0a, 1, 2, 4, 5 proven against FusedSemantics.v; Passes 1.1 and 1.2 unproven (#169) |
 
 ### Planned
 
