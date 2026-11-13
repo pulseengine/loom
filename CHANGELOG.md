@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`dead_function_elim_correct`, #500). The statements it replaces in
   `FusedOptimization.v` concluded `x = x` or assumed their conclusion, as did
   `fused_optimization_correct`; all three are removed.
+- Function body deduplication (fused Pass 1.2) is proven against the same
+  semantics (`body_dedup_correct`): redirecting calls from a defined function
+  to one with the same signature, locals and body preserves every function.
 
 ## [1.5.2] - 2026-11-11
 

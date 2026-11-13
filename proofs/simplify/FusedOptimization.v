@@ -46,9 +46,10 @@
     there, its statement here is not semantic evidence. Pass 0a (memory
     import deduplication), Pass 1 (adapter devirtualization), Pass 2
     (trivial call elimination), Pass 4 (dead function elimination) and
-    Pass 5 (import deduplication) have moved: see FusedSemantics.v. Two
-    passes that loom runs have no proof in either file: Pass 1.1 (scalar
-    adapter inlining) and Pass 1.2 (function body deduplication).
+    Pass 5 (import deduplication) have moved: see FusedSemantics.v, as has
+    Pass 1.2 (function body deduplication, [body_dedup_correct]). One pass
+    that loom runs has no proof in either file: Pass 1.1 (scalar adapter
+    inlining).
 
     ## Connection to Meld
 
@@ -269,8 +270,8 @@ Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
 
     No statement about the whole pipeline is made here. The one that stood
     here, [fused_optimization_correct], assumed its own conclusion. Passes
-    0a, 1, 2, 4 and 5 are proven in FusedSemantics.v; Passes 1.1 and 1.2
-    run and are not proven. *)
+    0a, 1, 1.2, 2, 4 and 5 are proven in FusedSemantics.v; Pass 1.1 runs
+    and is not proven. *)
 
 (** * Integration with loom Correctness *)
 

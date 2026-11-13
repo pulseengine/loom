@@ -394,6 +394,19 @@ Proof.
   destruct (kf j0); cbn; apply IH; lia.
 Qed.
 
+(** ** Function body deduplication
+
+    [dedupe_function_bodies] in fused_optimizer.rs redirects calls from a
+    defined function to the lowest-indexed defined function whose
+    signature, locals and body are identical, and rewrites every call with
+    [rewrite_calls]. [same_fn m f g] is that condition: [g] is [f], or both
+    are defined functions with the same record. *)
+Definition same_fn (m : module) (f g : nat) : Prop :=
+  g = f \/
+  (length (m_imports m) <= f /\ length (m_imports m) <= g /\
+   nth_error (m_funcs m) (f - length (m_imports m))
+   = nth_error (m_funcs m) (g - length (m_imports m))).
+
 Section Semantics.
 
 Variable store : Type.
@@ -1962,6 +1975,43 @@ Proof.
     exact (do_call_dfe_back _ _ _ _ _ _ _ Hok Hg IH H).
 Qed.
 
+(** *** Function body deduplication *)
+
+Lemma do_call_same : forall run m f g stk s, same_fn m f g ->
+  do_call run m g stk s = do_call run m f stk s.
+Proof.
+  intros run m f g stk s [->|[Hf [Hg Hn]]]; [reflexivity|].
+  unfold do_call.
+  assert (Ef : (f <? length (m_imports m)) = false) by (apply Nat.ltb_ge; exact Hf).
+  assert (Eg : (g <? length (m_imports m)) = false) by (apply Nat.ltb_ge; exact Hg).
+  rewrite Ef, Eg, Hn. reflexivity.
+Qed.
+
+(** Function body deduplication is correct. If every function [f] is
+    redirected to itself or to a defined function with the same signature,
+    locals and body, then rewriting every call through the redirect map
+    preserves every function, for any host and any semantics of the
+    unmodelled instructions. The pass removes nothing; the redirected
+    functions are left for dead function elimination. *)
+Theorem body_dedup_correct : forall m rho,
+  (forall f, same_fn m f (rho f)) ->
+  forall f, call_equiv m f (rw_module rho m) f.
+Proof.
+  intros m rho Hrho f stk s c. split.
+  - intros [k Hk]. exists k.
+    eapply do_call_rw; [|exact Hk].
+    apply sim_gen; [reflexivity| |lia].
+    intros k1 k2 _ IH g stk' s' cr H.
+    eapply do_call_rw; [exact IH|].
+    rewrite (do_call_same _ _ _ _ _ _ (Hrho g)). exact H.
+  - intros [k Hk].
+    eapply do_call_rw_back; [|exact Hk].
+    apply sim_back_gen; [reflexivity|].
+    intros k2 IH g stk' s' cr H.
+    destruct (do_call_rw_back _ _ _ _ _ _ _ IH H) as [k1 E1].
+    exists k1. rewrite <- (do_call_same _ _ _ _ _ _ (Hrho g)). exact E1.
+Qed.
+
 End Semantics.
 
 (** ** Concrete checks
@@ -2224,6 +2274,46 @@ Proof.
   split; [|reflexivity].
   intros H. specialize (H 0 _ eq_refl eq_refl). cbn in H.
   destruct H as [_ [_ [[H|H] _]]]; [lia|discriminate].
+Qed.
+
+(** Function body deduplication. Functions 0 and 1 have the same record
+    ([local0 - local1]); function 2 computes [local1 - local0]; function 3
+    calls 1. Redirecting 1 to 0 keeps the answer; redirecting it to 2, whose
+    body differs, does not, so [same_fn] is necessary. *)
+Definition sub_fn : func :=
+  mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (IPrim 0) CNil))).
+
+Definition ex6 : module :=
+  mkModule []
+    [ sub_fn; sub_fn;
+      mkFunc two_to_one 0 (CCons (ILocalGet 1) (CCons (ILocalGet 0) (CCons (IPrim 0) CNil)));
+      mkFunc two_to_one 0 (CCons (ILocalGet 0) (CCons (ILocalGet 1) (CCons (ICall 1) CNil))) ] [].
+
+Definition ex6_rho (f : nat) : nat := if Nat.eqb f 1 then 0 else f.
+
+Lemma ex6_same : forall f, same_fn ex6 f (ex6_rho f).
+Proof.
+  intros f. unfold ex6_rho. destruct (Nat.eqb_spec f 1) as [->|_].
+  - right. cbn. repeat split; lia || reflexivity.
+  - left. reflexivity.
+Qed.
+
+Example body_dedup_result :
+  run (rw_module ex6_rho ex6) 3 = run ex6 3 /\ run ex6 3 = Some (CDone unit [7%Z] tt).
+Proof. split; reflexivity. Qed.
+
+Example body_dedup_equiv :
+  call_equiv unit ex_prim ex_host ex_mprim ex6 3 (rw_module ex6_rho ex6) 3.
+Proof. apply body_dedup_correct. exact ex6_same. Qed.
+
+Definition ex6_bad (f : nat) : nat := if Nat.eqb f 1 then 2 else f.
+
+Example different_body_matters :
+  ~ same_fn ex6 1 (ex6_bad 1) /\
+  run (rw_module ex6_bad ex6) 3 = Some (CDone unit [(-7)%Z] tt).
+Proof.
+  split; [|reflexivity].
+  intros [H|[_ [_ H]]]; cbn in H; discriminate.
 Qed.
 
 End ConcreteCheck.

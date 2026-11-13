@@ -215,12 +215,13 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `memory_import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 0a |
 | `trivial_adapter_equiv` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
 | `devirtualize_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1 |
+| `body_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 1.2 |
 | `trivial_call_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 2 |
 | `dead_function_elim_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 4 |
 | `import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 5 |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 0a, Pass 1, Pass 2, Pass 4 and Pass 5 rows are semantic evidence.
+Every row closes with Qed, but only the Pass 0a, 1, 1.2, 2, 4 and 5 rows are semantic evidence.
 They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
 interpreter, and `Print Assumptions` reports them closed under the global
 context. `fused_then_standard_correct` composes two assumed per-pipeline
@@ -229,8 +230,8 @@ no theorem about the whole fused pipeline: `fused_optimization_correct`
 assumed its own conclusion and was removed, as were the earlier Pass 4
 statements (one concluded `x = x`, the other assumed its conclusion) and the
 Pass 3 statements (they restated their hypotheses; the pass is removed).
-Two passes that run have no proof: Pass 1.1 (scalar adapter inlining) and
-Pass 1.2 (function body deduplication). This is tracked in #169.
+One pass that runs has no proof: Pass 1.1 (scalar adapter inlining). This is
+tracked in #169.
 
 ### Proof Architecture
 
@@ -248,6 +249,10 @@ flowchart TD
 - `trivial_adapter_equiv`: the body `local.get 0; ...; local.get N-1; call T` (no extra locals, `T` with the same signature), which is exactly what `is_trivial_adapter` accepts, behaves as `T`. Equivalence means equal results, traps included, for every input, and divergence matches too.
 - `devirtualize_correct`: rewriting every call, at any nesting depth as `rewrite_calls` does, with a map `rho` preserves every function, provided `rho f` is reachable from `f` along trivial adapters. Adapter cycles satisfy this too.
 - Not yet proven: that the map built by `resolve_adapter_chains` meets this condition. Each step of that function moves an entry one adapter hop further along its chain, which suggests it does, but that is an argument about the Rust code, not a proof.
+
+**Function Body Deduplication** (Pass 1.2) is proven against the same semantics (`FusedSemantics.v`):
+- `body_dedup_correct`: if every function is redirected to itself or to a defined function with the same signature, locals and body (`same_fn`), rewriting every call through the redirect map preserves every function. `dedupe_function_bodies` redirects only after `functions_body_equal` confirms `(signature, locals, instructions)` are equal, and only between defined functions, so its map satisfies this. The pass removes nothing; dead function elimination removes the redirected copies.
+- A concrete check shows the condition is needed: redirecting a call to a function whose body computes `b - a` instead of `a - b` turns 7 into -7.
 
 **Trivial Call Elimination** is proven against the same semantics (`FusedSemantics.v`):
 - `trivial_call_elim_correct`: deleting every `call f`, at any nesting depth as `remove_trivial_calls_from_block` does, where each `f` in the set is a defined `() -> ()` function whose body is `nop`s only (what `is_nop_body` accepts, any number of extra locals), preserves every function.
@@ -366,7 +371,7 @@ optimize_module(&mut module)?;
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
 | Cross-memory adapter diagnostics | Done | Detection and counting (not collapsed) |
-| Correctness proofs | Partial | Passes 0a, 1, 2, 4, 5 proven against FusedSemantics.v; Passes 1.1 and 1.2 unproven (#169) |
+| Correctness proofs | Partial | Passes 0a, 1, 1.2, 2, 4, 5 proven against FusedSemantics.v; Pass 1.1 unproven (#169) |
 
 ### Planned
 
