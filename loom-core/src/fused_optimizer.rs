@@ -1,63 +1,48 @@
 //! Fused Component Optimization
 //!
-//! Specialized optimization passes for WebAssembly modules produced by component
-//! fusion tools (e.g., meld). When multiple P2/P3 components are fused into a
-//! single core module, the result contains characteristic patterns that benefit
-//! from targeted optimization:
+//! Passes for the single core module that component fusion (e.g. meld)
+//! produces. Each pass is proven against the concrete call semantics in
+//! `proofs/simplify/FusedSemantics.v`; the theorem is named per pass.
 //!
-//! ## Optimization Passes
+//! ## Passes, in pipeline order
 //!
 //! ### 0a. Memory Import Deduplication
-//! When meld fuses components sharing the same host memory, it emits multiple
-//! memory imports with the same (module, name) pair. An embedder that links
-//! by name binds them to the same memory (the wasm specification leaves
-//! binding to the embedder). This pass merges them, converting a
-//! multi-memory module to single-memory. Proven in
-//! proofs/simplify/FusedSemantics.v (`memory_import_dedup_correct`).
-//!
-//! ### 0b. Same-Memory Adapter Collapse (removed)
-//! This pass rewrote meld adapters that allocate, `memory.copy` within one
-//! memory and call a target into forwarding trampolines. That hands the
-//! target the caller's buffer instead of a private copy, so a target that
-//! writes to its argument, frees it or returns the pointer behaves
-//! differently. It is not run; see the
-//! `same_memory_adapter_keeps_*` tests for the counterexamples.
+//! meld emits one memory import per component that shares the host memory,
+//! all with the same (module, name). An embedder that links by name binds them
+//! to the same memory (the wasm specification leaves binding to the embedder).
+//! The pass merges them, turning a multi-memory module into a single-memory
+//! one. `memory_import_dedup_correct`.
 //!
 //! ### 1. Adapter Devirtualization
-//! Component fusion generates adapter trampolines for cross-component calls.
-//! Trivial adapters that simply forward all parameters to a target function
-//! can be bypassed: callers are rewritten to call the target directly.
+//! A trivial adapter forwards all its parameters to a target
+//! (`local.get 0..n-1; call target`). Callers are rewritten to call the target
+//! directly. `trivial_adapter_equiv`, `devirtualize_correct`.
+//!
+//! ### 1.2. Function Body Deduplication
+//! Calls to a defined function are redirected to the lowest-indexed defined
+//! function with the same signature, locals and body. `body_dedup_correct`.
 //!
 //! ### 2. Trivial Call Elimination
-//! Component fusion generates `cabi_post_return` functions for Canonical ABI
-//! compliance. When these are empty no-ops (`() -> ()`), calls to them are
-//! eliminated.
-//!
-//! ### 3. Function Type Deduplication (removed)
-//! Merging identical function types and remapping import and `call_indirect`
-//! type indices is not run. It never changed a parsed module (the parser keeps
-//! the raw type section, and the pass returned 0 when it was present), and it
-//! had no proof: its two Rocq statements restated their hypotheses (#169).
+//! Calls to defined `() -> ()` functions whose body is `nop`s only (e.g. an
+//! empty `cabi_post_return`) are deleted. `trivial_call_elim_correct`.
 //!
 //! ### 4. Dead Function Elimination
-//! After adapter devirtualization, adapter functions may become unreachable.
-//! This pass removes functions with zero call sites that are not exported.
+//! Defined functions not reachable through calls from the exports, the start
+//! function and the functions named in element segments are removed, and the
+//! rest are renumbered. `dead_function_elim_correct`.
 //!
 //! ### 5. Import Deduplication
-//! Fused modules may contain duplicate imports (same module+name+type) from
-//! different source components. These are merged with reference remapping.
+//! Function imports with the same (module, name, type) are merged and every
+//! reference is remapped. `import_dedup_correct`.
 //!
-//! ## Correctness
+//! ## Not performed
 //!
-//! All transformations are provably correct:
-//! - Memory import deduplication: identical imports resolve to same binding (Spec §2.5.10)
-//! - Same-memory adapter collapse: same-memory copy is redundant (Spec §5.4.7)
-//! - Adapter devirtualization: semantically identical (adapter body = forward call)
-//! - Type deduplication: structural type equality, index remapping preserves refs
-//! - Dead function elimination: unreachable code cannot affect semantics
-//! - Import deduplication: same external binding, merged references
-//!
-//! See `proofs/simplify/FusedOptimization.v` for formal Rocq proofs.
+//! Same-memory adapters (allocate, `memory.copy` the caller's bytes within one
+//! memory, call the target with the copy) are not collapsed into forwarding
+//! trampolines: that hands the target the caller's buffer instead of a private
+//! copy, so a target that writes to its argument, frees it or returns the
+//! pointer behaves differently. The `same_memory_adapter_keeps_*` tests pin
+//! this.
 
 use crate::{
     ExportKind, Function, FunctionSignature, Import, ImportKind, Instruction, Memory, Module,
@@ -71,16 +56,15 @@ pub struct FusedOptimizationStats {
     /// Number of duplicate memory imports merged
     pub memory_imports_deduplicated: usize,
     /// Number of same-memory adapters collapsed to forwarding trampolines.
-    /// Always 0: the collapse was removed because it is not
-    /// semantics-preserving (see the module documentation, 0b).
+    /// Always 0: same-memory adapters are not collapsed (see the module
+    /// documentation, "Not performed").
     pub same_memory_adapters_collapsed: usize,
     /// Number of adapter functions detected
     pub adapters_detected: usize,
     /// Number of call sites devirtualized (adapter call -> direct call)
     pub calls_devirtualized: usize,
-    /// Number of duplicate function types merged. Always 0: type
-    /// deduplication was removed because it was unproven (see the module
-    /// documentation, 3).
+    /// Number of duplicate function types merged. Always 0: function types
+    /// are not deduplicated.
     pub types_deduplicated: usize,
     /// Number of dead functions eliminated
     pub dead_functions_eliminated: usize,
@@ -90,9 +74,10 @@ pub struct FusedOptimizationStats {
     pub trivial_calls_eliminated: usize,
     /// Number of cross-memory adapters detected (not collapsed, diagnostic only)
     pub cross_memory_adapters_detected: usize,
-    /// Number of scalar adapters rewritten to direct-call shape (Tier-1.1, issue #68)
+    /// Number of scalar adapters rewritten to direct-call shape. Always 0:
+    /// scalar adapters are not inlined.
     pub scalar_adapters_inlined: usize,
-    /// Number of duplicate function bodies collapsed (Tier-2.2, issue #68)
+    /// Number of functions whose calls were redirected to an identical body
     pub function_bodies_deduplicated: usize,
 }
 
@@ -134,9 +119,7 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
     // identical memory imports.
     let memory_imports_deduplicated = deduplicate_memory_imports(module)?;
 
-    // Pass 0b (same-memory adapter collapse) is not run: replacing an
-    // allocate+copy adapter by a forwarding trampoline gives the target the
-    // caller's buffer instead of a private copy. See the module docs.
+    // Same-memory adapters are not collapsed; see the module docs.
     let same_memory_adapters_collapsed = 0;
 
     // Count cross-memory adapters (diagnostic only — adapters with mixed memory indices
@@ -155,16 +138,7 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
         ..Default::default()
     };
 
-    // Pass 1.1 (issue #68 Tier-1.1): Inline scalar adapters whose body is a
-    // canonical cross-memory copy (load/load/call/store/store) into the
-    // pass-through shape. Already pass-through adapters are no-ops here.
-    // Detect adapters again (some may be no-op after devirt). We re-use the
-    // existing AdapterInfo infrastructure.
-    let num_imported_funcs_inline = count_imported_functions(module);
-    let adapters_for_inline = detect_adapters(module, num_imported_funcs_inline);
-    stats.scalar_adapters_inlined = inline_scalar_adapters(module, &adapters_for_inline)?;
-
-    // Pass 1.2 (issue #68 Tier-2.2): Deduplicate function bodies that are
+    // Pass 1.2: Deduplicate function bodies that are
     // byte-identical across components (e.g. wit-bindgen runtime helpers).
     // Slots before eliminate_dead_functions so the redirected duplicates are
     // pruned in the same pipeline.
@@ -172,9 +146,6 @@ pub fn optimize_fused_module(module: &mut Module) -> Result<FusedOptimizationSta
 
     // Pass 2: Eliminate trivial no-op function calls (e.g. empty cabi_post_return)
     stats.trivial_calls_eliminated = eliminate_trivial_calls(module)?;
-
-    // Pass 3 (function type deduplication) is not run: it had no proof, and
-    // it never changed a parsed module. See the module docs.
 
     // Pass 4: Eliminate dead functions (after devirtualization may create dead adapters)
     stats.dead_functions_eliminated = eliminate_dead_functions(module)?;
@@ -773,358 +744,6 @@ fn rewrite_calls(
 }
 
 // ============================================================================
-// Pass 1.1 (issue #68 Tier-1.1): Scalar Adapter Inlining
-// ============================================================================
-
-/// Inline scalar adapters whose body is a canonical cross-memory copy pattern
-/// into the trivial pass-through shape.
-///
-/// After this pass, every call site of such an adapter is an obvious inlining
-/// candidate that the standard `inline_functions` pass picks up.
-///
-/// ## Recognised body shapes
-///
-/// For an adapter with N scalar params and M scalar results, an adapter body
-/// is considered eligible if it matches either:
-///
-/// 1. **Pure pass-through** (no Store/Load anywhere):
-///    `local.get 0; ...; local.get N-1; call target; end`
-///    These bodies are already in the canonical shape — no rewrite is needed
-///    but they are counted to surface the optimisation potential to callers.
-///
-/// 2. **Cross-memory scalar copy**:
-///    `(local.get arg)*; load(callee_mem); (...); load(caller_mem); (...);
-///     call target; store(caller_mem); (...); store(callee_mem)*`
-///    where every Load is paired with a matching Store of compatible type and
-///    no other side-effecting instructions appear in the body. The copy is
-///    redundant because callers are about to call the underlying function
-///    directly anyway.
-///
-/// ## Correctness
-///
-/// Both shapes are semantically equivalent to a direct call:
-/// - Pass-through is already a direct call (no-op rewrite).
-/// - Cross-memory copy: the value loaded from callee memory is the same value
-///   the caller pushed (scalar memcpy with matching width); the post-call
-///   store writes the result back to the same address. After devirtualization
-///   the callee no longer needs the copy because the underlying function is
-///   called directly with the caller's value.
-///
-/// Conservatively: if the body shape is anything else, the adapter is left
-/// unchanged. Skip rather than risk an unsound rewrite.
-///
-/// Returns the number of adapters whose bodies were rewritten or confirmed
-/// already in canonical shape.
-fn inline_scalar_adapters(module: &mut Module, adapters: &[AdapterInfo]) -> Result<usize> {
-    let mut count = 0usize;
-
-    for adapter in adapters {
-        let func_idx = adapter.func_index;
-        if func_idx >= module.functions.len() {
-            continue;
-        }
-
-        let target = adapter.target_func_idx;
-
-        // Filter: all params + results must be scalar (currently all ValueType
-        // variants are scalar, but this guards against future GC / reference /
-        // SIMD value types being added to the IR).
-        let all_scalar = {
-            let sig = &module.functions[func_idx].signature;
-            sig.params.iter().all(is_scalar_value_type)
-                && sig.results.iter().all(is_scalar_value_type)
-        };
-        if !all_scalar {
-            continue;
-        }
-
-        // Skip the start function (its name + ordering are observable)
-        if module.start_function == Some(module_func_abs_idx(module, func_idx)) {
-            continue;
-        }
-
-        // Classify the body. We don't rewrite anything that isn't already in
-        // the canonical pass-through shape OR doesn't match the cross-memory
-        // copy template.
-        let shape = classify_scalar_adapter_body(&module.functions[func_idx], target);
-        match shape {
-            ScalarAdapterShape::AlreadyPassThrough => {
-                // Already in the canonical shape — nothing to do, but count it
-                // so callers can see the optimisation surface.
-                count += 1;
-            }
-            ScalarAdapterShape::CrossMemoryCopy => {
-                // Rewrite to the canonical pass-through.
-                rewrite_adapter_to_passthrough(&mut module.functions[func_idx], target);
-                count += 1;
-            }
-            ScalarAdapterShape::Unrecognised => {
-                // Conservative: skip.
-            }
-        }
-    }
-
-    Ok(count)
-}
-
-/// True if a `ValueType` is one of the scalar value types LOOM supports
-/// rewriting against. Today this is i32/i64/f32/f64; the function exists so
-/// that adding SIMD or reference types later does not silently relax the
-/// filter.
-fn is_scalar_value_type(ty: &crate::ValueType) -> bool {
-    matches!(
-        ty,
-        crate::ValueType::I32
-            | crate::ValueType::I64
-            | crate::ValueType::F32
-            | crate::ValueType::F64
-    )
-}
-
-/// Convert a local function index into an absolute function index for
-/// comparisons against `module.start_function`.
-fn module_func_abs_idx(module: &Module, local_idx: usize) -> u32 {
-    count_imported_functions(module) as u32 + local_idx as u32
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ScalarAdapterShape {
-    /// `local.get 0; ...; local.get N-1; call target; end` — no memory ops.
-    AlreadyPassThrough,
-    /// Canonical cross-memory scalar copy: load(callee_mem); load(caller_mem);
-    /// call target; store(caller_mem); store(callee_mem).
-    CrossMemoryCopy,
-    /// Anything else — too risky to rewrite.
-    Unrecognised,
-}
-
-/// Inspect an adapter function body and classify it into one of the
-/// recognised shapes.
-fn classify_scalar_adapter_body(func: &Function, target: u32) -> ScalarAdapterShape {
-    let n_params = func.signature.params.len();
-    let instrs = &func.instructions;
-
-    // Must have no extra locals beyond parameters for either shape.
-    if !func.locals.is_empty() {
-        return ScalarAdapterShape::Unrecognised;
-    }
-
-    // Detect pure pass-through first (the cheap case).
-    if instrs.len() == n_params + 2 {
-        let mut ok = true;
-        for (i, instr) in instrs.iter().enumerate().take(n_params) {
-            match instr {
-                Instruction::LocalGet(idx) if *idx == i as u32 => {}
-                _ => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if ok {
-            if let (Instruction::Call(t), Instruction::End) =
-                (&instrs[n_params], &instrs[n_params + 1])
-            {
-                if *t == target && !contains_memory_op(instrs) {
-                    return ScalarAdapterShape::AlreadyPassThrough;
-                }
-            }
-        }
-    }
-
-    // Detect the canonical cross-memory scalar copy. We accept the strict
-    // shape: a single load per parameter that crosses a memory, exactly one
-    // call to `target`, then the symmetric stores. Anything else is rejected.
-    if is_cross_memory_scalar_copy(func, target) {
-        return ScalarAdapterShape::CrossMemoryCopy;
-    }
-
-    ScalarAdapterShape::Unrecognised
-}
-
-/// True if the instruction sequence contains any load or store. Used to
-/// rule out memory side effects when classifying the pass-through shape.
-fn contains_memory_op(instrs: &[Instruction]) -> bool {
-    for instr in instrs {
-        match instr {
-            Instruction::I32Load { .. }
-            | Instruction::I64Load { .. }
-            | Instruction::F32Load { .. }
-            | Instruction::F64Load { .. }
-            | Instruction::I32Load8S { .. }
-            | Instruction::I32Load8U { .. }
-            | Instruction::I32Load16S { .. }
-            | Instruction::I32Load16U { .. }
-            | Instruction::I64Load8S { .. }
-            | Instruction::I64Load8U { .. }
-            | Instruction::I64Load16S { .. }
-            | Instruction::I64Load16U { .. }
-            | Instruction::I64Load32S { .. }
-            | Instruction::I64Load32U { .. }
-            | Instruction::I32Store { .. }
-            | Instruction::I64Store { .. }
-            | Instruction::F32Store { .. }
-            | Instruction::F64Store { .. }
-            | Instruction::I32Store8 { .. }
-            | Instruction::I32Store16 { .. }
-            | Instruction::I64Store8 { .. }
-            | Instruction::I64Store16 { .. }
-            | Instruction::I64Store32 { .. }
-            | Instruction::MemoryCopy { .. }
-            | Instruction::MemoryFill(_)
-            | Instruction::MemoryInit { .. } => return true,
-            Instruction::Block { body, .. } | Instruction::Loop { body, .. }
-                if contains_memory_op(body) =>
-            {
-                return true;
-            }
-            Instruction::If {
-                then_body,
-                else_body,
-                ..
-            } if (contains_memory_op(then_body) || contains_memory_op(else_body)) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// True if a function body matches the canonical cross-memory scalar copy
-/// adapter shape.
-///
-/// The shape we accept is intentionally narrow:
-///
-///   (local.get i)+  -- load each scalar arg
-///   loadN m_callee  -- read value from callee memory
-///   (local.get i)+
-///   loadN m_caller  -- read value from caller memory
-///   call target
-///   storeN m_caller -- write result back to caller memory
-///   (local.get i)+
-///   storeN m_callee -- write result back to callee memory
-///   end
-///
-/// We only accept it if the two memories differ. When they don't, the simpler
-/// pass-through detection above already covered the case.
-fn is_cross_memory_scalar_copy(func: &Function, target: u32) -> bool {
-    let instrs = &func.instructions;
-    // Must end with End.
-    if instrs.last() != Some(&Instruction::End) {
-        return false;
-    }
-
-    // Must contain exactly one Call to `target` at the structural midpoint and
-    // exactly one Load before it and one Store after it where the memory
-    // indices differ.
-    let mut call_idx = None;
-    for (i, instr) in instrs.iter().enumerate() {
-        if let Instruction::Call(t) = instr {
-            if call_idx.is_some() {
-                return false; // multiple calls — too rich
-            }
-            if *t != target {
-                return false;
-            }
-            call_idx = Some(i);
-        }
-    }
-    let call_idx = match call_idx {
-        Some(i) => i,
-        None => return false,
-    };
-
-    // Must have at least one load before the call and one store after.
-    let (pre, post_with_call) = instrs.split_at(call_idx);
-    let post = &post_with_call[1..];
-
-    let pre_loads: Vec<u32> = pre.iter().filter_map(load_mem_idx).collect();
-    let post_stores: Vec<u32> = post.iter().filter_map(store_mem_idx).collect();
-
-    if pre_loads.is_empty() || post_stores.is_empty() {
-        return false;
-    }
-
-    // Cross-memory: at least one load+store must straddle two distinct memory
-    // indices.
-    let unique_pre: HashSet<u32> = pre_loads.iter().copied().collect();
-    let unique_post: HashSet<u32> = post_stores.iter().copied().collect();
-    let any_diff = unique_pre
-        .iter()
-        .any(|p| unique_post.iter().any(|q| p != q));
-    if !any_diff {
-        return false;
-    }
-
-    // Restrict the rest of the body to {LocalGet, the recognised loads/stores,
-    // Call, End}. Anything else (control flow, arithmetic, drops, globals)
-    // disqualifies the function.
-    for instr in instrs {
-        match instr {
-            Instruction::LocalGet(_) | Instruction::End | Instruction::Call(_) => {}
-            _ if load_mem_idx(instr).is_some() => {}
-            _ if store_mem_idx(instr).is_some() => {}
-            _ => return false,
-        }
-    }
-
-    true
-}
-
-/// If `instr` is a scalar load, return its memory index.
-fn load_mem_idx(instr: &Instruction) -> Option<u32> {
-    match instr {
-        Instruction::I32Load { mem, .. }
-        | Instruction::I64Load { mem, .. }
-        | Instruction::F32Load { mem, .. }
-        | Instruction::F64Load { mem, .. }
-        | Instruction::I32Load8S { mem, .. }
-        | Instruction::I32Load8U { mem, .. }
-        | Instruction::I32Load16S { mem, .. }
-        | Instruction::I32Load16U { mem, .. }
-        | Instruction::I64Load8S { mem, .. }
-        | Instruction::I64Load8U { mem, .. }
-        | Instruction::I64Load16S { mem, .. }
-        | Instruction::I64Load16U { mem, .. }
-        | Instruction::I64Load32S { mem, .. }
-        | Instruction::I64Load32U { mem, .. } => Some(*mem),
-        _ => None,
-    }
-}
-
-/// If `instr` is a scalar store, return its memory index.
-fn store_mem_idx(instr: &Instruction) -> Option<u32> {
-    match instr {
-        Instruction::I32Store { mem, .. }
-        | Instruction::I64Store { mem, .. }
-        | Instruction::F32Store { mem, .. }
-        | Instruction::F64Store { mem, .. }
-        | Instruction::I32Store8 { mem, .. }
-        | Instruction::I32Store16 { mem, .. }
-        | Instruction::I64Store8 { mem, .. }
-        | Instruction::I64Store16 { mem, .. }
-        | Instruction::I64Store32 { mem, .. } => Some(*mem),
-        _ => None,
-    }
-}
-
-/// Rewrite an adapter function body into the canonical pass-through shape:
-///   local.get 0; ...; local.get N-1; call target; end
-fn rewrite_adapter_to_passthrough(func: &mut Function, target: u32) {
-    let n_params = func.signature.params.len();
-    let mut new_instrs: Vec<Instruction> = Vec::with_capacity(n_params + 2);
-    for i in 0..n_params {
-        new_instrs.push(Instruction::LocalGet(i as u32));
-    }
-    new_instrs.push(Instruction::Call(target));
-    new_instrs.push(Instruction::End);
-    func.instructions = new_instrs;
-    // Drop any temporary locals — pass-through shape needs none.
-    func.locals.clear();
-}
-
-// ============================================================================
 // Pass 1.2 (issue #68 Tier-2.2): Function-Body Deduplication
 // ============================================================================
 
@@ -1257,7 +876,7 @@ fn functions_body_equal(a: &Function, b: &Function) -> bool {
 }
 
 // ============================================================================
-// Pass 3: Dead Function Elimination
+// Pass 4: Dead Function Elimination
 // ============================================================================
 
 /// Eliminate functions that are never called and not exported.
@@ -2591,9 +2210,8 @@ mod tests {
         );
     }
 
-    /// #169: type deduplication is not run. An in-memory module with
-    /// duplicate types (no raw type section, the only case the pass used to
-    /// change) keeps every type.
+    /// Function types are not deduplicated: an in-memory module with
+    /// duplicate types and no raw type section keeps every type.
     #[test]
     fn duplicate_types_are_kept() {
         let mut module = empty_module();
@@ -3269,7 +2887,7 @@ mod tests {
 
         // Adapter detected and devirtualized
         assert!(stats.adapters_detected >= 1);
-        // Type deduplication is not run (#169): both types are kept.
+        // Function types are not deduplicated: both types are kept.
         assert_eq!(stats.types_deduplicated, 0);
         assert_eq!(module.types.len(), 2);
     }
@@ -3561,118 +3179,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Pass 1.1 (issue #68 Tier-1.1): inline_scalar_adapters tests
-    // ========================================================================
-
-    /// 2-arg scalar adapter that is already in the pass-through shape: confirm
-    /// our pass classifies it correctly and leaves the body untouched.
-    #[test]
-    fn test_inline_scalar_adapter_pass_through() {
-        let mut module = empty_module();
-
-        let sig = FunctionSignature {
-            params: vec![ValueType::I32, ValueType::I32],
-            results: vec![ValueType::I32],
-        };
-        module.types.push(sig.clone());
-
-        // Function 0: target
-        module.functions.push(Function {
-            name: Some("target".to_string()),
-            signature: sig.clone(),
-            locals: vec![],
-            instructions: vec![
-                Instruction::LocalGet(0),
-                Instruction::LocalGet(1),
-                Instruction::I32Add,
-                Instruction::End,
-            ],
-        });
-
-        // Function 1: pass-through adapter, target absolute idx 0
-        module.functions.push(make_adapter(
-            &[ValueType::I32, ValueType::I32],
-            &[ValueType::I32],
-            0,
-        ));
-
-        module.exports.push(Export {
-            name: "adapter".to_string(),
-            kind: ExportKind::Func(1),
-        });
-
-        let adapters = detect_adapters(&module, 0);
-        assert_eq!(adapters.len(), 1, "trivial adapter should be detected");
-
-        let inlined = inline_scalar_adapters(&mut module, &adapters).unwrap();
-        assert_eq!(
-            inlined, 1,
-            "pass-through adapter should be counted as inlined-shape"
-        );
-
-        // Body must be exactly [LocalGet 0, LocalGet 1, Call(0), End]
-        assert_eq!(
-            module.functions[1].instructions,
-            vec![
-                Instruction::LocalGet(0),
-                Instruction::LocalGet(1),
-                Instruction::Call(0),
-                Instruction::End,
-            ]
-        );
-    }
-
-    /// Adapter whose body contains an extra arithmetic op (not a pure
-    /// pass-through and not a cross-memory copy): must be left alone.
-    /// Demonstrates the "skip when not scalar-rewritable" guard.
-    #[test]
-    fn test_inline_scalar_adapter_skips_non_scalar() {
-        let mut module = empty_module();
-
-        let sig = FunctionSignature {
-            params: vec![ValueType::I32],
-            results: vec![ValueType::I32],
-        };
-        module.types.push(sig.clone());
-
-        // Function 0: target
-        module.functions.push(make_target());
-
-        // Function 1: NOT a trivial adapter (extra I32Add)
-        let non_trivial = Function {
-            name: Some("non_trivial".to_string()),
-            signature: sig.clone(),
-            locals: vec![],
-            instructions: vec![
-                Instruction::LocalGet(0),
-                Instruction::I32Const(1),
-                Instruction::I32Add,
-                Instruction::Call(0),
-                Instruction::End,
-            ],
-        };
-        let original = non_trivial.instructions.clone();
-        module.functions.push(non_trivial);
-
-        // Build an `AdapterInfo` by hand (detect_adapters won't surface this
-        // function because is_trivial_adapter rejects it). Our pass must
-        // still classify the body as Unrecognised and leave it untouched.
-        let synthetic = vec![AdapterInfo {
-            func_index: 1,
-            target_func_idx: 0,
-        }];
-
-        let inlined = inline_scalar_adapters(&mut module, &synthetic).unwrap();
-        assert_eq!(
-            inlined, 0,
-            "non-canonical body must not be classified as inlinable"
-        );
-
-        // Body must be unchanged.
-        assert_eq!(module.functions[1].instructions, original);
-    }
-
-    // ========================================================================
     // Pass 1.2 (issue #68 Tier-2.2): dedupe_function_bodies tests
     // ========================================================================
 
@@ -3890,7 +3396,7 @@ mod tests {
         // Func 0: target
         module.functions.push(make_target());
 
-        // Func 1: pass-through adapter for target (eligible for Tier-1.1)
+        // Func 1: pass-through adapter for target
         module
             .functions
             .push(make_adapter(&[ValueType::I32], &[ValueType::I32], 0));
@@ -3942,12 +3448,8 @@ mod tests {
 
         let stats = optimize_fused_module(&mut module).unwrap();
 
-        // Tier-1.1 must have classified the trivial adapter.
-        assert!(
-            stats.scalar_adapters_inlined >= 1,
-            "scalar_adapters_inlined should fire (got {})",
-            stats.scalar_adapters_inlined
-        );
+        // Scalar adapters are not inlined.
+        assert_eq!(stats.scalar_adapters_inlined, 0);
 
         // Tier-2.2 must have collapsed the duplicate helper.
         assert!(
@@ -4086,7 +3588,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Same-memory adapter collapse (former Pass 0b) must not run.
+    // Same-memory adapters must not be collapsed.
     //
     // A meld-shaped adapter allocates a buffer, copies the caller's bytes
     // into it with `memory.copy {0, 0}` and calls the target with the NEW

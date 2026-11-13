@@ -940,7 +940,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- the_four_trapping_ops_match_a_spec_table
         - run: cargo test --release --lib -p loom-core --features verification -- slice_two_and_trap_gate_share_one_trap_rule
         - run: cargo test --release --lib -p loom-core --features verification -- tier2_slice2_div_obligations_are_routed_and_decided
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 560 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 558 passed'"
     status: verified
     release: v1.6.0
     tags: [v150, verification, solver-migration, traps]
@@ -1005,7 +1005,7 @@ artifacts:
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_a_pure_call_is_not_a_constant
         - run: cargo test --release --lib -p loom-core --features verification -- slice3_one_name_two_signatures_is_refused
         - run: cargo test --release --lib -p loom-core --features verification -- out_of_fragment_obligations_are_refused
-        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 560 passed'"
+        - run: "LOOM_VERIFY_BACKEND=both cargo test --release --lib -p loom-core --features verification 2>&1 | tee /dev/stderr | grep -qE '^test result: ok\\. 558 passed'"
     status: verified
     release: v1.5.0
     tags: [v150, verification, solver-migration]

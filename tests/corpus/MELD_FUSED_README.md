@@ -1,125 +1,55 @@
 # tests/corpus/meld_fused.wasm — placeholder (not yet built)
 
-> **Status: MISSING.** This fixture is referenced by `scripts/measure_corpus.sh`
-> but has not yet been produced. This README documents exactly what is
-> required so the next operator can land it without guesswork.
+> **Status: MISSING.** `scripts/measure_corpus.sh` lists `meld_fused` in its
+> `WORKLOADS` array; the row reports `n/a` until this fixture is committed.
 
 ## Why this fixture is needed
 
-LOOM v1.0.5 Track 3 (commit `27c0a01`, PR #132) added two passes that target
-the shapes a real `meld fuse` of multiple components produces:
+The fused-module passes in `loom-core/src/fused_optimizer.rs` target shapes
+that a `meld fuse` of several components produces. The existing component
+fixtures (`loom-core/tests/component_fixtures/simple.component.wasm`,
+`calc.component.wasm`) are independent of each other, so fusing them yields
+none of these shapes and the passes measure byte-neutral.
 
-| Pass                          | Target shape                                                         |
-|-------------------------------|----------------------------------------------------------------------|
-| `inline_scalar_adapters`      | cross-memory scalar copy: `load(memA); load(memB); call; store(memB); store(memA)` |
-| `dedupe_function_bodies`      | two functions with identical `(signature, locals, body)`             |
-
-The existing single-component fixtures
-(`loom-core/tests/component_fixtures/simple.component.wasm` and
-`calc.component.wasm`) produce a single fused core when run through
-`meld fuse`, but neither imports from the other, so the resulting fused
-core contains **no cross-memory adapter** — exactly the shape Tier-1.1
-targets. Track 3 therefore fired byte-neutral on the v1.0.5 measurement
-corpus.
-
-A **multi-component** meld-fused fixture is what Track 3 needs to demonstrate
-its byte wins. The harness already supports it; only the fixture is missing.
+| Pass                       | Target shape                                                   |
+|----------------------------|----------------------------------------------------------------|
+| `devirtualize_adapters`    | trivial adapter: `local.get 0..n-1; call target`               |
+| `dedupe_function_bodies`   | two functions with identical `(signature, locals, body)`       |
+| `eliminate_dead_functions` | functions unreachable from exports, start and element segments |
+| `deduplicate_imports`      | two imports with the same module, name and type                |
 
 ## What to build
 
-`tests/corpus/meld_fused.wasm` — a single **core module** (post-fusion)
-that:
+`tests/corpus/meld_fused.wasm`: a single core module (post-fusion) that
 
-1. Validates via `wasm-tools validate`.
-2. Contains at least one **cross-memory scalar adapter** (the
-   `inline_scalar_adapters` target shape).
-3. Optionally, contains two functions with identical
-   `(signature, locals, body)` (the `dedupe_function_bodies` target).
+1. validates with `wasm-tools validate`;
+2. contains at least one trivial adapter that callers reach;
+3. contains two functions with identical `(signature, locals, body)`.
 
 ## How to build it
 
-### Inputs that won't work (and why)
+Two independent components do not work: `meld fuse` either rejects them or
+produces no adapters worth removing. Use a pair where one component imports
+an interface the other exports:
 
-The two existing component fixtures
-(`loom-core/tests/component_fixtures/simple.component.wasm`,
-`calc.component.wasm`) are **independent**: neither imports the other. They
-both export only pure scalar `(i32, i32) -> i32` functions and import
-nothing. `meld fuse` on two independent components either rejects the
-input or produces trivial pass-through adapters with a single memory —
-no cross-memory shape, no dedup target.
-
-### Inputs that will work
-
-A pair of components where one **imports** an interface the other
-**exports**, and both perform some non-trivial body. Easiest path:
-
-1. Author a tiny `wit` interface (one function, e.g.
-   `add: func(a: s32, b: s32) -> s32`).
-2. Build a producer component (Rust + `cargo-component` or `wit-bindgen`)
-   that exports it.
-3. Build a consumer component that imports it and re-exports a wrapped
-   version.
-4. `meld fuse producer.component.wasm consumer.component.wasm
-   -o tests/corpus/meld_fused.wasm` (the consumer's memory and the
-   producer's memory are separate → cross-memory adapter shape).
-
-> **Constraint:** v1.0.5 Track E (this work) forbids pulling components
-> from crates.io. Build local fixtures or revive the v1.0.0 PR-Q fixture
-> set (some of those crates may already be in
-> `tests/corpus/rust-examples/`).
-
-### Toolchain
-
-- `meld` v0.x (`/Users/r/.cargo/bin/meld` per the v0.9.0 measurement notes).
-- `cargo component` or `wit-bindgen` for building components from Rust.
-- `wasm-tools` for validation and inspection.
-
-### Commands
+1. Write a small WIT interface with one function, e.g.
+   `add: func(a: s32, b: s32) -> s32`.
+2. Build a producer component that exports it (Rust with `cargo component`
+   or `wit-bindgen`).
+3. Build a consumer component that imports it and re-exports a wrapper.
+4. Fuse and check:
 
 ```bash
-# 1. Build the two components (toolchain-specific).
-# 2. Fuse them into a core module.
-meld fuse \
-    <producer>.component.wasm \
-    <consumer>.component.wasm \
+meld fuse <producer>.component.wasm <consumer>.component.wasm \
     -o tests/corpus/meld_fused.wasm
-
-# 3. Validate.
 wasm-tools validate tests/corpus/meld_fused.wasm
-
-# 4. Confirm the cross-memory adapter shape.
-wasm-tools print tests/corpus/meld_fused.wasm | grep -A 20 "adapter\|i32.load\|i32.store"
-
-# 5. Run the harness; the new row must be non-`n/a`.
-bash scripts/measure_corpus.sh
+bash scripts/measure_corpus.sh   # the meld_fused row must not be n/a
 ```
 
-## Harness wiring
-
-`scripts/measure_corpus.sh` has been updated on this branch to include
-`meld_fused` in the `WORKLOADS` array. The row reports `n/a` until the
-fixture is produced and committed.
-
-## Honest stop-report from this branch
-
-This branch (`release/v1.1.0-pr-meld-fixture`) attempted to produce the
-fixture but was unable to invoke `meld` due to an environment permission
-restriction on the agent that authored it (Bash invocations of `meld`
-were denied). The agent's choice was either to (a) ship a fake/stub wasm
-that validates but doesn't contain the target shape, or (b) ship this
-placeholder doc + harness wiring so the next operator can complete the
-work in minutes. **Option (b) was chosen per
-`CLAUDE.md`: "A correct optimizer that handles 50% of cases is infinitely
-better than a fast optimizer that corrupts 1% of cases."** Shipping a
-fake fixture would silently change what Track 3 measures against —
-exactly the kind of "good enough" shortcut LOOM's mission forbids.
+Build the components locally; do not pull them from crates.io.
 
 ## Verification once the fixture lands
 
-Run `loom optimize tests/corpus/meld_fused.wasm -o /tmp/meld_fused.loom.wasm`
-both **with** and **without** Track 3 passes
-(`inline_scalar_adapters` / `dedupe_function_bodies`) and confirm the
-byte delta is strictly negative with the passes enabled. The
-expected effect on a fixture with one cross-memory adapter and one
-dedup target is **non-zero**, breaking the byte-neutral measurement
-recorded in `docs/measurements/v0.9.0-corpus-baseline.md`.
+`loom optimize tests/corpus/meld_fused.wasm -o meld_fused.loom.wasm` must
+report a non-zero count for at least one of the passes above under `--stats`,
+and the optimized module must behave as the input does on its exports.
