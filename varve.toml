@@ -1,0 +1,11 @@
+# This repository's toolchain pin. `varve install` lays it down and the shims on
+# PATH then run exactly these tools; `varve which <tool>` names the layer and its
+# digest. The realm comes from varve-realms.toml beside this file, so no
+# environment variable is needed and the realm's trust root is authoritative.
+# Change layers only by editing this file in a reviewed commit.
+manifest-version = 1
+
+[toolchain]
+realm   = "covalent"
+channel = "rolling"
+layer   = "2026.11.10"
