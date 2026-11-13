@@ -2,8 +2,9 @@
 
     Formal verification of LOOM's value type system.
 
-    This module proves properties about WebAssembly value types,
-    connecting the pure Rocq model to the translated Rust code.
+    This module proves properties of a pure Rocq model of WebAssembly value
+    types. The model is not linked to the code rocq-of-rust generates from
+    the Rust implementation: no theorem here is about that code.
 *)
 
 From Stdlib Require Import Bool.
@@ -13,9 +14,8 @@ Import ListNotations.
 
 (** * Pure Rocq Model
 
-    We define a pure inductive type that mirrors the Rust enum.
-    This allows us to prove properties using standard Rocq tactics,
-    then relate them to the translated monadic code.
+    A pure inductive type that mirrors the Rust enum, so that properties can
+    be proven with standard Rocq tactics.
 *)
 
 (** WebAssembly value types *)
@@ -193,35 +193,3 @@ Theorem push_net_effect : forall t : ValueType,
 Proof.
   intros t. reflexivity.
 Qed.
-
-(** * Correspondence to Translated Code
-
-    The translated Rocq code uses the M monad with Value.t constructors.
-    These axioms state the correspondence between our pure model and
-    the generated monadic code.
-
-    The proofs above on the pure model give us confidence that the
-    properties hold for the actual Rust implementation.
-*)
-
-(** Value type discriminants match our pure model *)
-Axiom discriminant_correspondence :
-  forall (d : nat),
-    (d = 0 -> True) /\  (* I32 *)
-    (d = 1 -> True) /\  (* I64 *)
-    (d = 2 -> True) /\  (* F32 *)
-    (d = 3 -> True).    (* F64 *)
-
-(** The generated size_bytes returns the same values as our model *)
-Axiom size_bytes_correspondence :
-  forall t : ValueType,
-    (* Generated code returns Value.Integer IntegerKind.U32 n *)
-    (* where n matches our size_bytes function *)
-    True.
-
-(** The generated is_integer returns the same values as our model *)
-Axiom is_integer_correspondence :
-  forall t : ValueType,
-    (* Generated code returns Value.Bool b *)
-    (* where b matches our is_integer function *)
-    True.

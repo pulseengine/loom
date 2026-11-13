@@ -7,9 +7,6 @@
 # Axioms stated in loom's own proofs (also in proofs/TRUST_LEDGER.txt), and
 # the impredicative Set the translated code is compiled with.
 [//proofs:fused_optimization] Axioms: proofs.FusedOptimization.exec_call
-[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.discriminant_correspondence
-[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.is_integer_correspondence
-[//proofs/rust_verified:value_types_proofs] Axioms: proofs.rust_verified.value_types_proofs.size_bytes_correspondence
 [//proofs/rust_verified:isle_conversion] Theory: Set is impredicative
 [//proofs/rust_verified:stack_signature] Theory: Set is impredicative
 [//proofs/rust_verified:value_types_translated_proofs] Theory: Set is impredicative
