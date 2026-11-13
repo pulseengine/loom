@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Scalar adapter inlining (fused Pass 1.1) is no longer run (#169). It was
+  only given adapters from `detect_adapters`, which are already pass-throughs,
+  so in the pipeline it changed nothing and only counted them. Its other
+  branch rewrote a load/call/store adapter into a bare forward, dropping the
+  loads and stores, and had no proof. `scalar_adapters_inlined` is always 0.
 - Function type deduplication (fused Pass 3) is no longer run (#169). It
   returned 0 whenever the raw type section was present, which the parser
   sets for every module with a type section, so it never changed a parsed

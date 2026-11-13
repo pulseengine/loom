@@ -7,13 +7,13 @@ Specialized optimization for WebAssembly modules produced by component fusion (e
 When multiple P2/P3 WebAssembly components are **fused** into a single core module, the result contains characteristic patterns that standard optimization passes miss. The fused component optimizer targets these patterns specifically, achieving additional size and performance improvements beyond what loom's standard 12-phase pipeline provides.
 
 Component fusion (performed by tools like meld) combines multiple components into one module. This process introduces:
-- **Same-memory adapters** that redundantly allocate+copy within a single linear memory
+- **Duplicate memory imports** for one shared host memory
 - **Adapter trampolines** for cross-component calls
-- **Duplicate function types** from each source component
+- **Duplicate function bodies** (e.g. runtime helpers each component carries)
 - **Duplicate imports** where multiple components imported the same external function
 - **Dead functions** (adapters that can be bypassed)
 
-The fused optimizer detects and eliminates these artifacts.
+The fused optimizer removes these. It leaves same-memory adapters (allocate and copy within one memory) in place; see "Not performed" below.
 
 ---
 
@@ -127,7 +127,8 @@ Multiple components may import the same external function. These are merged and 
 flowchart TD
     Input[Fused Module from meld] --> P0a
     P0a["Pass 0a: Memory Import Dedup"] --> P1
-    P1["Pass 1: Adapter Devirtualization"] --> P2
+    P1["Pass 1: Adapter Devirtualization"] --> P12
+    P12["Pass 1.2: Function Body Dedup"] --> P2
     P2["Pass 2: Trivial Call Elimination"] --> P4
     P4["Pass 4: Dead Function Elimination"] --> P5
     P5["Pass 5: Import Deduplication"] --> Output
@@ -144,14 +145,14 @@ flowchart TD
 
 **Safety (all-or-nothing)**: This pass only fires when ALL memory imports are identical and there are no local memories. Partial dedup could leave references to removed memory indices, so all-or-nothing is the only safe strategy.
 
-### Pass 0b: Same-Memory Adapter Collapse (removed)
+### Not performed: same-memory adapter collapse
 
-This pass rewrote meld adapters that call `cabi_realloc`, `memory.copy {N, N}` the caller's bytes into the new buffer and call the target with the new pointer, into forwarding trampolines that pass the caller's original pointer. It was not semantics-preserving: the target then operates on the caller's buffer instead of a private copy. Two tests in `loom-core/src/fused_optimizer.rs` record counterexamples, both valid wasm before and after the rewrite:
+A meld adapter that calls `cabi_realloc`, `memory.copy {N, N}`s the caller's bytes into the new buffer and calls the target with the new pointer is not rewritten into a forwarding trampoline. That would hand the target the caller's buffer instead of a private copy. Two tests in `loom-core/src/fused_optimizer.rs` pin this; both modules are valid wasm before and after such a rewrite:
 
-- `same_memory_adapter_keeps_callee_writes_private`: the target writes 99 into its argument; the caller wrote 7 and reads it back. 7 before the rewrite, 99 after.
-- `same_memory_adapter_keeps_the_new_pointer`: the target returns its argument. The adapter returns the allocated pointer (1024) before the rewrite and the caller's pointer (16) after.
+- `same_memory_adapter_keeps_callee_writes_private`: the target writes 99 into its argument; the caller wrote 7 and reads back 7 (99 after the rewrite).
+- `same_memory_adapter_keeps_the_new_pointer`: the target returns its argument; the adapter returns the allocated pointer, 1024 (16 after the rewrite).
 
-The detector checked the adapter's shape (locals, a realloc call, same-index copies and loads/stores, one target call), not what the target does with the buffer. The pass, its axioms (`same_memory_adapter_equiv`, `same_memory_adapter_general_equiv`) and the five collapse theorems built on them are removed. `cross_memory_adapters_detected` is still reported as a diagnostic.
+`cross_memory_adapters_detected` is reported as a diagnostic; `same_memory_adapters_collapsed` is always 0.
 
 ### Pass 1: Adapter Devirtualization
 
@@ -184,14 +185,6 @@ The detector checked the adapter's shape (locals, a realloc call, same-index cop
 
 **Why this is correct**: A function with `() -> ()` signature and a body of `Nop`s only takes nothing from the stack, pushes nothing, and touches neither locals of the caller nor the store. This is proven as `trivial_call_elim_correct` in `FusedSemantics.v`; see Proof Architecture below.
 
-### Pass 3: Function Type Deduplication (removed)
-
-The pass merged structurally identical function types and remapped the type indices of imports and `call_indirect`. It is not run any more (#169):
-- It returned 0 whenever the raw type section bytes were present. The parser stores them for every module that has a type section, so the pass never changed a parsed module; it ran only on modules built in memory through the API.
-- It had no proof. Its two Rocq statements restated their own hypotheses, and the concrete semantics has no type indices.
-
-`types_deduplicated` is always 0. Tests pin that duplicate types are kept, both for an in-memory module and for a parsed one, whose type section comes out byte-identical.
-
 ### Pass 4: Dead Function Elimination
 
 **What**: Remove functions unreachable from any export root.
@@ -221,21 +214,17 @@ Each transformation has a corresponding formal proof in Rocq (`proofs/simplify/F
 | `import_dedup_correct` (FusedSemantics.v) | **Proven, no axioms** | Pass 5 |
 | `fused_then_standard_correct` | **Proven** | Composition |
 
-Every row closes with Qed, but only the Pass 0a, 1, 1.2, 2, 4 and 5 rows are semantic evidence.
-They are proven in `proofs/simplify/FusedSemantics.v` against a concrete
-interpreter, and `Print Assumptions` reports them closed under the global
-context. `fused_then_standard_correct` composes two assumed per-pipeline
-statements over the abstract `exec_call` of `FusedOptimization.v`. There is
-no theorem about the whole fused pipeline: `fused_optimization_correct`
-assumed its own conclusion and was removed, as were the earlier Pass 4
-statements (one concluded `x = x`, the other assumed its conclusion) and the
-Pass 3 statements (they restated their hypotheses; the pass is removed).
-One pass that runs has no proof: Pass 1.1 (scalar adapter inlining). This is
-tracked in #169.
+Every fused pass the optimizer runs has a row above proven in
+`proofs/simplify/FusedSemantics.v` against a concrete interpreter, and
+`Print Assumptions` reports each closed under the global context.
+`fused_then_standard_correct` is different: it composes two assumed
+per-pipeline statements over the abstract `exec_call` of
+`FusedOptimization.v`, so it is not semantic evidence. There is no theorem
+about the whole fused pipeline. Replacing `exec_call` is tracked in #169.
 
 ### Proof Architecture
 
-The remaining `FusedOptimization.v` proofs rely on no axiom besides the abstract `exec_call`. The former axioms `A1` (Pass 1), `A2` (Pass 5), `A3` (Pass 2) and `A4` (Pass 0a) are now theorems; `A0` and `A4b` (Pass 0b) were false and were removed with the pass:
+`FusedOptimization.v` assumes one axiom, the abstract `exec_call`, used only by `fused_then_standard_correct`:
 
 ```mermaid
 flowchart TD
@@ -291,11 +280,11 @@ flowchart TD
     subgraph Fused["Fused Component Optimization"]
         F0a["0a. Memory import dedup"]
         F1["1. Adapter devirtualization"]
+        F12["1.2. Function body dedup"]
         F2["2. Trivial call elimination"]
-        F3["3. Type deduplication"]
         F4["4. Dead function elimination"]
         F5["5. Import deduplication"]
-        F0a --> F1 --> F2 --> F3 --> F4 --> F5
+        F0a --> F1 --> F12 --> F2 --> F4 --> F5
     end
 
     Fused --> Standard
@@ -364,14 +353,13 @@ optimize_module(&mut module)?;
 | Feature | Status | Coverage |
 |---|---|---|
 | Memory import deduplication | Done | Identical memory imports (aliased host memory) |
-| Same-memory adapter collapse | Removed | Not semantics-preserving (see Pass 0b) |
 | Trivial adapter devirtualization | Done | All direct adapters |
 | Trivial call elimination | Done | () -> () no-op functions |
-| Function type deduplication | Removed | Unproven, and never changed a parsed module (see Pass 3) |
 | Dead function elimination | Done | With element segment parsing |
 | Function import deduplication | Done | Function imports only |
 | Cross-memory adapter diagnostics | Done | Detection and counting (not collapsed) |
-| Correctness proofs | Partial | Passes 0a, 1, 1.2, 2, 4, 5 proven against FusedSemantics.v; Pass 1.1 unproven (#169) |
+| Function body deduplication | Done | Identical (signature, locals, body) |
+| Correctness proofs | Done for every running pass | Passes 0a, 1, 1.2, 2, 4, 5 proven against FusedSemantics.v (#169) |
 
 ### Planned
 

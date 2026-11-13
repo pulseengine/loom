@@ -1,65 +1,41 @@
 (** * Fused Component Optimization Proofs
 
-    This module proves the correctness of optimization passes specific to
-    WebAssembly modules produced by component fusion (e.g., meld).
+    The fused optimizer (loom-core/src/fused_optimizer.rs) runs on the single
+    core module that component fusion (e.g. meld) produces, and removes the
+    artifacts fusion leaves behind. Every pass it runs is proven against a
+    concrete call semantics in FusedSemantics.v, with no axioms:
 
-    When multiple P2/P3 components are fused into a single core module,
-    the result contains adapter trampolines, duplicate types, duplicate
-    imports, and dead functions. The fused optimizer eliminates these
-    artifacts while preserving program semantics.
+    - 0a. Memory import deduplication: [memory_import_dedup_correct],
+      instantiated for [deduplicate_memory_imports] by
+      [memory_import_dedup_rust].
+    - 1. Adapter devirtualization: [trivial_adapter_equiv],
+      [devirtualize_correct].
+    - 1.2. Function body deduplication: [body_dedup_correct].
+    - 2. Trivial call elimination: [trivial_call_elim_correct].
+    - 4. Dead function elimination: [dead_function_elim_correct].
+    - 5. Import deduplication: [import_dedup_correct]. Import binding is left
+      to the embedder by the wasm specification; the model makes it explicit
+      by looking the host up by import key.
 
-    ## Proven Properties
+    The optimizer does not collapse same-memory adapters (allocate, copy the
+    caller's bytes, call the target with the copy). Passing the target the
+    caller's pointer instead lets the target write into the caller's buffer:
+    with a target that writes 99 into its argument, a caller that wrote 7
+    reads 99 back. The tests [same_memory_adapter_keeps_*] in
+    fused_optimizer.rs pin this.
 
-    0a. Memory import deduplication (proven in FusedSemantics.v): merging
-       memory imports with the same key and remapping every memory index
-       preserves execution semantics.
-
-    0b. Same-memory adapter collapse: removed. It is not
-       semantics-preserving; see the Pass 0b note below.
-
-    1. Adapter devirtualization (proven in FusedSemantics.v): replacing call-to-adapter with call-to-target
-       preserves execution semantics when the adapter is a trivial forwarder.
-
-    2. Trivial call elimination (proven in FusedSemantics.v): removing calls
-       to void->void no-op functions preserves execution semantics.
-
-    3. Type deduplication: removed. It had no proof and never changed a
-       parsed module; see the Pass 3 note below.
-
-    4. Dead function elimination (proven in FusedSemantics.v): removing the
-       defined functions outside a call-closed live set, and renumbering the
-       rest, preserves every live function.
-
-    5. Import deduplication (proven in FusedSemantics.v): merging identical
-       imports (same module+name+type)
-       and remapping references preserves binding semantics.
-
-    ## Proof Architecture
-
-    exec_call is axiomatized: the remaining statements here reason about
-    module-level execution abstractly, and no other axiom is assumed.
-
-    ## Status (issue #169)
-
-    This file is being replaced, pass by pass, by FusedSemantics.v, which
-    proves each pass against a concrete call semantics. Until a pass moves
-    there, its statement here is not semantic evidence. Pass 0a (memory
-    import deduplication), Pass 1 (adapter devirtualization), Pass 2
-    (trivial call elimination), Pass 4 (dead function elimination) and
-    Pass 5 (import deduplication) have moved: see FusedSemantics.v, as has
-    Pass 1.2 (function body deduplication, [body_dedup_correct]). One pass
-    that loom runs has no proof in either file: Pass 1.1 (scalar adapter
-    inlining).
+    This file keeps the abstract module model and [exec_call], used by
+    [fused_then_standard_correct], which composes a fused-pipeline statement
+    with a standard-pipeline statement. Replacing [exec_call] is tracked in
+    issue #169.
 
     ## Connection to Meld
 
     Meld performs: Parse -> Resolve -> Merge -> Adapt -> Encode
     loom performs: Fused Optim -> 12-Phase Pipeline
 
-    The fused optimizer runs on meld's output (a single core module) and
-    targets the structural artifacts introduced by the fusion process.
     These proofs complement meld's own formal verification in
-    proofs/spec/fusion_spec.v which proves the fusion itself is correct.
+    proofs/spec/fusion_spec.v, which proves the fusion itself is correct.
 *)
 
 From Stdlib Require Import Bool.
@@ -160,118 +136,6 @@ Inductive reachable (m : wasm_module) : func_idx -> Prop :=
     with arguments on the stack produces results on the stack according
     to the function's semantics. *)
 Axiom exec_call : wasm_module -> func_idx -> exec_state -> option exec_state.
-
-(** * Semantic Axioms
-
-    These axioms capture well-justified properties of the WebAssembly
-    specification that cannot be derived from our abstract exec_call.
-    Each axiom is minimal and directly motivated by the WASM spec. *)
-
-(** Axiom 1 (trivial adapter equivalence) is no longer assumed. It is the
-    theorem [trivial_adapter_equiv] in FusedSemantics.v, proven against a
-    concrete call semantics (issue #169). *)
-
-(** Axiom 2 (identical import equivalence) is no longer assumed. Import
-    deduplication is the theorem [import_dedup_correct] in FusedSemantics.v.
-    The axiom attributed "same (module, name, type) resolves to the same
-    function" to the wasm specification; the specification leaves import
-    binding to the embedder, so FusedSemantics.v states it as part of the
-    model instead: the host is looked up by import key (issue #169). *)
-
-(** Axiom 3 (trivial call elimination) is no longer assumed. The pass is
-    the theorem [trivial_call_elim_correct] in FusedSemantics.v (issue #169). *)
-
-(** * Pass 0a: Memory Import Deduplication Correctness
-
-    Proven in FusedSemantics.v, against a concrete interpreter and with no
-    axioms: [memory_import_dedup_correct] says that replacing the memory
-    imports and remapping every memory index with [sg] preserves every
-    function, provided each index names the same memory key (or no memory)
-    before and after; [memory_import_dedup_rust] is the instance that
-    [deduplicate_memory_imports] runs. The axiom that stood here,
-    [identical_memory_import_equiv], had no hypotheses, and the theorem
-    after it restated its own hypothesis. *)
-
-(** * Pass 0b: Same-Memory Adapter Collapse (removed)
-
-    The axioms [same_memory_adapter_equiv] and
-    [same_memory_adapter_general_equiv] stated that an adapter which
-    allocates a buffer, copies the caller's bytes into it within one memory
-    and calls the target with the new pointer behaves as the target called
-    with the original pointer. That is false: the target then works on the
-    caller's buffer instead of a private copy. With a target that writes 99
-    into its argument, a caller that wrote 7 reads 7 back before the
-    collapse and 99 after; with a target that returns its argument, the
-    adapter returns the allocated pointer before and the caller's pointer
-    after. Both are tests in loom-core/src/fused_optimizer.rs
-    ([same_memory_adapter_keeps_*]). The axioms, the five collapse theorems
-    that rested on them, and the pass itself have been removed. *)
-
-(** * Pass 1: Adapter Devirtualization Correctness
-
-    Proven in FusedSemantics.v, against a concrete interpreter and with no
-    axioms:
-    - [trivial_adapter_equiv]: a trivial adapter is observationally
-      equivalent to its target;
-    - [devirtualize_correct]: rewriting every [call f] to [call (rho f)],
-      at any nesting depth, preserves every function, provided [rho f] is
-      reachable from [f] along trivial adapters.
-
-    The two statements that used to stand here were removed: one restated
-    the axiom, and the other ([devirtualization_preserves_module_semantics])
-    assumed its own conclusion. *)
-
-(** * Pass 2: Trivial Call Elimination Correctness
-
-    Proven in FusedSemantics.v, against a concrete interpreter and with no
-    axioms: [trivial_call_elim_correct] says that deleting every call to a
-    defined [() -> ()] function whose body is [nop]s only, at any nesting
-    depth, preserves every function.
-
-    The three statements that used to stand here were removed: the axiom
-    [trivial_call_nop], [trivial_call_is_nop], which restated it, and
-    [trivial_call_elimination_preserves_semantics], which assumed its own
-    conclusion. The axiom also covered only the bodies [[End]] and [[]],
-    while [is_nop_body] in Rust accepts any number of [Nop]s. *)
-
-(** * Pass 3: Type Deduplication (removed)
-
-    [deduplicate_function_types] merged structurally identical function
-    types and remapped the type indices of imports and [call_indirect]. It
-    returned 0 whenever the raw type section was present, which the parser
-    sets for every module with a type section, so it never changed a parsed
-    module; it ran only on modules built in memory. The two statements that
-    stood here, [type_dedup_preserves_semantics] and [type_dedup_idempotent],
-    restated their hypotheses, and this model has no type indices. The pass
-    has been removed from fused_optimizer.rs (issue #169). *)
-
-(** * Pass 4: Dead Function Elimination Correctness
-
-    Proven in FusedSemantics.v, against a concrete interpreter and with no
-    axioms: [dead_function_elim_correct] says that removing the defined
-    functions outside a live set that is closed under calls, moving each kept
-    function down by the number removed before it and rewriting every call
-    through that map, preserves every live function. The two statements that
-    used to stand here were removed: [dead_function_elim_correct] concluded
-    [exec_call m f st = exec_call m f st], and
-    [dead_function_removal_preserves_semantics] assumed its own conclusion. *)
-
-(** * Pass 5: Import Deduplication Correctness
-
-    Proven in FusedSemantics.v, against a concrete interpreter and with no
-    axioms: [import_dedup_correct] says that replacing the imports by the
-    deduplicated list and remapping every call (and so every export and the
-    start function) with [rho] preserves every function, provided each
-    import maps to one with the same key and signature and every defined
-    function moves down by the number of imports removed. The statement
-    that stood here only restated the axiom. *)
-
-(** * Combined Correctness
-
-    No statement about the whole pipeline is made here. The one that stood
-    here, [fused_optimization_correct], assumed its own conclusion. Passes
-    0a, 1, 1.2, 2, 4 and 5 are proven in FusedSemantics.v; Pass 1.1 runs
-    and is not proven. *)
 
 (** * Integration with loom Correctness *)
 
