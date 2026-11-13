@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Inlining a callee with an early `return` (or a branch to its own function
+  label) made that exit leave the caller. A saturating add called in a loop
+  ended the loop on its first overflow: `scan(100)` returned 2147483647
+  instead of 19. The inlined body now gets its own block when it can exit
+  early, and `return` branches to it.
+- `dead-stores` could remove a live store in one arm of an `if`/`else` and
+  keep a dead one in the other: its liveness walk numbered the stores in the
+  opposite order to the pass that removes them. A function storing 7 in the
+  `else` arm returned 0.
+
 - A result-less `if` (likewise a void `block`, `loop`, call, `br_if`, `drop`
   or `nop`) followed by a store could be moved after that store (#503). On
   `if (x) { g = 7 }; g = 3`, `f(1)` left `g` at 7 instead of 3, and the
