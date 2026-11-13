@@ -2724,8 +2724,19 @@ pub fn verify_function_equivalence_with_backend(
         let solver = Solver::new();
 
         // Encode both functions
-        let orig_result = encode_function_to_smt(original);
-        let opt_result = encode_function_to_smt(optimized);
+        let orig_state = encode_function_state(original, None, None);
+        let opt_state = encode_function_state(optimized, None, None);
+
+        // Side effects on globals are part of the observable behaviour: a
+        // reordering of global writes is a counterexample even when the
+        // return values agree, and even for a void function.
+        if let (Ok((_, og)), Ok((_, pg))) = (&orig_state, &opt_state) {
+            if !check_globals_preserved(og, pg, pass_name)? {
+                return Ok(false);
+            }
+        }
+        let orig_result = orig_state.map(|(r, _)| r);
+        let opt_result = opt_state.map(|(r, _)| r);
 
         // Compute result while BVs are still valid
         match (&orig_result, &opt_result) {
@@ -3281,10 +3292,19 @@ fn verify_function_equivalence_with_context_uncounted(
         let shared_inputs = SharedSymbolicInputs::from_function(original);
 
         // Encode both functions with the SAME shared inputs
-        let orig_result =
-            encode_function_to_smt_with_shared_inputs(original, sig_ctx, &shared_inputs);
-        let opt_result =
-            encode_function_to_smt_with_shared_inputs(optimized, sig_ctx, &shared_inputs);
+        let orig_state = encode_function_state(original, Some(sig_ctx), Some(&shared_inputs));
+        let opt_state = encode_function_state(optimized, Some(sig_ctx), Some(&shared_inputs));
+
+        // Side effects on globals are part of the observable behaviour: a
+        // reordering of global writes is a counterexample even when the
+        // return values agree, and even for a void function.
+        if let (Ok((_, og)), Ok((_, pg))) = (&orig_state, &opt_state) {
+            if !check_globals_preserved(og, pg, pass_name)? {
+                return Ok(false);
+            }
+        }
+        let orig_result = orig_state.map(|(r, _)| r);
+        let opt_result = opt_state.map(|(r, _)| r);
 
         // Compute result while BVs are still valid
         match (&orig_result, &opt_result) {
@@ -4135,20 +4155,6 @@ fn encode_function_to_smt_with_context(
     encode_function_to_smt_impl(func, Some(sig_ctx))
 }
 
-/// Encode a WebAssembly function using pre-created shared symbolic inputs
-///
-/// This is CRITICAL for correct verification: both original and optimized functions
-/// must use the SAME symbolic inputs. Otherwise Z3 treats them as independent and
-/// can trivially find counterexamples.
-#[cfg(feature = "verification")]
-fn encode_function_to_smt_with_shared_inputs(
-    func: &Function,
-    sig_ctx: &VerificationSignatureContext,
-    shared: &SharedSymbolicInputs,
-) -> Result<Option<BV>> {
-    encode_function_to_smt_impl_inner(func, Some(sig_ctx), Some(shared))
-}
-
 /// Internal implementation of SMT encoding with optional signature context
 #[cfg(feature = "verification")]
 fn encode_function_to_smt_impl(
@@ -4168,12 +4174,27 @@ fn encode_function_to_smt_impl_inner(
     sig_ctx: Option<&VerificationSignatureContext>,
     shared_inputs: Option<&SharedSymbolicInputs>,
 ) -> Result<Option<BV>> {
+    encode_function_state(func, sig_ctx, shared_inputs).map(|(ret, _)| ret)
+}
+
+/// The encoded return value and, when the whole body was encoded, the final
+/// value of every global the function can observe. `None` for the globals
+/// means the post-state is not modelled (an early exit of the encoder).
+#[cfg(feature = "verification")]
+type EncodedState = (Option<BV>, Option<Vec<BV>>);
+
+#[cfg(feature = "verification")]
+fn encode_function_state(
+    func: &Function,
+    sig_ctx: Option<&VerificationSignatureContext>,
+    shared_inputs: Option<&SharedSymbolicInputs>,
+) -> Result<EncodedState> {
     // Conservative skip: functions using multi-memory (mem != 0) cannot be verified
     // with our single-Array Z3 model. Return None to skip verification rather than
     // produce incorrect proofs. Full multi-memory Z3 support (separate Array per
     // memory) is future work.
     if has_multi_memory_ops(&func.instructions) {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     // Create symbolic variables for parameters
@@ -5708,7 +5729,7 @@ fn encode_function_to_smt_impl_inner(
             Instruction::Unreachable => {
                 // For SMT purposes, unreachable means no concrete output
                 // Return a fresh symbolic variable (represents undefined)
-                return Ok(Some(BV::new_const("unreachable", 32)));
+                return Ok((Some(BV::new_const("unreachable", 32)), None));
             }
 
             // ============================================================
@@ -7127,13 +7148,78 @@ fn encode_function_to_smt_impl_inner(
     // Return value should be on stack if function has result type
     if func.signature.results.is_empty() {
         // Void function - no return value expected
-        Ok(None)
+        Ok((None, Some(globals)))
     } else if stack.is_empty() {
         Err(anyhow!(
             "Function returned no value (stack empty) but result type expected"
         ))
     } else {
-        Ok(Some(stack.pop().unwrap()))
+        Ok((Some(stack.pop().unwrap()), Some(globals)))
+    }
+}
+
+/// Whether the two encodings leave every global with the same value.
+///
+/// A function's global vector is extended lazily with `global{i}`, the same
+/// name both encodings start from, so a global one side never touched is
+/// padded with that initial value. Returns `Ok(None)` when either post-state
+/// is not modelled, `Err` when a global has different widths on the two sides
+/// (a model artifact that cannot be compared soundly).
+#[cfg(feature = "verification")]
+fn globals_equal(orig: &Option<Vec<BV>>, opt: &Option<Vec<BV>>) -> Result<Option<Bool>> {
+    let (Some(a), Some(b)) = (orig, opt) else {
+        return Ok(None);
+    };
+    let n = a.len().max(b.len());
+    let initial = |i: usize| BV::new_const(format!("global{}", i), 32);
+    let mut eqs: Vec<Bool> = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = a.get(i).cloned().unwrap_or_else(|| initial(i));
+        let y = b.get(i).cloned().unwrap_or_else(|| initial(i));
+        if x.get_size() != y.get_size() {
+            return Err(anyhow!(
+                "global {} has different widths after the two encodings",
+                i
+            ));
+        }
+        eqs.push(x.eq(&y));
+    }
+    let refs: Vec<&Bool> = eqs.iter().collect();
+    Ok(Some(Bool::and(&refs)))
+}
+
+/// Check that the original and optimized functions leave the globals equal.
+/// `Ok(true)`: proven equal, or the post-state is not modelled (the caller's
+/// return-value check decides alone, as before). `Ok(false)`: a counterexample.
+#[cfg(feature = "verification")]
+fn check_globals_preserved(
+    orig: &Option<Vec<BV>>,
+    opt: &Option<Vec<BV>>,
+    pass_name: &str,
+) -> Result<bool> {
+    let eq = match globals_equal(orig, opt) {
+        Ok(Some(eq)) => eq,
+        Ok(None) => return Ok(true),
+        Err(e) => return Err(anyhow!("{}: {}", pass_name, e)),
+    };
+    let solver = Solver::new();
+    solver.assert(eq.not());
+    match solver.check() {
+        SatResult::Unsat => Ok(true),
+        SatResult::Sat => {
+            revert_note(format_args!(
+                "{}: Verification failed! The globals differ after the call:",
+                pass_name
+            ));
+            if let Some(model) = solver.get_model() {
+                revert_note(format_args!("{}", model));
+            }
+            Ok(false)
+        }
+        SatResult::Unknown => Err(anyhow!(
+            "{}: SMT solver returned unknown on the globals (timeout or too complex)",
+            pass_name
+        )),
     }
 }
 
@@ -9184,6 +9270,79 @@ pub fn verify_stack_properties(
 #[cfg(all(test, feature = "verification"))]
 mod tests {
     use super::*;
+
+    fn only_func(wat: &str) -> Function {
+        let wasm = wat::parse_str(wat).expect("wat");
+        let module = crate::parse::parse_wasm(&wasm).expect("parse");
+        module.functions[0].clone()
+    }
+
+    const IF_THEN_SET: &str = r#"(module (global $g (mut i32) (i32.const 0))
+        (func (param $x i32)
+          (if (local.get $x) (then (global.set $g (i32.const 7))))
+          (global.set $g (i32.const 3))))"#;
+
+    /// The two writes in the opposite order: `g` ends at 7 when `x != 0`.
+    const IF_THEN_SET_REORDERED: &str = r#"(module (global $g (mut i32) (i32.const 0))
+        (func (param $x i32)
+          (global.set $g (i32.const 3))
+          (if (local.get $x) (then (global.set $g (i32.const 7))))))"#;
+
+    /// Verification covers side-effect ordering on globals: a void function
+    /// whose global writes are reordered is rejected, by both validators.
+    #[test]
+    fn reordered_global_writes_are_rejected() {
+        let orig = only_func(IF_THEN_SET);
+        let bad = only_func(IF_THEN_SET_REORDERED);
+        assert!(
+            TranslationValidator::new(&orig, "test")
+                .verify(&bad)
+                .is_err()
+        );
+        let module = crate::parse::parse_wasm(&wat::parse_str(IF_THEN_SET).unwrap()).unwrap();
+        let ctx = VerificationSignatureContext::from_module(&module);
+        assert!(
+            TranslationValidator::new_with_context(&orig, "test", ctx)
+                .verify(&bad)
+                .is_err()
+        );
+    }
+
+    /// The control: the unchanged body still verifies.
+    #[test]
+    fn unchanged_global_writes_are_accepted() {
+        let orig = only_func(IF_THEN_SET);
+        assert!(
+            TranslationValidator::new(&orig, "test")
+                .verify(&orig)
+                .is_ok()
+        );
+    }
+
+    /// The same reordering in a function with a result: the return values
+    /// agree, the globals do not.
+    #[test]
+    fn reordered_global_writes_are_rejected_with_a_result() {
+        let orig = only_func(
+            r#"(module (global $g (mut i32) (i32.const 0))
+                (func (param $x i32) (result i32)
+                  (if (local.get $x) (then (global.set $g (i32.const 7))))
+                  (global.set $g (i32.const 3))
+                  (i32.const 1)))"#,
+        );
+        let bad = only_func(
+            r#"(module (global $g (mut i32) (i32.const 0))
+                (func (param $x i32) (result i32)
+                  (global.set $g (i32.const 3))
+                  (if (local.get $x) (then (global.set $g (i32.const 7))))
+                  (i32.const 1)))"#,
+        );
+        assert!(
+            TranslationValidator::new(&orig, "test")
+                .verify(&bad)
+                .is_err()
+        );
+    }
     use crate::parse;
 
     // ---- PR-C (gale #219) M1a: precise acyclic CF executor, tested in isolation ----

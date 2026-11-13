@@ -4833,7 +4833,7 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for local.set"))?;
                     // local.set consumes a value but does NOT produce one
                     // The term goes to side_effects, not stack
-                    side_effects.push(local_set(*idx, val));
+                    push_effect(&mut side_effects, &stack, local_set(*idx, val))?;
                 }
                 Instruction::LocalTee(idx) => {
                     let val = stack
@@ -4859,7 +4859,11 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store address"))?;
                     // i32.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i32_store(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i32_store(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::I64Load { offset, align, mem } => {
                     let addr = stack
@@ -4876,7 +4880,11 @@ pub mod terms {
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store address"))?;
                     // i64.store consumes 2 values but does NOT produce any
                     // The term goes to side_effects, not stack
-                    side_effects.push(i64_store(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i64_store(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 // Partial-width memory load operations
                 Instruction::I32Load8S { offset, align, mem } => {
@@ -4953,7 +4961,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for f32.store address"))?;
-                    side_effects.push(f32_store(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        f32_store(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::F64Load { offset, align, mem } => {
                     let addr = stack
@@ -4968,7 +4980,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for f64.store address"))?;
-                    side_effects.push(f64_store(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        f64_store(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 // Partial-width memory store operations
                 Instruction::I32Store8 { offset, align, mem } => {
@@ -4978,7 +4994,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store8 address"))?;
-                    side_effects.push(i32_store8(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i32_store8(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::I32Store16 { offset, align, mem } => {
                     let value = stack
@@ -4987,7 +5007,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i32.store16 address"))?;
-                    side_effects.push(i32_store16(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i32_store16(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::I64Store8 { offset, align, mem } => {
                     let value = stack
@@ -4996,7 +5020,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store8 address"))?;
-                    side_effects.push(i64_store8(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i64_store8(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::I64Store16 { offset, align, mem } => {
                     let value = stack
@@ -5005,7 +5033,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store16 address"))?;
-                    side_effects.push(i64_store16(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i64_store16(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 Instruction::I64Store32 { offset, align, mem } => {
                     let value = stack
@@ -5014,7 +5046,11 @@ pub mod terms {
                     let addr = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for i64.store32 address"))?;
-                    side_effects.push(i64_store32(addr, value, *offset, *align, *mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        i64_store32(addr, value, *offset, *align, *mem),
+                    )?;
                 }
                 // Control flow instructions (Phase 14)
                 Instruction::Block { block_type, body } => {
@@ -5025,7 +5061,11 @@ pub mod terms {
                     // Convert body instructions to terms recursively with updated context
                     let body_terms = instructions_to_terms_impl(body, &new_context, sig_ctx)?;
                     let bt = convert_blocktype_to_isle(block_type);
-                    stack.push(block(None, bt, body_terms));
+                    if is_void_blocktype(block_type) {
+                        push_stmt(&mut side_effects, &stack, block(None, bt, body_terms))?;
+                    } else {
+                        stack.push(block(None, bt, body_terms));
+                    }
                 }
                 Instruction::Loop { block_type, body } => {
                     // Build new block context: add this block's type to the front
@@ -5035,7 +5075,15 @@ pub mod terms {
                     // Convert body instructions to terms recursively with updated context
                     let body_terms = instructions_to_terms_impl(body, &new_context, sig_ctx)?;
                     let bt = convert_blocktype_to_isle(block_type);
-                    stack.push(loop_construct(None, bt, body_terms));
+                    if is_void_blocktype(block_type) {
+                        push_stmt(
+                            &mut side_effects,
+                            &stack,
+                            loop_construct(None, bt, body_terms),
+                        )?;
+                    } else {
+                        stack.push(loop_construct(None, bt, body_terms));
+                    }
                 }
                 Instruction::If {
                     block_type,
@@ -5056,7 +5104,12 @@ pub mod terms {
                     let else_terms = instructions_to_terms_impl(else_body, &new_context, sig_ctx)?;
                     let bt = convert_blocktype_to_isle(block_type);
 
-                    stack.push(if_then_else(None, bt, condition, then_terms, else_terms));
+                    let term = if_then_else(None, bt, condition, then_terms, else_terms);
+                    if is_void_blocktype(block_type) {
+                        push_stmt(&mut side_effects, &stack, term)?;
+                    } else {
+                        stack.push(term);
+                    }
                 }
                 Instruction::Br(depth) => {
                     // Check if target block has a result type and pop value if needed
@@ -5089,7 +5142,11 @@ pub mod terms {
                     } else {
                         None
                     };
-                    stack.push(br_if(*depth, condition, value));
+                    if value.is_none() {
+                        push_stmt(&mut side_effects, &stack, br_if(*depth, condition, value))?;
+                    } else {
+                        stack.push(br_if(*depth, condition, value));
+                    }
                 }
                 Instruction::BrTable { targets, default } => {
                     // Pop index from stack
@@ -5137,14 +5194,25 @@ pub mod terms {
                             args.reverse();
                             args
                         } else {
-                            // Unknown function index - assume no arguments
-                            vec![]
+                            return Err(anyhow!(
+                                "call {}: unknown signature, arguments cannot be popped",
+                                func_idx
+                            ));
                         }
                     } else {
-                        // No signature context - assume no arguments (backwards compatible)
-                        vec![]
+                        return Err(anyhow!(
+                            "call {}: no signature context, arguments cannot be popped",
+                            func_idx
+                        ));
                     };
-                    stack.push(call(*func_idx, args));
+                    let void = sig_ctx
+                        .and_then(|ctx| ctx.get_function_signature(*func_idx))
+                        .is_some_and(|sig| sig.results.is_empty());
+                    if void {
+                        push_stmt(&mut side_effects, &stack, call(*func_idx, args))?;
+                    } else {
+                        stack.push(call(*func_idx, args));
+                    }
                 }
                 Instruction::CallIndirect {
                     type_idx,
@@ -5175,27 +5243,39 @@ pub mod terms {
                             args.reverse();
                             args
                         } else {
-                            // Unknown type index - assume no arguments
-                            vec![]
+                            return Err(anyhow!(
+                                "call_indirect type {}: unknown signature, arguments cannot be popped",
+                                type_idx
+                            ));
                         }
                     } else {
-                        // No signature context - assume no arguments (backwards compatible)
-                        vec![]
+                        return Err(anyhow!(
+                            "call_indirect type {}: no signature context, arguments cannot be popped",
+                            type_idx
+                        ));
                     };
-                    stack.push(call_indirect(*table_idx, *type_idx, table_offset, args));
+                    let void = sig_ctx
+                        .and_then(|ctx| ctx.get_type_signature(*type_idx))
+                        .is_some_and(|sig| sig.results.is_empty());
+                    let term = call_indirect(*table_idx, *type_idx, table_offset, args);
+                    if void {
+                        push_stmt(&mut side_effects, &stack, term)?;
+                    } else {
+                        stack.push(term);
+                    }
                 }
                 Instruction::Unreachable => {
                     stack.push(unreachable());
                 }
                 Instruction::Nop => {
-                    stack.push(nop());
+                    push_stmt(&mut side_effects, &stack, nop())?;
                 }
                 Instruction::Drop => {
                     // Pop value from stack and wrap in Drop term
                     let val = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for drop"))?;
-                    stack.push(drop_instr(val));
+                    push_stmt(&mut side_effects, &stack, drop_instr(val))?;
                 }
                 Instruction::GlobalGet(idx) => {
                     // Global loads produce a value on the stack
@@ -5208,7 +5288,7 @@ pub mod terms {
                     let val = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for global.set"))?;
-                    side_effects.push(global_set(*idx, val));
+                    push_effect(&mut side_effects, &stack, global_set(*idx, val))?;
                 }
                 Instruction::F32Const(bits) => {
                     stack.push(fconst32(ImmF32::from_bits(*bits)));
@@ -5569,7 +5649,7 @@ pub mod terms {
                     let dst = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for memory.fill dst"))?;
-                    side_effects.push(memory_fill(dst, val, len, *mem));
+                    push_effect(&mut side_effects, &stack, memory_fill(dst, val, len, *mem))?;
                 }
                 Instruction::MemoryCopy { dst_mem, src_mem } => {
                     let len = stack
@@ -5581,7 +5661,11 @@ pub mod terms {
                     let dst = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for memory.copy dst"))?;
-                    side_effects.push(memory_copy(dst, src, len, *dst_mem, *src_mem));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        memory_copy(dst, src, len, *dst_mem, *src_mem),
+                    )?;
                 }
                 Instruction::MemoryInit { mem, data_idx } => {
                     let len = stack
@@ -5593,10 +5677,14 @@ pub mod terms {
                     let dst = stack
                         .pop()
                         .ok_or_else(|| anyhow!("Stack underflow for memory.init dst"))?;
-                    side_effects.push(memory_init(dst, src, len, *mem, *data_idx));
+                    push_effect(
+                        &mut side_effects,
+                        &stack,
+                        memory_init(dst, src, len, *mem, *data_idx),
+                    )?;
                 }
                 Instruction::DataDrop(data_idx) => {
-                    side_effects.push(data_drop(*data_idx));
+                    push_effect(&mut side_effects, &stack, data_drop(*data_idx))?;
                 }
             }
         }
@@ -5605,6 +5693,39 @@ pub mod terms {
         let mut result = side_effects;
         result.extend(stack);
         Ok(result)
+    }
+
+    /// The term list is `side_effects` followed by `stack`, so the conversion
+    /// preserves execution order only if nothing is recorded in `side_effects`
+    /// while a value is still pending on `stack`: that value was computed
+    /// before the effect but would be emitted after it. Refuse instead.
+    fn push_effect(side_effects: &mut Vec<Value>, stack: &[Value], term: Value) -> Result<()> {
+        if !stack.is_empty() {
+            return Err(anyhow!(
+                "side effect after {} pending stack value(s): term order would change",
+                stack.len()
+            ));
+        }
+        side_effects.push(term);
+        Ok(())
+    }
+
+    /// A statement that produces no value (a void block, loop, if, call or
+    /// br_if, a drop, a nop). It belongs in the ordered statement list, not
+    /// on the value stack, where a later instruction would pop it as an
+    /// operand. With a value pending it can be placed in neither without
+    /// changing the order, so refuse.
+    fn push_stmt(side_effects: &mut Vec<Value>, stack: &[Value], term: Value) -> Result<()> {
+        push_effect(side_effects, stack, term)
+    }
+
+    /// A block type that takes and produces no values.
+    fn is_void_blocktype(bt: &BlockType) -> bool {
+        match bt {
+            BlockType::Empty => true,
+            BlockType::Func { params, results } => params.is_empty() && results.is_empty(),
+            BlockType::Value(_) => false,
+        }
     }
 
     /// Convert our BlockType to loom-isle BlockType
@@ -9852,6 +9973,45 @@ pub mod optimize {
         None
     }
 
+    /// Every local written (`local.set` / `local.tee`) anywhere in `instrs`,
+    /// at any nesting depth.
+    fn locals_written(instrs: &[Instruction], out: &mut std::collections::HashSet<u32>) {
+        for instr in instrs {
+            match instr {
+                Instruction::LocalSet(i) | Instruction::LocalTee(i) => {
+                    out.insert(*i);
+                }
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    locals_written(body, out);
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    locals_written(then_body, out);
+                    locals_written(else_body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A carrier RHS can be re-evaluated at a use only if its value cannot
+    /// differ there from its value at the def. `is_simple_pure_instr` admits
+    /// `local.get` and `global.get`, which read state: reject any `global.get`
+    /// (a `global.set` or a call can intervene), and any `local.get` of a local
+    /// that the function writes anywhere.
+    fn rhs_is_stable(rhs: &[Instruction], body: &[Instruction]) -> bool {
+        let mut written = std::collections::HashSet::new();
+        locals_written(body, &mut written);
+        rhs.iter().all(|instr| match instr {
+            Instruction::GlobalGet(_) => false,
+            Instruction::LocalGet(i) => !written.contains(i),
+            _ => true,
+        })
+    }
+
     /// #219 STEP 2 — forward `carrier`'s pure RHS to every use and drop the def,
     /// recursing into nested bodies.
     ///
@@ -9981,6 +10141,12 @@ pub mod optimize {
             carriers.sort_unstable();
             for carrier in carriers {
                 if let Some((rhs, is_tee)) = extract_carrier_rhs(&func.instructions, carrier) {
+                    // Re-evaluating the RHS at a use gives the def's value only
+                    // if nothing it reads can change in between: no global, and
+                    // no local that is written anywhere in the function.
+                    if !rhs_is_stable(&rhs, &func.instructions) {
+                        continue;
+                    }
                     forward_carrier_in_body(&mut func.instructions, carrier, &rhs, is_tee);
                 }
             }
@@ -12111,8 +12277,30 @@ pub mod optimize {
                 continue;
             }
 
-            // Step 2: Build interference graph
-            let interference_graph = build_interference_graph(&live_ranges);
+            // Step 2: Build interference graph. Locals of different types
+            // can never share a slot, so they interfere too.
+            let mut interference_graph = build_interference_graph(&live_ranges);
+            {
+                let mut ty: std::collections::BTreeMap<u32, crate::ValueType> =
+                    std::collections::BTreeMap::new();
+                let mut idx = func.signature.params.len() as u32;
+                for (count, value_type) in &func.locals {
+                    for _ in 0..*count {
+                        ty.insert(idx, *value_type);
+                        idx += 1;
+                    }
+                }
+                let nodes = interference_graph.nodes.clone();
+                for (i, a) in nodes.iter().enumerate() {
+                    for b in &nodes[i + 1..] {
+                        if ty.get(a) != ty.get(b) {
+                            interference_graph
+                                .edges
+                                .insert(((*a).min(*b), (*a).max(*b)));
+                        }
+                    }
+                }
+            }
 
             // Step 3: Graph coloring (greedy algorithm)
             let coloring = color_interference_graph(&interference_graph);
@@ -12131,7 +12319,7 @@ pub mod optimize {
             let max_color = coloring.values().max().copied().unwrap_or(0);
             let original_count = total_locals;
 
-            if (max_color + 1) < original_count as u32 {
+            if (max_color + 1) < original_count as u32 - param_count {
                 remap_function_locals(func, &coloring);
             }
 
@@ -12777,91 +12965,122 @@ pub mod optimize {
         local_idx: u32,
         start: usize,
         end: usize,
+        /// The local may be read before this function writes it (it relies on
+        /// zero initialisation), so it must not share a slot with anything.
+        alone: bool,
     }
 
     impl LiveRange {
         fn overlaps(&self, other: &LiveRange) -> bool {
-            // Two ranges overlap if one starts before the other ends
-            self.start < other.end && other.start < self.end
+            self.alone || other.alone || (self.start <= other.end && other.start <= self.end)
         }
     }
 
+    /// A conservative live range per non-parameter local.
+    ///
+    /// The range spans EVERY occurrence of the local (each get, set and tee),
+    /// not first def to last use: a write after the last read can still feed a
+    /// read in the next loop iteration. An occurrence inside a loop extends the
+    /// range to the whole outermost enclosing loop, which covers values carried
+    /// around the back edge. Two locals whose ranges are disjoint never have a
+    /// write of one between two occurrences of the other, so they can share a
+    /// slot. A local whose first occurrence is not a top-level `local.set` /
+    /// `local.tee` may be read while still zero, and is marked `alone`.
     fn compute_live_ranges(instructions: &[Instruction], param_count: usize) -> Vec<LiveRange> {
-        use std::collections::BTreeMap;
+        use std::collections::{BTreeMap, BTreeSet};
 
-        // Track first def and last use for each local
-        #[derive(Default)]
         struct LocalInfo {
-            first_def: Option<usize>,
-            last_use: Option<usize>,
+            first: usize,
+            last: usize,
+            first_is_top_def: bool,
         }
 
-        let mut local_info: BTreeMap<u32, LocalInfo> = BTreeMap::new();
-        let mut position = 0;
+        struct Scan {
+            info: BTreeMap<u32, LocalInfo>,
+            position: usize,
+            param_count: u32,
+            in_loop: BTreeSet<u32>,
+        }
 
-        fn scan_instructions(
-            instructions: &[crate::Instruction],
-            local_info: &mut BTreeMap<u32, LocalInfo>,
-            position: &mut usize,
-            param_count: usize,
-        ) {
-            use crate::Instruction;
-            for instr in instructions {
-                match instr {
-                    Instruction::LocalGet(idx)
-                        // Parameters are always live (don't coalesce them)
-                        if *idx >= param_count as u32 => {
-                            let info = local_info.entry(*idx).or_default();
-                            info.last_use = Some(*position);
-                            if info.first_def.is_none() {
-                                // If we see a get before any set, treat it as defined at position 0
-                                info.first_def = Some(0);
-                            }
-                        }
-                    Instruction::LocalSet(idx) | Instruction::LocalTee(idx)
-                        if *idx >= param_count as u32 => {
-                            let info = local_info.entry(*idx).or_default();
-                            if info.first_def.is_none() {
-                                info.first_def = Some(*position);
-                            }
-                            // Tee also counts as a use
-                            if matches!(instr, Instruction::LocalTee(_)) {
-                                info.last_use = Some(*position);
-                            }
-                        }
-                    // Recurse into control flow
-                    Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
-                        scan_instructions(body, local_info, position, param_count);
-                    }
-                    Instruction::If {
-                        then_body,
-                        else_body,
-                        ..
-                    } => {
-                        scan_instructions(then_body, local_info, position, param_count);
-                        scan_instructions(else_body, local_info, position, param_count);
-                    }
-                    _ => {}
+        impl Scan {
+            fn touch(&mut self, idx: u32, is_def: bool, depth: usize, looping: bool) {
+                if idx < self.param_count {
+                    return;
                 }
-                *position += 1;
+                let pos = self.position;
+                self.info
+                    .entry(idx)
+                    .and_modify(|i| i.last = pos)
+                    .or_insert(LocalInfo {
+                        first: pos,
+                        last: pos,
+                        first_is_top_def: is_def && depth == 0,
+                    });
+                if looping {
+                    self.in_loop.insert(idx);
+                }
+            }
+
+            fn scan(&mut self, instructions: &[crate::Instruction], depth: usize, looping: bool) {
+                use crate::Instruction;
+                for instr in instructions {
+                    match instr {
+                        Instruction::LocalGet(idx) => self.touch(*idx, false, depth, looping),
+                        Instruction::LocalSet(idx) | Instruction::LocalTee(idx) => {
+                            self.touch(*idx, true, depth, looping)
+                        }
+                        Instruction::Block { body, .. } => self.scan(body, depth + 1, looping),
+                        Instruction::Loop { body, .. } => {
+                            if looping {
+                                self.scan(body, depth + 1, true);
+                            } else {
+                                // Outermost loop: every local touched inside is
+                                // live across the whole loop.
+                                let start = self.position;
+                                let outer = std::mem::take(&mut self.in_loop);
+                                self.scan(body, depth + 1, true);
+                                let end = self.position;
+                                let touched = std::mem::replace(&mut self.in_loop, outer);
+                                for idx in touched {
+                                    if let Some(i) = self.info.get_mut(&idx) {
+                                        i.first = i.first.min(start);
+                                        i.last = i.last.max(end);
+                                    }
+                                }
+                            }
+                        }
+                        Instruction::If {
+                            then_body,
+                            else_body,
+                            ..
+                        } => {
+                            self.scan(then_body, depth + 1, looping);
+                            self.scan(else_body, depth + 1, looping);
+                        }
+                        _ => {}
+                    }
+                    self.position += 1;
+                }
             }
         }
 
-        scan_instructions(instructions, &mut local_info, &mut position, param_count);
+        let mut scan = Scan {
+            info: BTreeMap::new(),
+            position: 0,
+            param_count: param_count as u32,
+            in_loop: BTreeSet::new(),
+        };
+        scan.scan(instructions, 0, false);
 
-        // Build live ranges from local info
-        let mut ranges = Vec::new();
-        for (local_idx, info) in local_info {
-            if let (Some(start), Some(end)) = (info.first_def, info.last_use) {
-                ranges.push(LiveRange {
-                    local_idx,
-                    start,
-                    end,
-                });
-            }
-        }
-
-        ranges
+        scan.info
+            .into_iter()
+            .map(|(local_idx, i)| LiveRange {
+                local_idx,
+                start: i.first,
+                end: i.last,
+                alone: !i.first_is_top_def,
+            })
+            .collect()
     }
 
     struct InterferenceGraph {
@@ -12943,11 +13162,15 @@ pub mod optimize {
         func: &mut crate::Function,
         coloring: &std::collections::BTreeMap<u32, u32>,
     ) {
-        // Remap all local references in instructions
-        remap_instructions(&mut func.instructions, coloring);
-
-        // Rebuild local declarations based on new coloring
+        // Colors number the non-parameter slots: color c is local
+        // `param_count + c`. Using the color itself as the index put color 0
+        // on parameter 0.
         let param_count = func.signature.params.len();
+        let shifted: std::collections::BTreeMap<u32, u32> = coloring
+            .iter()
+            .map(|(old, color)| (*old, param_count as u32 + *color))
+            .collect();
+        remap_instructions(&mut func.instructions, &shifted);
 
         // Count how many locals of each type are needed for each color
         use std::collections::BTreeMap;

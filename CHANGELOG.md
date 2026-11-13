@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A result-less `if` (likewise a void `block`, `loop`, call, `br_if`, `drop`
+  or `nop`) followed by a store could be moved after that store (#503). On
+  `if (x) { g = 7 }; g = 3`, `f(1)` left `g` at 7 instead of 3, and the
+  output validated. `instructions_to_terms` emitted its side-effect list
+  before its value stack and kept void statements on the stack; void
+  statements now go into the ordered list, and a side effect recorded while
+  a value is still pending makes the conversion decline, so the function is
+  left unchanged. Reproduced by `constant-folding` and `advanced`.
+- A local could be read after it was reassigned (#504): `h(1.5, 1)` returned
+  -3.0 instead of 0.0. Two passes did this independently:
+  - `forward_carrier_locals` now forwards a defining expression only if it
+    reads no global and no local that the function writes;
+  - `coalesce_locals` used a local's color as its new index, so color 0
+    landed on parameter 0, and it could merge locals of different types.
+    Colors now number the slots after the parameters, and locals of
+    different types always interfere. Live ranges are also more
+    conservative: they span every occurrence, a loop extends them to the
+    whole loop, and a local first touched anywhere but a top-level
+    `local.set`/`local.tee` gets its own slot.
+
 ### Removed
 
 - Scalar adapter inlining (fused Pass 1.1) is no longer run (#169). It was
@@ -23,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verification
 
+- Translation validation now covers side-effect ordering on globals: the
+  final value of every global must match, for void functions as well.
 - Dead-function elimination (fused Pass 4) is proven against the concrete
   call semantics in `proofs/simplify/FusedSemantics.v`
   (`dead_function_elim_correct`, #500). The statements it replaces in
