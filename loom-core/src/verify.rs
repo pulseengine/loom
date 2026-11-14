@@ -44,8 +44,6 @@ const ENABLE_FPA_VERIFICATION: bool = true;
 use crate::Module;
 #[cfg(feature = "verification")]
 use crate::{BlockType, Function, FunctionSignature, ImportKind, Instruction, Module};
-#[cfg(feature = "verification")]
-use anyhow::Context as AnyhowContext;
 use anyhow::{Result, anyhow};
 
 /// Signature context for verification - stores function and type signatures
@@ -86,6 +84,15 @@ pub struct VerificationSignatureContext {
     /// no-op for every callee. Modeling by-body is what makes inlining
     /// provably sound. `Arc` keeps per-function context clones cheap.
     pub function_bodies: Vec<Option<std::sync::Arc<Function>>>,
+    /// Value types of every global, imports first, in index order. Empty
+    /// when the context was not built from a module; the exact executor then
+    /// refuses any function that touches a global, because it cannot give
+    /// the global its width.
+    pub global_types: Vec<crate::ValueType>,
+    /// One entry per memory, imports first: whether the exact executor can
+    /// model it (32-bit and not shared). Empty when the context was not built
+    /// from a module; a single plain memory 0 is then assumed.
+    pub memories: Vec<bool>,
 }
 
 #[cfg(all(test, feature = "verification"))]
@@ -315,12 +322,34 @@ impl VerificationSignatureContext {
         // then leave call_indirect untouched, mirroring the v1.0.2 behavior.
         let table_resolver = crate::optimize::build_table_resolver(module).unwrap_or_default();
 
+        let mut global_types: Vec<crate::ValueType> = module
+            .imports
+            .iter()
+            .filter_map(|i| match &i.kind {
+                ImportKind::Global { value_type, .. } => Some(*value_type),
+                _ => None,
+            })
+            .collect();
+        global_types.extend(module.globals.iter().map(|g| g.value_type));
+        let plain = |m: &crate::Memory| !m.shared && !m.memory64;
+        let mut memories: Vec<bool> = module
+            .imports
+            .iter()
+            .filter_map(|i| match &i.kind {
+                ImportKind::Memory(m) => Some(plain(m)),
+                _ => None,
+            })
+            .collect();
+        memories.extend(module.memories.iter().map(plain));
+
         VerificationSignatureContext {
             function_signatures,
             type_signatures: module.types.clone(),
             function_summaries,
             table_resolver,
             function_bodies,
+            global_types,
+            memories,
         }
     }
 
@@ -2479,102 +2508,41 @@ fn contains_unverifiable_instructions(instructions: &[Instruction]) -> bool {
 /// ```
 #[cfg(feature = "verification")]
 pub fn verify_optimization(original: &Module, optimized: &Module) -> Result<bool> {
-    // Check basic structural equivalence first
     if original.functions.len() != optimized.functions.len() {
         return Ok(false);
     }
-
-    // Create Z3 context and solver using thread-local context
-    // #313 Tier-2 slice 1: which engine decides a routable obligation.
+    // Callees are modelled by their ORIGINAL bodies on both sides. Every
+    // function is checked against its own original, so by induction over the
+    // call depth this establishes the module, not just each function alone.
+    let ctx = VerificationSignatureContext::from_module(original);
+    if ctx.global_types != VerificationSignatureContext::from_module(optimized).global_types {
+        return Ok(false);
+    }
     let backend = VerifyBackend::from_env();
-    let cfg = z3_config_with_timeout();
-    with_z3_config(&cfg, || {
-        let solver = Solver::new();
-
-        // Verify each function pair
-        for (orig_func, opt_func) in original.functions.iter().zip(optimized.functions.iter()) {
-            // Check signatures match
-            if orig_func.signature.params != opt_func.signature.params
-                || orig_func.signature.results != opt_func.signature.results
-            {
-                return Ok(false);
-            }
-
-            // Encode both functions to SMT
-            let orig_formula = encode_function_to_smt(orig_func)?;
-            let opt_formula = encode_function_to_smt(opt_func)?;
-
-            // Assert they are NOT equal (looking for counterexample)
-            solver.push();
-
-            // Handle void functions (both should be None) vs returning functions
-            match (orig_formula, opt_formula) {
-                (Some(orig), Some(opt)) => {
-                    // loom#145: equivalence check — never width-match (would
-                    // risk approving a non-equivalent transform); a width
-                    // mismatch is unprovable, so revert conservatively.
-                    if orig.get_size() != opt.get_size() {
-                        solver.pop(1);
-                        return Ok(false);
-                    }
-                    // #313 Tier-2 slice 1: offer the obligation to the neutral
-                    // seam. Under the default backend this ALWAYS defers, and
-                    // the incumbent path runs byte-identically to before.
-                    match verify_solver::decide_bv_equivalence(&orig, &opt, backend) {
-                        SeamOutcome::Decided(RuleVerdict::Proven) => {
-                            solver.pop(1);
-                            continue;
-                        }
-                        SeamOutcome::Decided(RuleVerdict::Disproven(model)) => {
-                            revert_note(format_args!("Counterexample found:"));
-                            revert_note(format_args!("{}", model));
-                            return Ok(false);
-                        }
-                        // Same outcome `SatResult::Unknown` produces here.
-                        SeamOutcome::Decided(RuleVerdict::Unknown) => {
-                            return Err(anyhow!(
-                                "SMT solver returned unknown (timeout or too complex)"
-                            ));
-                        }
-                        SeamOutcome::Deferred(_) => {}
-                    }
-                    solver.assert(orig.eq(&opt).not());
-                }
-                (None, None) => {
-                    // Both void functions - equivalent by definition (no return value to compare)
-                    solver.pop(1);
-                    continue;
-                }
-                _ => {
-                    // One returns value, one doesn't - not equivalent
-                    return Ok(false);
-                }
-            }
-
-            // UNSAT means equivalent (no counterexample exists)
-            match solver.check() {
-                SatResult::Unsat => {
-                    // Functions are equivalent
-                    solver.pop(1);
-                    continue;
-                }
-                SatResult::Sat => {
-                    // Found counterexample - not equivalent!
-                    let model = solver.get_model().context("Failed to get counterexample")?;
-                    revert_note(format_args!("Counterexample found:"));
-                    revert_note(format_args!("{}", model));
-                    return Ok(false);
-                }
-                SatResult::Unknown => {
-                    return Err(anyhow!(
-                        "SMT solver returned unknown (timeout or too complex)"
-                    ));
-                }
+    for (i, (orig_func, opt_func)) in original
+        .functions
+        .iter()
+        .zip(optimized.functions.iter())
+        .enumerate()
+    {
+        if orig_func.signature.params != opt_func.signature.params
+            || orig_func.signature.results != opt_func.signature.results
+        {
+            return Ok(false);
+        }
+        match exact_route(orig_func, opt_func, &ctx, backend) {
+            Some(Ok(true)) => continue,
+            Some(Ok(false)) => return Ok(false),
+            Some(Err(e)) => return Err(anyhow!("function {}: {}", i, e)),
+            None => {
+                return Err(anyhow!(
+                    "function {}: contains a loop, which the module check does not verify",
+                    i
+                ));
             }
         }
-
-        Ok(true)
-    })
+    }
+    Ok(true)
 }
 
 /// Verify that a function transformation preserves semantics
@@ -2658,6 +2626,12 @@ pub fn verify_function_equivalence_with_backend(
             "{}: Function signature changed during optimization",
             pass_name
         ));
+    }
+
+    // Without a module context, calls and globals are refused.
+    let no_module = VerificationSignatureContext::default();
+    if let Some(decided) = exact_route(original, optimized, &no_module, backend) {
+        return decided.map_err(|e| anyhow!("{}: {}", pass_name, e));
     }
 
     // Handle functions containing loops
@@ -3108,6 +3082,114 @@ fn take_unproven_acceptance() -> Option<&'static str> {
     UNPROVEN_ACCEPTANCE.with(|c| c.take())
 }
 
+/// What an accepted obligation did NOT compare, if anything.
+///
+/// An `Ok(true)` from the encoders means the compared state agreed; it says
+/// nothing about state they do not compare. This names the first such gap in
+/// either body so the acceptance is counted as kept-unproven rather than as a
+/// proof. `exact_branches` is true for the acyclic executor, which models
+/// `br`/`br_if`/`br_table`/`return` exactly; the main encoder approximates
+/// them.
+#[cfg(feature = "verification")]
+fn unmodelled_observable(
+    original: &Function,
+    optimized: &Function,
+    exact_branches: bool,
+) -> Option<&'static str> {
+    fn scan(body: &[Instruction], exact_branches: bool, top: bool) -> Option<&'static str> {
+        use Instruction as I;
+        let last = body.len().saturating_sub(1);
+        for (i, instr) in body.iter().enumerate() {
+            let gap = match instr {
+                I::Block { body, .. } | I::Loop { body, .. } => scan(body, exact_branches, false),
+                I::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => scan(then_body, exact_branches, false)
+                    .or_else(|| scan(else_body, exact_branches, false)),
+                I::Br(_) | I::BrIf(_) | I::BrTable { .. } if !exact_branches => {
+                    Some("branches approximated")
+                }
+                I::Return if !exact_branches && !(top && i == last) => {
+                    Some("branches approximated")
+                }
+                I::Unknown(_) => Some("unknown instruction"),
+                I::I32Store { .. }
+                | I::I64Store { .. }
+                | I::F32Store { .. }
+                | I::F64Store { .. }
+                | I::I32Store8 { .. }
+                | I::I32Store16 { .. }
+                | I::I64Store8 { .. }
+                | I::I64Store16 { .. }
+                | I::I64Store32 { .. }
+                | I::MemoryGrow(_)
+                | I::MemoryFill(_)
+                | I::MemoryCopy { .. }
+                | I::MemoryInit { .. }
+                | I::DataDrop(_)
+                | I::Call(_)
+                | I::CallIndirect { .. } => Some("final memory not compared"),
+                I::I32Load { .. }
+                | I::I64Load { .. }
+                | I::F32Load { .. }
+                | I::F64Load { .. }
+                | I::I32Load8S { .. }
+                | I::I32Load8U { .. }
+                | I::I32Load16S { .. }
+                | I::I32Load16U { .. }
+                | I::I64Load8S { .. }
+                | I::I64Load8U { .. }
+                | I::I64Load16S { .. }
+                | I::I64Load16U { .. }
+                | I::I64Load32S { .. }
+                | I::I64Load32U { .. }
+                | I::I32DivS
+                | I::I32DivU
+                | I::I32RemS
+                | I::I32RemU
+                | I::I64DivS
+                | I::I64DivU
+                | I::I64RemS
+                | I::I64RemU
+                | I::I32TruncF32S
+                | I::I32TruncF32U
+                | I::I32TruncF64S
+                | I::I32TruncF64U
+                | I::I64TruncF32S
+                | I::I64TruncF32U
+                | I::I64TruncF64S
+                | I::I64TruncF64U
+                | I::Unreachable => Some("traps not compared"),
+                _ => None,
+            };
+            if gap.is_some() {
+                return gap;
+            }
+        }
+        None
+    }
+    scan(&original.instructions, exact_branches, true)
+        .or_else(|| scan(&optimized.instructions, exact_branches, true))
+}
+
+/// Count an accepted obligation: as proven only when nothing observable was
+/// left out of the comparison.
+#[cfg(feature = "verification")]
+fn record_acceptance(original: &Function, optimized: &Function, exact_branches: bool) {
+    if exactly_modelable(original, optimized) {
+        // Decided by the exact executor, which compares results, globals,
+        // memory and traps.
+        crate::stats::record_proven();
+        return;
+    }
+    match unmodelled_observable(original, optimized, exact_branches) {
+        Some(reason) => crate::stats::record_kept_unproven(reason),
+        None => crate::stats::record_proven(),
+    }
+}
+
 /// The reason this pair cannot be proven by the SMT encoder, if any.
 ///
 /// This is the structural pre-check both verification paths already applied
@@ -3164,7 +3246,7 @@ pub fn verify_function_equivalence_with_context(
         // Kept, but nothing was proved about it. The caller will not revert,
         // so this is exactly the outcome a revert count cannot see.
         (Ok(true), Some(reason)) => crate::stats::record_kept_unproven(reason),
-        (Ok(true), None) => crate::stats::record_proven(),
+        (Ok(true), None) => record_acceptance(original, optimized, false),
         // Ok(false) / Err: the caller reverts and records that itself.
         _ => {}
     }
@@ -3203,6 +3285,14 @@ fn verify_function_equivalence_with_context_uncounted(
             "{}: Function signature changed during optimization",
             pass_name
         ));
+    }
+
+    let route_backend = match engine {
+        EngineMode::Configured => VerifyBackend::from_env(),
+        EngineMode::NewEngineOnly => VerifyBackend::Ordeal,
+    };
+    if let Some(decided) = exact_route(original, optimized, sig_ctx, route_backend) {
+        return decided.map_err(|e| anyhow!("{}: {}", pass_name, e));
     }
 
     // Handle functions containing loops - try K-induction first
@@ -3801,7 +3891,7 @@ impl TranslationValidator {
             }));
             let why_not = match new_engine {
                 Ok(Ok(true)) => {
-                    crate::stats::record_proven();
+                    record_acceptance(&self.original, optimized, false);
                     return Ok(());
                 }
                 Ok(Ok(false)) => "the new engine found a counterexample".to_string(),
@@ -3817,35 +3907,6 @@ impl TranslationValidator {
                 max_memory_ops,
                 why_not
             ));
-        }
-
-        // PR-C (#219) M3.2: precise acyclic-CF fast-path for the inliner. The
-        // main encoder models br_table approximately and a br_table callee is
-        // not straight-line-by-body-modelable, so it cannot prove `call F`
-        // (br_table callee) equal to its inlined body → the inline reverts. The
-        // acyclic executor is EXACT for acyclic CF + by-body calls. Try it here.
-        //
-        // PURELY ADDITIVE + scoped to the inliner: ONLY a precise Ok(true) (a
-        // real proof) short-circuits to accept; Ok(false)/Err/panic FALL THROUGH
-        // to the existing encoder unchanged. So this can only ADD accepts (the
-        // br_table-callee inlines), never weaken an existing check, and every
-        // non-inline pass is byte-identical. (catch_unwind: the acyclic encoder
-        // builds Z3 exprs and could panic on a malformed input.)
-        if self.pass_name == "inline_functions" {
-            let original = self.original.clone();
-            let sig_ctx = self.sig_ctx.clone();
-            let optimized_clone = optimized.clone();
-            let acyclic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                verify_acyclic_equivalence(&original, &optimized_clone, &sig_ctx)
-            }));
-            if let Ok(Ok(true)) = acyclic {
-                // A real proof: the acyclic executor is EXACT for acyclic
-                // control flow with by-body calls, so this counts as proven
-                // rather than as a bypass.
-                crate::stats::record_proven();
-                return Ok(());
-            }
-            // else: fall through to the existing encoder (no behavior change).
         }
 
         // Use catch_unwind to handle Z3 internal panics gracefully. (The
@@ -3946,10 +4007,33 @@ impl TranslationValidator {
     /// for skip-induced reverts and `crate::stats::record_revert("<pass>")`
     /// for genuine counterexamples.
     pub fn verify_or_revert_strict(&self, func: &mut Function) -> bool {
-        let result = verify_function_equivalence_with_result(&self.original, func, &self.pass_name);
+        install_z3_panic_filter();
+        let routed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exact_route(
+                &self.original,
+                func,
+                &self.sig_ctx,
+                VerifyBackend::from_env(),
+            )
+        }));
+        let result = match routed {
+            Ok(Some(Ok(true))) => VerificationResult::Verified,
+            Ok(Some(Ok(false))) => VerificationResult::Failed(format!(
+                "{}: counterexample from the exact executor",
+                self.pass_name
+            )),
+            Ok(Some(Err(e))) => VerificationResult::Error(format!("{}: {}", self.pass_name, e)),
+            Err(_panic) => VerificationResult::Error(format!(
+                "{}: solver-internal panic - equivalence not established",
+                self.pass_name
+            )),
+            Ok(None) => {
+                verify_function_equivalence_with_result(&self.original, func, &self.pass_name)
+            }
+        };
         match result {
             VerificationResult::Verified => {
-                crate::stats::record_proven();
+                record_acceptance(&self.original, func, false);
                 true
             }
             VerificationResult::Failed(reason) => {
@@ -7443,7 +7527,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvshl(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvshl(&amount));
         }
         Instruction::I32ShrS => {
             if stack.len() < 2 {
@@ -7452,7 +7538,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvashr(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvashr(&amount));
         }
         Instruction::I32ShrU => {
             if stack.len() < 2 {
@@ -7461,7 +7549,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvlshr(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvlshr(&amount));
         }
         // loom#163: integer division/remainder. Modeled via Z3 bvsdiv/bvudiv/
         // bvsrem/bvurem — bvsdiv truncates toward zero, matching WASM div_s.
@@ -7712,7 +7802,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvshl(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvshl(&amount));
         }
         Instruction::I64ShrS => {
             if stack.len() < 2 {
@@ -7721,7 +7813,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvashr(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvashr(&amount));
         }
         Instruction::I64ShrU => {
             if stack.len() < 2 {
@@ -7730,7 +7824,9 @@ fn encode_simple_instruction(
             let rhs = stack.pop().unwrap();
             let lhs = stack.pop().unwrap();
             let (lhs, rhs) = match_bv_widths(lhs, rhs);
-            stack.push(lhs.bvlshr(&rhs));
+            // wasm takes the shift amount modulo the width.
+            let amount = rhs.bvurem(BV::from_u64(lhs.get_size() as u64, lhs.get_size()));
+            stack.push(lhs.bvlshr(&amount));
         }
         // i64 comparisons — operands i64, result i32 (BV32) boolean.
         Instruction::I64Eq => {
@@ -8162,6 +8258,187 @@ fn encode_simple_instruction(
 // case) BEFORE being wired into the live inline-verify path (PR-C M3).
 // ===========================================================================
 
+/// A path condition with `true` and `false` kept out of the Z3 terms.
+///
+/// The new engine's term language has binary `and`/`or`/`not` over bit-vector
+/// comparisons and no Boolean constants, and its reflector rebuilds every node
+/// to check itself. Folding constants here, and building only binary
+/// connectives, keeps every obligation inside that language.
+#[cfg(feature = "verification")]
+#[derive(Clone)]
+enum Cond {
+    True,
+    False,
+    B(Bool),
+}
+
+#[cfg(feature = "verification")]
+impl Cond {
+    fn of(b: Bool) -> Self {
+        Cond::B(b)
+    }
+    fn and(&self, other: &Cond) -> Cond {
+        match (self, other) {
+            (Cond::False, _) | (_, Cond::False) => Cond::False,
+            (Cond::True, x) | (x, Cond::True) => x.clone(),
+            (Cond::B(a), Cond::B(b)) => Cond::B(Bool::and(&[a.clone(), b.clone()])),
+        }
+    }
+    fn or(&self, other: &Cond) -> Cond {
+        match (self, other) {
+            (Cond::True, _) | (_, Cond::True) => Cond::True,
+            (Cond::False, x) | (x, Cond::False) => x.clone(),
+            (Cond::B(a), Cond::B(b)) => Cond::B(Bool::or(&[a.clone(), b.clone()])),
+        }
+    }
+    fn not(&self) -> Cond {
+        match self {
+            Cond::True => Cond::False,
+            Cond::False => Cond::True,
+            Cond::B(b) => Cond::B(b.not()),
+        }
+    }
+    fn ite_bv(&self, t: &BV, f: &BV) -> BV {
+        if t == f {
+            return t.clone();
+        }
+        match self {
+            Cond::True => t.clone(),
+            Cond::False => f.clone(),
+            Cond::B(b) => b.ite(t, f),
+        }
+    }
+    fn ite_mem(&self, t: &Array, f: &Array) -> Array {
+        if t == f {
+            return t.clone();
+        }
+        match self {
+            Cond::True => t.clone(),
+            Cond::False => f.clone(),
+            Cond::B(b) => b.ite(t, f),
+        }
+    }
+    /// Conjunction of equalities, as a binary chain.
+    fn all(eqs: Vec<Bool>) -> Cond {
+        eqs.into_iter()
+            .fold(Cond::True, |acc, e| acc.and(&Cond::of(e)))
+    }
+    /// Syntactically the same condition (hash-consed Z3 terms compare by node).
+    fn same_as(&self, other: &Cond) -> bool {
+        match (self, other) {
+            (Cond::True, Cond::True) | (Cond::False, Cond::False) => true,
+            (Cond::B(a), Cond::B(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Linear memory as a base array plus the byte stores made since it.
+///
+/// `folded` is the base with the log applied, and is what loads read. The log
+/// lets a join merge memory as conditional stores,
+/// `store(M, a, ite(g, v, select(M, a)))`, instead of `ite` over whole arrays,
+/// which the new engine's term language does not have. Bases differ only
+/// after an opaque call; then the join falls back to `ite` over arrays.
+#[cfg(feature = "verification")]
+#[derive(Clone)]
+struct Mem {
+    base: Array,
+    log: Vec<(BV, BV)>,
+    folded: Array,
+    /// Size in 64 KiB pages. Symbolic at entry and shared by both encodings,
+    /// so equivalence must hold for every size; changed by `memory.grow` and
+    /// by opaque calls.
+    pages: BV,
+}
+
+#[cfg(feature = "verification")]
+impl Mem {
+    fn new(base: Array, pages: BV) -> Self {
+        Mem {
+            folded: base.clone(),
+            base,
+            log: Vec::new(),
+            pages,
+        }
+    }
+
+    fn store_byte(&mut self, addr: BV, byte: BV) {
+        self.folded = self.folded.store(&addr, &byte);
+        self.log.push((addr, byte));
+    }
+
+    /// Little-endian store of the low `bytes` bytes of `value` at
+    /// `addr + offset`, byte for byte as the shared `encode_*_store_into`
+    /// helpers do, so loads through `encode_*_load_from` read it back.
+    fn store_le(&mut self, addr: &BV, value: &BV, offset: u32, bytes: u32) {
+        let ea = addr.bvadd(BV::from_i64(offset as i64, 32));
+        for i in 0..bytes as i64 {
+            let byte = value.extract((i * 8 + 7) as u32, (i * 8) as u32);
+            self.store_byte(ea.bvadd(BV::from_i64(i, 32)), byte);
+        }
+    }
+
+    /// Merge every memory reaching one join, index by index.
+    fn merge_all(entries: &[(Cond, &Vec<Mem>)]) -> Vec<Mem> {
+        (0..entries[0].1.len())
+            .map(|i| {
+                let one: Vec<(Cond, &Mem)> =
+                    entries.iter().map(|(g, ms)| (g.clone(), &ms[i])).collect();
+                Mem::merge(&one)
+            })
+            .collect()
+    }
+
+    /// Merge memories reaching one join under pairwise-disjoint guards.
+    fn merge(entries: &[(Cond, &Mem)]) -> Mem {
+        let first = entries[0].1;
+        let (_, last) = entries.last().expect("a join has an entry");
+        let mut pages = last.pages.clone();
+        for (g, m) in entries[..entries.len() - 1].iter().rev() {
+            pages = g.ite_bv(&m.pages, &pages);
+        }
+        if entries.iter().all(|(_, m)| m.base == first.base) {
+            // Stores made before the paths split are shared by every entry.
+            let mut shared = first.log.len();
+            for (_, m) in entries {
+                let mut k = 0;
+                while k < shared.min(m.log.len())
+                    && m.log[k].0 == first.log[k].0
+                    && m.log[k].1 == first.log[k].1
+                {
+                    k += 1;
+                }
+                shared = k;
+            }
+            let mut out = Mem::new(first.base.clone(), pages);
+            for (a, b) in &first.log[..shared] {
+                out.store_byte(a.clone(), b.clone());
+            }
+            // Under its own guard each entry's later stores take effect; under
+            // the others' they write back the byte already there.
+            for (g, m) in entries {
+                for (a, b) in &m.log[shared..] {
+                    let cur = out
+                        .folded
+                        .select(a)
+                        .as_bv()
+                        .expect("memory maps addresses to bytes");
+                    let v = g.ite_bv(b, &cur);
+                    out.store_byte(a.clone(), v);
+                }
+            }
+            out
+        } else {
+            let mut folded = last.folded.clone();
+            for (g, m) in entries[..entries.len() - 1].iter().rev() {
+                folded = g.ite_mem(&m.folded, &folded);
+            }
+            Mem::new(folded, pages)
+        }
+    }
+}
+
 /// Symbolic state threaded along the *current* straight-line path.
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
@@ -8173,10 +8450,11 @@ struct AcyclicState {
     /// the SAME shared helpers (`encode_i32_load_from` etc.) the main encoder
     /// uses, so a `call F` modeled by-body and the inlined body produce
     /// bit-identical memory expressions. Memory is MUTABLE branch state, so it is
-    /// ITE-merged at every join exactly like locals/globals.
-    memory: Array,
+    /// merged at every join like locals/globals (see [`Mem::merge`]). One
+    /// entry per memory index.
+    memory: Vec<Mem>,
     /// Path condition guarding the current straight-line path.
-    path: Bool,
+    path: Cond,
     /// False once this path has branched / returned (subsequent straight-line
     /// instructions in the same sequence are dead and must not be executed).
     reachable: bool,
@@ -8185,12 +8463,12 @@ struct AcyclicState {
 /// One incoming branch to a label: its path guard plus the result/locals/globals/
 /// memory snapshot at the branch point.
 #[cfg(feature = "verification")]
-type BranchEntry = (Bool, Vec<BV>, Vec<BV>, Vec<BV>, Array);
+type BranchEntry = (Cond, Vec<BV>, Vec<BV>, Vec<BV>, Vec<Mem>);
 
 /// The ITE-merged successor of a join: result values, locals, globals, memory,
 /// and the merged path condition.
 #[cfg(feature = "verification")]
-type MergedState = (Vec<BV>, Vec<BV>, Vec<BV>, Array, Bool);
+type MergedState = (Vec<BV>, Vec<BV>, Vec<BV>, Vec<Mem>, Cond);
 
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
@@ -8338,8 +8616,11 @@ const MAX_ACYCLIC_CALL_DEPTH: usize = 8;
 #[allow(dead_code)]
 fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
     body.iter().all(|instr| match instr {
-        // Back-edges and indirect calls are out of scope.
-        Instruction::Loop { .. } | Instruction::CallIndirect { .. } => false,
+        // Back-edges are out of scope.
+        Instruction::Loop { .. } => false,
+        // Resolved to a direct call when its slot is a constant the table
+        // resolver knows, otherwise opaque.
+        Instruction::CallIndirect { .. } => true,
         // ANY direct call is modelable: by-body (acyclic local), ⊥-diverge
         // (no-return), or HAVOC (import / loop-containing / multi-result). The
         // executor's Call arm makes the choice; havoc never forges a false ≡.
@@ -8362,7 +8643,13 @@ fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
         | Instruction::Return
         // Unreachable is a trap (⊥): the executor diverges the path, never havoc.
         | Instruction::Unreachable => true,
-        other => is_acyclic_simple_modelable(other) || is_acyclic_memory_op(other),
+        // An explicit `end` closes the body it ends; it must be last.
+        Instruction::End => std::ptr::eq(instr, body.last().unwrap()),
+        other => {
+            is_acyclic_simple_modelable(other)
+                || is_acyclic_memory_op(other)
+                || is_exact_extra(other)
+        }
     })
 }
 
@@ -8388,7 +8675,7 @@ fn acyclic_label_index(labels: &[LabelJoin], depth: u32) -> Result<usize> {
 fn acyclic_push_branch(
     labels: &mut [LabelJoin],
     target: usize,
-    guard: Bool,
+    guard: Cond,
     state: &AcyclicState,
 ) -> Result<()> {
     let arity = labels[target].arity;
@@ -8414,34 +8701,32 @@ fn acyclic_push_branch(
 #[cfg(feature = "verification")]
 #[allow(dead_code)]
 fn acyclic_merge_entries(entries: &[BranchEntry]) -> Option<MergedState> {
-    let (_, last_res, last_loc, last_glob, last_mem) = entries.last()?;
+    let (_, last_res, last_loc, last_glob, _) = entries.last()?;
     let mut res = last_res.clone();
     let mut loc = last_loc.clone();
     let mut glob = last_glob.clone();
-    let mut mem = last_mem.clone();
-    let mut guards: Vec<Bool> = vec![entries.last().unwrap().0.clone()];
+    let mems: Vec<(Cond, &Vec<Mem>)> = entries.iter().map(|e| (e.0.clone(), &e.4)).collect();
+    let mem = Mem::merge_all(&mems);
+    let mut path = entries.last().unwrap().0.clone();
     // Fold earlier entries outward: each takes precedence under its own guard.
-    for (g, r, l, gl, m) in entries[..entries.len() - 1].iter().rev() {
+    for (g, r, l, gl, _) in entries[..entries.len() - 1].iter().rev() {
         res = r
             .iter()
             .zip(res.iter())
-            .map(|(t, f)| merge_bv(g, t, f))
+            .map(|(t, f)| g.ite_bv(t, f))
             .collect();
         loc = l
             .iter()
             .zip(loc.iter())
-            .map(|(t, f)| merge_bv(g, t, f))
+            .map(|(t, f)| g.ite_bv(t, f))
             .collect();
         glob = gl
             .iter()
             .zip(glob.iter())
-            .map(|(t, f)| merge_bv(g, t, f))
+            .map(|(t, f)| g.ite_bv(t, f))
             .collect();
-        // ITE-merge the memory Array (Bool::ite is generic over the Z3 sort).
-        mem = g.ite(m, &mem);
-        guards.push(g.clone());
+        path = g.or(&path);
     }
-    let path = Bool::or(&guards);
     Some((res, loc, glob, mem, path))
 }
 
@@ -8475,21 +8760,790 @@ fn acyclic_apply_join(
     }
 }
 
+/// State shared by every path of one encoding: the opaque-call counter and
+/// the trap exits.
+#[cfg(feature = "verification")]
+struct AcyclicCx {
+    /// Monotonic per-encode index of opaque calls. Threaded rather than kept in
+    /// `AcyclicState` (which is saved and restored at branches) so the Nth
+    /// opaque call in execution order gets the same index in both encodings.
+    havoc_counter: u64,
+    /// One entry per point where execution can trap: the guard under which it
+    /// traps there, and the globals and memory at that moment. Traps are
+    /// observable, and so is the state they leave behind.
+    traps: Vec<(Cond, Vec<BV>, Vec<Mem>)>,
+    /// Per memory index: whether the executor may access it.
+    mem_ok: Vec<bool>,
+    /// Facts every execution satisfies (a 32-bit memory never exceeds 65536
+    /// pages). The obligation is that they imply equivalence.
+    assumed: Cond,
+    /// Callees modelled by body; every other call is opaque. Decided per
+    /// callee, never per depth, so a callee is modelled the same way wherever
+    /// it is called and both encodings agree on it.
+    by_body: std::collections::HashSet<u32>,
+}
+
+/// The callees whose direct-call counts differ between the two bodies.
+///
+/// A call both bodies make equally often is modelled as an opaque call on
+/// both sides, which is enough to prove any transform that keeps it. Only a
+/// call that was inlined, removed or added needs the callee's body: inlining
+/// `F` lowers `F`'s count, and every callee `F`'s body calls rises in the
+/// inlined copy, so those are included too.
+#[cfg(feature = "verification")]
+fn callees_to_model_by_body(
+    original: &Function,
+    optimized: &Function,
+) -> std::collections::HashSet<u32> {
+    fn count(body: &[Instruction], into: &mut std::collections::HashMap<u32, i64>, sign: i64) {
+        for instr in body {
+            match instr {
+                Instruction::Call(g) => *into.entry(*g).or_insert(0) += sign,
+                Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                    count(body, into, sign)
+                }
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    count(then_body, into, sign);
+                    count(else_body, into, sign);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut diff = std::collections::HashMap::new();
+    count(&original.instructions, &mut diff, 1);
+    count(&optimized.instructions, &mut diff, -1);
+    diff.into_iter()
+        .filter(|(_, d)| *d != 0)
+        .map(|(g, _)| g)
+        .collect()
+}
+
+/// Record that the current path traps when `cond` holds, and continue on the
+/// path where it does not.
+#[cfg(feature = "verification")]
+fn acyclic_trap_if(state: &mut AcyclicState, cx: &mut AcyclicCx, cond: Cond) {
+    let guard = state.path.and(&cond);
+    cx.traps
+        .push((guard, state.globals.clone(), state.memory.clone()));
+    state.path = state.path.and(&cond.not());
+}
+
+/// The guard under which an access of `bytes` bytes at `addr + offset` is out
+/// of bounds. Computed in 64 bits so neither the sum nor the bound wraps.
+#[cfg(feature = "verification")]
+fn acyclic_oob(addr: &BV, offset: u32, bytes: u64, pages: &BV) -> Bool {
+    let end = addr
+        .zero_ext(32)
+        .bvadd(BV::from_u64(offset as u64 + bytes, 64));
+    let size = pages.zero_ext(32).bvshl(BV::from_u64(16, 64));
+    end.bvugt(&size)
+}
+
+/// A 32-bit memory has at most 65536 pages, so `addr + offset + n` of an
+/// access that does not trap never wraps 32 bits.
+#[cfg(feature = "verification")]
+fn pages_in_range(pages: &BV) -> Cond {
+    Cond::of(pages.bvule(BV::from_u64(65536, 32)))
+}
+
+/// The memory a single-memory instruction accesses.
+#[cfg(feature = "verification")]
+fn memory_index(instr: &Instruction) -> Option<u32> {
+    use Instruction as I;
+    match instr {
+        I::I32Load { mem, .. }
+        | I::I32Store { mem, .. }
+        | I::I64Load { mem, .. }
+        | I::I64Store { mem, .. }
+        | I::F32Load { mem, .. }
+        | I::F32Store { mem, .. }
+        | I::F64Load { mem, .. }
+        | I::F64Store { mem, .. }
+        | I::I32Load8S { mem, .. }
+        | I::I32Load8U { mem, .. }
+        | I::I32Load16S { mem, .. }
+        | I::I32Load16U { mem, .. }
+        | I::I64Load8S { mem, .. }
+        | I::I64Load8U { mem, .. }
+        | I::I64Load16S { mem, .. }
+        | I::I64Load16U { mem, .. }
+        | I::I64Load32S { mem, .. }
+        | I::I64Load32U { mem, .. }
+        | I::I32Store8 { mem, .. }
+        | I::I32Store16 { mem, .. }
+        | I::I64Store8 { mem, .. }
+        | I::I64Store16 { mem, .. }
+        | I::I64Store32 { mem, .. }
+        | I::MemoryInit { mem, .. } => Some(*mem),
+        I::MemorySize(m) | I::MemoryGrow(m) | I::MemoryFill(m) => Some(*m),
+        _ => None,
+    }
+}
+
+/// Check that memory `m` exists and is one the executor models (32-bit, not
+/// shared), and return it as an index.
+#[cfg(feature = "verification")]
+fn acyclic_mem(m: u32, cx: &AcyclicCx) -> Result<usize> {
+    match cx.mem_ok.get(m as usize) {
+        Some(true) => Ok(m as usize),
+        Some(false) => Err(anyhow!(
+            "acyclic executor: memory {} is shared or 64-bit",
+            m
+        )),
+        None => Err(anyhow!("acyclic executor: no memory {}", m)),
+    }
+}
+
+/// Instructions beyond the original allowlist that `exec_exact_extra` models.
+#[cfg(feature = "verification")]
+fn is_exact_extra(instr: &Instruction) -> bool {
+    use Instruction as I;
+    matches!(
+        instr,
+        I::MemorySize(_)
+            | I::MemoryGrow(_)
+            | I::MemoryFill(_)
+            | I::MemoryCopy { .. }
+            | I::MemoryInit { .. }
+            | I::F32Load { .. }
+            | I::F64Load { .. }
+            | I::F32Store { .. }
+            | I::F64Store { .. }
+            | I::I64Load8S { .. }
+            | I::I64Load8U { .. }
+            | I::I64Load16S { .. }
+            | I::I64Load16U { .. }
+            | I::I64Load32S { .. }
+            | I::I64Load32U { .. }
+            | I::I64Store8 { .. }
+            | I::I64Store16 { .. }
+            | I::I64Store32 { .. }
+            | I::I32Rotl
+            | I::I32Rotr
+            | I::I64Rotl
+            | I::I64Rotr
+            | I::I32Clz
+            | I::I32Ctz
+            | I::I32Popcnt
+            | I::I64Clz
+            | I::I64Ctz
+            | I::I64Popcnt
+            | I::I32Extend8S
+            | I::I32Extend16S
+            | I::I64Extend8S
+            | I::I64Extend16S
+            | I::I64Extend32S
+    ) || float_op(instr).is_some()
+}
+
+/// The constant value of a term, if it folds to a numeral.
+#[cfg(feature = "verification")]
+fn numeral(bv: &BV) -> Option<u64> {
+    z3::ast::Ast::simplify(bv).as_u64()
+}
+
+/// An uninterpreted function of `args`, applied.
+#[cfg(feature = "verification")]
+fn uf_apply(name: &str, args: &[&BV], range: &Sort) -> z3::ast::Dynamic {
+    let sorts: Vec<Sort> = args.iter().map(|a| Sort::bitvector(a.get_size())).collect();
+    let sort_refs: Vec<&Sort> = sorts.iter().collect();
+    let arg_refs: Vec<&dyn z3::ast::Ast> = args.iter().map(|a| *a as &dyn z3::ast::Ast).collect();
+    FuncDecl::new(name, &sort_refs, range).apply(&arg_refs)
+}
+
+/// How a float instruction is evaluated.
+#[cfg(feature = "verification")]
+#[derive(Clone, Copy)]
+enum FloatOp {
+    /// Arithmetic producing a float of `width` bits from `arity` operands.
+    Arith { arity: usize, width: u32 },
+    /// Comparison producing an i32 0 or 1.
+    Compare { width: u32 },
+    /// Float to integer that traps on NaN or out of range.
+    TruncTrapping { from: u32, to: u32 },
+    /// Any other conversion (saturating truncation, int to float, demote,
+    /// promote): total, producing `to` bits.
+    Convert { from: u32, to: u32 },
+}
+
+#[cfg(feature = "verification")]
+fn float_op(instr: &Instruction) -> Option<(&'static str, FloatOp)> {
+    use FloatOp::*;
+    use Instruction as I;
+    let a32 = |n| Arith {
+        arity: n,
+        width: 32,
+    };
+    let a64 = |n| Arith {
+        arity: n,
+        width: 64,
+    };
+    Some(match instr {
+        I::F32Add => ("f32_add", a32(2)),
+        I::F32Sub => ("f32_sub", a32(2)),
+        I::F32Mul => ("f32_mul", a32(2)),
+        I::F32Div => ("f32_div", a32(2)),
+        I::F32Min => ("f32_min", a32(2)),
+        I::F32Max => ("f32_max", a32(2)),
+        I::F32Ceil => ("f32_ceil", a32(1)),
+        I::F32Floor => ("f32_floor", a32(1)),
+        I::F32Trunc => ("f32_trunc", a32(1)),
+        I::F32Nearest => ("f32_nearest", a32(1)),
+        I::F32Sqrt => ("f32_sqrt", a32(1)),
+        I::F64Add => ("f64_add", a64(2)),
+        I::F64Sub => ("f64_sub", a64(2)),
+        I::F64Mul => ("f64_mul", a64(2)),
+        I::F64Div => ("f64_div", a64(2)),
+        I::F64Min => ("f64_min", a64(2)),
+        I::F64Max => ("f64_max", a64(2)),
+        I::F64Ceil => ("f64_ceil", a64(1)),
+        I::F64Floor => ("f64_floor", a64(1)),
+        I::F64Trunc => ("f64_trunc", a64(1)),
+        I::F64Nearest => ("f64_nearest", a64(1)),
+        I::F64Sqrt => ("f64_sqrt", a64(1)),
+        // abs, neg and copysign are bit operations, exact for every input.
+        I::F32Abs => ("f32_abs", a32(1)),
+        I::F32Neg => ("f32_neg", a32(1)),
+        I::F32Copysign => ("f32_copysign", a32(2)),
+        I::F64Abs => ("f64_abs", a64(1)),
+        I::F64Neg => ("f64_neg", a64(1)),
+        I::F64Copysign => ("f64_copysign", a64(2)),
+        I::F32Eq => ("f32_eq", Compare { width: 32 }),
+        I::F32Ne => ("f32_ne", Compare { width: 32 }),
+        I::F32Lt => ("f32_lt", Compare { width: 32 }),
+        I::F32Gt => ("f32_gt", Compare { width: 32 }),
+        I::F32Le => ("f32_le", Compare { width: 32 }),
+        I::F32Ge => ("f32_ge", Compare { width: 32 }),
+        I::F64Eq => ("f64_eq", Compare { width: 64 }),
+        I::F64Ne => ("f64_ne", Compare { width: 64 }),
+        I::F64Lt => ("f64_lt", Compare { width: 64 }),
+        I::F64Gt => ("f64_gt", Compare { width: 64 }),
+        I::F64Le => ("f64_le", Compare { width: 64 }),
+        I::F64Ge => ("f64_ge", Compare { width: 64 }),
+        I::I32TruncF32S => ("i32_trunc_f32_s", TruncTrapping { from: 32, to: 32 }),
+        I::I32TruncF32U => ("i32_trunc_f32_u", TruncTrapping { from: 32, to: 32 }),
+        I::I32TruncF64S => ("i32_trunc_f64_s", TruncTrapping { from: 64, to: 32 }),
+        I::I32TruncF64U => ("i32_trunc_f64_u", TruncTrapping { from: 64, to: 32 }),
+        I::I64TruncF32S => ("i64_trunc_f32_s", TruncTrapping { from: 32, to: 64 }),
+        I::I64TruncF32U => ("i64_trunc_f32_u", TruncTrapping { from: 32, to: 64 }),
+        I::I64TruncF64S => ("i64_trunc_f64_s", TruncTrapping { from: 64, to: 64 }),
+        I::I64TruncF64U => ("i64_trunc_f64_u", TruncTrapping { from: 64, to: 64 }),
+        I::I32TruncSatF32S => ("i32_trunc_sat_f32_s", Convert { from: 32, to: 32 }),
+        I::I32TruncSatF32U => ("i32_trunc_sat_f32_u", Convert { from: 32, to: 32 }),
+        I::I32TruncSatF64S => ("i32_trunc_sat_f64_s", Convert { from: 64, to: 32 }),
+        I::I32TruncSatF64U => ("i32_trunc_sat_f64_u", Convert { from: 64, to: 32 }),
+        I::I64TruncSatF32S => ("i64_trunc_sat_f32_s", Convert { from: 32, to: 64 }),
+        I::I64TruncSatF32U => ("i64_trunc_sat_f32_u", Convert { from: 32, to: 64 }),
+        I::I64TruncSatF64S => ("i64_trunc_sat_f64_s", Convert { from: 64, to: 64 }),
+        I::I64TruncSatF64U => ("i64_trunc_sat_f64_u", Convert { from: 64, to: 64 }),
+        I::F32ConvertI32S => ("f32_convert_i32_s", Convert { from: 32, to: 32 }),
+        I::F32ConvertI32U => ("f32_convert_i32_u", Convert { from: 32, to: 32 }),
+        I::F32ConvertI64S => ("f32_convert_i64_s", Convert { from: 64, to: 32 }),
+        I::F32ConvertI64U => ("f32_convert_i64_u", Convert { from: 64, to: 32 }),
+        I::F64ConvertI32S => ("f64_convert_i32_s", Convert { from: 32, to: 64 }),
+        I::F64ConvertI32U => ("f64_convert_i32_u", Convert { from: 32, to: 64 }),
+        I::F64ConvertI64S => ("f64_convert_i64_s", Convert { from: 64, to: 64 }),
+        I::F64ConvertI64U => ("f64_convert_i64_u", Convert { from: 64, to: 64 }),
+        I::F32DemoteF64 => ("f32_demote_f64", Convert { from: 64, to: 32 }),
+        I::F64PromoteF32 => ("f64_promote_f32", Convert { from: 32, to: 64 }),
+        // Reinterpretation keeps the bits.
+        I::I32ReinterpretF32 => ("reinterpret", Convert { from: 32, to: 32 }),
+        I::I64ReinterpretF64 => ("reinterpret", Convert { from: 64, to: 64 }),
+        I::F32ReinterpretI32 => ("reinterpret", Convert { from: 32, to: 32 }),
+        I::F64ReinterpretI64 => ("reinterpret", Convert { from: 64, to: 64 }),
+        _ => return None,
+    })
+}
+
+/// The canonical NaN of each width. Whenever wasm arithmetic produces a NaN it
+/// may produce this one, so evaluating to it is one of the allowed results.
+#[cfg(feature = "verification")]
+const CANON_NAN32: u64 = 0x7fc0_0000;
+#[cfg(feature = "verification")]
+const CANON_NAN64: u64 = 0x7ff8_0000_0000_0000;
+
+#[cfg(feature = "verification")]
+fn f32_bits(x: f32) -> u64 {
+    if x.is_nan() {
+        CANON_NAN32
+    } else {
+        x.to_bits() as u64
+    }
+}
+
+#[cfg(feature = "verification")]
+fn f64_bits(x: f64) -> u64 {
+    if x.is_nan() { CANON_NAN64 } else { x.to_bits() }
+}
+
+/// wasm `fmin`/`fmax`: NaN if either operand is NaN, and -0 below +0.
+#[cfg(feature = "verification")]
+fn wasm_min_max(a: f64, b: f64, max: bool) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        return f64::NAN;
+    }
+    if a == 0.0 && b == 0.0 {
+        let neg = if max {
+            a.is_sign_negative() && b.is_sign_negative()
+        } else {
+            a.is_sign_negative() || b.is_sign_negative()
+        };
+        return if neg { -0.0 } else { 0.0 };
+    }
+    if max { a.max(b) } else { a.min(b) }
+}
+
+/// Evaluate a float instruction on constant operands with wasm semantics.
+/// Returns `Err(())` for a trapping truncation that traps, `Ok(None)` when it
+/// does not apply.
+#[cfg(feature = "verification")]
+fn eval_float(name: &str, ops: &[u64]) -> std::result::Result<Option<u64>, ()> {
+    let f = |i: usize| f32::from_bits(ops[i] as u32);
+    let d = |i: usize| f64::from_bits(ops[i]);
+    let b = |x: bool| Some(x as u64);
+    // Range check for trapping truncation, done in f64 (exact for f32 inputs).
+    let trunc = |x: f64, lo: f64, hi: f64| -> std::result::Result<f64, ()> {
+        let t = x.trunc();
+        if x.is_nan() || t <= lo || t >= hi {
+            Err(())
+        } else {
+            Ok(t)
+        }
+    };
+    Ok(match name {
+        "f32_add" => Some(f32_bits(f(0) + f(1))),
+        "f32_sub" => Some(f32_bits(f(0) - f(1))),
+        "f32_mul" => Some(f32_bits(f(0) * f(1))),
+        "f32_div" => Some(f32_bits(f(0) / f(1))),
+        "f32_min" => Some(f32_bits(
+            wasm_min_max(f(0) as f64, f(1) as f64, false) as f32
+        )),
+        "f32_max" => Some(f32_bits(wasm_min_max(f(0) as f64, f(1) as f64, true) as f32)),
+        "f32_ceil" => Some(f32_bits(f(0).ceil())),
+        "f32_floor" => Some(f32_bits(f(0).floor())),
+        "f32_trunc" => Some(f32_bits(f(0).trunc())),
+        "f32_nearest" => Some(f32_bits(f(0).round_ties_even())),
+        "f32_sqrt" => Some(f32_bits(f(0).sqrt())),
+        "f64_add" => Some(f64_bits(d(0) + d(1))),
+        "f64_sub" => Some(f64_bits(d(0) - d(1))),
+        "f64_mul" => Some(f64_bits(d(0) * d(1))),
+        "f64_div" => Some(f64_bits(d(0) / d(1))),
+        "f64_min" => Some(f64_bits(wasm_min_max(d(0), d(1), false))),
+        "f64_max" => Some(f64_bits(wasm_min_max(d(0), d(1), true))),
+        "f64_ceil" => Some(f64_bits(d(0).ceil())),
+        "f64_floor" => Some(f64_bits(d(0).floor())),
+        "f64_trunc" => Some(f64_bits(d(0).trunc())),
+        "f64_nearest" => Some(f64_bits(d(0).round_ties_even())),
+        "f64_sqrt" => Some(f64_bits(d(0).sqrt())),
+        "f32_eq" => b(f(0) == f(1)),
+        "f32_ne" => b(f(0) != f(1)),
+        "f32_lt" => b(f(0) < f(1)),
+        "f32_gt" => b(f(0) > f(1)),
+        "f32_le" => b(f(0) <= f(1)),
+        "f32_ge" => b(f(0) >= f(1)),
+        "f64_eq" => b(d(0) == d(1)),
+        "f64_ne" => b(d(0) != d(1)),
+        "f64_lt" => b(d(0) < d(1)),
+        "f64_gt" => b(d(0) > d(1)),
+        "f64_le" => b(d(0) <= d(1)),
+        "f64_ge" => b(d(0) >= d(1)),
+        "i32_trunc_f32_s" => {
+            Some(trunc(f(0) as f64, -2147483649.0, 2147483648.0)? as i32 as u32 as u64)
+        }
+        "i32_trunc_f64_s" => Some(trunc(d(0), -2147483649.0, 2147483648.0)? as i32 as u32 as u64),
+        "i32_trunc_f32_u" => Some(trunc(f(0) as f64, -1.0, 4294967296.0)? as u32 as u64),
+        "i32_trunc_f64_u" => Some(trunc(d(0), -1.0, 4294967296.0)? as u32 as u64),
+        "i64_trunc_f32_s" => {
+            Some(trunc(f(0) as f64, -9223372036854777856.0, 9223372036854775808.0)? as i64 as u64)
+        }
+        "i64_trunc_f64_s" => {
+            Some(trunc(d(0), -9223372036854777856.0, 9223372036854775808.0)? as i64 as u64)
+        }
+        "i64_trunc_f32_u" => Some(trunc(f(0) as f64, -1.0, 18446744073709551616.0)? as u64),
+        "i64_trunc_f64_u" => Some(trunc(d(0), -1.0, 18446744073709551616.0)? as u64),
+        // Rust's float-to-int `as` saturates and maps NaN to 0, as wasm's
+        // trunc_sat does.
+        "i32_trunc_sat_f32_s" => Some(f(0) as i32 as u32 as u64),
+        "i32_trunc_sat_f32_u" => Some(f(0) as u32 as u64),
+        "i32_trunc_sat_f64_s" => Some(d(0) as i32 as u32 as u64),
+        "i32_trunc_sat_f64_u" => Some(d(0) as u32 as u64),
+        "i64_trunc_sat_f32_s" => Some(f(0) as i64 as u64),
+        "i64_trunc_sat_f32_u" => Some(f(0) as u64),
+        "i64_trunc_sat_f64_s" => Some(d(0) as i64 as u64),
+        "i64_trunc_sat_f64_u" => Some(d(0) as u64),
+        // Int-to-float `as` rounds to nearest, ties to even, as wasm does.
+        "f32_convert_i32_s" => Some(f32_bits(ops[0] as u32 as i32 as f32)),
+        "f32_convert_i32_u" => Some(f32_bits(ops[0] as u32 as f32)),
+        "f32_convert_i64_s" => Some(f32_bits(ops[0] as i64 as f32)),
+        "f32_convert_i64_u" => Some(f32_bits(ops[0] as f32)),
+        "f64_convert_i32_s" => Some(f64_bits(ops[0] as u32 as i32 as f64)),
+        "f64_convert_i32_u" => Some(f64_bits(ops[0] as u32 as f64)),
+        "f64_convert_i64_s" => Some(f64_bits(ops[0] as i64 as f64)),
+        "f64_convert_i64_u" => Some(f64_bits(ops[0] as f64)),
+        "f32_demote_f64" => Some(f32_bits(d(0) as f32)),
+        "f64_promote_f32" => Some(f64_bits(f(0) as f64)),
+        _ => None,
+    })
+}
+
+/// Execute a float instruction.
+///
+/// abs, neg, copysign and reinterpretation are bit operations and exact for
+/// every input. Everything else is evaluated with wasm semantics when its
+/// operands are constants, and is otherwise an uninterpreted function of the
+/// operand bits; a trapping truncation also traps under an uninterpreted
+/// condition of its operand.
+///
+/// Limitation: a NaN result is modelled as one value per operation and
+/// operands, so two evaluations of the same NaN-producing operation are
+/// taken to give the same payload. wasm lets them differ.
+#[cfg(feature = "verification")]
+fn exec_float(
+    name: &'static str,
+    op: FloatOp,
+    state: &mut AcyclicState,
+    cx: &mut AcyclicCx,
+) -> Result<()> {
+    let arity = match op {
+        FloatOp::Arith { arity, .. } => arity,
+        FloatOp::Compare { .. } => 2,
+        FloatOp::TruncTrapping { .. } | FloatOp::Convert { .. } => 1,
+    };
+    if state.stack.len() < arity {
+        return Err(anyhow!("acyclic executor: {} underflow", name));
+    }
+    let args: Vec<BV> = state.stack.split_off(state.stack.len() - arity);
+    let in_width = match op {
+        FloatOp::Arith { width, .. } | FloatOp::Compare { width } => width,
+        FloatOp::TruncTrapping { from, .. } | FloatOp::Convert { from, .. } => from,
+    };
+    if args.iter().any(|a| a.get_size() != in_width) {
+        return Err(anyhow!("acyclic executor: {} operand width", name));
+    }
+    let out_width = match op {
+        FloatOp::Arith { width, .. } => width,
+        FloatOp::Compare { .. } => 32,
+        FloatOp::TruncTrapping { to, .. } | FloatOp::Convert { to, .. } => to,
+    };
+
+    // Bit operations.
+    let sign = |w: u32| BV::from_u64(1u64 << (w - 1), w);
+    let exact = match name {
+        "reinterpret" => Some(args[0].clone()),
+        "f32_abs" | "f64_abs" => Some(args[0].bvand(sign(in_width).bvnot())),
+        "f32_neg" | "f64_neg" => Some(args[0].bvxor(sign(in_width))),
+        "f32_copysign" | "f64_copysign" => Some(
+            args[0]
+                .bvand(sign(in_width).bvnot())
+                .bvor(args[1].bvand(sign(in_width))),
+        ),
+        _ => None,
+    };
+    if let Some(v) = exact {
+        state.stack.push(v);
+        return Ok(());
+    }
+
+    let consts: Option<Vec<u64>> = args.iter().map(numeral).collect();
+    if let Some(ops) = consts {
+        match eval_float(name, &ops) {
+            Ok(Some(v)) => {
+                state.stack.push(BV::from_u64(v, out_width));
+                return Ok(());
+            }
+            Err(()) => {
+                // A constant operand out of range: this path always traps.
+                acyclic_trap_if(state, cx, Cond::True);
+                state.reachable = false;
+                state.stack.push(BV::from_u64(0, out_width));
+                return Ok(());
+            }
+            Ok(None) => {}
+        }
+    }
+
+    let refs: Vec<&BV> = args.iter().collect();
+    if let FloatOp::TruncTrapping { .. } = op {
+        let traps = uf_apply(&format!("xfloat_{}_traps", name), &refs, &Sort::bool())
+            .as_bool()
+            .ok_or_else(|| anyhow!("acyclic executor: trap model is not a boolean"))?;
+        acyclic_trap_if(state, cx, Cond::of(traps));
+    }
+    let v = if let FloatOp::Compare { .. } = op {
+        // 0 or 1, never anything else.
+        uf_apply(&format!("xfloat_{}", name), &refs, &Sort::bitvector(1))
+            .as_bv()
+            .ok_or_else(|| anyhow!("acyclic executor: float model is not a bit-vector"))?
+            .zero_ext(31)
+    } else {
+        uf_apply(
+            &format!("xfloat_{}", name),
+            &refs,
+            &Sort::bitvector(out_width),
+        )
+        .as_bv()
+        .ok_or_else(|| anyhow!("acyclic executor: float model is not a bit-vector"))?
+    };
+    state.stack.push(v);
+    Ok(())
+}
+
+/// Count of set bits, as a sum of the zero-extended bits.
+#[cfg(feature = "verification")]
+fn popcnt(v: &BV) -> BV {
+    let w = v.get_size();
+    let mut sum = BV::from_u64(0, w);
+    for i in 0..w {
+        sum = sum.bvadd(v.extract(i, i).zero_ext(w - 1));
+    }
+    sum
+}
+
+/// Leading (`from_top`) or trailing zero count.
+#[cfg(feature = "verification")]
+fn count_zeros(v: &BV, from_top: bool) -> BV {
+    let w = v.get_size();
+    let mut result = BV::from_u64(w as u64, w);
+    // Built inside out, so the bit nearest the counted end is tested first.
+    for k in (0..w).rev() {
+        let bit = if from_top { w - 1 - k } else { k };
+        let set = v.extract(bit, bit).eq(BV::from_u64(1, 1));
+        result = set.ite(&BV::from_u64(k as u64, w), &result);
+    }
+    result
+}
+
+/// Execute an instruction accepted by [`is_exact_extra`].
+#[cfg(feature = "verification")]
+fn exec_exact_extra(
+    instr: &Instruction,
+    state: &mut AcyclicState,
+    cx: &mut AcyclicCx,
+) -> Result<()> {
+    use Instruction as I;
+    let pop = |state: &mut AcyclicState, what: &str| {
+        state
+            .stack
+            .pop()
+            .ok_or_else(|| anyhow!("acyclic executor: {} underflow", what))
+    };
+    if let Some((name, op)) = float_op(instr) {
+        return exec_float(name, op, state, cx);
+    }
+    match instr {
+        I::MemorySize(_) => {
+            let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
+            state.stack.push(state.memory[m].pages.clone());
+        }
+        I::MemoryGrow(_) => {
+            let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
+            let delta = pop(state, "memory.grow")?;
+            let pages = state.memory[m].pages.clone();
+            let id = BV::from_u64(cx.havoc_counter, 64);
+            cx.havoc_counter += 1;
+            // Growth may fail for any reason; whether it does is a function of
+            // its position and inputs. It never succeeds past 65536 pages.
+            let ok = uf_apply("xmemory_grow_ok", &[&id, &pages, &delta], &Sort::bool())
+                .as_bool()
+                .ok_or_else(|| anyhow!("acyclic executor: grow model is not a boolean"))?;
+            let fits = pages
+                .zero_ext(32)
+                .bvadd(delta.zero_ext(32))
+                .bvule(BV::from_u64(65536, 64));
+            let grows = Cond::of(Bool::and(&[ok, fits]));
+            state
+                .stack
+                .push(grows.ite_bv(&pages, &BV::from_i64(-1, 32)));
+            state.memory[m].pages = grows.ite_bv(&pages.bvadd(&delta), &pages);
+        }
+
+        // Loads and stores that move bits: floats as their bit patterns, and
+        // the i64 partial widths.
+        I::F32Load { offset, .. }
+        | I::F64Load { offset, .. }
+        | I::I64Load8S { offset, .. }
+        | I::I64Load8U { offset, .. }
+        | I::I64Load16S { offset, .. }
+        | I::I64Load16U { offset, .. }
+        | I::I64Load32S { offset, .. }
+        | I::I64Load32U { offset, .. } => {
+            let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
+            let addr = pop(state, "load")?;
+            let (bytes, signed, width) = match instr {
+                I::F32Load { .. } => (4, false, 32),
+                I::F64Load { .. } => (8, false, 64),
+                I::I64Load8S { .. } => (1, true, 64),
+                I::I64Load8U { .. } => (1, false, 64),
+                I::I64Load16S { .. } => (2, true, 64),
+                I::I64Load16U { .. } => (2, false, 64),
+                I::I64Load32S { .. } => (4, true, 64),
+                _ => (4, false, 64),
+            };
+            let oob = acyclic_oob(&addr, *offset, bytes as u64, &state.memory[m].pages);
+            acyclic_trap_if(state, cx, Cond::of(oob));
+            let v = match instr {
+                I::F32Load { .. } => encode_i32_load_from(&state.memory[m].folded, &addr, *offset)?,
+                I::F64Load { .. } => encode_i64_load_from(&state.memory[m].folded, &addr, *offset)?,
+                _ => encode_partial_load_from(
+                    &state.memory[m].folded,
+                    &addr,
+                    *offset,
+                    bytes,
+                    signed,
+                    width,
+                )?,
+            };
+            state.stack.push(v);
+        }
+        I::F32Store { offset, .. }
+        | I::F64Store { offset, .. }
+        | I::I64Store8 { offset, .. }
+        | I::I64Store16 { offset, .. }
+        | I::I64Store32 { offset, .. } => {
+            let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
+            let value = pop(state, "store value")?;
+            let addr = pop(state, "store address")?;
+            let bytes = match instr {
+                I::F32Store { .. } | I::I64Store32 { .. } => 4,
+                I::F64Store { .. } => 8,
+                I::I64Store8 { .. } => 1,
+                _ => 2,
+            };
+            let oob = acyclic_oob(&addr, *offset, bytes as u64, &state.memory[m].pages);
+            acyclic_trap_if(state, cx, Cond::of(oob));
+            state.memory[m].store_le(&addr, &value, *offset, bytes);
+        }
+
+        // Bulk memory: the bounds checks are exact; the new contents are a
+        // function of the memories and the operands.
+        I::MemoryFill(_) | I::MemoryCopy { .. } | I::MemoryInit { .. } => {
+            let n = pop(state, "bulk length")?;
+            let src = pop(state, "bulk source")?;
+            let dst = pop(state, "bulk destination")?;
+            let (d, s_mem) = match instr {
+                I::MemoryCopy { dst_mem, src_mem } => {
+                    (acyclic_mem(*dst_mem, cx)?, Some(acyclic_mem(*src_mem, cx)?))
+                }
+                _ => (acyclic_mem(memory_index(instr).unwrap_or(0), cx)?, None),
+            };
+            let past = |a: &BV, pages: &BV| {
+                let size = pages.zero_ext(32).bvshl(BV::from_u64(16, 64));
+                a.zero_ext(32).bvadd(n.zero_ext(32)).bvugt(&size)
+            };
+            let dst_oob = past(&dst, &state.memory[d].pages);
+            let mem_sort = Sort::array(&Sort::bitvector(32), &Sort::bitvector(8));
+            let bv32 = Sort::bitvector(32);
+            let (oob, new) = match instr {
+                I::MemoryCopy { .. } => {
+                    let sm = s_mem.unwrap();
+                    let oob = Bool::or(&[dst_oob, past(&src, &state.memory[sm].pages)]);
+                    let new = FuncDecl::new(
+                        format!("xmemory_copy{}_{}", d, sm),
+                        &[&mem_sort, &mem_sort, &bv32, &bv32, &bv32],
+                        &mem_sort,
+                    )
+                    .apply(&[
+                        &state.memory[d].folded,
+                        &state.memory[sm].folded,
+                        &dst,
+                        &src,
+                        &n,
+                    ]);
+                    (oob, new)
+                }
+                I::MemoryInit { data_idx, .. } => {
+                    let seg_len = BV::new_const(format!("data{}_len", data_idx), 32);
+                    let seg_oob = src
+                        .zero_ext(32)
+                        .bvadd(n.zero_ext(32))
+                        .bvugt(seg_len.zero_ext(32));
+                    let new = FuncDecl::new(
+                        format!("xmemory_init{}_{}", d, data_idx),
+                        &[&mem_sort, &bv32, &bv32, &bv32],
+                        &mem_sort,
+                    )
+                    .apply(&[&state.memory[d].folded, &dst, &src, &n]);
+                    (Bool::or(&[dst_oob, seg_oob]), new)
+                }
+                _ => {
+                    let new = FuncDecl::new(
+                        format!("xmemory_fill{}", d),
+                        &[&mem_sort, &bv32, &bv32, &bv32],
+                        &mem_sort,
+                    )
+                    .apply(&[&state.memory[d].folded, &dst, &src, &n]);
+                    (dst_oob, new)
+                }
+            };
+            acyclic_trap_if(state, cx, Cond::of(oob));
+            let new = new
+                .as_array()
+                .ok_or_else(|| anyhow!("acyclic executor: bulk memory model is not an array"))?;
+            let pages = state.memory[d].pages.clone();
+            state.memory[d] = Mem::new(new, pages);
+        }
+
+        I::I32Rotl | I::I32Rotr | I::I64Rotl | I::I64Rotr => {
+            let amount = pop(state, "rotate amount")?;
+            let v = pop(state, "rotate value")?;
+            let w = v.get_size();
+            let amount = amount.bvurem(BV::from_u64(w as u64, w));
+            state
+                .stack
+                .push(if matches!(instr, I::I32Rotl | I::I64Rotl) {
+                    v.bvrotl(&amount)
+                } else {
+                    v.bvrotr(&amount)
+                });
+        }
+        I::I32Clz | I::I64Clz => {
+            let v = pop(state, "clz")?;
+            state.stack.push(count_zeros(&v, true));
+        }
+        I::I32Ctz | I::I64Ctz => {
+            let v = pop(state, "ctz")?;
+            state.stack.push(count_zeros(&v, false));
+        }
+        I::I32Popcnt | I::I64Popcnt => {
+            let v = pop(state, "popcnt")?;
+            state.stack.push(popcnt(&v));
+        }
+        I::I32Extend8S | I::I32Extend16S | I::I64Extend8S | I::I64Extend16S | I::I64Extend32S => {
+            let v = pop(state, "extend")?;
+            let w = v.get_size();
+            let from = match instr {
+                I::I32Extend8S | I::I64Extend8S => 8,
+                I::I32Extend16S | I::I64Extend16S => 16,
+                _ => 32,
+            };
+            state.stack.push(v.extract(from - 1, 0).sign_ext(w - from));
+        }
+        other => {
+            return Err(anyhow!(
+                "acyclic executor: instruction not modelable: {:?}",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Execute a structured, acyclic instruction sequence, merging branch states at
 /// label joins. Precondition: the enclosing function passed
 /// `is_acyclic_modelable_body`. `labels[0]` is the function label.
 #[cfg(feature = "verification")]
-#[allow(dead_code)]
 fn exec_acyclic(
     body: &[Instruction],
     state: &mut AcyclicState,
     labels: &mut Vec<LabelJoin>,
     ctx: &VerificationSignatureContext,
     depth: usize,
-    // Monotonic per-ENCODE counter for impure-call havoc names. Threaded (not in
-    // AcyclicState, which is saved/restored at branches) so the Nth impure call
-    // gets the same id in the original and optimized encodings → they unify.
-    havoc_counter: &mut u64,
+    cx: &mut AcyclicCx,
 ) -> Result<()> {
     for instr in body {
         if !state.reachable {
@@ -8504,7 +9558,7 @@ fn exec_acyclic(
                     arity,
                     entries: Vec::new(),
                 });
-                exec_acyclic(body, state, labels, ctx, depth, havoc_counter)?;
+                exec_acyclic(body, state, labels, ctx, depth, cx)?;
                 // Fall-through off the end == implicit `br 0` to this block.
                 if state.reachable {
                     let target = labels.len() - 1;
@@ -8534,21 +9588,19 @@ fn exec_acyclic(
                     entries: Vec::new(),
                 });
                 let target = labels.len() - 1;
-                // then-branch under path ∧ cond≠0
-                state.path = Bool::and(&[saved_path.clone(), cond_nz.clone()]);
+                state.path = saved_path.and(&Cond::of(cond_nz.clone()));
                 state.reachable = true;
-                exec_acyclic(then_body, state, labels, ctx, depth, havoc_counter)?;
+                exec_acyclic(then_body, state, labels, ctx, depth, cx)?;
                 if state.reachable {
                     acyclic_push_branch(labels, target, state.path.clone(), state)?;
                 }
-                // else-branch under path ∧ cond=0 (restore entry state)
                 state.stack = base_stack.clone();
                 state.locals = saved_locals;
                 state.globals = saved_globals;
                 state.memory = saved_memory;
-                state.path = Bool::and(&[saved_path, cond_nz.not()]);
+                state.path = saved_path.and(&Cond::of(cond_nz.not()));
                 state.reachable = true;
-                exec_acyclic(else_body, state, labels, ctx, depth, havoc_counter)?;
+                exec_acyclic(else_body, state, labels, ctx, depth, cx)?;
                 if state.reachable {
                     acyclic_push_branch(labels, target, state.path.clone(), state)?;
                 }
@@ -8567,10 +9619,9 @@ fn exec_acyclic(
                     .ok_or_else(|| anyhow!("acyclic executor: BrIf underflow"))?;
                 let cond_nz = cond.eq(BV::from_i64(0, 32)).not();
                 let target = acyclic_label_index(labels, *depth)?;
-                let branch_guard = Bool::and(&[state.path.clone(), cond_nz.clone()]);
+                let branch_guard = state.path.and(&Cond::of(cond_nz.clone()));
                 acyclic_push_branch(labels, target, branch_guard, state)?;
-                // Fall-through path narrows to cond=0.
-                state.path = Bool::and(&[state.path.clone(), cond_nz.not()]);
+                state.path = state.path.and(&Cond::of(cond_nz.not()));
             }
             Instruction::BrTable { targets, default } => {
                 let sel = state
@@ -8578,117 +9629,153 @@ fn exec_acyclic(
                     .pop()
                     .ok_or_else(|| anyhow!("acyclic executor: BrTable underflow"))?;
                 let n = targets.len() as u64;
-                // Arm i is taken iff sel == i.
                 for (i, d) in targets.iter().enumerate() {
                     let target = acyclic_label_index(labels, *d)?;
-                    let guard =
-                        Bool::and(&[state.path.clone(), sel.eq(BV::from_u64(i as u64, 32))]);
+                    let guard = state
+                        .path
+                        .and(&Cond::of(sel.eq(BV::from_u64(i as u64, 32))));
                     acyclic_push_branch(labels, target, guard, state)?;
                 }
-                // Default is taken iff sel >=u n (UNSIGNED — gale must-fix: a
-                // signed >= would leave selectors in [2^31, 2^32) in a gap
-                // between the arm guards and the default, letting Z3 pick any
-                // arm → a false equivalence).
+                // Default iff sel >=u n (unsigned, so selectors in [2^31, 2^32)
+                // are covered too).
                 let target = acyclic_label_index(labels, *default)?;
-                let guard = Bool::and(&[state.path.clone(), sel.bvuge(BV::from_u64(n, 32))]);
+                let guard = state.path.and(&Cond::of(sel.bvuge(BV::from_u64(n, 32))));
                 acyclic_push_branch(labels, target, guard, state)?;
                 state.reachable = false;
             }
             Instruction::Return => {
-                // Branch to the implicit function label.
                 acyclic_push_branch(labels, 0, state.path.clone(), state)?;
                 state.reachable = false;
             }
             Instruction::Unreachable => {
-                // Trap: this path diverges (⊥) — it drops out of the result
-                // ITE and contributes to no join, exactly like a no-return
-                // call. NEVER havoc (Alive2 ub discipline).
+                acyclic_trap_if(state, cx, Cond::True);
                 state.reachable = false;
             }
+            // Admitted only as the last instruction of a body.
+            Instruction::End => break,
             Instruction::Call(g) => {
                 let callee_opt = ctx
                     .function_bodies
                     .get(*g as usize)
                     .and_then(|o| o.as_deref());
                 match callee_opt {
-                    // No-return callee (panic→unreachable): ⊥-diverge — the path
-                    // traps and drops out of the result ITE, NEVER havoc (Alive2
-                    // `ub` discipline; havoc reopens #155/#159).
-                    Some(callee) if is_noreturn_callee(callee) => {
-                        state.reachable = false;
-                    }
-                    // Acyclic, single-result local callee: model BY BODY (the
-                    // same executor models the original `call F` and the inlined
-                    // body identically → the inline is provable). Its OWN impure
-                    // calls get havoc'd via the shared counter.
+                    // A local callee the executor can model is executed by
+                    // body, so a call and its inlined body give the same
+                    // expressions, traps included.
                     Some(callee)
-                        if depth + 1 < MAX_ACYCLIC_CALL_DEPTH
+                        if cx.by_body.contains(g)
+                            && depth + 1 < MAX_ACYCLIC_CALL_DEPTH
                             && callee.signature.results.len() <= 1
                             && is_acyclic_modelable_body(&callee.instructions) =>
                     {
-                        encode_acyclic_call(callee, state, ctx, depth, havoc_counter)?;
+                        encode_acyclic_call(callee, state, ctx, depth, cx)?;
                     }
-                    // Impure / opaque call (import, multi-result, too-deep, or a
-                    // local callee with a loop/unmodelable shape): HAVOC. Sound
-                    // and conservative — corresponding calls in the original and
-                    // optimized encodings get the SAME havoc id (shared counter)
-                    // so they unify; only a havoc-vs-CONCRETE mismatch (e.g.
-                    // original havocs `call F` but optimized inlines F's effect)
-                    // refuses to prove → revert (the #155/#159 guard).
+                    // Anything else is opaque: its results, its effects and
+                    // whether it traps are functions of what it can observe.
                     _ => {
-                        acyclic_havoc_call(*g, state, ctx, havoc_counter)?;
+                        acyclic_havoc_call(*g, state, ctx, cx)?;
                     }
                 }
             }
-            // PR-C Phase 2: memory loads/stores via the SAME shared helpers the
-            // main encoder uses (so a by-body call and its inlined body produce
-            // bit-identical memory expressions). Handled explicitly — NEVER
-            // delegated to encode_simple_instruction, which havocs memory ops.
-            Instruction::I32Load { offset, .. } => {
+            Instruction::I32DivS
+            | Instruction::I32DivU
+            | Instruction::I32RemS
+            | Instruction::I32RemU
+            | Instruction::I64DivS
+            | Instruction::I64DivU
+            | Instruction::I64RemS
+            | Instruction::I64RemU => {
+                let n = state.stack.len();
+                if n < 2 {
+                    return Err(anyhow!("acyclic executor: div/rem underflow"));
+                }
+                let rhs = state.stack[n - 1].clone();
+                let lhs = state.stack[n - 2].clone();
+                let w = rhs.get_size();
+                let mut trap = rhs.eq(BV::from_u64(0, w));
+                // Signed division overflows (and traps) on MIN / -1; signed
+                // remainder does not trap there.
+                if matches!(instr, Instruction::I32DivS | Instruction::I64DivS) {
+                    let min = BV::from_u64(1u64 << (w - 1), w);
+                    let neg1 = BV::from_i64(-1, w);
+                    trap = Bool::or(&[trap, Bool::and(&[lhs.eq(&min), rhs.eq(&neg1)])]);
+                }
+                acyclic_trap_if(state, cx, Cond::of(trap));
+                encode_simple_instruction(
+                    instr,
+                    &mut state.stack,
+                    &mut state.locals,
+                    &mut state.globals,
+                )?;
+            }
+            Instruction::GlobalGet(idx) | Instruction::GlobalSet(idx) => {
+                let i = *idx as usize;
+                if i >= state.globals.len() {
+                    return Err(anyhow!(
+                        "acyclic executor: global {} has no known type",
+                        idx
+                    ));
+                }
+                if let Instruction::GlobalSet(_) = instr {
+                    let v = state
+                        .stack
+                        .last()
+                        .ok_or_else(|| anyhow!("acyclic executor: GlobalSet underflow"))?;
+                    if v.get_size() != state.globals[i].get_size() {
+                        return Err(anyhow!("acyclic executor: global {} width mismatch", idx));
+                    }
+                }
+                encode_simple_instruction(
+                    instr,
+                    &mut state.stack,
+                    &mut state.locals,
+                    &mut state.globals,
+                )?;
+            }
+            Instruction::I32Load { offset, .. } | Instruction::I64Load { offset, .. } => {
+                let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
                 let addr = state
                     .stack
                     .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I32Load underflow"))?;
-                state
-                    .stack
-                    .push(encode_i32_load_from(&state.memory, &addr, *offset)?);
+                    .ok_or_else(|| anyhow!("acyclic executor: load underflow"))?;
+                let bytes = if matches!(instr, Instruction::I32Load { .. }) {
+                    4
+                } else {
+                    8
+                };
+                let oob = acyclic_oob(&addr, *offset, bytes, &state.memory[m].pages);
+                acyclic_trap_if(state, cx, Cond::of(oob));
+                let v = if bytes == 4 {
+                    encode_i32_load_from(&state.memory[m].folded, &addr, *offset)?
+                } else {
+                    encode_i64_load_from(&state.memory[m].folded, &addr, *offset)?
+                };
+                state.stack.push(v);
             }
-            Instruction::I64Load { offset, .. } => {
-                let addr = state
-                    .stack
-                    .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I64Load underflow"))?;
-                state
-                    .stack
-                    .push(encode_i64_load_from(&state.memory, &addr, *offset)?);
-            }
-            Instruction::I32Store { offset, .. } => {
+            Instruction::I32Store { offset, .. } | Instruction::I64Store { offset, .. } => {
+                let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
                 let value = state
                     .stack
                     .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I32Store value underflow"))?;
+                    .ok_or_else(|| anyhow!("acyclic executor: store value underflow"))?;
                 let addr = state
                     .stack
                     .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I32Store addr underflow"))?;
-                state.memory = encode_i32_store_into(&state.memory, &addr, &value, *offset);
+                    .ok_or_else(|| anyhow!("acyclic executor: store addr underflow"))?;
+                let bytes = if matches!(instr, Instruction::I32Store { .. }) {
+                    4
+                } else {
+                    8
+                };
+                let oob = acyclic_oob(&addr, *offset, bytes, &state.memory[m].pages);
+                acyclic_trap_if(state, cx, Cond::of(oob));
+                state.memory[m].store_le(&addr, &value, *offset, bytes as u32);
             }
-            Instruction::I64Store { offset, .. } => {
-                let value = state
-                    .stack
-                    .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I64Store value underflow"))?;
-                let addr = state
-                    .stack
-                    .pop()
-                    .ok_or_else(|| anyhow!("acyclic executor: I64Store addr underflow"))?;
-                state.memory = encode_i64_store_into(&state.memory, &addr, &value, *offset);
-            }
-            // Partial-width (8/16-bit) loads/stores (loom#161 helpers).
             Instruction::I32Load8S { offset, .. }
             | Instruction::I32Load8U { offset, .. }
             | Instruction::I32Load16S { offset, .. }
             | Instruction::I32Load16U { offset, .. } => {
+                let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
                 let addr = state
                     .stack
                     .pop()
@@ -8699,8 +9786,10 @@ fn exec_acyclic(
                     Instruction::I32Load16S { .. } => (2, true),
                     _ => (2, false),
                 };
+                let oob = acyclic_oob(&addr, *offset, bytes as u64, &state.memory[m].pages);
+                acyclic_trap_if(state, cx, Cond::of(oob));
                 state.stack.push(encode_partial_load_from(
-                    &state.memory,
+                    &state.memory[m].folded,
                     &addr,
                     *offset,
                     bytes,
@@ -8709,6 +9798,7 @@ fn exec_acyclic(
                 )?);
             }
             Instruction::I32Store8 { offset, .. } | Instruction::I32Store16 { offset, .. } => {
+                let m = acyclic_mem(memory_index(instr).unwrap_or(0), cx)?;
                 let value = state
                     .stack
                     .pop()
@@ -8722,12 +9812,49 @@ fn exec_acyclic(
                 } else {
                     2
                 };
-                state.memory =
-                    encode_partial_store_into(&state.memory, &addr, &value, *offset, bytes);
+                let oob = acyclic_oob(&addr, *offset, bytes as u64, &state.memory[m].pages);
+                acyclic_trap_if(state, cx, Cond::of(oob));
+                state.memory[m].store_le(&addr, &value, *offset, bytes);
             }
+            Instruction::CallIndirect {
+                type_idx,
+                table_idx,
+            } => {
+                let sig = ctx
+                    .get_type_signature(*type_idx)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("acyclic executor: no type {}", type_idx))?;
+                let slot = state
+                    .stack
+                    .last()
+                    .ok_or_else(|| anyhow!("acyclic executor: call_indirect underflow"))?
+                    .clone();
+                let resolved = numeral(&slot)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .and_then(|n| ctx.resolve_indirect_call(*table_idx, n, &sig));
+                match resolved {
+                    // A constant slot holding a function of this type: the
+                    // call is that direct call.
+                    Some(f) => {
+                        state.stack.pop();
+                        exec_acyclic(&[Instruction::Call(f)], state, labels, ctx, depth, cx)?;
+                    }
+                    None => {
+                        let slot = state.stack.pop().unwrap();
+                        acyclic_opaque_call(
+                            &format!("xcall_indirect{}_{}", table_idx, type_idx),
+                            &sig,
+                            vec![slot],
+                            state,
+                            cx,
+                        )?;
+                    }
+                }
+            }
+            other if is_exact_extra(other) => exec_exact_extra(other, state, cx)?,
             other => {
-                // Defense in depth: never delegate an unmodeled op (the
-                // delegate's catch-all havocs and would desync the stack).
+                // Never delegate an unmodelled op: the delegate's catch-all
+                // pushes a fresh value and would desync the stack.
                 if !is_acyclic_simple_modelable(other) {
                     return Err(anyhow!(
                         "acyclic executor: instruction not modelable: {:?}",
@@ -8746,70 +9873,131 @@ fn exec_acyclic(
     Ok(())
 }
 
-/// Model an opaque / impure `call g` by HAVOC (PR-C Phase 2b): pop the args,
-/// push a fresh symbolic per result, and havoc all globals + memory. Naming is
-/// deterministic in the per-encode `havoc_counter` so the Nth impure call gets
-/// the SAME names in the original and optimized encodings → they unify in Z3
-/// (the original's `call F` and the optimized's `call F` cancel). Mirrors the
-/// main encoder's conservative Call tier. Used for imports and local callees the
-/// acyclic executor cannot model by-body (loops, multi-result, too-deep).
+/// Model an opaque `call g`: an import, or a local callee the executor cannot
+/// execute by body.
+///
+/// Everything the call produces is an uninterpreted function of what it can
+/// observe: its position among opaque calls in execution order, its
+/// arguments, the globals and the memory. So two encodings agree on a call
+/// only when they make the same call at the same position from the same
+/// state; dropping a write the callee could read, or moving a call across one,
+/// changes its inputs and is not provable. The call may trap, leaving its own
+/// globals and memory behind.
 #[cfg(feature = "verification")]
-#[allow(dead_code)]
 fn acyclic_havoc_call(
     g: u32,
     state: &mut AcyclicState,
     ctx: &VerificationSignatureContext,
-    havoc_counter: &mut u64,
+    cx: &mut AcyclicCx,
 ) -> Result<()> {
     let sig = ctx
         .get_function_signature(g)
+        .cloned()
         .ok_or_else(|| anyhow!("acyclic executor: no signature for call {}", g))?;
+    acyclic_opaque_call(&format!("xcall{}", g), &sig, Vec::new(), state, cx)
+}
+
+/// An opaque call named `name` with signature `sig`. `extra` are inputs
+/// beyond the arguments (the table slot of an indirect call).
+#[cfg(feature = "verification")]
+fn acyclic_opaque_call(
+    name: &str,
+    sig: &FunctionSignature,
+    extra: Vec<BV>,
+    state: &mut AcyclicState,
+    cx: &mut AcyclicCx,
+) -> Result<()> {
     let nparams = sig.params.len();
     if state.stack.len() < nparams {
-        return Err(anyhow!("acyclic executor: havoc-call arg underflow"));
+        return Err(anyhow!("acyclic executor: opaque-call arg underflow"));
     }
-    // Discard the args (the opaque result is independent of them, matching the
-    // main encoder's conservative tier).
-    state.stack.truncate(state.stack.len() - nparams);
-    // Fresh symbolic result(s).
-    for (i, rt) in sig.results.iter().enumerate() {
-        state.stack.push(BV::new_const(
-            format!("call_{}_result_{}", g, i),
-            bv_width_for_value_type(*rt),
+    let mut args: Vec<BV> = state.stack.split_off(state.stack.len() - nparams);
+    args.extend(extra);
+    let id = BV::from_u64(cx.havoc_counter, 64);
+    cx.havoc_counter += 1;
+
+    let mem_sort = Sort::array(&Sort::bitvector(32), &Sort::bitvector(8));
+    let mut domain: Vec<Sort> = vec![Sort::bitvector(64)];
+    domain.extend(args.iter().map(|a| Sort::bitvector(a.get_size())));
+    domain.extend(state.globals.iter().map(|v| Sort::bitvector(v.get_size())));
+    for _ in &state.memory {
+        domain.push(mem_sort.clone());
+        domain.push(Sort::bitvector(32));
+    }
+    let domain_refs: Vec<&Sort> = domain.iter().collect();
+    let mut inputs: Vec<&dyn z3::ast::Ast> = vec![&id];
+    inputs.extend(args.iter().map(|a| a as &dyn z3::ast::Ast));
+    inputs.extend(state.globals.iter().map(|v| v as &dyn z3::ast::Ast));
+    for mem in &state.memory {
+        inputs.push(&mem.folded);
+        inputs.push(&mem.pages);
+    }
+    let apply =
+        |name: String, range: &Sort| FuncDecl::new(name, &domain_refs, range).apply(&inputs);
+    let as_bv = |d: z3::ast::Dynamic| {
+        d.as_bv()
+            .ok_or_else(|| anyhow!("acyclic executor: call model is not a bit-vector"))
+    };
+    let as_mem = |d: z3::ast::Dynamic| {
+        d.as_array()
+            .ok_or_else(|| anyhow!("acyclic executor: call model is not an array"))
+    };
+
+    let traps = apply(format!("{}_traps", name), &Sort::bool())
+        .as_bool()
+        .ok_or_else(|| anyhow!("acyclic executor: call model is not a boolean"))?;
+    let mut trap_globals = Vec::with_capacity(state.globals.len());
+    let mut globals = Vec::with_capacity(state.globals.len());
+    for (k, v) in state.globals.iter().enumerate() {
+        let s = Sort::bitvector(v.get_size());
+        trap_globals.push(as_bv(apply(format!("{}_trap_global{}", name, k), &s))?);
+        globals.push(as_bv(apply(format!("{}_global{}", name, k), &s))?);
+    }
+    let pages_sort = Sort::bitvector(32);
+    let mut trap_memory = Vec::with_capacity(state.memory.len());
+    let mut memory = Vec::with_capacity(state.memory.len());
+    for k in 0..state.memory.len() {
+        trap_memory.push(Mem::new(
+            as_mem(apply(format!("{}_trap_memory{}", name, k), &mem_sort))?,
+            as_bv(apply(format!("{}_trap_pages{}", name, k), &pages_sort))?,
         ));
+        memory.push(Mem::new(
+            as_mem(apply(format!("{}_memory{}", name, k), &mem_sort))?,
+            as_bv(apply(format!("{}_pages{}", name, k), &pages_sort))?,
+        ));
+        for m in [&trap_memory[k], &memory[k]] {
+            cx.assumed = cx.assumed.and(&pages_in_range(&m.pages));
+        }
     }
-    // Havoc globals + memory with the shared deterministic id.
-    let id = *havoc_counter;
-    *havoc_counter += 1;
-    for (idx, global) in state.globals.iter_mut().enumerate() {
-        *global = BV::new_const(
-            format!("global_{}_after_call_{}_{}", idx, g, id),
-            global.get_size(),
-        );
+    let mut results = Vec::with_capacity(sig.results.len());
+    for (i, rt) in sig.results.iter().enumerate() {
+        let s = Sort::bitvector(bv_width_for_value_type(*rt));
+        results.push(as_bv(apply(format!("{}_result{}", name, i), &s))?);
     }
-    state.memory = Array::new_const(
-        format!("mem_after_call_{}_{}", g, id),
-        &Sort::bitvector(32),
-        &Sort::bitvector(8),
-    );
+
+    cx.traps.push((
+        state.path.and(&Cond::of(traps.clone())),
+        trap_globals,
+        trap_memory,
+    ));
+    state.path = state.path.and(&Cond::of(traps.not()));
+    state.globals = globals;
+    state.memory = memory;
+    state.stack.extend(results);
     Ok(())
 }
 
-/// Model a `call` to `callee` BY BODY: pop the args, recursively encode the
-/// callee through `exec_acyclic` (params bound to the args, declared locals
-/// zero-init, globals SHARED with the caller so the callee's global writes
-/// propagate back), and push the merged single result. Sets `reachable=false`
-/// if every callee path traps (no normal exit). The SAME executor models both
-/// the original `call F` (here) and the inlined body, so they yield the same
-/// expression → the inline is provable.
+/// Model a `call` to `callee` BY BODY: pop the args, execute the callee with
+/// params bound to them and globals and memory shared with the caller, and
+/// push the merged single result. Traps inside the callee are traps of the
+/// caller. Sets `reachable=false` if the callee never returns normally.
 #[cfg(feature = "verification")]
-#[allow(dead_code)]
 fn encode_acyclic_call(
     callee: &Function,
     state: &mut AcyclicState,
     ctx: &VerificationSignatureContext,
     depth: usize,
-    havoc_counter: &mut u64,
+    cx: &mut AcyclicCx,
 ) -> Result<()> {
     if depth + 1 >= MAX_ACYCLIC_CALL_DEPTH {
         return Err(anyhow!("acyclic executor: call recursion too deep"));
@@ -8822,7 +10010,6 @@ fn encode_acyclic_call(
     if state.stack.len() < nparams {
         return Err(anyhow!("acyclic executor: call arg underflow"));
     }
-    // Pop args (last param on top of stack); bind to the callee's param locals.
     let mut callee_locals: Vec<BV> = state.stack.split_off(state.stack.len() - nparams);
     for (count, lt) in callee.locals.iter() {
         let width = bv_width_for_value_type(*lt);
@@ -8833,12 +10020,8 @@ fn encode_acyclic_call(
     let mut sub = AcyclicState {
         stack: Vec::new(),
         locals: callee_locals,
-        // SHARED globals + memory — the callee may read/write module globals and
-        // linear memory; the merged result threads the updated state back to the
-        // caller.
         globals: state.globals.clone(),
         memory: state.memory.clone(),
-        // Inherit the caller's path so callee branch guards conjoin it.
         path: state.path.clone(),
         reachable: true,
     };
@@ -8852,7 +10035,7 @@ fn encode_acyclic_call(
         &mut sub_labels,
         ctx,
         depth + 1,
-        havoc_counter,
+        cx,
     )?;
     if sub.reachable {
         acyclic_push_branch(&mut sub_labels, 0, sub.path.clone(), &sub)?;
@@ -8860,8 +10043,6 @@ fn encode_acyclic_call(
     let join = sub_labels.pop().unwrap();
     match acyclic_merge_entries(&join.entries) {
         Some((results, _locals, globals, memory, path)) => {
-            // Propagate callee global + memory writes; narrow the caller path to
-            // the callee's returning paths.
             state.globals = globals;
             state.memory = memory;
             state.path = path;
@@ -8870,23 +10051,36 @@ fn encode_acyclic_call(
             }
         }
         None => {
-            // Callee never returns normally (all paths trap) → caller diverges.
             state.reachable = false;
         }
     }
     Ok(())
 }
 
-/// Encode a function via the precise acyclic CF executor. Mirrors
-/// `encode_function_to_smt`'s deterministic input naming (`param{i}`,
-/// `global{i}`) so two encodings UNIFY in Z3 and can be compared directly.
-/// Returns `Err` if the function is not acyclic-modelable (caller falls back).
+/// Everything a caller can observe after running a function: whether it
+/// trapped, the globals and memory it left (in either case), and its results
+/// when it returned.
 #[cfg(feature = "verification")]
-#[allow(dead_code)]
+struct AcyclicObservation {
+    /// Facts the execution satisfies; the comparison is conditional on them.
+    assumed: Cond,
+    trapped: Cond,
+    trap_globals: Vec<BV>,
+    trap_memory: Vec<Array>,
+    results: Vec<BV>,
+    globals: Vec<BV>,
+    memory: Vec<Array>,
+}
+
+/// Encode a function via the exact acyclic executor. Inputs are named
+/// deterministically (`param{i}`, `global{i}`, `memory`, `memory_size`) so two
+/// encodings share them. Returns `Err` if the function is not modelable.
+#[cfg(feature = "verification")]
 fn encode_acyclic_function(
     func: &Function,
     ctx: &VerificationSignatureContext,
-) -> Result<Option<BV>> {
+    by_body: &std::collections::HashSet<u32>,
+) -> Result<AcyclicObservation> {
     if !is_acyclic_modelable_body(&func.instructions) {
         return Err(anyhow!("function not acyclic-modelable"));
     }
@@ -8908,131 +10102,335 @@ fn encode_acyclic_function(
             locals.push(BV::from_u64(0, width));
         }
     }
-    let mut globals: Vec<BV> = Vec::new();
-    for i in 0..16 {
-        globals.push(BV::new_const(format!("global{}", i), 32));
-    }
-    // Symbolic initial memory — same name as the main encoder so two
-    // encode_acyclic_function calls (original + optimized) unify in Z3.
-    let memory = Array::new_const("memory", &Sort::bitvector(32), &Sort::bitvector(8));
+    let globals: Vec<BV> = ctx
+        .global_types
+        .iter()
+        .enumerate()
+        .map(|(i, t)| BV::new_const(format!("global{}", i), bv_width_for_value_type(*t)))
+        .collect();
+    // Memory 0 keeps the names `memory` and `memory_size`.
+    let mem_ok: Vec<bool> = if ctx.memories.is_empty() {
+        vec![true]
+    } else {
+        ctx.memories.clone()
+    };
+    let suffix = |i: usize| if i == 0 { String::new() } else { i.to_string() };
+    let memory: Vec<Mem> = (0..mem_ok.len())
+        .map(|i| {
+            Mem::new(
+                Array::new_const(
+                    format!("memory{}", suffix(i)),
+                    &Sort::bitvector(32),
+                    &Sort::bitvector(8),
+                ),
+                BV::new_const(format!("memory_size{}", suffix(i)), 32),
+            )
+        })
+        .collect();
 
     let mut state = AcyclicState {
         stack: Vec::new(),
         locals,
-        globals,
-        memory,
-        path: Bool::from_bool(true),
+        globals: globals.clone(),
+        memory: memory.clone(),
+        path: Cond::True,
         reachable: true,
     };
     let mut labels = vec![LabelJoin {
         arity,
         entries: Vec::new(),
     }];
-    // Per-encode impure-call havoc counter (reset to 0 each encode so the Nth
-    // impure call gets the same id in the original and optimized encodings).
-    let mut havoc_counter: u64 = 0;
-    exec_acyclic(
-        &func.instructions,
-        &mut state,
-        &mut labels,
-        ctx,
-        0,
-        &mut havoc_counter,
-    )?;
-    // Fall-through off the function body == implicit return.
+    let mut cx = AcyclicCx {
+        havoc_counter: 0,
+        traps: Vec::new(),
+        mem_ok,
+        assumed: memory
+            .iter()
+            .fold(Cond::True, |a, m| a.and(&pages_in_range(&m.pages))),
+        by_body: by_body.clone(),
+    };
+    exec_acyclic(&func.instructions, &mut state, &mut labels, ctx, 0, &mut cx)?;
     if state.reachable {
         acyclic_push_branch(&mut labels, 0, state.path.clone(), &state)?;
     }
     let func_join = labels.pop().unwrap();
 
-    if arity == 0 {
-        return Ok(None);
-    }
-    match acyclic_merge_entries(&func_join.entries) {
-        Some((results, _, _, _, _)) => Ok(Some(results[0].clone())),
-        None => Err(anyhow!("acyclic executor: function has no reachable exit")),
-    }
+    // Normal exit. With none, every path traps and these are never compared.
+    // Memory sizes are observable; they are compared after the globals.
+    let with_pages = |mut g: Vec<BV>, ms: &[Mem]| {
+        g.extend(ms.iter().map(|m| m.pages.clone()));
+        g
+    };
+    let folded = |ms: &[Mem]| ms.iter().map(|m| m.folded.clone()).collect::<Vec<Array>>();
+    let (results, ret_globals, ret_memory) = match acyclic_merge_entries(&func_join.entries) {
+        Some((results, _, g, m, _)) => (results, with_pages(g, &m), folded(&m)),
+        None => {
+            let results = func
+                .signature
+                .results
+                .iter()
+                .map(|t| BV::from_u64(0, bv_width_for_value_type(*t)))
+                .collect();
+            (
+                results,
+                with_pages(globals.clone(), &memory),
+                folded(&memory),
+            )
+        }
+    };
+
+    // Trap exits, merged the same way. Their guards are pairwise disjoint:
+    // each one narrows the path the later ones run on.
+    let (trapped, trap_globals, trap_memory) = match cx.traps.split_last() {
+        None => (Cond::False, with_pages(globals, &memory), folded(&memory)),
+        Some(((g_last, gl_last, _), rest)) => {
+            let mut gl = gl_last.clone();
+            let mut any = g_last.clone();
+            for (g, gs, _) in rest.iter().rev() {
+                gl = gs
+                    .iter()
+                    .zip(gl.iter())
+                    .map(|(t, f)| g.ite_bv(t, f))
+                    .collect();
+                any = g.or(&any);
+            }
+            let mems: Vec<(Cond, &Vec<Mem>)> =
+                cx.traps.iter().map(|t| (t.0.clone(), &t.2)).collect();
+            let merged = Mem::merge_all(&mems);
+            (any, with_pages(gl, &merged), folded(&merged))
+        }
+    };
+
+    Ok(AcyclicObservation {
+        assumed: cx.assumed.clone(),
+        trapped,
+        trap_globals,
+        trap_memory,
+        results,
+        globals: ret_globals,
+        memory: ret_memory,
+    })
 }
 
-/// PR-C (#219) M3: precise FAST PATH for proving `original ≡ optimized` when
-/// BOTH functions are acyclic-CF-modelable (integer, block/if/br/br_if/br_table,
-/// by-body calls, no loops/memory). Encodes both via the precise acyclic
-/// executor (deterministic input names → they unify in Z3) and checks semantic
-/// equivalence (`a == b` has no counterexample). This is what lets the verified
-/// inliner prove a `call F` (with a `br_table` callee) equal to its inlined
-/// body — the case the straight-line by-body modeler (`callee_inlinable_by_body`)
-/// cannot reach.
-///
-/// Returns `Err` if either function is not acyclic-modelable, if a result width
-/// mismatches, or if the encoding fails — the caller then FALLS BACK to the
-/// existing encoder-based `verify_function_equivalence` (no behavior change for
-/// non-acyclic functions; this only ADDS proving power, never removes a check).
+/// The condition under which two observations agree: both trap, leaving the
+/// same globals and memory, or neither traps and both return the same results
+/// with the same globals and memory.
 #[cfg(feature = "verification")]
-#[allow(dead_code)] // wired into inline_functions' verify-or-revert in M3 step 2
+fn acyclic_same(o: &AcyclicObservation, p: &AcyclicObservation) -> Result<Cond> {
+    if o.results.len() != p.results.len()
+        || o.results
+            .iter()
+            .zip(p.results.iter())
+            .any(|(a, b)| a.get_size() != b.get_size())
+        || o.globals.len() != p.globals.len()
+        || o.memory.len() != p.memory.len()
+    {
+        return Err(anyhow!("acyclic verify: result or global shape mismatch"));
+    }
+    // Memories are compared at one fresh address. It is free in the negated
+    // obligation, so a counterexample exists exactly when some byte differs;
+    // this keeps the obligation to select/store terms, without array
+    // extensionality.
+    let at = BV::new_const("observed_address", 32);
+    // Identical terms (the encodings share hash-consed nodes wherever the two
+    // functions do the same thing) need no equality: leaving them out keeps the
+    // obligation to what the transform actually changed.
+    let all_eq = |a: &[BV], b: &[BV], ma: &[Array], mb: &[Array]| {
+        let mut c: Vec<Bool> = a
+            .iter()
+            .zip(b.iter())
+            .filter(|(x, y)| x != y)
+            .map(|(x, y)| x.eq(y))
+            .collect();
+        for (x, y) in ma.iter().zip(mb.iter()) {
+            if x != y {
+                c.push(x.select(&at).eq(y.select(&at)));
+            }
+        }
+        Cond::all(c)
+    };
+    let same_return = all_eq(&o.results, &p.results, &o.memory, &p.memory)
+        .and(&all_eq(&o.globals, &p.globals, &o.memory, &p.memory));
+    let same_trap_state = all_eq(
+        &o.trap_globals,
+        &p.trap_globals,
+        &o.trap_memory,
+        &p.trap_memory,
+    );
+    // (both trap with the same state) or (neither traps and both return the
+    // same).
+    // Same trap condition and same state at the trap: then the only question
+    // is the normal return, and `t or (not t and same)` is `t or same`.
+    let same = if o.trapped.same_as(&p.trapped) && matches!(same_trap_state, Cond::True) {
+        o.trapped.or(&same_return)
+    } else {
+        let both_trap = o.trapped.and(&p.trapped).and(&same_trap_state);
+        let neither = o.trapped.not().and(&p.trapped.not()).and(&same_return);
+        both_trap.or(&neither)
+    };
+    // Hypotheses imply the comparison. Shared hypotheses are the same term,
+    // so they are stated once.
+    let assumed = if o.assumed.same_as(&p.assumed) {
+        o.assumed.clone()
+    } else {
+        o.assumed.and(&p.assumed)
+    };
+    Ok(match same {
+        Cond::True => Cond::True,
+        _ => assumed.not().or(&same),
+    })
+}
+
+/// True when both functions are within what the exact executor models.
+#[cfg(feature = "verification")]
+pub(crate) fn exactly_modelable(original: &Function, optimized: &Function) -> bool {
+    original.signature.results.len() <= 1
+        && is_acyclic_modelable_body(&original.instructions)
+        && is_acyclic_modelable_body(&optimized.instructions)
+}
+
+/// Route an obligation. Bodies within the exact executor are decided by it.
+/// Loop-free bodies outside it are refused: the main encoder approximates
+/// branches and compares neither final memory nor traps, so its acceptance is
+/// not a proof. `None` leaves bodies with loops to the loop verifier.
+#[cfg(feature = "verification")]
+fn exact_route(
+    original: &Function,
+    optimized: &Function,
+    ctx: &VerificationSignatureContext,
+    backend: VerifyBackend,
+) -> Option<Result<bool>> {
+    if exactly_modelable(original, optimized) {
+        return Some(verify_acyclic_equivalence_with_backend(
+            original, optimized, ctx, backend,
+        ));
+    }
+    if contains_any_loop(&original.instructions) || contains_any_loop(&optimized.instructions) {
+        return None;
+    }
+    let culprit = first_unmodelled(&original.instructions)
+        .or_else(|| first_unmodelled(&optimized.instructions))
+        .unwrap_or_else(|| "a multi-result signature".to_string());
+    Some(Err(anyhow!(
+        "outside the exact executor (it does not model {})",
+        culprit
+    )))
+}
+
+/// The first instruction in `body` the exact executor does not admit.
+#[cfg(feature = "verification")]
+fn first_unmodelled(body: &[Instruction]) -> Option<String> {
+    for instr in body {
+        let inner = match instr {
+            Instruction::Block { block_type, body } | Instruction::Loop { block_type, body } => {
+                if acyclic_block_arity(block_type).is_err() {
+                    return Some(format!("{:?}", block_type));
+                }
+                first_unmodelled(body)
+            }
+            Instruction::If {
+                block_type,
+                then_body,
+                else_body,
+            } => {
+                if acyclic_block_arity(block_type).is_err() {
+                    return Some(format!("{:?}", block_type));
+                }
+                first_unmodelled(then_body).or_else(|| first_unmodelled(else_body))
+            }
+            other => (!is_acyclic_modelable_body(std::slice::from_ref(other)))
+                .then(|| format!("{:?}", other)),
+        };
+        if inner.is_some() {
+            return inner;
+        }
+    }
+    None
+}
+
+/// Decide `original ≡ optimized` with the exact acyclic executor: both trap
+/// under the same inputs, leaving the same globals and memory, and otherwise
+/// both return the same results with the same globals and memory.
+///
+/// `Ok(true)` is a proof; `Ok(false)` a counterexample; `Err` means not
+/// decided (unmodelable input, solver unknown), which callers must treat as
+/// not proven.
+#[cfg(all(test, feature = "verification"))]
 pub(crate) fn verify_acyclic_equivalence(
     original: &Function,
     optimized: &Function,
     ctx: &VerificationSignatureContext,
+) -> Result<bool> {
+    verify_acyclic_equivalence_with_backend(original, optimized, ctx, VerifyBackend::from_env())
+}
+
+#[cfg(feature = "verification")]
+fn verify_acyclic_equivalence_with_backend(
+    original: &Function,
+    optimized: &Function,
+    ctx: &VerificationSignatureContext,
+    backend: VerifyBackend,
 ) -> Result<bool> {
     if original.signature.params != optimized.signature.params
         || original.signature.results != optimized.signature.results
     {
         return Err(anyhow!("acyclic verify: signature changed"));
     }
-    // Only handle the precise acyclic case; anything else → caller falls back.
-    if !is_acyclic_modelable_body(&original.instructions)
-        || !is_acyclic_modelable_body(&optimized.instructions)
-    {
+    if !exactly_modelable(original, optimized) {
         return Err(anyhow!("acyclic verify: not acyclic-modelable"));
     }
 
-    // #313 Tier-2 slice 1: which engine decides a routable obligation.
-    let backend = VerifyBackend::from_env();
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
-        let solver = Solver::new();
-        let orig_result = encode_acyclic_function(original, ctx);
-        let opt_result = encode_acyclic_function(optimized, ctx);
-        match (&orig_result, &opt_result) {
-            (Ok(Some(orig)), Ok(Some(opt))) => {
-                // loom#145 soundness boundary: never width-match the final
-                // equality — a width mismatch is a model artifact we cannot
-                // soundly resolve, so bail to "not proven" and let the caller
-                // fall back / revert.
-                if orig.get_size() != opt.get_size() {
-                    return Err(anyhow!("acyclic verify: result width mismatch"));
-                }
+        let by_body = callees_to_model_by_body(original, optimized);
+        let o = encode_acyclic_function(original, ctx, &by_body)?;
+        let p = encode_acyclic_function(optimized, ctx, &by_body)?;
+        let same = match acyclic_same(&o, &p)? {
+            Cond::True => return Ok(true),
+            Cond::False => {
+                revert_note(format_args!(
+                    "exact verify: the two functions differ on every input"
+                ));
+                return Ok(false);
+            }
+            Cond::B(b) => b,
+        };
 
-                // #313 Tier-2 slice 1: offer the obligation to the neutral
-                // seam. Under the default backend this ALWAYS defers, and the
-                // incumbent path below runs byte-identically to before.
-                if let SeamOutcome::Decided(verdict) =
-                    verify_solver::decide_bv_equivalence(orig, opt, backend)
-                {
+        // Offer the obligation to the configured engine first, as one bit.
+        let lhs = same.ite(&BV::from_u64(1, 1), &BV::from_u64(0, 1));
+        let rhs = BV::from_u64(1, 1);
+        let deferred =
+            match verify_solver::decide_bv_equivalence_traps_modelled(&lhs, &rhs, backend) {
+                SeamOutcome::Decided(verdict) => {
                     return match verdict {
                         RuleVerdict::Proven => Ok(true),
-                        RuleVerdict::Disproven(_) => Ok(false),
-                        // Same outcome `SatResult::Unknown` produces here.
-                        RuleVerdict::Unknown => {
-                            Err(anyhow!("acyclic verify: solver unknown (timeout)"))
+                        RuleVerdict::Disproven(model) => {
+                            revert_note(format_args!("exact verify: counterexample: {}", model));
+                            Ok(false)
                         }
+                        RuleVerdict::Unknown => Err(anyhow!("acyclic verify: solver unknown")),
                     };
                 }
+                SeamOutcome::Deferred(reason) => reason,
+            };
+        if backend == VerifyBackend::Ordeal {
+            return Err(anyhow!(
+                "acyclic verify: the new engine deferred this obligation ({:?})",
+                deferred
+            ));
+        }
 
-                solver.assert(orig.eq(opt).not());
-                match solver.check() {
-                    SatResult::Unsat => Ok(true),
-                    SatResult::Sat => Ok(false),
-                    SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
+        let solver = Solver::new();
+        solver.assert(same.not());
+        match solver.check() {
+            SatResult::Unsat => Ok(true),
+            SatResult::Sat => {
+                if let Some(model) = solver.get_model() {
+                    revert_note(format_args!("exact verify: counterexample: {}", model));
                 }
+                Ok(false)
             }
-            // Both void: no return value to compare. The acyclic executor does
-            // not yet model side-effect (global/memory) equivalence for void
-            // functions, so defer to the existing verifier — signal fall-back.
-            (Ok(None), Ok(None)) => Err(anyhow!("acyclic verify: void — defer to fallback")),
-            (Err(e), _) => Err(anyhow!("acyclic verify: encode original: {}", e)),
-            (_, Err(e)) => Err(anyhow!("acyclic verify: encode optimized: {}", e)),
-            _ => Err(anyhow!("acyclic verify: return-type mismatch")),
+            SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
         }
     })
 }
@@ -9311,9 +10709,11 @@ mod tests {
     /// The control: the unchanged body still verifies.
     #[test]
     fn unchanged_global_writes_are_accepted() {
-        let orig = only_func(IF_THEN_SET);
+        let module = parse::parse_wat(IF_THEN_SET).unwrap();
+        let orig = module.functions[0].clone();
+        let ctx = VerificationSignatureContext::from_module(&module);
         assert!(
-            TranslationValidator::new(&orig, "test")
+            TranslationValidator::new_with_context(&orig, "test", ctx)
                 .verify(&orig)
                 .is_ok()
         );
@@ -9368,21 +10768,19 @@ mod tests {
         let cfg = z3_config_with_timeout();
         with_z3_config(&cfg, || {
             let solver = Solver::new();
-            let ra = encode_acyclic_function(fa, &ctx_a)?;
-            let rb = encode_acyclic_function(fb, &ctx_b)?;
-            match (ra, rb) {
-                (Some(a), Some(b)) => {
-                    if a.get_size() != b.get_size() {
-                        return Ok(false);
-                    }
-                    solver.assert(a.eq(&b).not());
-                    match solver.check() {
-                        SatResult::Unsat => Ok(true),
-                        SatResult::Sat => Ok(false),
-                        SatResult::Unknown => Err(anyhow!("solver unknown")),
-                    }
-                }
-                _ => Err(anyhow!("void/encode mismatch")),
+            let by_body = callees_to_model_by_body(fa, fb);
+            let ra = encode_acyclic_function(fa, &ctx_a, &by_body)?;
+            let rb = encode_acyclic_function(fb, &ctx_b, &by_body)?;
+            let same = match acyclic_same(&ra, &rb)? {
+                Cond::True => return Ok(true),
+                Cond::False => return Ok(false),
+                Cond::B(b) => b,
+            };
+            solver.assert(same.not());
+            match solver.check() {
+                SatResult::Unsat => Ok(true),
+                SatResult::Sat => Ok(false),
+                SatResult::Unknown => Err(anyhow!("solver unknown")),
             }
         })
     }
@@ -9549,8 +10947,7 @@ mod tests {
     #[test]
     #[cfg(feature = "verification")]
     fn test_acyclic_noreturn_call_diverges() {
-        // func 0 = panic (no params, unreachable); func 1 = g: if arg!=0 return 7
-        // else call panic (diverge). func 1 should equal "always return 7".
+        // func 0 = panic (unreachable); func 1 returns 7 or traps through it.
         let with_trap = r#"
             (module
                 (func unreachable)
@@ -9562,11 +10959,23 @@ mod tests {
                         call 0
                         i32.const 7
                     end))"#;
+        let inlined = r#"
+            (module (func (param i32) (result i32)
+                local.get 0
+                if (result i32)
+                    i32.const 7
+                else
+                    unreachable
+                end))"#;
         let always7 = r#"
             (module (func (param i32) (result i32) i32.const 7))"#;
         assert!(
-            acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
-            "no-return call path must diverge (drop out), leaving only the return-7 path"
+            acyclic_equiv_at(with_trap, 1, inlined, 0).unwrap(),
+            "the call to a trapping function equals its inlined trap"
+        );
+        assert!(
+            !acyclic_equiv_at(with_trap, 1, always7, 0).unwrap(),
+            "a trap is observable: removing it is not equivalent"
         );
     }
 
@@ -9584,10 +10993,22 @@ mod tests {
                 else
                     unreachable
                 end))"#;
+        let guard_first = r#"
+            (module (func (param i32) (result i32)
+                local.get 0
+                i32.eqz
+                if
+                    unreachable
+                end
+                i32.const 7))"#;
         let always7 = r#"(module (func (param i32) (result i32) i32.const 7))"#;
         assert!(
-            acyclic_equiv(with_trap, always7).unwrap(),
-            "the unreachable (trap) path must diverge, leaving only the return-7 path"
+            acyclic_equiv(with_trap, guard_first).unwrap(),
+            "the same trap condition in another shape is equivalent"
+        );
+        assert!(
+            !acyclic_equiv(with_trap, always7).unwrap(),
+            "a trap is observable: removing it is not equivalent"
         );
     }
 
@@ -9612,6 +11033,27 @@ mod tests {
                     end
                     i32.const 100
                     i32.load))"#;
+        // Same stores, the load folded through the per-branch merge.
+        let folded = r#"
+            (module (memory 1)
+                (func (param i32) (result i32)
+                    local.get 0
+                    if
+                        i32.const 100
+                        i32.const 5
+                        i32.store
+                    else
+                        i32.const 100
+                        i32.const 6
+                        i32.store
+                    end
+                    local.get 0
+                    if (result i32)
+                        i32.const 5
+                    else
+                        i32.const 6
+                    end))"#;
+        // Same result, but the stores are gone: memory differs.
         let direct = r#"
             (module (memory 1)
                 (func (param i32) (result i32)
@@ -9622,8 +11064,12 @@ mod tests {
                         i32.const 6
                     end))"#;
         assert!(
-            acyclic_equiv(with_mem, direct).unwrap(),
-            "store-on-each-branch then load must merge memory (ite) → loaded value matches"
+            acyclic_equiv(with_mem, folded).unwrap(),
+            "store-on-each-branch then load must merge memory, so the load folds"
+        );
+        assert!(
+            !acyclic_equiv(with_mem, direct).unwrap(),
+            "dropping the stores changes memory"
         );
     }
 
@@ -10423,8 +11869,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_data_drop_noop() {
-        // Test that data.drop has no effect on verification.
+    fn test_verify_data_drop_is_refused() {
         // Original: data.drop 0; return 42
         // Optimized: data.drop 0; return 42
         let original_wat = r#"
@@ -10452,15 +11897,14 @@ mod tests {
         let original = parse::parse_wat(original_wat).unwrap();
         let optimized = parse::parse_wat(optimized_wat).unwrap();
 
+        // data.drop changes state a later memory.init observes (the segment
+        // becomes empty), and the validator does not model that state, so a
+        // body containing it is refused rather than called equivalent.
         let result = verify_optimization(&original, &optimized);
         assert!(
-            result.is_ok(),
-            "Verification of data.drop failed: {:?}",
+            result.is_err(),
+            "a body with data.drop must not be reported verified: {:?}",
             result
-        );
-        assert!(
-            result.unwrap(),
-            "data.drop should have no effect on verification"
         );
     }
 
@@ -10700,6 +12144,9 @@ mod tests {
     /// `x << 2` — NOT equivalent to `x * 2`.
     #[cfg(feature = "verification")]
     const SHL2: &str = "(module (func (param i32) (result i32) local.get 0 i32.const 2 i32.shl))";
+    /// `(x * 2) | 0` — equivalent to `x * 2`, but not the same term.
+    #[cfg(feature = "verification")]
+    const MUL2_OR0: &str = "(module (func (param i32) (result i32) local.get 0 i32.const 2 i32.mul i32.const 0 i32.or))";
 
     #[cfg(feature = "verification")]
     #[test]
@@ -10730,10 +12177,11 @@ mod tests {
         // (Ite over a comparison) and an i64 sign-extension must route too.
         let ifelse_a = "(module (func (param i32) (result i32) local.get 0 i32.eqz \
                         if (result i32) i32.const 10 else i32.const 20 end))";
-        let ifelse_b = "(module (func (param i32) (result i32) local.get 0 i32.const 0 i32.eq \
+        let ifelse_b = "(module (func (param i32) (result i32) local.get 0 i32.const 1 i32.lt_u \
                         if (result i32) i32.const 10 else i32.const 20 end))";
         let ext_a = "(module (func (param i32) (result i64) local.get 0 i64.extend_i32_s))";
-        let ext_b = "(module (func (param i32) (result i64) local.get 0 i64.extend_i32_s))";
+        let ext_b = "(module (func (param i32) (result i64) local.get 0 i64.extend_i32_s \
+                     i64.const 0 i64.or))";
         for (wa, wb) in [(ifelse_a, ifelse_b), (ext_a, ext_b)] {
             let (a, b) = func_pair(wa, wb);
             verify_solver::reset_route_counts();
@@ -10777,7 +12225,9 @@ mod tests {
         // reflection, the identical-AST round trip, and the extended
         // lowering. A hand-built term would not test that.
         let load = "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load))";
-        let (a, b) = func_pair(load, load);
+        // Not the identical body: identical terms are equal without a solver.
+        let load_or0 = "(module (memory 1) (func (param i32) (result i32) local.get 0 i32.load i32.const 0 i32.or))";
+        let (a, b) = func_pair(load, load_or0);
         verify_solver::reset_route_counts();
         let proved =
             verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
@@ -10854,16 +12304,20 @@ mod tests {
 
     /// The kill-criterion: over the bound, an obligation the new engine
     /// defers is refused, never handed to Z3. Z3's array theory is the cost
-    /// #347 bounds, so a fallback here would bring back the hang. A division
-    /// under an `if` is deferred by the new engine (TrapUnderConditional) and
-    /// would be decided by Z3; the refusal text shows the deferral path ran.
+    /// #347 bounds, so a fallback here would bring back the hang. The memory
+    /// after `memory.fill` is an uninterpreted array, which the new engine
+    /// does not take; the refusal text shows the deferral path ran.
     #[cfg(feature = "verification")]
     #[test]
     fn over_the_memory_bound_a_deferred_obligation_is_refused_without_z3() {
-        let div = "local.get 1 if (result i32) local.get 1 local.get 0 i32.div_u \
-                   else i32.const 0 end";
-        let a = over_memory_bound("(result i32)", "", div);
-        let err = validate(&a, &a)
+        let fill = "local.get 0 i32.const 0 i32.const 4 memory.fill";
+        let a = over_memory_bound("(result i32)", fill, "local.get 0 i32.load");
+        let b = over_memory_bound(
+            "(result i32)",
+            fill,
+            "local.get 0 i32.load i32.const 0 i32.or",
+        );
+        let err = validate(&a, &b)
             .expect_err("deferred over the bound")
             .to_string();
         assert!(err.contains("(#347)"), "{err}");
@@ -10873,29 +12327,42 @@ mod tests {
         );
     }
 
-    /// A void body has no return value, so there is no obligation to prove.
-    /// Below the bound the validator accepts it; over the bound that would
-    /// turn a refusal into an unproven acceptance.
+    /// A void body is compared on its globals and memory, over the bound as
+    /// below it: dropping a store is refused, an unchanged body accepted.
     #[cfg(feature = "verification")]
     #[test]
-    fn over_the_memory_bound_a_void_body_is_refused() {
-        let a = over_memory_bound("", "", "");
-        let err = validate(&a, &a).expect_err("nothing to prove").to_string();
+    fn over_the_memory_bound_a_void_body_is_compared() {
+        let a = over_memory_bound("", "local.get 0 i32.const 9 i32.store offset=12", "");
+        let b = over_memory_bound("", "", "");
+        let err = validate(&a, &b)
+            .expect_err("a dropped store changes memory")
+            .to_string();
         assert!(err.contains("(#347)"), "{err}");
-        assert!(err.contains("void"), "{err}");
+        assert!(
+            validate(&a, &a).is_ok(),
+            "an unchanged void body is accepted"
+        );
     }
 
-    /// Float memory access is outside the verifier's model. Below the bound it
-    /// is kept unproven; over the bound it must stay refused.
+    /// An instruction outside the executor (`data.drop`) is refused over the
+    /// bound, as below it.
     #[cfg(feature = "verification")]
     #[test]
     fn over_the_memory_bound_an_unverifiable_body_is_refused() {
-        let a = over_memory_bound("(result i32)", "local.get 0 f32.load drop", "local.get 1");
-        let err = validate(&a, &a)
-            .expect_err("float load is unverifiable")
+        let with_data = |result: &str| {
+            over_memory_bound("(result i32)", "data.drop 0", result).replacen(
+                "(memory 1)",
+                "(memory 1) (data \"x\")",
+                1,
+            )
+        };
+        let a = with_data("local.get 1");
+        let b = with_data("local.get 1 i32.const 0 i32.or");
+        let err = validate(&a, &b)
+            .expect_err("data.drop is not modelled")
             .to_string();
         assert!(err.contains("(#347)"), "{err}");
-        assert!(err.contains("unverifiable"), "{err}");
+        assert!(err.contains("outside the exact executor"), "{err}");
     }
 
     /// A loop too large for bounded unrolling goes through K-induction, as it
@@ -10932,7 +12399,11 @@ mod tests {
         let store_load = "(module (memory 1) (func (param i32) (param i32) (result i32) \
                           local.get 0 local.get 1 i32.store \
                           local.get 0 i32.load))";
-        let (a, b) = func_pair(store_load, store_load);
+        // Not the identical body: identical terms are equal without a solver.
+        let store_load_or0 = "(module (memory 1) (func (param i32) (param i32) (result i32) \
+                              local.get 0 local.get 1 i32.store \
+                              local.get 0 i32.load i32.const 0 i32.or))";
+        let (a, b) = func_pair(store_load, store_load_or0);
         verify_solver::reset_route_counts();
         let proved =
             verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
@@ -10992,7 +12463,10 @@ mod tests {
         // is the part a hand-built term cannot test.
         let div = "(module (func (param i32) (param i32) (result i32) \
                    local.get 0 local.get 1 i32.div_u))";
-        let (a, b) = func_pair(div, div);
+        // Not the identical body: identical terms are equal without a solver.
+        let div_or0 = "(module (func (param i32) (param i32) (result i32) \
+                       local.get 0 local.get 1 i32.div_u i32.const 0 i32.or))";
+        let (a, b) = func_pair(div, div_or0);
         verify_solver::reset_route_counts();
         let proved =
             verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
@@ -11033,7 +12507,13 @@ mod tests {
                 "(module (func (param {ty}) (param {ty}) (result {ty}) \
                  local.get 0 local.get 1 {op}))"
             );
-            let (a, b) = func_pair(&src, &src);
+            // Not the identical body: identical terms are equal without a
+            // solver.
+            let src_or0 = format!(
+                "(module (func (param {ty}) (param {ty}) (result {ty}) \
+                 local.get 0 local.get 1 {op} {ty}.const 0 {ty}.or))"
+            );
+            let (a, b) = func_pair(&src, &src_or0);
             verify_solver::reset_route_counts();
             let proved =
                 verify_function_equivalence_with_backend(&a, &b, "test", VerifyBackend::Ordeal)
@@ -11066,9 +12546,9 @@ mod tests {
     #[test]
     fn tier2_slice1_routes_obligations_from_the_real_corpus() {
         // Reachability asserted on REAL WebAssembly rather than hand-written
-        // fragments. Each function is offered against itself, which produces
-        // exactly the obligation the validator builds during a pass — same
-        // encoder, same term shapes. If a future Z3 or encoder change alters
+        // fragments. Each function is offered against a copy whose result is
+        // or-ed with 0: the same encoder and term shapes as a pass produces,
+        // without being the identical term (which needs no solver). If a future Z3 or encoder change alters
         // those shapes so the reflection stops matching, this goes red instead
         // of silently leaving every obligation on the incumbent.
         let corpus = [
@@ -11087,9 +12567,23 @@ mod tests {
             let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {}", path, e));
             let m = crate::parse::parse_wasm(&bytes).unwrap_or_else(|e| panic!("{}: {}", path, e));
             for f in &m.functions {
+                let mut g = f.clone();
+                match f.signature.results.as_slice() {
+                    [crate::ValueType::I32] => g
+                        .instructions
+                        .extend([Instruction::I32Const(0), Instruction::I32Or]),
+                    [crate::ValueType::I64] => g
+                        .instructions
+                        .extend([Instruction::I64Const(0), Instruction::I64Or]),
+                    _ => continue,
+                }
                 verify_solver::reset_route_counts();
-                let _ =
-                    verify_function_equivalence_with_backend(f, f, "corpus", VerifyBackend::Ordeal);
+                let _ = verify_function_equivalence_with_backend(
+                    f,
+                    &g,
+                    "corpus",
+                    VerifyBackend::Ordeal,
+                );
                 let (r, d) = verify_solver::route_counts();
                 routed += r;
                 deferred += d;
@@ -11299,7 +12793,9 @@ mod tests {
         let cases: &[(&str, &str, bool)] = &[
             (MUL2, SHL1, true),
             (MUL2, SHL2, false),
-            (MUL2, MUL2, true),
+            // Syntactically identical results need no solver, so the
+            // self-comparison is `x * 2` against `(x * 2) | 0`.
+            (MUL2, MUL2_OR0, true),
             (
                 "(module (func (param i32) (param i32) (result i32) \
                  local.get 0 local.get 1 i32.and))",

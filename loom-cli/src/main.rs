@@ -1109,7 +1109,9 @@ fn run_verification(original: &loom_core::Module, optimized: &loom_core::Module)
         println!("🔬 Running Z3 SMT verification...");
         match loom_core::verify::verify_optimization(original, optimized) {
             Ok(true) => {
-                println!("  ✅ Z3 verification passed: optimizations are semantically equivalent");
+                println!(
+                    "  ✅ Z3 check passed: every function proven equivalent (return values, globals, memory, traps)"
+                );
             }
             Ok(false) => {
                 println!("  ❌ Z3 verification failed: counterexample found");

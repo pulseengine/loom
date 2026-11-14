@@ -7684,6 +7684,8 @@ pub mod optimize {
     /// 2. Removes unused drops (i32.const; drop)
     /// 3. Removes dead local.set operations
     pub fn eliminate_dead_code(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -7706,7 +7708,11 @@ pub mod optimize {
             let guard = ValidationGuard::with_context(func, "eliminate_dead_code", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
-            let translator = TranslationValidator::new(func, "eliminate_dead_code");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "eliminate_dead_code",
+                verify_ctx.clone(),
+            );
 
             // Pass 1: Remove unreachable code
             func.instructions = eliminate_dead_code_in_block(&func.instructions);
@@ -7891,6 +7897,8 @@ pub mod optimize {
     /// Branch Simplification (Phase 15 - Issue #16)
     /// Simplifies control flow by removing redundant branches and folding constant conditions
     pub fn simplify_branches(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -7903,7 +7911,11 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "simplify_branches", ctx.clone());
-            let translator = TranslationValidator::new(func, "simplify_branches");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "simplify_branches",
+                verify_ctx.clone(),
+            );
 
             func.instructions = simplify_branches_in_block(&func.instructions);
 
@@ -8020,6 +8032,8 @@ pub mod optimize {
     /// Block Merging (Phase 16 - Issue #17)
     /// Merges nested blocks to reduce CFG complexity and improve code locality
     pub fn merge_blocks(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -8032,7 +8046,8 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "merge_blocks", ctx.clone());
-            let translator = TranslationValidator::new(func, "merge_blocks");
+            let translator =
+                TranslationValidator::new_with_context(func, "merge_blocks", verify_ctx.clone());
 
             func.instructions = merge_blocks_in_instructions(&func.instructions);
 
@@ -8476,6 +8491,8 @@ pub mod optimize {
     /// validated by Z3 translation. Place early in the pipeline so
     /// subsequent passes see canonical forms.
     pub fn canonicalize(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -8487,7 +8504,8 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "canonicalize", ctx.clone());
-            let translator = TranslationValidator::new(func, "canonicalize");
+            let translator =
+                TranslationValidator::new_with_context(func, "canonicalize", verify_ctx.clone());
             let original_instructions = func.instructions.clone();
 
             // Apply both rewrites. Tee normalization first (peephole),
@@ -9026,6 +9044,8 @@ pub mod optimize {
     /// Vacuum Cleanup Pass (Phase 17 - Issue #20)
     /// Final cleanup pass that removes nops, unwraps trivial blocks, and simplifies degenerate patterns
     pub fn vacuum(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -9078,7 +9098,8 @@ pub mod optimize {
             let guard = ValidationGuard::with_context(func, "vacuum", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
-            let translator = TranslationValidator::new(func, "vacuum");
+            let translator =
+                TranslationValidator::new_with_context(func, "vacuum", verify_ctx.clone());
 
             // Apply vacuum transformation (passes summaries through so the
             // const+drop peephole can also fold pure+no-trap Call;Drop pairs).
@@ -9426,6 +9447,8 @@ pub mod optimize {
     ///
     /// This runs iteratively until a fixed point is reached.
     pub fn simplify_locals(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -9460,7 +9483,8 @@ pub mod optimize {
             let guard = ValidationGuard::with_context(func, "simplify_locals", ctx.clone());
 
             // Capture original for translation validation and rollback
-            let translator = TranslationValidator::new(func, "simplify_locals");
+            let translator =
+                TranslationValidator::new_with_context(func, "simplify_locals", verify_ctx.clone());
             let original_instructions = func.instructions.clone();
 
             let mut changed = true;
@@ -10825,6 +10849,8 @@ pub mod optimize {
     /// - Enables further optimizations
     /// - Expected: 5-10% binary size reduction
     pub fn code_folding(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -10845,7 +10871,8 @@ pub mod optimize {
             let guard = ValidationGuard::with_context(func, "code_folding", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
-            let translator = TranslationValidator::new(func, "code_folding");
+            let translator =
+                TranslationValidator::new_with_context(func, "code_folding", verify_ctx.clone());
 
             let mut changed = true;
             let mut iterations = 0;
@@ -11213,6 +11240,8 @@ pub mod optimize {
     /// - Can enable further optimizations
     /// - Expected: 3-8% performance improvement
     pub fn loop_invariant_code_motion(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -11239,7 +11268,11 @@ pub mod optimize {
                 ValidationGuard::with_context(func, "loop_invariant_code_motion", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
-            let translator = TranslationValidator::new(func, "loop_invariant_code_motion");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "loop_invariant_code_motion",
+                verify_ctx.clone(),
+            );
 
             // Phase 1: Consecutive hoisting from loop start (existing behavior)
             let mut changed = true;
@@ -11966,6 +11999,8 @@ pub mod optimize {
     /// - Cleaner control flow
     /// - Expected: 1-2% binary size reduction
     pub fn remove_unused_branches(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -11988,7 +12023,11 @@ pub mod optimize {
             let guard = ValidationGuard::with_context(func, "remove_unused_branches", ctx.clone());
 
             // Capture original for translation validation (Z3 proof of semantic equivalence)
-            let translator = TranslationValidator::new(func, "remove_unused_branches");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "remove_unused_branches",
+                verify_ctx.clone(),
+            );
 
             let mut changed = true;
             let mut iterations = 0;
@@ -12088,6 +12127,8 @@ pub mod optimize {
     /// - Simpler constant handling
     /// - Expected: 1-2% code size reduction
     pub fn optimize_added_constants(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -12106,7 +12147,11 @@ pub mod optimize {
 
             let guard =
                 ValidationGuard::with_context(func, "optimize_added_constants", ctx.clone());
-            let translator = TranslationValidator::new(func, "optimize_added_constants");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "optimize_added_constants",
+                verify_ctx.clone(),
+            );
 
             let mut changed = true;
             let mut iterations = 0;
@@ -12243,6 +12288,8 @@ pub mod optimize {
     /// - Lower indices use smaller LEB128 encoding
     /// - Expected: 10-15% binary size reduction
     pub fn coalesce_locals(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::verify::TranslationValidator;
 
         for func in &mut module.functions {
@@ -12266,7 +12313,8 @@ pub mod optimize {
             }
 
             // Capture original for Z3 verification and rollback
-            let translator = TranslationValidator::new(func, "coalesce_locals");
+            let translator =
+                TranslationValidator::new_with_context(func, "coalesce_locals", verify_ctx.clone());
             let original_instructions = func.instructions.clone();
             let original_locals = func.locals.clone();
 
@@ -12367,6 +12415,8 @@ pub mod optimize {
     ///    declarations from surviving types.
     /// 6. Z3 translation-validation: revert on rejection.
     pub fn eliminate_dead_locals(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
         use std::collections::{BTreeMap, BTreeSet};
@@ -12403,7 +12453,11 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "eliminate_dead_locals", ctx.clone());
-            let translator = TranslationValidator::new(func, "eliminate_dead_locals");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "eliminate_dead_locals",
+                verify_ctx.clone(),
+            );
             let original_instructions = func.instructions.clone();
             let original_locals = func.locals.clone();
 
@@ -12599,6 +12653,8 @@ pub mod optimize {
     /// locals with zero remaining reads (if all their writes were dead);
     /// running these passes in sequence amplifies their effect.
     pub fn eliminate_dead_stores(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
 
@@ -12641,7 +12697,11 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "eliminate_dead_stores", ctx.clone());
-            let translator = TranslationValidator::new(func, "eliminate_dead_stores");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "eliminate_dead_stores",
+                verify_ctx.clone(),
+            );
             let original_instructions = func.instructions.clone();
 
             // Step 3: apply — walk forward, replace dead writes by ID.
@@ -13255,6 +13315,8 @@ pub mod optimize {
     ///
     /// Propagates immutable global constants throughout the module.
     pub fn precompute(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use std::collections::BTreeMap;
 
         // Phase 1: Analyze globals to find constants
@@ -13288,7 +13350,8 @@ pub mod optimize {
         use crate::verify::TranslationValidator;
 
         for func in &mut module.functions {
-            let translator = TranslationValidator::new(func, "precompute");
+            let translator =
+                TranslationValidator::new_with_context(func, "precompute", verify_ctx.clone());
 
             func.instructions =
                 propagate_global_constants_in_instructions(&func.instructions, &global_constants);
@@ -13372,6 +13435,8 @@ pub mod optimize {
     /// - `optimize_advanced_instructions()` (algebraic simplifications, strength reduction)
     /// - Self-operation optimizations (x-x→0, x^x→0, etc.)
     pub fn eliminate_common_subexpressions(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
         use std::collections::BTreeMap;
@@ -13394,7 +13459,11 @@ pub mod optimize {
 
             let guard =
                 ValidationGuard::with_context(func, "eliminate_common_subexpressions", ctx.clone());
-            let translator = TranslationValidator::new(func, "eliminate_common_subexpressions");
+            let translator = TranslationValidator::new_with_context(
+                func,
+                "eliminate_common_subexpressions",
+                verify_ctx.clone(),
+            );
 
             // Phase 1: Find all expression patterns (binary ops with 3-instruction sequences)
             let patterns = find_expression_patterns(&func.instructions);
@@ -15594,6 +15663,8 @@ pub mod optimize {
     /// - Nested blocks with compatible types → flattened
     /// - Empty blocks → removed
     pub fn fold_code(module: &mut Module) -> Result<()> {
+        // Global types and callee signatures for the validator.
+        let verify_ctx = crate::verify::VerificationSignatureContext::from_module(module);
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
         use std::collections::HashMap;
@@ -15607,7 +15678,8 @@ pub mod optimize {
             }
 
             let guard = ValidationGuard::with_context(func, "fold_code", ctx.clone());
-            let translator = TranslationValidator::new(func, "fold_code");
+            let translator =
+                TranslationValidator::new_with_context(func, "fold_code", verify_ctx.clone());
 
             // Phase 1: Analyze local variable usage
             let mut usage = HashMap::new();
@@ -16982,11 +17054,11 @@ mod tests {
         let wat = r#"
             (module
               (func $test (result i32)
-                (block $exit (result i32)
+                (block $exit
                   (i32.const 0)
                   (br_if $exit)
-                  (i32.const 42)
                 )
+                (i32.const 42)
               )
             )
         "#;

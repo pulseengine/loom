@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Translation validation decides every loop-free function with one exact
+  model of its control flow and state, for every pass. It compares return
+  values, globals, every linear memory and its size, and traps together with
+  the globals and memory they leave behind. It models `br_if` and `br_table`
+  (including carried values), early `return`, conditional stores, aliasing
+  loads and stores, calls (callees whose call count changed are executed by
+  body; other calls are functions of their position, arguments, globals and
+  memories), `call_indirect` (resolved when the slot is a known constant),
+  bulk memory, `memory.size`/`memory.grow`, multiple memories, i64 globals,
+  float operations and the remaining integer operations. Before, the main
+  encoder approximated branches, did not carry memory into `block`/`if`
+  bodies, compared neither memory nor traps, skipped functions that use a
+  second memory, and gave the results of unmodelled operations shared names,
+  so different operands could compare equal.
+- A loop-free function the model does not cover (`data.drop`, shared or
+  64-bit memories, multi-value blocks) is no longer changed. Functions with
+  loops still go through the loop verifier, which compares less; `--stats`
+  lists those acceptances as kept without a proof.
+- `--stats` counts an accepted transform as proven only when the exact model
+  decided it.
+- `LOOM_VERIFY_BACKEND=both`: when one engine returns unknown and the other
+  decides, the obligation is reported as unknown instead of failing as a
+  solver disagreement. Only proven against disproven is a disagreement.
+- The README, the `--verify` output and the docs say what is compared.
+
+### Fixed
+
+- Shift amounts were not reduced modulo the width in the validator's model,
+  and every global was modelled as 32 bits.
+
 ## [1.5.3] - 2026-11-14
 
 Shipped-binary changes since 1.5.2: #506 (fixes for #503 and #504), #510
