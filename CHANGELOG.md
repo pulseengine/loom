@@ -7,18 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-11-14
+
+Shipped-binary changes since 1.5.2: #506 (fixes for #503 and #504), #510
+(fixes for #508 and #509), #505 and #501 (fused passes removed). #497, #500
+and #502 change proofs and CI.
+
 ### Fixed
 
 - Inlining a callee with an early `return` (or a branch to its own function
-  label) made that exit leave the caller. A saturating add called in a loop
+  label) made that exit leave the caller (#508). A saturating add called in a loop
   ended the loop on its first overflow: `scan(100)` returned 2147483647
   instead of 19. The inlined body now gets its own block when it can exit
   early, and `return` branches to it.
 - `dead-stores` could remove a live store in one arm of an `if`/`else` and
   keep a dead one in the other: its liveness walk numbered the stores in the
   opposite order to the pass that removes them. A function storing 7 in the
-  `else` arm returned 0.
-
+  `else` arm returned 0 (#509).
 - A result-less `if` (likewise a void `block`, `loop`, call, `br_if`, `drop`
   or `nop`) followed by a store could be moved after that store (#503). On
   `if (x) { g = 7 }; g = 3`, `f(1)` left `g` at 7 instead of 3, and the
@@ -65,6 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Function body deduplication (fused Pass 1.2) is proven against the same
   semantics (`body_dedup_correct`): redirecting calls from a defined function
   to one with the same signature, locals and body preserves every function.
+- Every Rocq library is re-checked with `rocqchk`, and the trusted
+  declarations are ratcheted (#497).
+
+### CI
+
+- A `Verify-Filter:` line in a PR body widens the verification gate's
+  default artifact set instead of replacing it (#510).
 
 ## [1.5.2] - 2026-11-11
 
