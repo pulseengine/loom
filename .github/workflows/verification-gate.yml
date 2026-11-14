@@ -149,10 +149,11 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          # Default: every TEST-* feature artifact tagged for the current
-          # release milestone (v100 for v1.0.x). PRs may override by adding
-          # a single line to the body:
+          # Default: every TEST-* feature artifact. A PR may WIDEN the set by
+          # adding a single line to the body:
           #     Verify-Filter: (and (= type "feature") (has-tag "v101"))
+          # The override is OR-ed with the default, never substituted for it,
+          # so a PR body cannot narrow the gate below the default set.
           # Default scope is intentionally narrow — running every
           # `(= type "feature")` artifact would re-run dozens of `cargo test`
           # invocations and blow the 30-minute job timeout.
@@ -161,7 +162,7 @@ jobs:
           DEFAULT='(and (= type "feature") (matches id "^TEST-"))'
           OVERRIDE=$(printf '%s' "$PR_BODY" | grep -m1 -E '^Verify-Filter:' | sed 's/^Verify-Filter:[[:space:]]*//' || true)
           if [ -n "${OVERRIDE:-}" ]; then
-            printf 'filter=%s\n' "$OVERRIDE" >>"$GITHUB_OUTPUT"
+            printf 'filter=(or %s %s)\n' "$DEFAULT" "$OVERRIDE" >>"$GITHUB_OUTPUT"
           else
             printf 'filter=%s\n' "$DEFAULT" >>"$GITHUB_OUTPUT"
           fi

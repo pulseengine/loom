@@ -12848,8 +12848,13 @@ pub mod optimize {
                         // Both arms see the same live-after-if.
                         // If's label targets the END of the if (live-after).
                         label_stack.push(live.clone());
-                        let then_live_in = self.walk(then_body, live.clone(), label_stack);
+                        // Write IDs count DOWN as this walk meets writes and
+                        // are applied in forward order, `then` before `else`.
+                        // Walking backward therefore has to meet the `else`
+                        // arm's writes first; the other order gives one arm's
+                        // verdicts to the other arm's writes.
                         let else_live_in = self.walk(else_body, live.clone(), label_stack);
+                        let then_live_in = self.walk(then_body, live.clone(), label_stack);
                         label_stack.pop();
 
                         // live-before-if = live-in-then ∪ live-in-else
@@ -15198,6 +15203,61 @@ pub mod optimize {
     }
 
     /// Inline function calls in a block of instructions
+    /// Whether `body` (nested `depth` labels inside the function body) can
+    /// leave the function: a `return`, or a branch whose depth reaches past
+    /// every enclosing label to the function's own.
+    fn inline_body_escapes(body: &[Instruction], depth: u32) -> bool {
+        body.iter().any(|i| match i {
+            Instruction::Return => true,
+            Instruction::Br(d) | Instruction::BrIf(d) => *d >= depth,
+            Instruction::BrTable { targets, default } => {
+                *default >= depth || targets.iter().any(|t| *t >= depth)
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                inline_body_escapes(body, depth + 1)
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                inline_body_escapes(then_body, depth + 1)
+                    || inline_body_escapes(else_body, depth + 1)
+            }
+            _ => false,
+        })
+    }
+
+    /// Rewrite the exits of an inlined body that is about to be wrapped in one
+    /// block: `return` becomes a branch to that block. Branches to the
+    /// callee's function label already have the right depth, because the
+    /// wrapper sits exactly where that label was.
+    fn returns_to_branches(body: Vec<Instruction>, depth: u32) -> Vec<Instruction> {
+        body.into_iter()
+            .map(|i| match i {
+                Instruction::Return => Instruction::Br(depth),
+                Instruction::Block { block_type, body } => Instruction::Block {
+                    block_type,
+                    body: returns_to_branches(body, depth + 1),
+                },
+                Instruction::Loop { block_type, body } => Instruction::Loop {
+                    block_type,
+                    body: returns_to_branches(body, depth + 1),
+                },
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => Instruction::If {
+                    block_type,
+                    then_body: returns_to_branches(then_body, depth + 1),
+                    else_body: returns_to_branches(else_body, depth + 1),
+                },
+                other => other,
+            })
+            .collect()
+    }
+
     fn inline_calls_in_block(
         instructions: &[Instruction],
         inline_set: &std::collections::HashSet<u32>,
@@ -15284,7 +15344,26 @@ pub mod optimize {
                             &param_targets,
                         );
 
-                        result.extend(inlined_body);
+                        // Step 5: a `return` in the callee (or a branch to its
+                        // function label) leaves the CALLEE. Spliced in as is,
+                        // it would leave the caller. Give the inlined body its
+                        // own label and send those exits there.
+                        if inline_body_escapes(&inlined_body, 0) {
+                            let block_type = match callee.signature.results.as_slice() {
+                                [] => BlockType::Empty,
+                                [t] => BlockType::Value(*t),
+                                many => BlockType::Func {
+                                    params: vec![],
+                                    results: many.to_vec(),
+                                },
+                            };
+                            result.push(Instruction::Block {
+                                block_type,
+                                body: returns_to_branches(inlined_body, 0),
+                            });
+                        } else {
+                            result.extend(inlined_body);
+                        }
                     } else {
                         // Function not found, keep original call
                         result.push(instr.clone());
