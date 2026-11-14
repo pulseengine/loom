@@ -343,7 +343,7 @@ pub fn decide_bv_equivalence(
     opt: &z3::ast::BV,
     backend: VerifyBackend,
 ) -> SeamOutcome {
-    let outcome = decide_inner(orig, opt, backend);
+    let outcome = decide_inner(orig, opt, backend, true);
     match &outcome {
         SeamOutcome::Decided(_) => note_routed(),
         SeamOutcome::Deferred(reason) => note_deferred(*reason),
@@ -352,7 +352,37 @@ pub fn decide_bv_equivalence(
 }
 
 #[cfg(feature = "verification")]
-fn decide_inner(orig: &z3::ast::BV, opt: &z3::ast::BV, backend: VerifyBackend) -> SeamOutcome {
+/// [`decide_bv_equivalence`] for an obligation whose traps the caller has
+/// already modelled as path conditions (the exact executor in `verify.rs`).
+///
+/// The seam's own trap flags read every division in a term as a trap of that
+/// side. In an obligation that already guards each division by its trap
+/// condition, that second model is wrong: the guarded side contains the
+/// divisions and the other side (`1`) does not, so the flags would differ at
+/// a zero divisor and disprove a function against itself. Reflection, the
+/// round-trip gate and the sliver check are the same as for
+/// [`decide_bv_equivalence`].
+#[cfg(feature = "verification")]
+pub fn decide_bv_equivalence_traps_modelled(
+    orig: &z3::ast::BV,
+    opt: &z3::ast::BV,
+    backend: VerifyBackend,
+) -> SeamOutcome {
+    let outcome = decide_inner(orig, opt, backend, false);
+    match &outcome {
+        SeamOutcome::Decided(_) => note_routed(),
+        SeamOutcome::Deferred(reason) => note_deferred(*reason),
+    }
+    outcome
+}
+
+#[cfg(feature = "verification")]
+fn decide_inner(
+    orig: &z3::ast::BV,
+    opt: &z3::ast::BV,
+    backend: VerifyBackend,
+    add_trap_flags: bool,
+) -> SeamOutcome {
     // Default backend: nothing is routed. The validator's behaviour is
     // byte-identical to before this module existed.
     if backend == VerifyBackend::Z3 {
@@ -393,13 +423,18 @@ fn decide_inner(orig: &z3::ast::BV, opt: &z3::ast::BV, backend: VerifyBackend) -
     // condition is read off the same representation the proof is discharged
     // on. Reading it from the Z3 side instead would reintroduce a second,
     // unvalidated path into the obligation.
-    let lhs_trap = match trap_condition(&lhs) {
-        Ok(t) => t,
-        Err(reason) => return SeamOutcome::Deferred(reason),
-    };
-    let rhs_trap = match trap_condition(&rhs) {
-        Ok(t) => t,
-        Err(reason) => return SeamOutcome::Deferred(reason),
+    let (lhs_trap, rhs_trap) = if add_trap_flags {
+        let lhs_trap = match trap_condition(&lhs) {
+            Ok(t) => t,
+            Err(reason) => return SeamOutcome::Deferred(reason),
+        };
+        let rhs_trap = match trap_condition(&rhs) {
+            Ok(t) => t,
+            Err(reason) => return SeamOutcome::Deferred(reason),
+        };
+        (lhs_trap, rhs_trap)
+    } else {
+        (None, None)
     };
 
     // When NEITHER side can trap this is byte-identical to slice 1's
@@ -786,6 +821,13 @@ fn prove(lhs: &RuleTerm, rhs: &RuleTerm, backend: VerifyBackend) -> RuleVerdict 
         VerifyBackend::Both => {
             let z3 = Z3RuleSolver.prove_rule_equiv(lhs, rhs);
             let ordeal = BoundedOrdealSolver::from_env().prove_rule_equiv(lhs, rhs);
+            // Both engines run under a wall-clock budget, so one can give up
+            // where the other decides. That is not a disagreement about the
+            // obligation: the combined verdict is Unknown, which the callers
+            // report as undecided. Only Proven against Disproven contradicts.
+            if matches!(z3, RuleVerdict::Unknown) || matches!(ordeal, RuleVerdict::Unknown) {
+                return RuleVerdict::Unknown;
+            }
             assert!(
                 z3.agrees_with(&ordeal),
                 "LOOM_VERIFY_BACKEND=both: translation-validation solver disagreement!\n  \
