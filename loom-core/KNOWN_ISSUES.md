@@ -41,17 +41,23 @@ All fixture tests now pass with Z3 formal verification!
 ## Architecture Notes
 
 ### Z3 Translation Validation
-Every optimization pass uses `TranslationValidator` to prove semantic equivalence:
+Every optimization pass uses `TranslationValidator`:
 1. Capture original function before optimization
 2. Apply optimization
-3. Z3 proves `∀ inputs: original(inputs) = optimized(inputs)`
+3. Ask Z3 for an input on which the two differ; keep the change only if
+   there is none
 
-This catches bugs that would be missed by traditional testing.
+For a function without loops the comparison is exact: return values,
+globals, every linear memory and its size, and traps with the state they
+leave. A loop-free function with an instruction outside the model is not
+changed. A function with loops is checked by a separate loop verifier that
+does not compare memory, globals or traps, so for it a passing check is not a
+proof of equivalence.
 
 ### Stack Analysis
 LOOM now has comprehensive stack validation:
 - `ValidationGuard` validates stack correctness after each pass
-- `TranslationValidator` proves semantic equivalence with Z3
+- `TranslationValidator` checks equivalence with Z3 (see above)
 - Both must pass for an optimization to be accepted
 
 ## References
