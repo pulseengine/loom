@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Shift amounts were not reduced modulo the width in the validator's model,
   and every global was modelled as 32 bits.
+- `dead-stores` could remove a live store inside a loop when the value is
+  read after a branch out of a nested loop (#516). The removed store in the
+  reproducer was a loop counter's update, so the optimized function no
+  longer terminated. The liveness walk set the live set before a loop from
+  the loop's own reads and discarded what branches out of it need; it now
+  iterates the loop entry to a fixpoint.
+- `simplify-locals` rewrote a read of a local to the source of a copy that
+  came after the read, and kept rewriting after the source was written again
+  (#517); `f(5)` returned 31 instead of 36. Copies are now tracked in order
+  and only from the copy until either local is written.
 
 ## [1.5.3] - 2026-11-14
 
