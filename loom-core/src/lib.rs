@@ -9512,18 +9512,22 @@ pub mod optimize {
                     )
                 });
 
-                // Apply optimizations (skip equivalence substitution if control flow present)
-                let safe_equivalences = if has_control_flow {
-                    std::collections::BTreeMap::new()
-                } else {
-                    equivalences
-                };
+                // Copy substitution is positional: `local.get s; local.set d`
+                // makes d equal s only from that point until either is
+                // written again. `analyze_locals` collects copies over the
+                // whole body with no positions, so its map is not applied;
+                // `substitute_copies_forward` tracks them in order instead,
+                // and only in straight-line code.
+                let _ = equivalences;
                 func.instructions = simplify_instructions(
                     &func.instructions,
                     &usage,
-                    &safe_equivalences,
+                    &std::collections::BTreeMap::new(),
                     &mut changed,
                 );
+                if !has_control_flow {
+                    func.instructions = substitute_copies_forward(&func.instructions, &mut changed);
+                }
 
                 // Apply Redundant Set Elimination
                 // This replaces redundant local.set with drop, preserving stack effects.
@@ -10327,6 +10331,48 @@ pub mod optimize {
 
         analyze_recursive(instructions, &mut usage, &mut equivalences, &mut position);
         (usage, equivalences)
+    }
+
+    /// Rewrite reads of a copied local to its source, in straight-line code.
+    ///
+    /// After `local.get s; local.set d`, a read of `d` may read `s` instead,
+    /// until `d` or `s` is written again. Every read is rewritten only by the
+    /// copies in force at its own position: a read before the copy, or after
+    /// either local changed, keeps its local.
+    fn substitute_copies_forward(
+        instructions: &[Instruction],
+        changed: &mut bool,
+    ) -> Vec<Instruction> {
+        let mut copies: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        let mut out: Vec<Instruction> = Vec::with_capacity(instructions.len());
+        for instr in instructions {
+            match instr {
+                Instruction::LocalGet(x) => match copies.get(x) {
+                    Some(&y) => {
+                        out.push(Instruction::LocalGet(y));
+                        *changed = true;
+                    }
+                    None => out.push(instr.clone()),
+                },
+                Instruction::LocalSet(d) | Instruction::LocalTee(d) => {
+                    // The copy source, if this is `local.get s; local.set d`
+                    // (the get already rewritten to its own source).
+                    let source = match (instr, out.last()) {
+                        (Instruction::LocalSet(_), Some(Instruction::LocalGet(s))) => Some(*s),
+                        _ => None,
+                    };
+                    copies.retain(|k, v| k != d && v != d);
+                    if let Some(s) = source {
+                        if s != *d {
+                            copies.insert(*d, s);
+                        }
+                    }
+                    out.push(instr.clone());
+                }
+                _ => out.push(instr.clone()),
+            }
+        }
+        out
     }
 
     fn simplify_instructions(
@@ -12881,24 +12927,33 @@ pub mod optimize {
                         label_stack.pop();
                     }
                     Instruction::Loop { body, .. } => {
-                        // Conservative v1: assume every local read inside
-                        // the body is live throughout the body and live
-                        // just before the loop. This avoids fixpoint
-                        // iteration on the back-edge.
+                        // The loop label is the loop's entry, so the live set
+                        // there is what the body needs at its start. That
+                        // includes what a branch OUT of the loop needs at its
+                        // target, which the body's own reads do not cover:
+                        // iterate to a fixpoint, restoring the write numbering
+                        // and verdicts before each re-walk so only the final
+                        // walk's verdicts count. Starting each walk from the
+                        // label (a superset of what is live after the loop)
+                        // over-approximates, which only keeps writes.
                         let mut body_reads = LiveSet::new();
                         collect_reads(body, &mut body_reads);
-                        let live_in_body: LiveSet = live.union(&body_reads).copied().collect();
-
-                        // Loop label targets the loop-header (live-in-body).
-                        label_stack.push(live_in_body.clone());
-                        // Walk body for dead-write detection. Pass the
-                        // conservative live_in_body as live-after each
-                        // body instruction (over-approximation: keeps
-                        // writes inside loops; safe).
-                        let _ = self.walk(body, live_in_body.clone(), label_stack);
-                        label_stack.pop();
-
-                        live = live_in_body;
+                        let mut label: LiveSet = live.union(&body_reads).copied().collect();
+                        loop {
+                            let counter = self.write_counter;
+                            let dead = self.dead_writes.clone();
+                            label_stack.push(label.clone());
+                            let entry = self.walk(body, label.clone(), label_stack);
+                            label_stack.pop();
+                            let next: LiveSet = label.union(&entry).copied().collect();
+                            if next == label {
+                                break;
+                            }
+                            self.write_counter = counter;
+                            self.dead_writes = dead;
+                            label = next;
+                        }
+                        live = label;
                     }
                     Instruction::If {
                         then_body,
