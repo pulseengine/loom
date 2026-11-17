@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-11-17
+
+Shipped-binary changes since 1.5.3: #518 (fixes for #516 and #517) and #514
+(translation validation decides loop-free functions with an exact model).
+
 ### Changed
 
 - Translation validation decides every loop-free function with one exact
