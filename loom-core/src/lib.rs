@@ -1235,8 +1235,19 @@ pub mod parse {
                 }
             }
 
-            // Validate the payload
-            validator.payload(&payload).context("Validation failed")?;
+            // Validate the payload. For a code-section entry, `payload` only
+            // checks the entry's place in the module and hands back a
+            // validator for the body, which has to be run: without that, a
+            // body the spec rejects (for example operators after its final
+            // `end`) was parsed and optimized as if it were valid (#479).
+            if let wasmparser::ValidPayload::Func(to_validate, body) =
+                validator.payload(&payload).context("Validation failed")?
+            {
+                to_validate
+                    .into_validator(Default::default())
+                    .validate(&body)
+                    .context("Function body validation failed")?;
+            }
         }
 
         // Convert all types from wasmparser::FuncType to FunctionSignature
@@ -16335,7 +16346,9 @@ mod tests {
                       local.get 0
                       local.set 1
                       local.get 0
+                      local.get 0
                       br_if 1
+                      drop
                       i32.const 7
                     end
                     local.get 1
@@ -16352,7 +16365,9 @@ mod tests {
                 "(module (func (param i32) (result i32) (local i32)
                     block (result i32)
                       local.get 0
+                      local.get 0
                       br_if 0
+                      drop
                       local.get 0
                       local.set 1
                       i32.const 7
@@ -17359,9 +17374,9 @@ mod tests {
               (func $test (result i32)
                 (block (result i32)
                   (i32.const 10)
+                  (drop)
                   (block (result i32)
                     (i32.const 32)
-                    (i32.add)
                   )
                 )
               )

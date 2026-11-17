@@ -10884,9 +10884,10 @@ mod tests {
     #[cfg(feature = "verification")]
     fn test_acyclic_modelable_gate() {
         // The whole-function gate must reject loops (back-edges).
-        let with_loop =
-            parse::parse_wat("(module (func (param i32) (result i32) (loop local.get 0)))")
-                .unwrap();
+        let with_loop = parse::parse_wat(
+            "(module (func (param i32) (result i32) (loop (result i32) local.get 0)))",
+        )
+        .unwrap();
         assert!(
             !is_acyclic_modelable_body(&with_loop.functions[0].instructions),
             "loops (back-edges) must be rejected"

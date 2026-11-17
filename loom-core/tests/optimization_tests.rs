@@ -1335,12 +1335,12 @@ fn test_code_folding_multiple_instructions() {
                 (local $y i32)
                 (if (local.get 0)
                     (then
-                        (i32.const 1)
+                        (drop (i32.const 1))
                         (local.set $x (i32.const 10))
                         (local.set $y (i32.const 20))
                     )
                     (else
-                        (i32.const 2)
+                        (drop (i32.const 2))
                         (local.set $x (i32.const 10))
                         (local.set $y (i32.const 20))
                     )
@@ -1364,10 +1364,11 @@ fn test_code_folding_multiple_instructions() {
         0
     }
 
+    // `i32.const 1; drop` stays in the arm; the two common sets are folded out.
     let then_len = count_if_body_instrs(&module.functions[0].instructions);
     assert_eq!(
-        then_len, 1,
-        "Expected only 1 instruction in then body after folding, got {}",
+        then_len, 2,
+        "Expected only `i32.const 1; drop` in then body after folding, got {}",
         then_len
     );
 }
@@ -1453,7 +1454,7 @@ fn test_code_folding_nested_if() {
                         )
                     )
                     (else
-                        (i32.const 2)
+                        (drop (i32.const 2))
                     )
                 )
             )
@@ -2675,8 +2676,11 @@ fn test_multiple_float_constants() {
         (module
             (func $multiple_floats (result f64)
                 f32.const 1.0
+                drop
                 f32.const 2.0
+                drop
                 f64.const 3.5
+                drop
                 f64.const 4.5
             )
         )
