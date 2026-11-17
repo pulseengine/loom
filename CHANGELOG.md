@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meaning (#479). Function bodies are now validated and such input is
   refused. Four test fixtures that were not valid WebAssembly are corrected.
 
+### Changed
+
+- Translation validation decides functions with loops with the exact
+  executor too. Loops are paired in order with their counterparts and
+  proven one iteration at a time: from the same header state, both bodies
+  take the same exit (back to the header, out to an enclosing label, off the
+  end, a trap) with the same locals, globals and memories. The rest of the
+  function uses each proven loop as the same function of its entry state.
+  The loop verifier this replaces compared only loop-body locals after one
+  iteration: code outside loops, globals, memory and traps were not
+  compared, loops it found complex were skipped, and two functions with
+  different numbers of loops were accepted. Changes that alter a loop's
+  structure, such as loop-invariant code motion, are not provable this way
+  and are reverted (#523).
+
 ## [1.5.4] - 2026-11-17
 
 Shipped-binary changes since 1.5.3: #518 (fixes for #516 and #517) and #514

@@ -47,12 +47,12 @@ Every optimization pass uses `TranslationValidator`:
 3. Ask Z3 for an input on which the two differ; keep the change only if
    there is none
 
-For a function without loops the comparison is exact: return values,
-globals, every linear memory and its size, and traps with the state they
-leave. A loop-free function with an instruction outside the model is not
-changed. A function with loops is checked by a separate loop verifier that
-does not compare memory, globals or traps, so for it a passing check is not a
-proof of equivalence.
+For every function the comparison is exact: return values, globals, every
+linear memory and its size, and traps with the state they leave. Loops are
+paired with their counterparts and proven one iteration at a time; a change
+to a loop's structure (such as a hoist) is not provable that way and is
+reverted. A function with an instruction outside the model is not changed.
+Functions over the solver size threshold are kept without a check.
 
 ### Stack Analysis
 LOOM now has comprehensive stack validation:

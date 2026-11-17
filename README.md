@@ -2,14 +2,14 @@
 
 # Loom
 
-<sup>WebAssembly optimizer with per-pass translation validation (exact for loop-free functions)</sup>
+<sup>WebAssembly optimizer with per-pass translation validation</sup>
 
 &nbsp;
 
 [![CI](https://github.com/pulseengine/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/loom/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
-![Translation validation: loop-free functions](https://img.shields.io/badge/Translation_validation_(Z3)-loop--free_functions-F9A825?style=flat-square&logoColor=white&labelColor=1a1b27)
+![Translation validation](https://img.shields.io/badge/Translation_validation-Z3-00C853?style=flat-square&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
 
 &nbsp;
@@ -32,7 +32,7 @@
 
 Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
 
-WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination. After each pass a Z3 SMT translation validator compares each changed function with its previous version and keeps the change only if the two are proven equivalent. For a function without loops the comparison is exact: return values, globals, every linear memory and its size, and traps, including the globals and memory a trap leaves behind. A function that is outside this model (a loop-free function with an instruction it does not model) is not changed. A function with loops is checked by a separate loop verifier that compares less (not memory, globals or traps), so for such functions a passing check is not a proof that the output is equivalent; `--stats` lists those acceptances as kept without a proof. Floating-point arithmetic on non-constant operands is compared as uninterpreted functions, and a NaN result is taken to have one payload per operation and operands. Includes a fused mode purpose-built for Meld output.
+WebAssembly optimization pipeline built on Cranelift's ISLE pattern-matching engine. Constant folding, strength reduction, CSE, inlining, dead code elimination. After each pass a Z3 SMT translation validator compares each changed function with its previous version and keeps the change only if the two are proven equivalent. The comparison is exact: return values, globals, every linear memory and its size, and traps, including the globals and memory a trap leaves behind. Each loop is paired with the loop in the same place in the other function and proven one iteration at a time; a change that alters a loop's structure (for example hoisting code out of it) cannot be proven this way and is not kept. A function with an instruction outside the model is not changed. Functions over the solver size threshold are kept without a check, and `--stats` lists them. Floating-point arithmetic on non-constant operands is compared as uninterpreted functions, and a NaN result is taken to have one payload per operation and operands. Includes a fused mode purpose-built for Meld output.
 
 Loom consistently achieves 80-95% binary size reduction with 10-30 microsecond optimization times. The entire pipeline is pure Rust with minimal dependencies.
 
@@ -75,14 +75,14 @@ See [docs/architecture.md](docs/architecture.md) for the full pipeline design.
 - **Common subexpression elimination** — Deduplicate redundant computations
 - **Function inlining** — Inline small functions to expose cross-function optimizations
 - **Dead code elimination** — Remove unreachable code and unused locals
-- **Loop-invariant code motion** — Hoist invariant expressions out of loops
+- **Loop-invariant code motion** — Hoist invariant expressions out of loops (hoists are not yet provable under the validator, so they are reverted; #523)
 - **Component Model support** — wasm32-wasip2 build target
 - **Stateful dataflow analysis** — Track locals and memory state across passes
 - **Idempotent passes** — Safe to run multiple times without degradation
 
 ## Translation Validation
 
-Z3 SMT translation validation is **on by default** (`default = ["verification", "attestation"]` in loom-core / loom-cli Cargo.toml). After each optimization pass the validator asks for an input on which the original and the optimized function differ, and keeps the change only if there is none; otherwise the function is reverted to its pre-pass state. For a function without loops the comparison is exact: return values, globals, every linear memory and its size, and traps, including the globals and memory a trap leaves behind. A function that is outside this model (a loop-free function with an instruction it does not model) is not changed. A function with loops is checked by a separate loop verifier that compares less (not memory, globals or traps), so for such functions a passing check is not a proof that the output is equivalent; `--stats` lists those acceptances as kept without a proof. Floating-point arithmetic on non-constant operands is compared as uninterpreted functions, and a NaN result is taken to have one payload per operation and operands. Functions over the solver size threshold are kept without a check. `--stats` reports how many accepted transforms were proven and how many were kept without a proof, with the reason.
+Z3 SMT translation validation is **on by default** (`default = ["verification", "attestation"]` in loom-core / loom-cli Cargo.toml). After each optimization pass the validator asks for an input on which the original and the optimized function differ, and keeps the change only if there is none; otherwise the function is reverted to its pre-pass state. The comparison is exact: return values, globals, every linear memory and its size, and traps, including the globals and memory a trap leaves behind. Each loop is paired with the loop in the same place in the other function and proven one iteration at a time; a change that alters a loop's structure (for example hoisting code out of it) cannot be proven this way and is not kept. A function with an instruction outside the model is not changed. Functions over the solver size threshold are kept without a check, and `--stats` lists them. Floating-point arithmetic on non-constant operands is compared as uninterpreted functions, and a NaN result is taken to have one payload per operation and operands. `--stats` reports how many accepted transforms were proven and how many were kept without a proof, with the reason.
 
 ```bash
 # Default build — Z3 verification on

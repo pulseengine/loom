@@ -1,11 +1,10 @@
 //! `--stats` counts an accepted transform as "proven" only when the validator
 //! compared everything the function can change.
 //!
-//! Loop-free functions are decided by the exact executor, which compares
-//! results, globals, memory and traps, so their acceptances are proven. A
-//! function with a loop is still checked by the loop verifier, which
-//! approximates branches, so its acceptance is kept without a proof and the
-//! counts say so with the reason. One test per binary: the counters are
+//! Functions are decided by the exact executor, which compares results,
+//! globals, memory and traps (loops one iteration at a time), so their
+//! acceptances are proven. A body over the solver size threshold is kept
+//! without a check, and the counts say so with the reason. One test per binary: the counters are
 //! process-global.
 #![cfg(feature = "verification")]
 
@@ -45,7 +44,7 @@ fn only_fully_compared_acceptances_count_as_proven() {
         assert_eq!((proven, kept.len()), (1, 0), "{wat}: kept {kept:?}");
     }
 
-    // A loop goes to the loop verifier, which approximates branches.
+    // A loop is proven too: against itself, one iteration at a time.
     let (proven, kept) = accepted_counts(
         r#"(module (func (param i32) (result i32) (local i32)
              (loop
@@ -53,6 +52,18 @@ fn only_fully_compared_acceptances_count_as_proven() {
                local.get 1 local.get 0 i32.lt_u br_if 0)
              local.get 1))"#,
     );
+    assert_eq!((proven, kept.len()), (1, 0), "loop: kept {kept:?}");
+
+    // A body over the solver size threshold is kept without a check, and
+    // the counts say so.
+    let big = format!(
+        "(module (func (param i32) (result i32) local.get 0 {}))",
+        "i32.const 1 i32.add ".repeat(1100)
+    );
+    let (proven, kept) = accepted_counts(&big);
     assert_eq!(proven, 0);
-    assert_eq!(kept, vec!["branches approximated".to_string()]);
+    assert_eq!(
+        kept,
+        vec!["body over the solver size threshold".to_string()]
+    );
 }
