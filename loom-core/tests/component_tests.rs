@@ -78,6 +78,8 @@ fn test_component_stats_calculations() {
         optimized_size: 200,
         module_count: 2,
         modules_optimized: 2,
+        modules_skipped: Vec::new(),
+        modules_failed: Vec::new(),
         original_module_size: 800,
         optimized_module_size: 100,
         size_breakdown: Default::default(),
@@ -390,5 +392,52 @@ fn test_component_optimization_verifies_output() {
     println!(
         "Component optimization: {} module(s), {:.1}% module reduction",
         stats.modules_optimized, module_reduction
+    );
+}
+
+/// #530: a core module skipped under #196 (function-referencing element table)
+/// must be reported as skipped, never counted as optimized.
+#[test]
+fn test_skipped_module_not_reported_as_optimized() {
+    let component = wat::parse_str(
+        r#"(component
+            (core module $plain
+              (func (export "add") (param i32 i32) (result i32)
+                local.get 0 local.get 1 i32.add))
+            (core module $table
+              (table 1 funcref)
+              (func $f (result i32) i32.const 7)
+              (elem (i32.const 0) $f)
+              (func (export "call") (result i32)
+                i32.const 0 call_indirect (result i32)))
+          )"#,
+    )
+    .expect("fixture parses");
+
+    let (optimized, stats) = optimize_component(&component).expect("optimization runs");
+    wasmparser::validate(&optimized).expect("output validates");
+
+    assert_eq!(stats.module_count, 2);
+    assert_eq!(
+        stats.modules_optimized, 1,
+        "only the plain module is optimized"
+    );
+    assert_eq!(stats.modules_failed, Vec::<(usize, String)>::new());
+    assert_eq!(
+        stats.modules_skipped.len(),
+        1,
+        "the table module is skipped"
+    );
+    assert_eq!(stats.modules_skipped[0].0, 1);
+    assert!(stats.modules_skipped[0].1.contains("#196"));
+    assert!(
+        !stats.message.starts_with("Successfully"),
+        "status must not claim success with a skipped module: {}",
+        stats.message
+    );
+    assert!(
+        stats.message.contains("Optimized 1 of 2") && stats.message.contains("skipped 1"),
+        "status: {}",
+        stats.message
     );
 }

@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `end`) was parsed and optimized, and the output gave the invalid input a
   meaning (#479). Function bodies are now validated and such input is
   refused. Four test fixtures that were not valid WebAssembly are corrected.
+- Component optimization counted a core module skipped under #196
+  (function-referencing element table) as optimized and printed
+  "Successfully optimized N of N core modules" (#530). `ComponentStats` now
+  lists skipped and failed modules with their reasons, `modules_optimized`
+  counts only modules the pipeline ran on, and the status line names each
+  skipped or failed module.
 
 ### Changed
 
