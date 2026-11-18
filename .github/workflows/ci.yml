@@ -68,7 +68,7 @@ jobs:
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -101,7 +101,7 @@ jobs:
     name: Format
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -114,9 +114,9 @@ jobs:
     name: Clippy
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: the vendored Z3 build needs cmake and a C++
+    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
     # toolchain, which are not confirmed on smithy hosts.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -130,7 +130,7 @@ jobs:
     name: Test
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
+    # Stays on ubuntu-24.04: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
       # #421: the default (true) made one transient flake look like three
@@ -147,7 +147,7 @@ jobs:
       # which OS actually broke.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         rust: [stable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -160,7 +160,7 @@ jobs:
     name: Build
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: matrix spans macOS + Windows; smithy is Linux-only.
+    # Stays on ubuntu-24.04: matrix spans macOS + Windows; smithy is Linux-only.
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -171,7 +171,7 @@ jobs:
         # unexercised-gate shape this repository keeps finding. Building it
         # on every PR means a toolchain or z3-sys regression on ARM fails a
         # check now, not during a release.
-        os: [ubuntu-latest, ubuntu-22.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-22.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -225,7 +225,7 @@ jobs:
 
   validate:
     name: Validate WebAssembly Output
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     needs: build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -296,10 +296,10 @@ jobs:
     name: Code Coverage
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: uses `sudo rm -rf` to free disk space on the
+    # Stays on ubuntu-24.04: uses `sudo rm -rf` to free disk space on the
     # GitHub-hosted image. Could migrate by dropping the free-disk step
     # (smithy has plenty of disk via lv_runners) but leaving as-is for now.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Free disk space
         run: |
@@ -328,7 +328,7 @@ jobs:
     name: Benchmarks
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -344,9 +344,9 @@ jobs:
     name: Z3 Verification Build
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: the vendored Z3 build needs cmake and a C++
+    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
     # toolchain, which are not confirmed on smithy hosts.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -402,9 +402,9 @@ jobs:
     name: Behavioral Differential Gate (#238)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # ubuntu-latest: default features pull `verification` (needs z3); the
+    # ubuntu-24.04: default features pull `verification` (needs z3); the
     # `differential` feature additionally pulls wasmtime. Both build here.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -455,7 +455,7 @@ jobs:
     name: WASM Build (wasm32-wasip2, no Z3)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Pin to Rust 1.93.1 for WASM build — Rust 1.94.0 bundles a
@@ -491,7 +491,7 @@ jobs:
 
   self-optimization:
     name: Self-Optimization Test
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
     needs: [build, wasm-build]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -502,7 +502,7 @@ jobs:
       - name: Download LOOM binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: loom-ubuntu-latest
+          name: loom-ubuntu-24.04
           path: ./loom-bin
       - name: Download LOOM WASM
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -540,9 +540,9 @@ jobs:
     name: Rocq Formal Proofs
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-latest: requires Nix + Bazel; both are out-of-scope for
+    # Stays on ubuntu-24.04: requires Nix + Bazel; both are out-of-scope for
     # smithy phase 1 (see migration playbook "What's currently out of scope").
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Fails when (loom#169):
     #   - a proof stops compiling;
     #   - a .v file gains an Axiom/Parameter/Conjecture/Admitted/admit, or
@@ -614,9 +614,9 @@ jobs:
 
   differential:
     name: Differential Testing (vs wasm-opt)
-    # Stays on ubuntu-latest: requires `sudo apt-get install binaryen`;
+    # Stays on ubuntu-24.04: requires `sudo apt-get install binaryen`;
     # binaryen/wasm-opt is not provisioned on smithy hosts.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
