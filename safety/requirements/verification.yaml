@@ -1615,6 +1615,32 @@ artifacts:
   # in scope is indistinguishable from one reading it because the work is done.
   # ============================================================================
 
+  - id: TEST-GLIBC-FLOOR-AFTER-2204
+    type: feature
+    title: gnu Linux binaries built without the ubuntu-22.04 image still load on glibc 2.35 (DD-18)
+    description: >
+      PLANNED, not yet implemented. Checks DD-18: the x86_64 and aarch64 gnu
+      binaries are built on an ubuntu-24.04 host inside an older-glibc
+      container, and the 2.35 floor still holds. Evidence runs on every PR
+      in the ci.yml Build matrix, not only at tag time, so a toolchain
+      regression fails a check before a release. Target: merged by
+      2027-02-15.
+    fields:
+      acceptance-criteria:
+        - "Given release.yml and ci.yml, no job runs on ubuntu-22.04 or ubuntu-22.04-arm"
+        - "Given the x86_64 and aarch64 gnu binaries, scripts/check_elf_floor.sh passes with ceiling 2.35 / 3.4.30 and its negative control fails"
+        - "Given an ubuntu:22.04 container (glibc 2.35), each binary runs `loom --version` and optimizes a corpus module to output that passes wasm-tools validate"
+        - "Given the same corpus module, the container-built and the 1.5.x release binary produce byte-identical output"
+        - "Given a release tag after the switch, both Linux archives are produced by the new jobs and the release run concludes success"
+    status: draft
+    release: v1.6.0
+    tags: [release-engineering, portability]
+    links:
+      - type: verifies
+        target: REQ-18
+      - type: verifies
+        target: DD-18
+
   - id: TEST-388-MUSL-LINUX-RELEASE
     type: feature
     title: Linux releases are not glibc-only — a musl artifact ships and runs where glibc 2.34 does not (#388)
