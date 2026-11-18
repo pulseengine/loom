@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `parse_wasm` validated a module's sections but never ran the validator for
+  function bodies, so a body the spec rejects (operators after its final
+  `end`) was parsed and optimized, and the output gave the invalid input a
+  meaning (#479). Function bodies are now validated and such input is
+  refused. Four test fixtures that were not valid WebAssembly are corrected.
+
 ## [1.5.4] - 2026-11-17
 
 Shipped-binary changes since 1.5.3: #518 (fixes for #516 and #517) and #514
