@@ -114,9 +114,9 @@ jobs:
     name: Clippy
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # rust-cpu: builds the vendored Z3 (cmake + C++), as the rust-cpu jobs in
-    # verification-gate.yml already do. Fork PRs run on ubuntu-24.04.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
+    # toolchain, which are not confirmed on smithy hosts.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -344,9 +344,9 @@ jobs:
     name: Z3 Verification Build
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # rust-cpu: builds the vendored Z3 (cmake + C++), as the rust-cpu jobs in
-    # verification-gate.yml already do. Fork PRs run on ubuntu-24.04.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
+    # toolchain, which are not confirmed on smithy hosts.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -402,9 +402,9 @@ jobs:
     name: Behavioral Differential Gate (#238)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # rust-cpu: default features pull `verification` (vendored Z3) and the
-    # `differential` feature pulls wasmtime. Fork PRs run on ubuntu-24.04.
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    # ubuntu-24.04: default features pull `verification` (needs z3); the
+    # `differential` feature additionally pulls wasmtime. Both build here.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
