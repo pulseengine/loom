@@ -9078,14 +9078,17 @@ pub mod optimize {
         // observable behavior. If any of the last N is not a pure
         // pusher, or fewer than N entries exist (args came from outside
         // the local region), the fold is skipped.
-        let summaries = crate::summary::compute_module_summaries(module);
-        // Snapshot per-function (param_count, result_count) before the
-        // mutable loop. The fold requires param_count == 0 and
-        // result_count == 1.
-        let signatures: Vec<(usize, usize)> = module
-            .functions
-            .iter()
-            .map(|f| (f.signature.params.len(), f.signature.results.len()))
+        // Both tables are indexed by function-space index (imports first),
+        // which is what a `Call` operand holds. Imports are opaque, so their
+        // summary never allows a fold; an import with no resolvable type gets
+        // an arity no call can match.
+        let summaries = crate::summary::compute_call_summaries(module);
+        let signatures: Vec<(usize, usize)> = crate::summary::call_signatures(module)
+            .into_iter()
+            .map(|sig| match sig {
+                Some((p, r)) => (p.len(), r.len()),
+                None => (usize::MAX, usize::MAX),
+            })
             .collect();
 
         // loom#254 — whole-module structural snapshot BEFORE vacuum. Like
@@ -9313,8 +9316,7 @@ pub mod optimize {
                     let i = *idx as usize;
                     if i < summaries.len()
                         && i < signatures.len()
-                        && summaries[i].is_pure
-                        && summaries[i].is_no_trap
+                        && summaries[i].is_removable()
                         && signatures[i].1 == 1
                     {
                         let n = signatures[i].0;
@@ -9390,8 +9392,7 @@ pub mod optimize {
                 // dangling values that break stack balance.
                 let i = *idx as usize;
                 i < summaries.len()
-                    && summaries[i].is_pure
-                    && summaries[i].is_no_trap
+                    && summaries[i].is_removable()
                     && i < signatures.len()
                     && signatures[i] == (0, 1)
             }
@@ -14069,12 +14070,9 @@ pub mod optimize {
         // callee signature to know how many args to pop and what result
         // type to materialize the cache local with. Snapshot before the
         // mutable loop so we don't borrow `module` twice.
-        let summaries = crate::summary::compute_module_summaries(module);
-        let func_signatures: Vec<(Vec<super::ValueType>, Vec<super::ValueType>)> = module
-            .functions
-            .iter()
-            .map(|f| (f.signature.params.clone(), f.signature.results.clone()))
-            .collect();
+        // Indexed by function-space index (imports first), like `Call`.
+        let summaries = crate::summary::compute_call_summaries(module);
+        let func_signatures = crate::summary::call_signatures(module);
 
         for func in &mut module.functions {
             // Skip functions with unsupported instructions (can't verify)
@@ -14301,8 +14299,8 @@ pub mod optimize {
                     Instruction::Call(func_idx) => {
                         let fi = *func_idx as usize;
                         let (params, results) = match func_signatures.get(fi) {
-                            Some(sig) => sig.clone(),
-                            None => {
+                            Some(Some(sig)) => sig.clone(),
+                            _ => {
                                 // Imported / unknown function — be
                                 // conservative: clear stack analysis.
                                 stack.clear();
@@ -14310,10 +14308,15 @@ pub mod optimize {
                                 continue;
                             }
                         };
-                        let summary = summaries.get(fi).copied().unwrap_or_default();
+                        let summary = summaries
+                            .get(fi)
+                            .copied()
+                            .unwrap_or(crate::summary::FunctionSummary::OPAQUE);
                         let single_result = results.len() == 1;
                         let arity = params.len();
-                        let pure_no_trap = summary.is_pure && summary.is_no_trap;
+                        // Dedup needs the result to be a function of the
+                        // arguments: pure, completes normally, reads no state.
+                        let pure_no_trap = summary.is_deterministic();
 
                         if pure_no_trap && single_result && stack.len() >= arity {
                             // Pop arity args from both stacks (in order).
@@ -14428,6 +14431,7 @@ pub mod optimize {
                         // results[0] is well-defined.
                         Expr::Call { func_idx, .. } => func_signatures
                             .get(*func_idx as usize)
+                            .and_then(|sig| sig.as_ref())
                             .and_then(|(_, results)| results.first().copied())
                             .unwrap_or(super::ValueType::I32),
                         _ => super::ValueType::I32, // Default

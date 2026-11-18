@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Function summaries index calls by function-space index (imports first) and classify import calls, float-to-int truncation, loops, call cycles, unknown instructions and state reads conservatively; CSE and the verifier's pure-call encoding require callees that read no state (#526).
 - `parse_wasm` validated a module's sections but never ran the validator for
   function bodies, so a body the spec rejects (operators after its final
   `end`) was parsed and optimized, and the output gave the invalid input a
