@@ -18,7 +18,6 @@ jobs:
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
 
-
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -61,7 +60,6 @@ jobs:
   test-workspace:
     name: Test Full Workspace
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
-
     needs: test-shared
 
     steps:
@@ -106,7 +104,6 @@ jobs:
   integration-test:
     name: Integration Testing
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
-
     needs: test-workspace
 
     steps:
@@ -159,7 +156,6 @@ jobs:
     # verification-gate.yml already do. Fork PRs run on ubuntu-24.04.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
 
-
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -179,7 +175,6 @@ jobs:
   verify-architecture:
     name: Verify Architecture
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
-
 
     steps:
       - name: Checkout code
