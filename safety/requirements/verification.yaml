@@ -1615,53 +1615,20 @@ artifacts:
   # in scope is indistinguishable from one reading it because the work is done.
   # ============================================================================
 
-  - id: TEST-GLIBC-FLOOR-AFTER-2204
-    type: feature
-    title: gnu Linux binaries built without the ubuntu-22.04 image still load on glibc 2.35 (DD-18)
-    description: >
-      PLANNED, not yet implemented. Checks DD-18: the x86_64 and aarch64 gnu
-      binaries are built on an ubuntu-24.04 host inside an older-glibc
-      container, and the 2.35 floor still holds. Evidence runs on every PR
-      in the ci.yml Build matrix, not only at tag time, so a toolchain
-      regression fails a check before a release. Target: merged by
-      2027-02-15.
-    fields:
-      acceptance-criteria:
-        - "Given release.yml and ci.yml, no job runs on ubuntu-22.04 or ubuntu-22.04-arm"
-        - "Given the x86_64 and aarch64 gnu binaries, scripts/check_elf_floor.sh passes with ceiling 2.35 / 3.4.30 and its negative control fails"
-        - "Given an ubuntu:22.04 container (glibc 2.35), each binary runs `loom --version` and optimizes a corpus module to output that passes wasm-tools validate"
-        - "Given the same corpus module, the container-built and the 1.5.x release binary produce byte-identical output"
-        - "Given a release tag after the switch, both Linux archives are produced by the new jobs and the release run concludes success"
-    status: draft
-    release: v1.6.0
-    tags: [release-engineering, portability]
-    links:
-      - type: verifies
-        target: REQ-18
-      - type: verifies
-        target: DD-18
-
   - id: TEST-388-MUSL-LINUX-RELEASE
     type: feature
-    title: Linux releases are not glibc-only — a musl artifact ships and runs where glibc 2.34 does not (#388)
+    title: Linux releases are static musl builds that run where glibc 2.34 does not (#388, DD-18)
     description: >
       PLANNED — not yet implemented.
       v1.4.1's Linux x86_64 asset is dynamically linked with a GLIBC_2.34
       floor, measured from the downloaded binary. That excludes every distro
       older than the 2.34 line and all of Alpine, so "Linux" in the release
       notes currently means "recent glibc Linux".
-      SEQUENCING. An earlier draft of this artifact claimed musl was gated
-      behind #313, on the reasoning that a static musl build needs a musl C++
-      toolchain because loom links a C++ solver. That was an assumption about
-      cost, not a measurement, and the maintainer corrected it: musl is in
-      routine use across this toolchain and is not the hard part here.
-      #313 still comes first, but on its own merits rather than because musl
-      waits on it — the C++ solver is the larger problem (it set the #311
-      glibc floor, it breaks the wasm32-wasip2 build, and it carries a
-      fork we maintain), and the migration to the certificate-checked engine
-      is wanted independently. So this item is sequenced AFTER #313 by
-      priority, not blocked BY it; if it turns out to be cheap enough to land
-      alongside, nothing here forbids that.
+      SEQUENCING. DD-18 schedules this ahead of the solver retirement
+      (#313): the musl builds replace the ubuntu-22.04 gnu builds before that
+      image is unsupported on 2027-04-17. The static build links the vendored
+      C++ solver and static libstdc++; its cost is measured first, and the
+      measurement can reopen DD-18.
       Asserted, once built: (1) a musl artifact is published alongside the gnu
       one; (2) it is statically linked — `file` reports no interpreter and
       `readelf -V` reports NO GLIBC requirement at all, which is the actual
@@ -1676,12 +1643,19 @@ artifacts:
         - "Given the musl binary, readelf reports NO GLIBC version requirement (fail-closed if undeterminable)"
         - "Given an image lacking glibc 2.34, the musl binary RUNS there"
         - "The musl build's actual cost is measured before it is scheduled, not assumed from the C++ dependency"
+        - "Given both x86_64-unknown-linux-musl and aarch64-unknown-linux-musl, each is built on every PR in the ci.yml Build matrix, statically linked (no program interpreter), and runs `loom --version` plus a corpus optimize whose output passes wasm-tools validate in alpine and ubuntu:22.04 containers"
+        - "Given the corpus, the musl and gnu builds of the same commit produce byte-identical output"
+        - "Given release.yml and ci.yml after the transition release, no job runs on ubuntu-22.04 or ubuntu-22.04-arm (DD-18 step 3, by 2027-03-31)"
     status: draft
+    # DD-18: retagged to the first release cut after the switch merges
+    # (owner decision 2026-11-18); v1.6.0 is the placeholder until then.
     release: v1.6.0
     tags: [v150, release-engineering, portability]
     links:
       - type: verifies
         target: REQ-18
+      - type: verifies
+        target: DD-18
 
   - id: TEST-AARCH64-LINUX-RELEASE-TARGET
     type: feature
