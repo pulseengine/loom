@@ -50,7 +50,8 @@ jobs:
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+
     # 45, not 25. The sweep's observed FLOOR was 30.4 minutes for a build plus
     # 23 artifacts, which puts the build alone near 20 — so a 25-minute budget
     # here would be tight on a warm cache and impossible on a cold one. Setting
@@ -98,7 +99,8 @@ jobs:
     name: Verification Gate (rivet-driven)
     # Advisory and not required: skipped in the merge queue.
     if: github.event_name != 'merge_group'
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+
     # #353: raised from 30. Observed durations for this sweep ran 30.4-102.5
     # minutes against a 30-minute cap, so EVERY run was killed — the minimum
     # exceeded the budget by 24 seconds. A budget the floor cannot meet is not
