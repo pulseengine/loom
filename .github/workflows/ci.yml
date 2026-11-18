@@ -31,7 +31,7 @@ jobs:
   # merge_group; verification-gate.yml does.
   changes:
     name: Detect changed areas
-    runs-on: [self-hosted, linux, x64, light]
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -68,7 +68,7 @@ jobs:
     # Routes fork PRs to GitHub-hosted runners by default. This is NOT a security
     # boundary: a fork PR can edit this file. Isolation is enforced by the org's
     # smithy runner-group policy and fork-PR approval (pulseengine/warte#35).
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -101,7 +101,7 @@ jobs:
     name: Format
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","light"]') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -114,9 +114,9 @@ jobs:
     name: Clippy
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
-    # toolchain, which are not confirmed on smithy hosts.
-    runs-on: ubuntu-24.04
+    # rust-cpu: builds the vendored Z3 (cmake + C++), as the rust-cpu jobs in
+    # verification-gate.yml already do. Fork PRs run on ubuntu-24.04.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -225,7 +225,7 @@ jobs:
 
   validate:
     name: Validate WebAssembly Output
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     needs: build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -237,7 +237,7 @@ jobs:
         run: cargo build --release
       - name: Optimize and validate test fixtures
         run: |
-          mkdir -p /tmp/loom-optimized
+          mkdir -p "$RUNNER_TEMP/loom-optimized"
 
           # All fixture tests now pass with Z3 verification!
           # CSE and simplify_locals bugs have been fixed.
@@ -248,7 +248,7 @@ jobs:
 
           for fixture in tests/fixtures/*.wat; do
             filename=$(basename "$fixture" .wat)
-            output_file="/tmp/loom-optimized/${filename}.wasm"
+            output_file="$RUNNER_TEMP/loom-optimized/${filename}.wasm"
 
             # Check if this is a known failure
             is_known_failure=false
@@ -328,7 +328,7 @@ jobs:
     name: Benchmarks
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -344,9 +344,9 @@ jobs:
     name: Z3 Verification Build
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # Stays on ubuntu-24.04: the vendored Z3 build needs cmake and a C++
-    # toolchain, which are not confirmed on smithy hosts.
-    runs-on: ubuntu-24.04
+    # rust-cpu: builds the vendored Z3 (cmake + C++), as the rust-cpu jobs in
+    # verification-gate.yml already do. Fork PRs run on ubuntu-24.04.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -357,7 +357,7 @@ jobs:
         run: |
           # Use bench_compare.wat which passes all verification
           ./target/release/loom optimize tests/fixtures/bench_compare.wat \
-            -o /tmp/test.wasm --verify --stats
+            -o "$RUNNER_TEMP/test.wasm" --verify --stats
       - name: Verify all fixtures with Z3
         run: |
           verified=0
@@ -365,7 +365,7 @@ jobs:
           for fixture in tests/fixtures/*.wat; do
             filename=$(basename "$fixture")
             echo "Verifying: $filename"
-            if ./target/release/loom optimize "$fixture" -o /tmp/verified_output.wasm --verify --stats 2>&1; then
+            if ./target/release/loom optimize "$fixture" -o "$RUNNER_TEMP/verified_output.wasm" --verify --stats 2>&1; then
               verified=$((verified + 1))
             else
               echo "Z3 verification issue: $filename (non-fatal, tracking coverage)"
@@ -384,7 +384,7 @@ jobs:
             found=true
             filename=$(basename "$wasm_file")
             echo "Verifying: $filename"
-            if ./target/release/loom optimize "$wasm_file" -o /tmp/verified_output.wasm --verify --stats 2>&1; then
+            if ./target/release/loom optimize "$wasm_file" -o "$RUNNER_TEMP/verified_output.wasm" --verify --stats 2>&1; then
               verified=$((verified + 1))
             else
               echo "Z3 verification issue: $filename (non-fatal, tracking coverage)"
@@ -402,9 +402,9 @@ jobs:
     name: Behavioral Differential Gate (#238)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    # ubuntu-24.04: default features pull `verification` (needs z3); the
-    # `differential` feature additionally pulls wasmtime. Both build here.
-    runs-on: ubuntu-24.04
+    # rust-cpu: default features pull `verification` (vendored Z3) and the
+    # `differential` feature pulls wasmtime. Fork PRs run on ubuntu-24.04.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
@@ -427,7 +427,7 @@ jobs:
           for w in "${corpus[@]}"; do
             [ -f "$w" ] || continue
             name=$(basename "$w")
-            if log=$(./target/release/loom optimize "$w" -o /tmp/diff_out.wasm --differential 2>&1); then
+            if log=$(./target/release/loom optimize "$w" -o "$RUNNER_TEMP/diff_out.wasm" --differential 2>&1); then
               echo "✅ certified: $name"
               certified=$((certified + 1))
             elif echo "$log" | grep -q "inconclusive"; then
@@ -455,7 +455,8 @@ jobs:
     name: WASM Build (wasm32-wasip2, no Z3)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ubuntu-24.04
+    # light: no Z3 and no C++ build. Fork PRs run on ubuntu-24.04.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Pin to Rust 1.93.1 for WASM build — Rust 1.94.0 bundles a
@@ -491,7 +492,7 @@ jobs:
 
   self-optimization:
     name: Self-Optimization Test
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","rust-cpu"]') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","}.$l.q{"]') || 'ubuntu-24.04' }}
     needs: [build, wasm-build]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -515,7 +516,7 @@ jobs:
         run: |
           echo "Testing LOOM self-optimization (dogfooding)..."
           INPUT="./loom-wasm/loom.wasm"
-          OUTPUT="/tmp/loom-optimized.wasm"
+          OUTPUT="$RUNNER_TEMP/loom-optimized.wasm"
 
           # Verify input is valid
           wasm-tools validate "$INPUT" || { echo "Input validation failed"; exit 1; }
@@ -650,24 +651,24 @@ jobs:
             orig_size=$(wc -c < "$fixture")
 
             # Optimize with LOOM
-            if ./target/release/loom optimize "$fixture" -o /tmp/loom_out.wasm 2>/dev/null; then
-              loom_size=$(wc -c < /tmp/loom_out.wasm)
+            if ./target/release/loom optimize "$fixture" -o "$RUNNER_TEMP/loom_out.wasm" 2>/dev/null; then
+              loom_size=$(wc -c < "$RUNNER_TEMP/loom_out.wasm")
               loom_valid="yes"
-              wasm-tools validate /tmp/loom_out.wasm 2>/dev/null || loom_valid="INVALID"
+              wasm-tools validate "$RUNNER_TEMP/loom_out.wasm" 2>/dev/null || loom_valid="INVALID"
             else
               loom_size="-"
               loom_valid="error"
             fi
 
             # First compile WAT to WASM for wasm-opt
-            if wasm-tools parse "$fixture" -o /tmp/orig.wasm 2>/dev/null; then
-              orig_wasm_size=$(wc -c < /tmp/orig.wasm)
+            if wasm-tools parse "$fixture" -o "$RUNNER_TEMP/orig.wasm" 2>/dev/null; then
+              orig_wasm_size=$(wc -c < "$RUNNER_TEMP/orig.wasm")
 
               # Optimize with wasm-opt
-              if wasm-opt -O3 /tmp/orig.wasm -o /tmp/wopt_out.wasm 2>/dev/null; then
-                wopt_size=$(wc -c < /tmp/wopt_out.wasm)
+              if wasm-opt -O3 "$RUNNER_TEMP/orig.wasm" -o "$RUNNER_TEMP/wopt_out.wasm" 2>/dev/null; then
+                wopt_size=$(wc -c < "$RUNNER_TEMP/wopt_out.wasm")
                 wopt_valid="yes"
-                wasm-tools validate /tmp/wopt_out.wasm 2>/dev/null || wopt_valid="INVALID"
+                wasm-tools validate "$RUNNER_TEMP/wopt_out.wasm" 2>/dev/null || wopt_valid="INVALID"
               else
                 wopt_size="-"
                 wopt_valid="error"
