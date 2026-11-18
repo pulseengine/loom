@@ -678,12 +678,15 @@ impl VerificationSignatureContext {
     /// PR-K3: check whether a callee is pure + no-trap and therefore
     /// safe to encode as a deterministic uninterpreted function
     /// `f(args)` in the SMT representation. Returns true only when
-    /// IPA proved both purity and no-trap; imported / unknown / non-
-    /// pure / may-trap callees return false, falling back to the
+    /// IPA proved the callee pure, completing normally and reading no
+    /// state; imported / unknown / non-pure / may-trap / state-reading
+    /// callees return false, falling back to the
     /// conservative fresh-symbolic + havoc encoding.
     pub fn is_pure_no_trap_call(&self, func_idx: u32) -> bool {
         match self.function_summaries.get(func_idx as usize) {
-            Some(Some(s)) => s.is_pure && s.is_no_trap,
+            // `pure_call_k(args)` ranges over the arguments only, so the
+            // callee must not read memory, globals or the host.
+            Some(Some(s)) => s.is_deterministic(),
             _ => false,
         }
     }
