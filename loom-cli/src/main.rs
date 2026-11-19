@@ -518,8 +518,11 @@ fn optimize_command(
                         }
                     );
                     println!(
-                        "Core modules: {} found, {} optimized",
-                        stats.module_count, stats.modules_optimized
+                        "Core modules: {} found, {} optimized, {} skipped, {} failed",
+                        stats.module_count,
+                        stats.modules_optimized,
+                        stats.modules_skipped.len(),
+                        stats.modules_failed.len()
                     );
                     if stats.original_module_size > 0 {
                         println!(

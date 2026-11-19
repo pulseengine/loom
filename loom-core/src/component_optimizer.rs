@@ -125,8 +125,15 @@ pub struct ComponentStats {
     pub optimized_size: usize,
     /// Number of core modules found
     pub module_count: usize,
-    /// Number of modules successfully optimized
+    /// Number of modules the optimization pipeline ran on. Skipped and failed
+    /// modules are not counted here.
     pub modules_optimized: usize,
+    /// Modules kept byte-for-byte because loom declined to optimize them,
+    /// as `(module index, reason)`.
+    pub modules_skipped: Vec<(usize, String)>,
+    /// Modules kept byte-for-byte because optimization returned an error,
+    /// as `(module index, error)`.
+    pub modules_failed: Vec<(usize, String)>,
     /// Total size of original modules
     pub original_module_size: usize,
     /// Total size of optimized modules
@@ -280,22 +287,31 @@ fn optimize_component_inner(
 
     // Step 2: Optimize each core module
     let mut optimized_count = 0;
+    let mut skipped: Vec<(usize, String)> = Vec::new();
+    let mut failed: Vec<(usize, String)> = Vec::new();
     let mut phase_b = PhaseBOutcome::default();
     for (idx, core_module) in core_modules.iter_mut().enumerate() {
         // #239 Phase B: the set of this module's export names that the enclosing
         // component actually references. `None` ⇒ every export stays live.
         let live_names = liveness.and_then(|l| l.live_names(idx));
         match optimize_core_module(&core_module.original_bytes, live_names) {
-            Ok((optimized_bytes, module_phase_b)) => {
+            Ok(CoreModuleOutcome::Optimized(optimized_bytes, module_phase_b)) => {
                 core_module.optimized_bytes = Some(optimized_bytes);
                 phase_b.merge(&module_phase_b);
                 optimized_count += 1;
                 eprintln!("✓ Module {}: Optimized successfully", idx);
             }
+            Ok(CoreModuleOutcome::Skipped(reason)) => {
+                eprintln!(
+                    "⚠  Module {}: Skipped ({}); original bytes kept",
+                    idx, reason
+                );
+                skipped.push((idx, reason.to_string()));
+            }
             Err(e) => {
                 eprintln!("⚠  Module {}: Failed to optimize: {:?}", idx, e);
                 eprintln!("   Using original bytes for this module");
-                // Keep original bytes
+                failed.push((idx, format!("{e}")));
             }
         }
     }
@@ -351,23 +367,62 @@ fn optimize_component_inner(
         core_functions_removed: phase_b.functions_removed,
     };
 
+    let message = module_status_message(core_modules.len(), optimized_count, &skipped, &failed);
     let stats = ComponentStats {
         original_size: component_bytes.len(),
         optimized_size: optimized_component.len(),
         module_count: core_modules.len(),
         modules_optimized: optimized_count,
+        modules_skipped: skipped,
+        modules_failed: failed,
         original_module_size,
         optimized_module_size,
         size_breakdown,
-        message: format!(
-            "Successfully optimized {} of {} core modules",
-            optimized_count,
-            core_modules.len()
-        ),
+        message,
     };
 
     Ok((optimized_component, stats))
 }
+
+/// The status line for a component run (#530). It says "Successfully" only
+/// when every core module was optimized, and names each skipped or failed
+/// module with its reason.
+fn module_status_message(
+    module_count: usize,
+    optimized: usize,
+    skipped: &[(usize, String)],
+    failed: &[(usize, String)],
+) -> String {
+    if skipped.is_empty() && failed.is_empty() {
+        return format!("Successfully optimized {optimized} of {module_count} core modules");
+    }
+    let list = |v: &[(usize, String)]| {
+        v.iter()
+            .map(|(i, r)| format!("module {i}: {r}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let mut msg = format!("Optimized {optimized} of {module_count} core modules");
+    if !skipped.is_empty() {
+        msg.push_str(&format!(", skipped {} ({})", skipped.len(), list(skipped)));
+    }
+    if !failed.is_empty() {
+        msg.push_str(&format!(", failed {} ({})", failed.len(), list(failed)));
+    }
+    msg
+}
+
+/// What [`optimize_core_module`] did with one core module.
+enum CoreModuleOutcome {
+    /// The pipeline ran; the bytes are its output.
+    Optimized(Vec<u8>, PhaseBOutcome),
+    /// loom declined to optimize the module; the original bytes are kept.
+    Skipped(&'static str),
+}
+
+/// Reason recorded for a module skipped under #196.
+const SKIP_REASON_FUNCREF_ELEMENTS: &str =
+    "function-referencing element table, pending a behavioral gate (#196)";
 
 /// Is `name` the `component-type` metadata section?
 ///
@@ -416,7 +471,7 @@ struct CoreModule {
 fn optimize_core_module(
     module_bytes: &[u8],
     live_names: Option<&std::collections::HashSet<String>>,
-) -> Result<(Vec<u8>, PhaseBOutcome)> {
+) -> Result<CoreModuleOutcome> {
     // First validate the input module
     Validator::new_with_features(wasm_features_with_async())
         .validate_all(module_bytes)
@@ -439,11 +494,7 @@ fn optimize_core_module(
     // Re-enabling optimization for these modules is gated on a behavioral
     // differential (run exports before/after and compare) — see #196.
     if crate::fused_optimizer::element_section_references_functions(&module) {
-        eprintln!(
-            "  Skipped optimization: module has a function-referencing element table \
-             (indirect-call dispatch); keeping original bytes pending a behavioral gate (#196)"
-        );
-        return Ok((module_bytes.to_vec(), PhaseBOutcome::default()));
+        return Ok(CoreModuleOutcome::Skipped(SKIP_REASON_FUNCREF_ELEMENTS));
     }
 
     // Phase B (#239 / #303): component-level reachability GC. Drop the function
@@ -747,7 +798,7 @@ fn optimize_core_module(
         return Err(anyhow!("Module roundtrip validation failed: {}", e));
     }
 
-    Ok((optimized_bytes, phase_b))
+    Ok(CoreModuleOutcome::Optimized(optimized_bytes, phase_b))
 }
 
 /// Reconstruct a component with optimized core modules
