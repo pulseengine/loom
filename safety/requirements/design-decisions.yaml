@@ -433,3 +433,51 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-18
+
+  - id: DD-18
+    type: design-decision
+    title: "Linux release binaries become static musl builds when the ubuntu-22.04 runner image is retired"
+    status: approved
+    description: >
+      The x86_64 and aarch64 gnu release binaries are built on the
+      `ubuntu-22.04` and `ubuntu-22.04-arm` runner images (release.yml, and
+      the ci.yml Build matrix for aarch64) because the image sets the
+      binary's glibc floor: v1.2.0 was built on a newer image, required
+      GLIBC 2.38 and did not load on 22.04 (#311). The 22.04 images are
+      deprecated since 2026-09-17 and unsupported from 2027-04-17, with
+      brownouts possible before that. Decision (owner, 2026-11-18): replace
+      the gnu Linux builds with statically linked musl builds
+      (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) on
+      supported runner images. A static binary has no glibc requirement, so
+      the floor no longer depends on any runner image. This folds in #388.
+      Plan: (1) measure: build both musl targets with the vendored Z3 and
+      static libstdc++, and record build time, binary size and optimize time
+      on the corpus against the gnu build; (2) publish the musl archives
+      beside the gnu ones in the first release after the switch merges,
+      targeted by 2027-02-15, and announce in its notes that the gnu
+      archives end; (3) remove the gnu Linux jobs and every 22.04 pin by
+      2027-03-31, before the image is unsupported.
+    fields:
+      rationale: >
+        The glibc floor is a promise the runner image only happened to
+        keep. A static musl binary removes the promise instead of
+        maintaining it: no interpreter, no GLIBC symbol versions, and it runs
+        on Alpine and on glibc distributions older than 2.35, which the gnu
+        build never did (#388). Publishing both for one release keeps the
+        archive names consumers fetch working while they move, so the rename
+        reaches them as an announcement rather than a missing file.
+      alternatives: >
+        Alternative 1: build gnu on ubuntu-24.04 (rejected: glibc 2.39
+        raises the floor, the #311 regression). Alternative 2: gnu inside an
+        older-glibc container such as manylinux_2_28 (not chosen: keeps a
+        floor to maintain, and still excludes Alpine). Alternative 3:
+        cargo-zigbuild targeting a glibc version (not chosen: compiles the
+        C++ solver with a different C++ toolchain and standard library than
+        every other target). Alternative 4: stay on 22.04 until removal
+        (rejected: brownouts would fail releases without notice).
+        The measurement step can still overturn this: if the static musl
+        build of the C++ solver fails, or its optimize time is unacceptable,
+        the decision is reopened with those numbers.
+    links:
+      - type: satisfies
+        target: REQ-18
