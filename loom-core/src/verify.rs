@@ -8620,7 +8620,11 @@ const MAX_ACYCLIC_CALL_DEPTH: usize = 8;
 fn is_acyclic_modelable_body(body: &[Instruction]) -> bool {
     body.iter().all(|instr| match instr {
         // Back-edges are out of scope.
-        Instruction::Loop { .. } => false,
+        // A loop is proven against its counterpart iteration by iteration
+        // and applied as a summary.
+        Instruction::Loop { block_type, body } => {
+            acyclic_block_arity(block_type).is_ok() && is_acyclic_modelable_body(body)
+        }
         // Resolved to a direct call when its slot is a constant the table
         // resolver knows, otherwise opaque.
         Instruction::CallIndirect { .. } => true,
@@ -8784,6 +8788,13 @@ struct AcyclicCx {
     /// callee, never per depth, so a callee is modelled the same way wherever
     /// it is called and both encodings agree on it.
     by_body: std::collections::HashSet<u32>,
+    /// This function's loops, each proven against its counterpart in the
+    /// other function before encoding; applied as summaries.
+    loops: LoopTable,
+    /// Locals both functions have (the shorter local list).
+    common_locals: usize,
+    /// "o" or "p": names this side's own locals in loop summaries.
+    side: &'static str,
 }
 
 /// The callees whose direct-call counts differ between the two bodies.
@@ -9667,6 +9678,7 @@ fn exec_acyclic(
                     // expressions, traps included.
                     Some(callee)
                         if cx.by_body.contains(g)
+                            && !contains_any_loop(&callee.instructions)
                             && depth + 1 < MAX_ACYCLIC_CALL_DEPTH
                             && callee.signature.results.len() <= 1
                             && is_acyclic_modelable_body(&callee.instructions) =>
@@ -9854,6 +9866,23 @@ fn exec_acyclic(
                     }
                 }
             }
+            // A loop no branch returns to is a block.
+            Instruction::Loop { block_type, body } if !loop_has_back_edge(body) => {
+                let arity = acyclic_block_arity(block_type)?;
+                let base_stack = state.stack.clone();
+                labels.push(LabelJoin {
+                    arity,
+                    entries: Vec::new(),
+                });
+                exec_acyclic(body, state, labels, ctx, depth, cx)?;
+                if state.reachable {
+                    let target = labels.len() - 1;
+                    acyclic_push_branch(labels, target, state.path.clone(), state)?;
+                }
+                let join = labels.pop().unwrap();
+                acyclic_apply_join(state, base_stack, &join)?;
+            }
+            Instruction::Loop { .. } => exec_loop_summary(instr, state, labels, cx)?,
             other if is_exact_extra(other) => exec_exact_extra(other, state, cx)?,
             other => {
                 // Never delegate an unmodelled op: the delegate's catch-all
@@ -10083,6 +10112,9 @@ fn encode_acyclic_function(
     func: &Function,
     ctx: &VerificationSignatureContext,
     by_body: &std::collections::HashSet<u32>,
+    loops: &LoopTable,
+    common_locals: usize,
+    side: &'static str,
 ) -> Result<AcyclicObservation> {
     if !is_acyclic_modelable_body(&func.instructions) {
         return Err(anyhow!("function not acyclic-modelable"));
@@ -10151,6 +10183,9 @@ fn encode_acyclic_function(
             .iter()
             .fold(Cond::True, |a, m| a.and(&pages_in_range(&m.pages))),
         by_body: by_body.clone(),
+        loops: loops.clone(),
+        common_locals,
+        side,
     };
     exec_acyclic(&func.instructions, &mut state, &mut labels, ctx, 0, &mut cx)?;
     if state.reachable {
@@ -10213,6 +10248,566 @@ fn encode_acyclic_function(
         globals: ret_globals,
         memory: ret_memory,
     })
+}
+
+/// A loop's place in its function: its pre-order index (which pairs it with
+/// the loop of the same index in the other function), the result types of
+/// every label enclosing it (index 0 is the function's own label; a loop
+/// label carries nothing, so it contributes no types), and its own result
+/// types.
+#[cfg(feature = "verification")]
+#[derive(Clone, PartialEq)]
+struct LoopInfo {
+    index: usize,
+    outer: Vec<Vec<crate::ValueType>>,
+    results: Vec<crate::ValueType>,
+}
+
+/// Whether any branch in `body` targets the loop whose body it is. A loop no
+/// branch returns to runs its body once, exactly like a block.
+#[cfg(feature = "verification")]
+fn loop_has_back_edge(body: &[Instruction]) -> bool {
+    fn walk(body: &[Instruction], depth: u32) -> bool {
+        body.iter().any(|i| match i {
+            Instruction::Br(n) | Instruction::BrIf(n) => *n == depth,
+            Instruction::BrTable { targets, default } => {
+                *default == depth || targets.contains(&depth)
+            }
+            Instruction::Block { body, .. } | Instruction::Loop { body, .. } => {
+                walk(body, depth + 1)
+            }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => walk(then_body, depth + 1) || walk(else_body, depth + 1),
+            _ => false,
+        })
+    }
+    walk(body, 0)
+}
+
+/// Loops of one function by the address of their `loop` instruction.
+#[cfg(feature = "verification")]
+type LoopTable = std::collections::HashMap<usize, LoopInfo>;
+
+#[cfg(feature = "verification")]
+fn block_results(bt: &BlockType) -> Result<Vec<crate::ValueType>> {
+    match bt {
+        BlockType::Empty => Ok(Vec::new()),
+        BlockType::Value(t) => Ok(vec![*t]),
+        BlockType::Func { params, results } if params.is_empty() && results.len() <= 1 => {
+            Ok(results.clone())
+        }
+        _ => Err(anyhow!(
+            "acyclic executor: block with params/multi-result not modeled"
+        )),
+    }
+}
+
+/// Every loop of `func`, in pre-order.
+#[cfg(feature = "verification")]
+fn collect_loop_sites(func: &Function) -> Result<Vec<(&Instruction, LoopInfo)>> {
+    fn walk<'a>(
+        body: &'a [Instruction],
+        stack: &mut Vec<Vec<crate::ValueType>>,
+        out: &mut Vec<(&'a Instruction, LoopInfo)>,
+    ) -> Result<()> {
+        for instr in body {
+            match instr {
+                Instruction::Block { block_type, body } => {
+                    stack.push(block_results(block_type)?);
+                    walk(body, stack, out)?;
+                    stack.pop();
+                }
+                // Executed as a block, with a block's label.
+                Instruction::Loop { block_type, body } if !loop_has_back_edge(body) => {
+                    stack.push(block_results(block_type)?);
+                    walk(body, stack, out)?;
+                    stack.pop();
+                }
+                Instruction::If {
+                    block_type,
+                    then_body,
+                    else_body,
+                } => {
+                    stack.push(block_results(block_type)?);
+                    walk(then_body, stack, out)?;
+                    walk(else_body, stack, out)?;
+                    stack.pop();
+                }
+                Instruction::Loop { block_type, body } => {
+                    let info = LoopInfo {
+                        index: out.len(),
+                        outer: stack.clone(),
+                        results: block_results(block_type)?,
+                    };
+                    out.push((instr, info));
+                    stack.push(Vec::new());
+                    walk(body, stack, out)?;
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![func.signature.results.clone()];
+    walk(&func.instructions, &mut stack, &mut out)?;
+    Ok(out)
+}
+
+/// The value types of every local of `func`, parameters first.
+#[cfg(feature = "verification")]
+fn local_types(func: &Function) -> Vec<crate::ValueType> {
+    let mut t = func.signature.params.clone();
+    for (count, lt) in &func.locals {
+        for _ in 0..*count {
+            t.push(*lt);
+        }
+    }
+    t
+}
+
+/// One way out of a single loop iteration: its guard, carried values,
+/// locals, globals and memories.
+#[cfg(feature = "verification")]
+type IterExit = (Cond, Vec<BV>, Vec<BV>, Vec<BV>, Vec<Mem>);
+
+/// What one iteration of a loop body can do, from a symbolic header state.
+#[cfg(feature = "verification")]
+struct IterOutcome {
+    assumed: Cond,
+    /// Branches to each enclosing label, index 0 the function's own.
+    outer: Vec<Option<IterExit>>,
+    /// Branches back to the loop header.
+    cont: Option<IterExit>,
+    /// Falling off the end of the body.
+    fall: Option<IterExit>,
+    trapped: Cond,
+    trap_globals: Vec<BV>,
+    trap_mems: Vec<Mem>,
+}
+
+/// Run one iteration of the loop `site` of `func` from a symbolic header
+/// state. The state is named by the loop's index, so both functions start
+/// from the same values; locals beyond the first `common` are this side's
+/// own and start arbitrary.
+#[cfg(feature = "verification")]
+#[allow(clippy::too_many_arguments)]
+fn run_loop_iteration(
+    func: &Function,
+    site: &Instruction,
+    info: &LoopInfo,
+    ctx: &VerificationSignatureContext,
+    by_body: &std::collections::HashSet<u32>,
+    table: &LoopTable,
+    common: usize,
+    side: &'static str,
+) -> Result<IterOutcome> {
+    let body = match site {
+        Instruction::Loop { body, .. } => body,
+        _ => return Err(anyhow!("acyclic executor: loop site is not a loop")),
+    };
+    let k = info.index;
+    let locals: Vec<BV> = local_types(func)
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let name = if i < common {
+                format!("loop{}_local{}", k, i)
+            } else {
+                format!("loop{}_{}extra{}", k, side, i)
+            };
+            BV::new_const(name, bv_width_for_value_type(*t))
+        })
+        .collect();
+    let globals: Vec<BV> = ctx
+        .global_types
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            BV::new_const(
+                format!("loop{}_global{}", k, i),
+                bv_width_for_value_type(*t),
+            )
+        })
+        .collect();
+    let mem_ok: Vec<bool> = if ctx.memories.is_empty() {
+        vec![true]
+    } else {
+        ctx.memories.clone()
+    };
+    let memory: Vec<Mem> = (0..mem_ok.len())
+        .map(|m| {
+            Mem::new(
+                Array::new_const(
+                    format!("loop{}_memory{}", k, m),
+                    &Sort::bitvector(32),
+                    &Sort::bitvector(8),
+                ),
+                BV::new_const(format!("loop{}_pages{}", k, m), 32),
+            )
+        })
+        .collect();
+    let mut cx = AcyclicCx {
+        havoc_counter: 0,
+        traps: Vec::new(),
+        mem_ok,
+        assumed: memory
+            .iter()
+            .fold(Cond::True, |a, m| a.and(&pages_in_range(&m.pages))),
+        by_body: by_body.clone(),
+        loops: table.clone(),
+        common_locals: common,
+        side,
+    };
+    let mut state = AcyclicState {
+        stack: Vec::new(),
+        locals,
+        globals,
+        memory,
+        path: Cond::True,
+        reachable: true,
+    };
+    let mut labels: Vec<LabelJoin> = info
+        .outer
+        .iter()
+        .map(|t| LabelJoin {
+            arity: t.len(),
+            entries: Vec::new(),
+        })
+        .collect();
+    labels.push(LabelJoin {
+        arity: 0,
+        entries: Vec::new(),
+    });
+    exec_acyclic(body, &mut state, &mut labels, ctx, 0, &mut cx)?;
+
+    let fall = if state.reachable {
+        let r = info.results.len();
+        if state.stack.len() < r {
+            return Err(anyhow!("acyclic executor: loop result underflow"));
+        }
+        let vals = state.stack[state.stack.len() - r..].to_vec();
+        Some((
+            state.path.clone(),
+            vals,
+            state.locals.clone(),
+            state.globals.clone(),
+            state.memory.clone(),
+        ))
+    } else {
+        None
+    };
+    let as_exit =
+        |m: Option<MergedState>| m.map(|(res, loc, glob, mem, path)| (path, res, loc, glob, mem));
+    let cont = as_exit(acyclic_merge_entries(&labels.pop().unwrap().entries));
+    let outer: Vec<Option<IterExit>> = labels
+        .iter()
+        .map(|l| as_exit(acyclic_merge_entries(&l.entries)))
+        .collect();
+    let (trapped, trap_globals, trap_mems) = match cx.traps.split_last() {
+        None => (Cond::False, Vec::new(), Vec::new()),
+        Some(((g_last, gl_last, _), rest)) => {
+            let mut gl = gl_last.clone();
+            let mut any = g_last.clone();
+            for (g, gs, _) in rest.iter().rev() {
+                gl = gs
+                    .iter()
+                    .zip(gl.iter())
+                    .map(|(t, f)| g.ite_bv(t, f))
+                    .collect();
+                any = g.or(&any);
+            }
+            let mems: Vec<(Cond, &Vec<Mem>)> =
+                cx.traps.iter().map(|t| (t.0.clone(), &t.2)).collect();
+            (any, gl, Mem::merge_all(&mems))
+        }
+    };
+    Ok(IterOutcome {
+        assumed: cx.assumed.clone(),
+        outer,
+        cont,
+        fall,
+        trapped,
+        trap_globals,
+        trap_mems,
+    })
+}
+
+/// Same guard, and under it the same values, common locals, globals and
+/// memories.
+#[cfg(feature = "verification")]
+fn exit_same(a: &Option<IterExit>, b: &Option<IterExit>, common: usize, at: &BV) -> Cond {
+    let none = (Cond::False, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (ga, va, la, gla, ma) = a.as_ref().unwrap_or(&none);
+    let (gb, vb, lb, glb, mb) = b.as_ref().unwrap_or(&none);
+    if matches!(ga, Cond::False) && matches!(gb, Cond::False) {
+        return Cond::True;
+    }
+    let mut eqs: Vec<Bool> = Vec::new();
+    let mut pair = |x: &BV, y: &BV| {
+        if x != y {
+            eqs.push(x.eq(y));
+        }
+    };
+    for (x, y) in va.iter().zip(vb.iter()) {
+        pair(x, y);
+    }
+    for (x, y) in la.iter().zip(lb.iter()).take(common) {
+        pair(x, y);
+    }
+    for (x, y) in gla.iter().zip(glb.iter()) {
+        pair(x, y);
+    }
+    for (x, y) in ma.iter().zip(mb.iter()) {
+        pair(&x.pages, &y.pages);
+    }
+    for (x, y) in ma.iter().zip(mb.iter()) {
+        if x.folded != y.folded {
+            eqs.push(x.folded.select(at).eq(y.folded.select(at)));
+        }
+    }
+    let eq = Cond::all(eqs);
+    if ga.same_as(gb) {
+        return ga.not().or(&eq);
+    }
+    ga.and(gb).and(&eq).or(&ga.not().and(&gb.not()))
+}
+
+/// The condition under which one iteration of the two loop bodies does the
+/// same thing from the same header state: the same exit (back to the
+/// header, out to each enclosing label, off the end, or a trap) under the
+/// same inputs, with the same values, common locals, globals and memories.
+#[cfg(feature = "verification")]
+fn loop_iterations_same(o: &IterOutcome, p: &IterOutcome, common: usize) -> Result<Cond> {
+    if o.outer.len() != p.outer.len() {
+        return Err(anyhow!("acyclic verify: loop nesting differs"));
+    }
+    let at = BV::new_const("observed_address", 32);
+    let mut same =
+        exit_same(&o.cont, &p.cont, common, &at).and(&exit_same(&o.fall, &p.fall, common, &at));
+    for (a, b) in o.outer.iter().zip(p.outer.iter()) {
+        same = same.and(&exit_same(a, b, common, &at));
+    }
+    let trap_o = (!matches!(o.trapped, Cond::False)).then(|| {
+        (
+            o.trapped.clone(),
+            Vec::new(),
+            Vec::new(),
+            o.trap_globals.clone(),
+            o.trap_mems.clone(),
+        )
+    });
+    let trap_p = (!matches!(p.trapped, Cond::False)).then(|| {
+        (
+            p.trapped.clone(),
+            Vec::new(),
+            Vec::new(),
+            p.trap_globals.clone(),
+            p.trap_mems.clone(),
+        )
+    });
+    same = same.and(&exit_same(&trap_o, &trap_p, 0, &at));
+    let assumed = if o.assumed.same_as(&p.assumed) {
+        o.assumed.clone()
+    } else {
+        o.assumed.and(&p.assumed)
+    };
+    Ok(match same {
+        Cond::True => Cond::True,
+        _ => assumed.not().or(&same),
+    })
+}
+
+/// Apply a proven loop as a summary: what it does is a function of its
+/// entry state (the common locals, the globals and every memory), the same
+/// function for both encodings. Exactly one of its exits is taken: off the
+/// end, a branch to an enclosing label, or a trap; otherwise it does not
+/// terminate and that path ends here.
+#[cfg(feature = "verification")]
+fn exec_loop_summary(
+    instr: &Instruction,
+    state: &mut AcyclicState,
+    labels: &mut [LabelJoin],
+    cx: &mut AcyclicCx,
+) -> Result<()> {
+    let info = cx
+        .loops
+        .get(&(instr as *const Instruction as usize))
+        .cloned()
+        .ok_or_else(|| anyhow!("acyclic executor: loop without a proven counterpart"))?;
+    if labels.len() != info.outer.len() {
+        return Err(anyhow!("acyclic executor: loop label depth mismatch"));
+    }
+    let k = info.index;
+    let n = cx.common_locals.min(state.locals.len());
+    let mem_sort = Sort::array(&Sort::bitvector(32), &Sort::bitvector(8));
+    let mut domain: Vec<Sort> = Vec::new();
+    let mut inputs: Vec<&dyn z3::ast::Ast> = Vec::new();
+    for l in &state.locals[..n] {
+        domain.push(Sort::bitvector(l.get_size()));
+        inputs.push(l);
+    }
+    for g in &state.globals {
+        domain.push(Sort::bitvector(g.get_size()));
+        inputs.push(g);
+    }
+    for m in &state.memory {
+        domain.push(mem_sort.clone());
+        inputs.push(&m.folded);
+        domain.push(Sort::bitvector(32));
+        inputs.push(&m.pages);
+    }
+    let domain_refs: Vec<&Sort> = domain.iter().collect();
+    let apply =
+        |name: String, range: &Sort| FuncDecl::new(name, &domain_refs, range).apply(&inputs);
+    let bv = |d: z3::ast::Dynamic| {
+        d.as_bv()
+            .ok_or_else(|| anyhow!("loop model is not a bit-vector"))
+    };
+    let arr = |d: z3::ast::Dynamic| {
+        d.as_array()
+            .ok_or_else(|| anyhow!("loop model is not an array"))
+    };
+
+    let sel = bv(apply(format!("xloop{}_exit", k), &Sort::bitvector(8)))?;
+    let is = |v: usize| Cond::of(sel.eq(BV::from_u64(v as u64, 8)));
+
+    let mut new_locals = Vec::with_capacity(state.locals.len());
+    for (i, l) in state.locals.iter().enumerate() {
+        let s = Sort::bitvector(l.get_size());
+        if i < n {
+            new_locals.push(bv(apply(format!("xloop{}_local{}", k, i), &s))?);
+        } else {
+            // This side's own local: a function of the entry state and its
+            // own value, so the other encoding cannot share it.
+            let mut d = domain_refs.clone();
+            d.push(&s);
+            let mut a = inputs.clone();
+            a.push(l);
+            new_locals.push(bv(FuncDecl::new(
+                format!("xloop{}_{}extra{}", k, cx.side, i),
+                &d,
+                &s,
+            )
+            .apply(&a))?);
+        }
+    }
+    let mut new_globals = Vec::with_capacity(state.globals.len());
+    let mut trap_globals = Vec::with_capacity(state.globals.len());
+    for (i, g) in state.globals.iter().enumerate() {
+        let s = Sort::bitvector(g.get_size());
+        new_globals.push(bv(apply(format!("xloop{}_global{}", k, i), &s))?);
+        trap_globals.push(bv(apply(format!("xloop{}_trap_global{}", k, i), &s))?);
+    }
+    let pages_sort = Sort::bitvector(32);
+    let mut new_mems = Vec::with_capacity(state.memory.len());
+    let mut trap_mems = Vec::with_capacity(state.memory.len());
+    for m in 0..state.memory.len() {
+        let pages = bv(apply(format!("xloop{}_pages{}", k, m), &pages_sort))?;
+        let trap_pages = bv(apply(format!("xloop{}_trap_pages{}", k, m), &pages_sort))?;
+        cx.assumed = cx
+            .assumed
+            .and(&pages_in_range(&pages))
+            .and(&pages_in_range(&trap_pages));
+        new_mems.push(Mem::new(
+            arr(apply(format!("xloop{}_memory{}", k, m), &mem_sort))?,
+            pages,
+        ));
+        trap_mems.push(Mem::new(
+            arr(apply(format!("xloop{}_trap_memory{}", k, m), &mem_sort))?,
+            trap_pages,
+        ));
+    }
+
+    for (j, tys) in info.outer.iter().enumerate() {
+        let guard = state.path.and(&is(j + 1));
+        if matches!(guard, Cond::False) {
+            continue;
+        }
+        let mut vals = Vec::with_capacity(tys.len());
+        for (v, t) in tys.iter().enumerate() {
+            let s = Sort::bitvector(bv_width_for_value_type(*t));
+            vals.push(bv(apply(format!("xloop{}_val{}_{}", k, j, v), &s))?);
+        }
+        let exit = AcyclicState {
+            stack: vals,
+            locals: new_locals.clone(),
+            globals: new_globals.clone(),
+            memory: new_mems.clone(),
+            path: guard.clone(),
+            reachable: true,
+        };
+        acyclic_push_branch(labels, j, guard, &exit)?;
+    }
+    cx.traps.push((
+        state.path.and(&is(info.outer.len() + 1)),
+        trap_globals,
+        trap_mems,
+    ));
+    let mut results = Vec::with_capacity(info.results.len());
+    for (v, t) in info.results.iter().enumerate() {
+        let s = Sort::bitvector(bv_width_for_value_type(*t));
+        results.push(bv(apply(format!("xloop{}_res{}", k, v), &s))?);
+    }
+    let fall_path = state.path.and(&is(0));
+    state.path = fall_path;
+    state.locals = new_locals;
+    state.globals = new_globals;
+    state.memory = new_mems;
+    state.stack.extend(results);
+    Ok(())
+}
+
+/// Decide a comparison condition: the configured engine first, then Z3.
+#[cfg(feature = "verification")]
+fn decide_same(same: Cond, backend: VerifyBackend) -> Result<bool> {
+    let same = match same {
+        Cond::True => return Ok(true),
+        Cond::False => {
+            revert_note(format_args!(
+                "exact verify: the two functions differ on every input"
+            ));
+            return Ok(false);
+        }
+        Cond::B(b) => b,
+    };
+    let lhs = same.ite(&BV::from_u64(1, 1), &BV::from_u64(0, 1));
+    let rhs = BV::from_u64(1, 1);
+    let deferred = match verify_solver::decide_bv_equivalence_traps_modelled(&lhs, &rhs, backend) {
+        SeamOutcome::Decided(verdict) => {
+            return match verdict {
+                RuleVerdict::Proven => Ok(true),
+                RuleVerdict::Disproven(model) => {
+                    revert_note(format_args!("exact verify: counterexample: {}", model));
+                    Ok(false)
+                }
+                RuleVerdict::Unknown => Err(anyhow!("acyclic verify: solver unknown")),
+            };
+        }
+        SeamOutcome::Deferred(reason) => reason,
+    };
+    if backend == VerifyBackend::Ordeal {
+        return Err(anyhow!(
+            "acyclic verify: the new engine deferred this obligation ({:?})",
+            deferred
+        ));
+    }
+    let solver = Solver::new();
+    solver.assert(same.not());
+    match solver.check() {
+        SatResult::Unsat => Ok(true),
+        SatResult::Sat => {
+            if let Some(model) = solver.get_model() {
+                revert_note(format_args!("exact verify: counterexample: {}", model));
+            }
+            Ok(false)
+        }
+        SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
+    }
 }
 
 /// The condition under which two observations agree: both trap, leaving the
@@ -10308,9 +10903,6 @@ fn exact_route(
             original, optimized, ctx, backend,
         ));
     }
-    if contains_any_loop(&original.instructions) || contains_any_loop(&optimized.instructions) {
-        return None;
-    }
     let culprit = first_unmodelled(&original.instructions)
         .or_else(|| first_unmodelled(&optimized.instructions))
         .unwrap_or_else(|| "a multi-result signature".to_string());
@@ -10386,55 +10978,55 @@ fn verify_acyclic_equivalence_with_backend(
     let cfg = z3_config_with_timeout();
     with_z3_config(&cfg, || {
         let by_body = callees_to_model_by_body(original, optimized);
-        let o = encode_acyclic_function(original, ctx, &by_body)?;
-        let p = encode_acyclic_function(optimized, ctx, &by_body)?;
-        let same = match acyclic_same(&o, &p)? {
-            Cond::True => return Ok(true),
-            Cond::False => {
+
+        // Loops are paired in pre-order and proven one iteration at a time
+        // before either function is encoded.
+        let sites_o = collect_loop_sites(original)?;
+        let sites_p = collect_loop_sites(optimized)?;
+        if sites_o.len() != sites_p.len() {
+            return Err(anyhow!(
+                "acyclic verify: the two functions have different numbers of loops"
+            ));
+        }
+        let types_o = local_types(original);
+        let types_p = local_types(optimized);
+        let common = types_o.len().min(types_p.len());
+        if types_o[..common] != types_p[..common] {
+            return Err(anyhow!("acyclic verify: local types differ"));
+        }
+        let table = |sites: &[(&Instruction, LoopInfo)]| -> LoopTable {
+            sites
+                .iter()
+                .map(|(i, info)| (*i as *const Instruction as usize, info.clone()))
+                .collect()
+        };
+        let table_o = table(&sites_o);
+        let table_p = table(&sites_p);
+        for ((site_o, info_o), (site_p, info_p)) in sites_o.iter().zip(sites_p.iter()) {
+            if info_o != info_p {
+                return Err(anyhow!(
+                    "acyclic verify: loop {} is nested differently",
+                    info_o.index
+                ));
+            }
+            let it_o = run_loop_iteration(
+                original, site_o, info_o, ctx, &by_body, &table_o, common, "o",
+            )?;
+            let it_p = run_loop_iteration(
+                optimized, site_p, info_p, ctx, &by_body, &table_p, common, "p",
+            )?;
+            if !decide_same(loop_iterations_same(&it_o, &it_p, common)?, backend)? {
                 revert_note(format_args!(
-                    "exact verify: the two functions differ on every input"
+                    "exact verify: loop {} does not do the same in one iteration",
+                    info_o.index
                 ));
                 return Ok(false);
             }
-            Cond::B(b) => b,
-        };
-
-        // Offer the obligation to the configured engine first, as one bit.
-        let lhs = same.ite(&BV::from_u64(1, 1), &BV::from_u64(0, 1));
-        let rhs = BV::from_u64(1, 1);
-        let deferred =
-            match verify_solver::decide_bv_equivalence_traps_modelled(&lhs, &rhs, backend) {
-                SeamOutcome::Decided(verdict) => {
-                    return match verdict {
-                        RuleVerdict::Proven => Ok(true),
-                        RuleVerdict::Disproven(model) => {
-                            revert_note(format_args!("exact verify: counterexample: {}", model));
-                            Ok(false)
-                        }
-                        RuleVerdict::Unknown => Err(anyhow!("acyclic verify: solver unknown")),
-                    };
-                }
-                SeamOutcome::Deferred(reason) => reason,
-            };
-        if backend == VerifyBackend::Ordeal {
-            return Err(anyhow!(
-                "acyclic verify: the new engine deferred this obligation ({:?})",
-                deferred
-            ));
         }
 
-        let solver = Solver::new();
-        solver.assert(same.not());
-        match solver.check() {
-            SatResult::Unsat => Ok(true),
-            SatResult::Sat => {
-                if let Some(model) = solver.get_model() {
-                    revert_note(format_args!("exact verify: counterexample: {}", model));
-                }
-                Ok(false)
-            }
-            SatResult::Unknown => Err(anyhow!("acyclic verify: solver unknown (timeout)")),
-        }
+        let o = encode_acyclic_function(original, ctx, &by_body, &table_o, common, "o")?;
+        let p = encode_acyclic_function(optimized, ctx, &by_body, &table_p, common, "p")?;
+        decide_same(acyclic_same(&o, &p)?, backend)
     })
 }
 
@@ -10772,8 +11364,11 @@ mod tests {
         with_z3_config(&cfg, || {
             let solver = Solver::new();
             let by_body = callees_to_model_by_body(fa, fb);
-            let ra = encode_acyclic_function(fa, &ctx_a, &by_body)?;
-            let rb = encode_acyclic_function(fb, &ctx_b, &by_body)?;
+            // These fixtures are loop-free, so there are no loop summaries.
+            let no_loops = LoopTable::new();
+            let common = local_types(fa).len().min(local_types(fb).len());
+            let ra = encode_acyclic_function(fa, &ctx_a, &by_body, &no_loops, common, "o")?;
+            let rb = encode_acyclic_function(fb, &ctx_b, &by_body, &no_loops, common, "p")?;
             let same = match acyclic_same(&ra, &rb)? {
                 Cond::True => return Ok(true),
                 Cond::False => return Ok(false),
@@ -10886,14 +11481,16 @@ mod tests {
     #[test]
     #[cfg(feature = "verification")]
     fn test_acyclic_modelable_gate() {
-        // The whole-function gate must reject loops (back-edges).
+        // Loops with a back-edge are admitted: each is proven against its
+        // counterpart one iteration at a time and applied as a summary.
         let with_loop = parse::parse_wat(
-            "(module (func (param i32) (result i32) (loop (result i32) local.get 0)))",
+            "(module (func (param i32) (result i32) \
+             (loop (result i32) local.get 0 br_if 0 i32.const 1)))",
         )
         .unwrap();
         assert!(
-            !is_acyclic_modelable_body(&with_loop.functions[0].instructions),
-            "loops (back-edges) must be rejected"
+            is_acyclic_modelable_body(&with_loop.functions[0].instructions),
+            "a loop with a back-edge is admitted"
         );
 
         // PR-C Phase 2: memory ops are now ADMITTED (the executor threads a
@@ -11190,14 +11787,15 @@ mod tests {
             "a wrong-default body must NOT verify equivalent"
         );
 
-        // A function with a loop is not acyclic-modelable → Err (caller falls back).
+        // A function with a loop is decided too: the identity is proven.
         let loopy = parse::parse_wat(
-            "(module (func (param i32) (result i32) (loop (result i32) local.get 0)))",
+            "(module (func (param i32) (result i32) \
+             (loop (result i32) local.get 0 br_if 0 i32.const 1)))",
         )
         .unwrap();
         assert!(
-            verify_acyclic_equivalence(&loopy.functions[0], &loopy.functions[0], &ctx).is_err(),
-            "non-acyclic functions must Err so the caller falls back"
+            verify_acyclic_equivalence(&loopy.functions[0], &loopy.functions[0], &ctx).unwrap(),
+            "a function with a loop is equivalent to itself"
         );
     }
 
@@ -12567,9 +13165,11 @@ mod tests {
             ),
         ];
         let (mut routed, mut deferred) = (0u64, 0u64);
+        let mut reasons: Vec<(&'static str, u64)> = Vec::new();
         for path in corpus {
             let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {}", path, e));
             let m = crate::parse::parse_wasm(&bytes).unwrap_or_else(|e| panic!("{}: {}", path, e));
+            let ctx = VerificationSignatureContext::from_module(&m);
             for f in &m.functions {
                 let mut g = f.clone();
                 match f.signature.results.as_slice() {
@@ -12582,27 +13182,35 @@ mod tests {
                     _ => continue,
                 }
                 verify_solver::reset_route_counts();
-                let _ = verify_function_equivalence_with_backend(
-                    f,
-                    &g,
-                    "corpus",
-                    VerifyBackend::Ordeal,
-                );
+                // With the module's context, as the passes call it: calls
+                // need their signatures and globals their types.
+                let _ = verify_acyclic_equivalence_with_backend(f, &g, &ctx, VerifyBackend::Ordeal);
                 let (r, d) = verify_solver::route_counts();
                 routed += r;
                 deferred += d;
+                reasons.extend(verify_solver::deferrals_by_reason());
             }
         }
-        // Measured at the time of writing: 13 of the 17 corpus functions
-        // reach the solver at all (the rest are void or skipped upstream),
-        // and all 13 route. The floor is deliberately below that so ordinary
-        // corpus churn does not fail the build, while a collapse to zero —
-        // the inert-seam failure mode — does.
+        // Measured with loops and calls decided exactly: 11 corpus
+        // functions reach the seam; 2 are decided by the new engine and 9
+        // defer, almost all because loop summaries and opaque calls are
+        // uninterpreted functions over memories, which the new engine's
+        // term language does not have yet. A collapse to zero decided (the
+        // inert-seam failure mode) fails, and so does any deferral for a
+        // reason other than those two.
+        let expected = ["operand is not a bitvector", "term exceeds node budget"];
         assert!(
-            routed >= 8,
-            "expected the seam to decide real corpus obligations, got routed={} deferred={}",
+            reasons.iter().all(|(r, _)| expected.contains(r)),
+            "unexpected deferral reason: {:?}",
+            reasons
+        );
+        assert!(
+            routed >= 2,
+            "expected the seam to decide real corpus obligations, got routed={} deferred={} \
+             (deferral reasons: {:?})",
             routed,
-            deferred
+            deferred,
+            reasons
         );
     }
 
