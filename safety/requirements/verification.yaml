@@ -1185,7 +1185,7 @@ artifacts:
         - "The non-singleton valueSet path has a test that FAILS if the path is removed (reachability is the asserted property)"
         - "#283 is resolved on the record: either a reproduction showing distinct float ops unified, or a proof they cannot be"
     status: draft
-    release: v1.6.0
+    release: v1.7.0
     tags: [v150, verification, solver-migration, floats]
     links:
       - type: verifies
@@ -1226,7 +1226,7 @@ artifacts:
         - "Given the dependabot config, the per-pin cranelift-isle ignore entries are removed (superseded by the committed lockfile)"
         - "Given a re-run of the org-wide consumer search, the fork has no consumer outside this repository before it is archived"
     status: draft
-    release: v1.6.0
+    release: v1.7.0
     tags: [v150, verification, solver-migration, release-engineering]
     links:
       - type: verifies
@@ -1714,7 +1714,7 @@ artifacts:
       # the failure #353 is about. An artifact with no steps is SKIPPED, which
       # is the honest state for one that is not yet verifiable.
     status: draft
-    release: v1.6.0
+    release: v1.7.0
     tags: [v150, release-engineering, portability]
     links:
       - type: verifies
@@ -1796,3 +1796,252 @@ artifacts:
         target: REQ-2
       - type: verifies
         target: REQ-12
+
+  # ---------------------------------------------------------------------------
+  # v1.6.0 North Star scope (docs/proposals/v1.6.0-release-plan.md).
+  # Each item serves North Star objective O3 ("Every verified claim is backed");
+  # named in the description until rivet's `serves:` field ships.
+  # ---------------------------------------------------------------------------
+
+  - id: TEST-O3-STATS-JSON-ENGINE
+    type: feature
+    title: a run's validation outcome is machine-readable per attempt, with the deciding engine (serves O3)
+    description: >
+      PLANNED. Serves O3. `loom optimize --stats-json <file>` writes the
+      --stats counters plus, per attempt, function index, pass, outcome,
+      deciding engine and reason, and every LOOM_* budget in effect; no host
+      names or paths. Proven attempts split into `proof` (ordeal, certificate
+      re-checked) and `solver_verdict` (Z3, no certificate). `attempts` is
+      counted at entry, independently of the outcome counters, so the bucket
+      sum is a check and not a tautology.
+    fields:
+      acceptance-criteria:
+        - "Given a fixture, the JSON totals equal the text --stats totals"
+        - "Given a run, proof + solver_verdict + kept_unproven + reverted equals attempts, where attempts is incremented at entry"
+        - "Given LOOM_VERIFY_BACKEND=ordeal, at least one attempt is attributed to proof; given z3, none is"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, evidence]
+    links:
+      - type: verifies
+        target: REQ-3
+
+  - id: TEST-O3-COUNT-DETERMINISM
+    type: feature
+    title: validation counts are reproducible across machines at one commit (serves O3)
+    description: >
+      PLANNED. Serves O3. Precondition for any required ratchet on the
+      counts. Run the 30 corpus inputs twice on two machines at one commit and
+      publish per-input differences in docs/measurements/. Solver timeouts are
+      wall-clock, so counts may differ; if they do on more than the fused
+      fixture, budgets move to deterministic limits before a ratchet becomes
+      required.
+    fields:
+      acceptance-criteria:
+        - "Given two machines and one commit, the per-input counts are published with every difference listed"
+        - "Given a difference outside the fused fixture, the ratchet stays advisory until budgets are deterministic"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification]
+    links:
+      - type: verifies
+        target: REQ-14
+
+  - id: TEST-O3-VALIDATOR-TRUST-LEDGER
+    type: feature
+    title: the translation validator's trust escapes are a generated ledger that may only shrink (serves O3)
+    description: >
+      PLANNED. Serves O3. safety/VALIDATOR_TRUST_LEDGER.txt is generated from
+      the code (each record_kept_unproven reason, each LOOM_* read under
+      loom-core/src/verify*.rs) plus reviewed structural entries: encoder,
+      parser and binary encoder, floats as uninterpreted functions, one NaN
+      payload per operation, the #196 whole-module skip, the #345 library/CLI
+      difference. The first commit is a one-time disclosure of escapes that
+      already exist; after it, entries may only shrink and a deletion links the
+      change that removed the escape (the O3 guard).
+    fields:
+      acceptance-criteria:
+        - "Given a planted record_kept_unproven reason, the ledger check exits 1 naming the entry"
+        - "Given a planted LOOM_ environment read, the ledger check exits 1 naming the entry"
+        - "Given a deleted entry without a linked change, the ledger check exits 1"
+        - "Given the job, it is listed in branch protection and no path filter can skip it"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, trusted-base]
+    links:
+      - type: verifies
+        target: REQ-4
+
+  - id: TEST-O3-COVERAGE-RATCHET
+    type: feature
+    title: validation coverage over the corpus cannot regress (serves O3)
+    description: >
+      PLANNED. Serves O3. A committed script and baseline over the 30
+      repository inputs fail if kept_unproven rises, absolute proof +
+      solver_verdict falls, output bytes grow, or attempts fall. A rise in
+      solver_verdict alone does not fail while Z3 is the default. Becomes a
+      required check only after TEST-O3-COUNT-DETERMINISM.
+      Baseline on main c717ce6: 7,917 attempts, 7,517 proven, 35 kept without
+      proof (all in the meld-fused fixture, body over the solver size
+      threshold), 365 reverted.
+    fields:
+      acceptance-criteria:
+        - "Given a planted rise in kept_unproven, the ratchet exits 1 naming that condition"
+        - "Given a planted fall in proven attempts, the ratchet exits 1 naming that condition"
+        - "Given planted output growth, the ratchet exits 1 naming that condition"
+        - "Given a planted fall in attempts, the ratchet exits 1 naming that condition"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification]
+    links:
+      - type: verifies
+        target: REQ-3
+
+  - id: TEST-O3-README-CLAIMS
+    type: feature
+    title: every verification, percentage, timing or dependency claim in the README names a check (serves O3)
+    description: >
+      PLANNED. Serves O3. README line 37 claims "80-95% binary size reduction
+      with 10-30 microsecond optimization times" and "The entire pipeline is
+      pure Rust"; the fused fixture grows 108,701 -> 134,813 bytes in 67 s on
+      main c717ce6 and the build vendors Z3 (C++). Such claims are removed or
+      sourced, and a check keeps new ones from landing unbacked.
+    fields:
+      acceptance-criteria:
+        - "Given a planted unbacked percentage, timing, 'proven' or 'pure Rust' sentence, the claims check exits 1 naming it"
+        - "Given a listed claim, the check it names exists in a workflow"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, documentation]
+    links:
+      - type: verifies
+        target: REQ-3
+
+  - id: TEST-O3-NORTH-STAR-INPUT
+    type: feature
+    title: each release publishes north-star-input.O3.json inside the signed sums (serves O3)
+    description: >
+      PLANNED. Serves O3. Shared shape from pulseengine.eu #392-#394: facts
+      proof_check_required, axiom_audit and ledger, each with a planted
+      control; ran false counts as failed; blind spots in not_measured. Written
+      before SHA256SUMS.txt so the cosign signature covers it, from runs at the
+      tag commit. Whether loom's file is counted toward the O3 indicator is an
+      owner decision outside this item.
+    fields:
+      acceptance-criteria:
+        - "Given a release, north-star-input.O3.json validates against the pinned schema and is listed in SHA256SUMS.txt"
+        - "Given each fact's step removed, the generator reports ran false or control_failed_as_expected false for that fact"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, release-engineering, evidence]
+    links:
+      - type: verifies
+        target: REQ-3
+
+  - id: TEST-O3-ORDEAL-BASELINE-GATE
+    type: feature
+    title: the share of attempts ordeal proves with a re-checked certificate is measured before any default changes (serves O3)
+    description: >
+      PLANNED. Serves O3. Go/no-go for the default-engine flip. Run the corpus
+      with LOOM_VERIFY_BACKEND=ordeal; record the certificate share, defer
+      reasons, reflected term sizes against MAX_TERM_NODES (4096) and time in
+      docs/measurements/. The flip threshold T is set from this measurement.
+      Below 50% after #522 and slice 5, the default stays Z3.
+    fields:
+      acceptance-criteria:
+        - "Given the corpus, the certificate share, defer reasons and term-size distribution are published"
+        - "Given the published share, T is recorded before TEST-O3-ORDEAL-DEFAULT changes any default"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, ordeal]
+    links:
+      - type: verifies
+        target: REQ-1
+
+  - id: TEST-522-OPAQUE-LEAVES
+    type: feature
+    title: uninterpreted applications reach ordeal as opaque leaves, so call and loop obligations are decided with a certificate (#522, serves O3)
+    description: >
+      PLANNED. Serves O3. #522 measured 2 of 11 seam functions on tests/corpus
+      decided by ordeal, 8 deferred because of uninterpreted applications.
+      Reflection and opaque leaves are trusted items and enter the validator
+      trust ledger in the same change.
+    fields:
+      acceptance-criteria:
+        - "Given the corpus, the number of obligations ordeal decides with a certificate rises above the gate baseline"
+        - "Given the change, the validator trust ledger lists reflection and opaque leaves"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, ordeal]
+    links:
+      - type: verifies
+        target: REQ-1
+
+  - id: TEST-O3-ORDEAL-DEFAULT
+    type: feature
+    title: ordeal decides by default when the gate allows, and the validator's obligations run under both engines in a required check (serves O3)
+    description: >
+      PLANNED, conditional on TEST-O3-ORDEAL-BASELINE-GATE. Serves O3. ordeal
+      decides; what it defers goes to Z3 and is counted solver_verdict.
+      LOOM_VERIFY_BACKEND=z3 stays an opt-out for one release. The required
+      solver differential extends from the 38 rewrite rules to the validator's
+      obligations over the corpus under both.
+    fields:
+      acceptance-criteria:
+        - "Given the both job, a run routing fewer than the pinned minimum of obligations fails"
+        - "Given a test-only ordeal stub answering Unsat on a known inequivalent pair, the both job fails with the disagreement message"
+        - "Given a corrupted certificate step the refutation needs, the verdict falls back to not proven"
+        - "Given the corpus, the certificate share meets T"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, ordeal]
+    links:
+      - type: verifies
+        target: REQ-1
+
+  - id: TEST-O3-SECOND-SOLVER-EXPERIMENT
+    type: feature
+    title: exported obligations are re-checked by a second solver in a separate process (experiment, serves O3)
+    description: >
+      PLANNED, experimental. Serves O3. `loom optimize --emit-obligations
+      <dir>` writes each obligation as SMT-LIB 2 with an index (function,
+      pass, sha256 of input and output wasm, engine, budgets). Establishes that
+      the emitted formulas are unsatisfiable to an independent solver; it does
+      not establish that a formula encodes the wasm functions faithfully (the
+      encoder stays a ledger entry). Offline certificate re-check waits on
+      ordeal exposing a serialised certificate and a checker without search.
+    fields:
+      acceptance-criteria:
+        - "Given the corpus, every exported obligation answers unsat, with a pinned minimum count"
+        - "Given an exported obligation from a known inequivalent pair, the second solver answers sat"
+        - "Given unknown or a timeout, it is reported and never counted as unsat"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, experiment]
+    links:
+      - type: verifies
+        target: REQ-1
+
+  - id: TEST-475-REQUIRED-BEHAVIORAL-DIFFERENTIAL
+    type: feature
+    title: the behavioral claim of the falsification statement is tested by a required wasmtime differential (#475, serves O3)
+    description: >
+      PLANNED. Serves O3. A test, not a proof. The wasmtime differential runs
+      over a pinned input list and compares return values, traps, exported
+      globals and linear memory. A test-only feature plants one wrong rewrite
+      that bypasses the validator; the oracle must report that function.
+      Kept-without-proof functions are executed or listed as unexecuted, with
+      the count pinned and shrinking. The v1.6.0 falsification statement names
+      this job.
+    fields:
+      acceptance-criteria:
+        - "Given the planted miscompile, the job fails naming the planted function"
+        - "Given a deleted input, the job fails because the pinned list does not match"
+        - "Given a release, no shipped artifact is built with the planted-miscompile feature"
+        - "Given the job, it is listed in branch protection and no path filter can skip it"
+    status: draft
+    release: v1.6.0
+    tags: [north-star-o3, verification, differential]
+    links:
+      - type: verifies
+        target: REQ-15
