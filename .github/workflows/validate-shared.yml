@@ -46,15 +46,15 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build loom-shared
-        run: cargo build -p loom-shared --verbose
+        run: cargo build --locked -p loom-shared --verbose
 
       - name: Test loom-shared
-        run: cargo test -p loom-shared --release --verbose
+        run: cargo test --locked -p loom-shared --release --verbose
 
       - name: Check ISLE generation
         run: |
           # Verify ISLE files compile
-          cargo build -p loom-shared
+          cargo build --locked -p loom-shared
           echo "✅ ISLE compilation successful"
 
   test-workspace:
@@ -90,15 +90,15 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build all crates
-        run: cargo build --workspace --verbose
+        run: cargo build --locked --workspace --verbose
 
       - name: Test all crates
-        run: cargo test --workspace --release --verbose
+        run: cargo test --locked --workspace --release --verbose
 
       - name: Verify loom-isle re-exports
         run: |
           # Ensure loom-isle correctly re-exports from loom-shared
-          cargo build -p loom-isle
+          cargo build --locked -p loom-isle
           echo "✅ loom-isle re-export verification successful"
 
   integration-test:
@@ -125,7 +125,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build CLI
-        run: cargo build --release -p loom-cli
+        run: cargo build --locked --release -p loom-cli
 
       - name: Test CLI optimization
         run: |
@@ -170,7 +170,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   verify-architecture:
     name: Verify Architecture
