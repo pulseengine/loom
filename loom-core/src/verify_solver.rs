@@ -306,6 +306,7 @@ pub fn route_counts() -> (u64, u64) {
 #[cfg(feature = "verification")]
 fn note_routed() {
     ROUTED.with(|c| c.set(c.get() + 1));
+    crate::stats::note_ordeal_decision();
 }
 
 #[cfg(feature = "verification")]

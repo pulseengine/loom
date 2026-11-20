@@ -7520,7 +7520,7 @@ pub mod optimize {
                  indicates an optimization-pass bug that escaped the per-pass safety nets; \
                  please report it."
             );
-            crate::stats::record_revert("optimize_module:structural-invalid");
+            crate::stats::record_pass_revert("optimize_module:structural-invalid");
             *module = original_module;
         }
 
@@ -7645,7 +7645,7 @@ pub mod optimize {
                         "constant_folding: reverting function (trap backstop rejected a \
                          div/rem const-fold — mandatory trap would be dropped; #288/#273)"
                     );
-                    crate::stats::record_revert("constant_folding:trap-backstop");
+                    crate::stats::record_pass_revert("constant_folding:trap-backstop");
                     func.instructions = original_instructions.clone();
                 }
             }
@@ -7682,7 +7682,7 @@ pub mod optimize {
                 "constant_folding: reverting pass (post-fold module failed WebAssembly \
                  validation — a skipped-Z3 unchecked fold would emit invalid wasm; #257)"
             );
-            crate::stats::record_revert("constant_folding:structural-invalid");
+            crate::stats::record_pass_revert("constant_folding:structural-invalid");
             module.functions = functions_before;
         }
 
@@ -9141,7 +9141,7 @@ pub mod optimize {
                  validation — a skipped-Z3 unchecked fold over unverifiable float \
                  load/store would emit invalid wasm; #254)"
             );
-            crate::stats::record_revert("vacuum:structural-invalid");
+            crate::stats::record_pass_revert("vacuum:structural-invalid");
             module.functions = functions_before;
         }
         Ok(())
@@ -9569,7 +9569,7 @@ pub mod optimize {
                 "simplify_locals: reverting pass (post-simplify module failed WebAssembly \
                  validation — a skipped-Z3 unchecked simplification would emit invalid wasm; #257)"
             );
-            crate::stats::record_revert("simplify_locals:structural-invalid");
+            crate::stats::record_pass_revert("simplify_locals:structural-invalid");
             module.functions = functions_before;
         }
         Ok(())
@@ -10214,7 +10214,7 @@ pub mod optimize {
             let grew = count_instrs(&func.instructions) > count_instrs(&original_instructions);
             if grew || guard.validate(func).is_err() || translator.verify(func).is_err() {
                 if grew {
-                    crate::stats::record_revert("forward_carrier_locals_no_shrink");
+                    crate::stats::record_pass_revert("forward_carrier_locals_no_shrink");
                 } else {
                     eprintln!("forward_carrier_locals: reverting function (verification rejected)");
                     crate::stats::record_revert("forward_carrier_locals");

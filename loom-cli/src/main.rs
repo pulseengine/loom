@@ -38,6 +38,12 @@ enum Commands {
         #[arg(long)]
         stats: bool,
 
+        /// Write the validation outcome of every attempt (one function after
+        /// one pass) as JSON to FILE: counts by outcome, deciding engine and
+        /// reason, the solver budgets in effect, and one record per attempt.
+        #[arg(long, value_name = "FILE")]
+        stats_json: Option<String>,
+
         /// Run verification after optimization
         #[arg(long)]
         verify: bool,
@@ -218,6 +224,17 @@ impl OptimizationStats {
                 ),
                 None => println!("  Proven:  0/0 attempts"),
             }
+            // What "proven" rests on, by deciding engine. `unchanged` is a
+            // pass that left the function as it was; only `ordeal` carries a
+            // re-checked certificate.
+            let by_engine = loom_core::stats::attempt_accounting().proven_by_engine();
+            if !by_engine.is_empty() {
+                let parts: Vec<String> = by_engine
+                    .iter()
+                    .map(|(e, n)| format!("{} {}", e.label(), n))
+                    .collect();
+                println!("    by engine: {}", parts.join(", "));
+            }
             if !coverage.kept_unproven.is_empty() {
                 println!(
                     "  Kept WITHOUT proof: {} attempt(s)",
@@ -251,6 +268,17 @@ impl OptimizationStats {
             }
             let total: u64 = reverts.values().sum();
             println!("  Total: {} revert(s)", total);
+        }
+
+        // Reverts a pass decided by its own check, with no validator verdict.
+        let pass_reverts = loom_core::stats::pass_revert_summary();
+        if !pass_reverts.is_empty() {
+            println!();
+            println!("↩️  Reverted by a pass check (not a validator verdict)");
+            println!("─────────────────────────────────────────");
+            for (key, count) in &pass_reverts {
+                println!("  {:30} {}", key, count);
+            }
         }
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
@@ -370,6 +398,110 @@ fn count_instructions_from_bytes(bytes: &[u8]) -> usize {
 /// missing or corrupt file. The exit code is still non-zero: a caller that
 /// checks it learns something went wrong, and a caller that ignores it still
 /// gets a module that loads.
+/// The solver budgets a run may override, as `(variable, value)` for those
+/// set in the environment. Values that are not a number or a backend name are
+/// reported as `"<set>"`, so a report never carries a path from the host.
+fn loom_budgets_in_effect() -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    let mut vars: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("LOOM_"))
+        .collect();
+    vars.sort();
+    for (k, v) in vars {
+        let shown = if v.parse::<u64>().is_ok() || matches!(v.as_str(), "z3" | "ordeal" | "both") {
+            v
+        } else {
+            "<set>".to_string()
+        };
+        m.insert(k, serde_json::Value::String(shown));
+    }
+    m
+}
+
+/// Build the `--stats-json` document from the process-wide counters.
+fn stats_json_document() -> serde_json::Value {
+    use loom_core::stats::Outcome;
+    use serde_json::json;
+
+    let acc = loom_core::stats::attempt_accounting();
+    let coverage = loom_core::stats::coverage_summary();
+    let (proven, kept, reverted) = acc.outcome_counts();
+
+    let mut by_engine = serde_json::Map::new();
+    for (engine, n) in acc.proven_by_engine() {
+        by_engine.insert(engine.label().to_string(), json!(n));
+    }
+    let mut kept_by_reason = std::collections::BTreeMap::<String, u64>::new();
+    let mut reverted_by_key = std::collections::BTreeMap::<String, u64>::new();
+    let records: Vec<serde_json::Value> = acc
+        .records
+        .iter()
+        .map(|r| {
+            let mut rec = json!({ "pass": r.pass, "function": r.function });
+            match &r.outcome {
+                Outcome::Proven(engine) => {
+                    rec["outcome"] = json!("proven");
+                    rec["engine"] = json!(engine.label());
+                }
+                Outcome::KeptUnproven(reason) => {
+                    *kept_by_reason.entry(reason.clone()).or_insert(0) += 1;
+                    rec["outcome"] = json!("kept_unproven");
+                    rec["reason"] = json!(reason);
+                }
+                Outcome::Reverted(key) => {
+                    *reverted_by_key.entry(key.clone()).or_insert(0) += 1;
+                    rec["outcome"] = json!("reverted");
+                    rec["revert_key"] = json!(key);
+                }
+            }
+            rec
+        })
+        .collect();
+
+    json!({
+        "schema": "loom-stats/1",
+        "loom_version": env!("CARGO_PKG_VERSION"),
+        "verification_feature": cfg!(feature = "verification"),
+        "budgets_set": loom_budgets_in_effect(),
+        "attempts": {
+            "entered": acc.entered,
+            "classified": acc.records.len(),
+            "unclassified": acc.unclassified,
+            "outcomes_without_entry": acc.outcomes_without_entry,
+            "consistent": acc.is_consistent(),
+        },
+        "outcomes": {
+            "proven": proven,
+            "proven_by_engine": by_engine,
+            "proven_certified": acc.proven_certified(),
+            "kept_unproven": kept,
+            "kept_unproven_by_reason": kept_by_reason,
+            "reverted": reverted,
+            "reverted_by_key": reverted_by_key,
+        },
+        // Reverts decided by a pass's own check (size guard, trap backstop,
+        // structural-validity net). No validator attempt corresponds to them,
+        // so they are not in `attempts` or `outcomes`.
+        "pass_check_reverts_by_key": loom_core::stats::pass_revert_summary(),
+        // The --stats text counters, for comparison.
+        "text_counters": {
+            "proven": coverage.proven,
+            "kept_unproven": coverage.total_kept_unproven(),
+            "reverted": coverage.reverted,
+        },
+        "records": records,
+    })
+}
+
+/// Write the `--stats-json` document to `path`.
+fn write_stats_json(path: &str) -> Result<()> {
+    let doc = stats_json_document();
+    let text = serde_json::to_string_pretty(&doc).context("Failed to serialize --stats-json")?;
+    fs::write(path, text).with_context(|| format!("Failed to write --stats-json to {path}"))?;
+    println!("✓ Validation stats written to: {path}");
+    Ok(())
+}
+
 fn write_validated_output(
     output_path: &str,
     output_bytes: &[u8],
@@ -1275,6 +1407,7 @@ fn main() -> Result<()> {
             output,
             wat,
             stats,
+            stats_json,
             verify,
             #[cfg(feature = "attestation")]
             attestation,
@@ -1308,6 +1441,9 @@ fn main() -> Result<()> {
                 no_reachability_gc,
                 facts,
             )?;
+            if let Some(path) = stats_json {
+                write_stats_json(&path)?;
+            }
         }
 
         Some(Commands::Verify { isle_file }) => {
