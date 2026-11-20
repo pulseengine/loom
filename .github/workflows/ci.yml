@@ -153,6 +153,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # loom-core/tests/validator_trust_ledger.rs compares the ledger with the
+      # base branch's copy: a line may leave only as a linked `removed:` line.
+      - name: Base branch's validator trust ledger
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          f="$RUNNER_TEMP/base-validator-trust-ledger.txt"
+          if git cat-file -e "$BASE_SHA:safety/VALIDATOR_TRUST_LEDGER.txt" 2>/dev/null; then
+            git show "$BASE_SHA:safety/VALIDATOR_TRUST_LEDGER.txt" > "$f"
+          else
+            : > "$f"
+          fi
+          echo "LOOM_LEDGER_BASE=$f" >> "$GITHUB_ENV"
       - name: Run tests
         run: cargo test --all --release --verbose
 
