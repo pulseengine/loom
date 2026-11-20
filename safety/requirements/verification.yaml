@@ -1968,21 +1968,30 @@ artifacts:
     type: feature
     title: validation coverage over the corpus cannot regress (serves O3)
     description: >
-      PLANNED. Serves O3. A committed script and baseline over the 30
-      repository inputs fail if kept_unproven rises, absolute proof +
-      solver_verdict falls, output bytes grow, or attempts fall. A rise in
-      solver_verdict alone does not fail while Z3 is the default. Becomes a
-      required check only after TEST-O3-COUNT-DETERMINISM.
-      Baseline on main c717ce6: 7,917 attempts, 7,517 proven, 35 kept without
-      proof (all in the meld-fused fixture, body over the solver size
-      threshold), 365 reverted.
+      Serves O3. loom-cli/tests/coverage_ratchet.rs compares `loom optimize
+      --stats-json` on the 30 repository inputs with the committed baseline
+      safety/coverage-ratchet.json and fails, per input, if kept_unproven
+      rises, proof + solver_verdict (attempts decided by ordeal or Z3) falls,
+      output bytes grow, attempts fall, or an input is missing on either side.
+      A rise in solver_verdict alone does not fail while Z3 is the default.
+      Baseline on main 4368a01 (aarch64-macos): 7,913 attempts, 134 proof +
+      solver_verdict, 35 kept without proof (all in the meld-fused fixture),
+      151,601 output bytes. The live comparison is `#[ignore]`d and not run in
+      CI until TEST-O3-COUNT-DETERMINISM shows the counts equal across
+      machines; the step below runs the planted controls. Becomes a required
+      check only after TEST-O3-COUNT-DETERMINISM.
     fields:
       acceptance-criteria:
         - "Given a planted rise in kept_unproven, the ratchet exits 1 naming that condition"
         - "Given a planted fall in proven attempts, the ratchet exits 1 naming that condition"
         - "Given planted output growth, the ratchet exits 1 naming that condition"
         - "Given a planted fall in attempts, the ratchet exits 1 naming that condition"
-    status: draft
+      steps:
+        - run: |
+            set -euo pipefail
+            cargo test --release -p loom-cli --test coverage_ratchet 2>&1 | tee ratchet.out
+            grep -qE '^test result: ok\. 7 passed; 0 failed; 1 ignored' ratchet.out
+    status: implemented
     release: v1.6.0
     tags: [north-star-o3, verification]
     links:

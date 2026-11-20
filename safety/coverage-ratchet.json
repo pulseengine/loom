@@ -1,0 +1,185 @@
+{
+  "inputs": {
+    "loom-core/tests/fixtures/issue254-records-fused.wasm": {
+      "attempts": 6104,
+      "kept_unproven": 35,
+      "output_bytes": 134813,
+      "proof_plus_solver_verdict": 4
+    },
+    "loom-core/tests/fixtures/repro-219/sem.loom.wasm": {
+      "attempts": 32,
+      "kept_unproven": 0,
+      "output_bytes": 964,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/corpus/httparse.wasm": {
+      "attempts": 38,
+      "kept_unproven": 0,
+      "output_bytes": 3952,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/corpus/json_lite.wasm": {
+      "attempts": 47,
+      "kept_unproven": 0,
+      "output_bytes": 2668,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/corpus/state_machine.wasm": {
+      "attempts": 42,
+      "kept_unproven": 0,
+      "output_bytes": 1558,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/advanced_math.wat": {
+      "attempts": 51,
+      "kept_unproven": 0,
+      "output_bytes": 500,
+      "proof_plus_solver_verdict": 5
+    },
+    "tests/fixtures/bench_bitops.wat": {
+      "attempts": 40,
+      "kept_unproven": 0,
+      "output_bytes": 185,
+      "proof_plus_solver_verdict": 2
+    },
+    "tests/fixtures/bench_compare.wat": {
+      "attempts": 180,
+      "kept_unproven": 0,
+      "output_bytes": 445,
+      "proof_plus_solver_verdict": 20
+    },
+    "tests/fixtures/bench_crypto.wat": {
+      "attempts": 72,
+      "kept_unproven": 0,
+      "output_bytes": 248,
+      "proof_plus_solver_verdict": 8
+    },
+    "tests/fixtures/bench_locals.wat": {
+      "attempts": 32,
+      "kept_unproven": 0,
+      "output_bytes": 164,
+      "proof_plus_solver_verdict": 2
+    },
+    "tests/fixtures/bench_math.wat": {
+      "attempts": 144,
+      "kept_unproven": 0,
+      "output_bytes": 399,
+      "proof_plus_solver_verdict": 15
+    },
+    "tests/fixtures/bench_memory.wat": {
+      "attempts": 54,
+      "kept_unproven": 0,
+      "output_bytes": 253,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/bench_unary.wat": {
+      "attempts": 225,
+      "kept_unproven": 0,
+      "output_bytes": 548,
+      "proof_plus_solver_verdict": 25
+    },
+    "tests/fixtures/block_merging_test.wat": {
+      "attempts": 63,
+      "kept_unproven": 0,
+      "output_bytes": 219,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/branch_simplification_test.wat": {
+      "attempts": 72,
+      "kept_unproven": 0,
+      "output_bytes": 458,
+      "proof_plus_solver_verdict": 8
+    },
+    "tests/fixtures/crypto_utils.wat": {
+      "attempts": 69,
+      "kept_unproven": 0,
+      "output_bytes": 866,
+      "proof_plus_solver_verdict": 1
+    },
+    "tests/fixtures/dce_test.wat": {
+      "attempts": 46,
+      "kept_unproven": 0,
+      "output_bytes": 345,
+      "proof_plus_solver_verdict": 1
+    },
+    "tests/fixtures/fibonacci.wat": {
+      "attempts": 16,
+      "kept_unproven": 0,
+      "output_bytes": 220,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/matrix_multiply.wat": {
+      "attempts": 6,
+      "kept_unproven": 0,
+      "output_bytes": 348,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/quicksort.wat": {
+      "attempts": 21,
+      "kept_unproven": 0,
+      "output_bytes": 450,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/simple_game_logic.wat": {
+      "attempts": 32,
+      "kept_unproven": 0,
+      "output_bytes": 448,
+      "proof_plus_solver_verdict": 1
+    },
+    "tests/fixtures/simple_module.wat": {
+      "attempts": 9,
+      "kept_unproven": 0,
+      "output_bytes": 49,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/simplify_locals_test.wat": {
+      "attempts": 66,
+      "kept_unproven": 0,
+      "output_bytes": 226,
+      "proof_plus_solver_verdict": 2
+    },
+    "tests/fixtures/test_expected.wat": {
+      "attempts": 9,
+      "kept_unproven": 0,
+      "output_bytes": 52,
+      "proof_plus_solver_verdict": 0
+    },
+    "tests/fixtures/test_input.wat": {
+      "attempts": 29,
+      "kept_unproven": 0,
+      "output_bytes": 111,
+      "proof_plus_solver_verdict": 2
+    },
+    "tests/fixtures/test_phase7.wat": {
+      "attempts": 63,
+      "kept_unproven": 0,
+      "output_bytes": 172,
+      "proof_plus_solver_verdict": 7
+    },
+    "tests/fixtures/test_phase8_bitwise.wat": {
+      "attempts": 108,
+      "kept_unproven": 0,
+      "output_bytes": 265,
+      "proof_plus_solver_verdict": 12
+    },
+    "tests/fixtures/test_phase8_comparisons.wat": {
+      "attempts": 108,
+      "kept_unproven": 0,
+      "output_bytes": 254,
+      "proof_plus_solver_verdict": 12
+    },
+    "tests/fixtures/test_phase8_division.wat": {
+      "attempts": 72,
+      "kept_unproven": 0,
+      "output_bytes": 203,
+      "proof_plus_solver_verdict": 6
+    },
+    "tests/fixtures/vacuum_test.wat": {
+      "attempts": 63,
+      "kept_unproven": 0,
+      "output_bytes": 218,
+      "proof_plus_solver_verdict": 1
+    }
+  },
+  "schema": "loom-coverage-ratchet/1"
+}
