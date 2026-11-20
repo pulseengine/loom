@@ -132,14 +132,24 @@ artifacts:
     type: feature
     title: Rocq mechanized proofs (Bazel)
     description: >
-      Compiles all proofs in `proofs/` via Bazel. CI fails if any proof
-      regresses or any axiom changes shape. v0.5.0 wired
-      `FusedOptimization.v` into the build (audit D1).
+      Compiles all proofs in `proofs/` via Bazel and re-checks every compiled
+      library with rocqchk. The evidence is the required "Rocq Formal Proofs"
+      job in .github/workflows/ci.yml (job id `rocq-proofs`), which fails when
+      a proof stops compiling or a proof test fails, when an assumption
+      appears that proofs/TRUST_LEDGER.txt or proofs/ASSUMPTIONS_ALLOWLIST.txt
+      does not list, or when a rocq_library has no kernel re-check.
     fields:
       method: automated-test
-      steps:
-        - run: |
-            bazel build //proofs/... 2>&1 || echo "SKIP if bazel not available on this runner"
+      acceptance-criteria:
+        - "Given any PR or merge-queue entry that changes code, the required ci.yml job \"Rocq Formal Proofs\" runs bazel build and bazel test over //proofs/... and succeeds"
+        - "Given a proof file that does not compile, that job fails"
+      # No `steps:` deliberately. The proofs need Nix, Bazel and the
+      # rocq-of-rust nightly, which the sweep's runners are not set up with,
+      # and the required job above already runs them on every PR. An earlier
+      # step here ran `bazel build //proofs/... || echo "SKIP ..."`, which
+      # exited 0 whether or not the proofs built, so the sweep reported a
+      # pass it never established. An artifact with no steps is SKIPPED by
+      # the sweep; the verdict comes from the required job.
     status: verified
     tags: [v100, rocq, proofs]
     links:
