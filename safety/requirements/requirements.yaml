@@ -136,9 +136,12 @@ artifacts:
     title: Self-optimization (dogfooding) test
     status: approved
     description: >
-      LOOM must be able to optimize its own WebAssembly binary and the
-      optimized version must produce identical results to the original.
-      This is the most rigorous correctness test.
+      LOOM must optimize its own WebAssembly build, and the optimized build
+      must produce identical results to the original. Two parts, each with
+      its own test: the optimized component behaves identically on the
+      repository's test inputs (TEST-SELF-OPTIMIZATION), and LOOM optimizes
+      the core module that holds its own code (TEST-SELF-OPTIMIZATION-OWN-CODE,
+      blocked on #196).
     fields:
       priority: must
       category: non-functional

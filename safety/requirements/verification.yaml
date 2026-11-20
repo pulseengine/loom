@@ -162,25 +162,89 @@ artifacts:
 
   - id: TEST-SELF-OPTIMIZATION
     type: feature
-    title: Self-optimization (dogfooding) — LOOM optimizes its own .wasm
+    title: Self-optimization (dogfooding) — the optimized LOOM component behaves like the original
     description: >
-      Builds LOOM to a wasm component, runs LOOM on it, runs the optimized
-      LOOM, and compares output to the original LOOM's output. If the
-      optimized LOOM produces different results, the optimizer is unsound.
+      The native LOOM optimizes LOOM's own wasm32-wasip2 build (loom-cli,
+      no Z3). The original and the optimized loom.wasm then run under a
+      pinned wasmtime as `loom optimize <input> -o <output> --attestation
+      false` on every .wasm and .wat file under tests/, loom-core/tests/
+      and fuzz/seeds/, and their exit status, output presence and output
+      bytes must be identical for every input
+      (loom-cli/tests/dogfood.rs, optimized_loom_produces_the_same_results_as_loom).
+      The test fails on any difference, on 0 inputs, or if the original
+      LOOM succeeds on none, and prints the input count and how many of
+      loom.wasm's core modules were optimized. This verifies the optimized
+      component, whichever of its core modules LOOM changed; whether LOOM
+      optimizes the module holding its own code is
+      TEST-SELF-OPTIMIZATION-OWN-CODE.
     fields:
       method: automated-test
+      acceptance-criteria:
+        - "Given the repository's test inputs, the optimized loom.wasm and the original produce identical exit status and output bytes on every input"
+        - "Given an optimized loom.wasm whose output differs by one byte, the test fails (LOOM_DOGFOOD_CONTROL_FLIP=1)"
+        - "Given no inputs, or no input the original LOOM optimizes, the test fails"
       steps:
         - run: |
-            cargo test --release -p loom-testing -- self_optimization 2>&1 || echo "SKIP if dogfood target missing"
-    # Draft until the real dogfood test lands. The step above runs no test:
-    # the filter `self_optimization` matches nothing in loom-testing, so it
-    # passed with 0 tests run, and the ci.yml "Self-Optimization Test" job
-    # only validates LOOM's optimized output without running it. Nothing
-    # yet runs the optimized LOOM and compares its results, which is the
-    # claim above and REQ-8's.
-    status: draft
+            set -euo pipefail
+            wt=wasmtime-v50.0.1-x86_64-linux
+            dir=$(mktemp -d)
+            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/$wt.tar.xz"
+            echo "685466455dd42a14774a86c36c8f2e45cbb9bd6d92a850139315df60a75498a5  $dir/$wt.tar.xz" | sha256sum -c -
+            tar xJf "$dir/$wt.tar.xz" -C "$dir"
+            rustup target add wasm32-wasip2
+            cargo build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+            target_dir=${CARGO_TARGET_DIR:-$PWD/target}
+            LOOM_DOGFOOD_WASM="$target_dir/wasm32-wasip2/release/loom.wasm" \
+            LOOM_DOGFOOD_WASMTIME="$dir/$wt/wasmtime" \
+              cargo test --release -p loom-cli --test dogfood -- --ignored --nocapture --exact optimized_loom_produces_the_same_results_as_loom 2>&1 | tee "$dir/dogfood.out"
+            grep -E '^dogfood: |core modules optimized' "$dir/dogfood.out"
+            grep -qE '^test result: ok\. 1 passed' "$dir/dogfood.out"
+    status: verified
     release: v1.6.0
     tags: [v100, dogfooding]
+    links:
+      - type: verifies
+        target: REQ-8
+
+  - id: TEST-SELF-OPTIMIZATION-OWN-CODE
+    type: feature
+    title: Self-optimization — LOOM optimizes the core module that holds its own code
+    description: >
+      Of loom.wasm's core modules, the largest holds LOOM's own code. This
+      artifact requires the native LOOM to report that module "Optimized
+      successfully" when it optimizes loom.wasm, and the dogfood comparison
+      (TEST-SELF-OPTIMIZATION) to pass on the result
+      (loom-cli/tests/dogfood.rs, loom_optimizes_its_own_code_module). Today
+      LOOM keeps that module byte-for-byte under #196
+      (function-referencing element table) and optimizes 1 of 3 core
+      modules, so the test fails; it goes to verified when #196 lets the
+      module through and both tests pass.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given loom.wasm, the native LOOM reports its largest core module as optimized"
+        - "Given that optimized loom.wasm, the dogfood comparison passes on every input"
+      steps:
+        - run: |
+            set -euo pipefail
+            wt=wasmtime-v50.0.1-x86_64-linux
+            dir=$(mktemp -d)
+            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/$wt.tar.xz"
+            echo "685466455dd42a14774a86c36c8f2e45cbb9bd6d92a850139315df60a75498a5  $dir/$wt.tar.xz" | sha256sum -c -
+            tar xJf "$dir/$wt.tar.xz" -C "$dir"
+            rustup target add wasm32-wasip2
+            cargo build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+            target_dir=${CARGO_TARGET_DIR:-$PWD/target}
+            LOOM_DOGFOOD_WASM="$target_dir/wasm32-wasip2/release/loom.wasm" \
+            LOOM_DOGFOOD_WASMTIME="$dir/$wt/wasmtime" \
+              cargo test --release -p loom-cli --test dogfood -- --ignored --nocapture optimized_loom_produces_the_same_results_as_loom loom_optimizes_its_own_code_module 2>&1 | tee "$dir/dogfood.out"
+            grep -E '^dogfood: |core modules optimized' "$dir/dogfood.out"
+            grep -qE '^test result: ok\. 2 passed' "$dir/dogfood.out"
+    # Draft until #196 lets LOOM optimize its own code module. The step fails
+    # today (1 of 3 core modules optimized, the main one not), so the sweep
+    # reports this artifact unverified rather than passing it.
+    status: draft
+    tags: [dogfooding]
     links:
       - type: verifies
         target: REQ-8

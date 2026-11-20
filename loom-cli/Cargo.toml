@@ -41,3 +41,6 @@ differential = ["loom-testing"]
 [[bin]]
 name = "loom"
 path = "src/main.rs"
+
+[dev-dependencies]
+wasmparser = { workspace = true }
