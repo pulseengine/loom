@@ -172,7 +172,14 @@ artifacts:
       steps:
         - run: |
             cargo test --release -p loom-testing -- self_optimization 2>&1 || echo "SKIP if dogfood target missing"
-    status: verified
+    # Draft until the real dogfood test lands. The step above runs no test:
+    # the filter `self_optimization` matches nothing in loom-testing, so it
+    # passed with 0 tests run, and the ci.yml "Self-Optimization Test" job
+    # only validates LOOM's optimized output without running it. Nothing
+    # yet runs the optimized LOOM and compares its results, which is the
+    # claim above and REQ-8's.
+    status: draft
+    release: v1.6.0
     tags: [v100, dogfooding]
     links:
       - type: verifies
@@ -421,14 +428,25 @@ artifacts:
     type: feature
     title: LOOM compiles to wasm32-wasip2
     description: >
-      Verifies that the LOOM workspace builds cleanly for the
-      `wasm32-wasip2` target. This is the self-build path used by the
-      dogfooding test (REQ-8) and by the cross-component-call story.
+      Verifies that the LOOM CLI builds for the `wasm32-wasip2` target
+      without Z3 (`--no-default-features --features attestation`, the same
+      build as the ci.yml "WASM Build (wasm32-wasip2, no Z3)" job, which is
+      not a required check) and that the resulting loom.wasm validates.
+      This is the self-build path used by the dogfooding test (REQ-8) and by
+      the cross-component-call story.
     fields:
       method: automated-test
+      # The step fails when the target cannot be added, the build fails, or
+      # the output does not validate. An earlier step built loom-core with
+      # its default features, which include Z3; z3-sys does not build for
+      # wasm32-wasip2, and a trailing `|| echo "SKIP ..."` turned that
+      # failure into a pass.
       steps:
         - run: |
-            (rustup target list --installed | grep -q wasm32-wasip2 && cargo build --release --target wasm32-wasip2 -p loom-core) || echo "SKIP if wasm32-wasip2 toolchain absent"
+            set -euo pipefail
+            rustup target add wasm32-wasip2
+            cargo build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+            wasm-tools validate "${CARGO_TARGET_DIR:-target}/wasm32-wasip2/release/loom.wasm"
     status: verified
     tags: [v100, build-target]
     links:
