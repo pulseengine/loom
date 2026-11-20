@@ -186,10 +186,10 @@ artifacts:
       steps:
         - run: |
             set -euo pipefail
-            wt=wasmtime-v50.0.1-x86_64-linux
+            wt=wasmtime-v50.0.3-x86_64-linux
             dir=$(mktemp -d)
-            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/$wt.tar.xz"
-            echo "685466455dd42a14774a86c36c8f2e45cbb9bd6d92a850139315df60a75498a5  $dir/$wt.tar.xz" | sha256sum -c -
+            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.3/$wt.tar.xz"
+            echo "c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476  $dir/$wt.tar.xz" | sha256sum -c -
             tar xJf "$dir/$wt.tar.xz" -C "$dir"
             rustup target add wasm32-wasip2
             cargo build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
@@ -227,10 +227,10 @@ artifacts:
       steps:
         - run: |
             set -euo pipefail
-            wt=wasmtime-v50.0.1-x86_64-linux
+            wt=wasmtime-v50.0.3-x86_64-linux
             dir=$(mktemp -d)
-            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/$wt.tar.xz"
-            echo "685466455dd42a14774a86c36c8f2e45cbb9bd6d92a850139315df60a75498a5  $dir/$wt.tar.xz" | sha256sum -c -
+            curl -fsSL -o "$dir/$wt.tar.xz" "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.3/$wt.tar.xz"
+            echo "c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476  $dir/$wt.tar.xz" | sha256sum -c -
             tar xJf "$dir/$wt.tar.xz" -C "$dir"
             rustup target add wasm32-wasip2
             cargo build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
