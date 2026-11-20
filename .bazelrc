@@ -1,0 +1,5 @@
+# MODULE.bazel.lock is committed and must match MODULE.bazel: a build fails
+# instead of rewriting it. Regenerate with
+#   bazel mod deps --lockfile_mode=update
+# using the Bazel version in .bazelversion.
+common --lockfile_mode=error

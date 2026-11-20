@@ -90,7 +90,7 @@ jobs:
           # Measured: libtest does not colour the summary line when stdout is
           # not a tty, so the pin matches today either way — but the pin must
           # not depend on that staying true.
-          cargo test --release --lib -p loom-core --features verification -- \
+          cargo test --locked --release --lib -p loom-core --features verification -- \
             test_verify_all_rules --color never 2>&1 | tee solver-differential.out
           grep -qE '^test result: ok\. 1 passed' solver-differential.out
 
@@ -119,6 +119,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
+      # The artifact steps below run cargo without --locked. Checking here
+      # that Cargo.lock is current means none of them re-resolves it.
+      - name: Cargo.lock is up to date
+        run: cargo fetch --locked
+
       # TEST-CORPUS-HARNESS refuses to report a measurement it has not
       # validated ("ERROR: wasm-tools not found on PATH (validation is
       # mandatory)") — which is the right call, and the reason that artifact
@@ -127,7 +132,7 @@ jobs:
       # picked up the job. The gate has to PROVIDE what its artifacts
       # require; an environment-dependent verdict is not a verdict.
       - name: Install wasm-tools
-        run: command -v wasm-tools >/dev/null || cargo install wasm-tools
+        run: command -v wasm-tools >/dev/null || cargo install --locked wasm-tools
 
       - name: Install rivet
         run: |
