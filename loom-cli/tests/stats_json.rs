@@ -177,3 +177,36 @@ fn budget_values_that_are_not_numbers_are_redacted() {
     assert_eq!(j["budgets_set"]["LOOM_Z3_TIMEOUT_MS"], "12345");
     assert!(!j.to_string().contains("/some/host/path"));
 }
+
+/// A revert a pass decides by its own check (here the size guard of
+/// forward_carrier_locals) is reported apart from validator outcomes, so the
+/// attempt accounting stays consistent. Measured at a725eaa: both inputs
+/// reported an outcome without an attempt, because the size-guard revert was
+/// counted as a validator rejection.
+#[test]
+fn pass_check_reverts_are_not_validator_outcomes() {
+    for (input, tag) in [
+        ("tests/fixtures/bench_locals.wat", "bench_locals"),
+        ("tests/fixtures/quicksort.wat", "quicksort"),
+    ] {
+        let (j, stdout) = run(&fixture(input), None, tag);
+        let a = &j["attempts"];
+        assert_eq!(u(&a["outcomes_without_entry"]), 0, "{input}: {a}");
+        assert_eq!(a["consistent"], true, "{input}: {a}");
+        let p = &j["pass_check_reverts_by_key"];
+        assert!(
+            p["forward_carrier_locals_no_shrink"].as_u64().unwrap_or(0) > 0,
+            "{input}: the size-guard revert this test depends on did not happen: {p}"
+        );
+        assert!(
+            stdout.contains("Reverted by a pass check"),
+            "{input}: the text report does not list the pass-check revert:\n{stdout}"
+        );
+        // The validator's revert count and the text report agree.
+        assert_eq!(
+            u(&j["outcomes"]["reverted"]),
+            u(&j["text_counters"]["reverted"]),
+            "{input}"
+        );
+    }
+}

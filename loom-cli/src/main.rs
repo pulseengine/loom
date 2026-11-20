@@ -269,6 +269,17 @@ impl OptimizationStats {
             let total: u64 = reverts.values().sum();
             println!("  Total: {} revert(s)", total);
         }
+
+        // Reverts a pass decided by its own check, with no validator verdict.
+        let pass_reverts = loom_core::stats::pass_revert_summary();
+        if !pass_reverts.is_empty() {
+            println!();
+            println!("↩️  Reverted by a pass check (not a validator verdict)");
+            println!("─────────────────────────────────────────");
+            for (key, count) in &pass_reverts {
+                println!("  {:30} {}", key, count);
+            }
+        }
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 
@@ -468,9 +479,11 @@ fn stats_json_document() -> serde_json::Value {
             "reverted": reverted,
             "reverted_by_key": reverted_by_key,
         },
-        // The --stats text counters, for comparison. `reverted` there counts
-        // every revert key, including reverts that never reached the
-        // validator (outcomes_without_entry above).
+        // Reverts decided by a pass's own check (size guard, trap backstop,
+        // structural-validity net). No validator attempt corresponds to them,
+        // so they are not in `attempts` or `outcomes`.
+        "pass_check_reverts_by_key": loom_core::stats::pass_revert_summary(),
+        // The --stats text counters, for comparison.
         "text_counters": {
             "proven": coverage.proven,
             "kept_unproven": coverage.total_kept_unproven(),

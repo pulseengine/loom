@@ -31,6 +31,34 @@ pub fn record_revert(pass_name: &str) {
     finish(|_| Outcome::Reverted(pass_name.to_string()));
 }
 
+fn pass_check_counters() -> &'static Mutex<BTreeMap<String, u64>> {
+    static COUNTERS: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
+    COUNTERS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Record a revert decided by a pass's own check, not by the translation
+/// validator: a size guard, the trap backstop, or a structural-validity net.
+///
+/// Counted apart from the validator's outcomes. No validator attempt
+/// corresponds to such a revert (the check runs before the validator or
+/// after it accepted), so counting it with [`record_revert`] reported a
+/// validator rejection that never happened and left an outcome without an
+/// attempt in the accounting.
+pub fn record_pass_revert(key: &str) {
+    let mut map = pass_check_counters()
+        .lock()
+        .expect("pass-check counter mutex poisoned");
+    *map.entry(key.to_string()).or_insert(0) += 1;
+}
+
+/// Reverts decided by a pass's own check, by key. Not reset.
+pub fn pass_revert_summary() -> BTreeMap<String, u64> {
+    pass_check_counters()
+        .lock()
+        .expect("pass-check counter mutex poisoned")
+        .clone()
+}
+
 /// Read a snapshot of the current revert counters.
 ///
 /// Returns a sorted map (pass name → revert count). Counters are not
