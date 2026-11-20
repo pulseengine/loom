@@ -112,6 +112,10 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
       CARGO_INCREMENTAL: 0
+      # tools/run_verification.py writes to a pipe; unbuffered, each artifact's
+      # lines reach the log as they happen and carry their own runner
+      # timestamp, so per-artifact minutes can be read from the log.
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -126,23 +130,37 @@ jobs:
       # not all carry the tool, so the result depended on which machine
       # picked up the job. The gate has to PROVIDE what its artifacts
       # require; an environment-dependent verdict is not a verdict.
-      - name: Install wasm-tools
-        run: command -v wasm-tools >/dev/null || cargo install wasm-tools
-
-      - name: Install rivet
+      # Pinned release binaries, checked against their sha256 before use.
+      # Both go into a job-local bin directory ahead of PATH, so the pinned
+      # version wins over anything a runner has installed. rivet v0.7.0 is
+      # the tag on commit b7a17be, the first release with
+      # `rivet list --filter <sexp>`, which this gate depends on.
+      - name: Install wasm-tools and rivet (pinned release binaries)
+        env:
+          WASM_TOOLS_VERSION: 1.263.0
+          WASM_TOOLS_SHA256: 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431
+          RIVET_VERSION: 0.7.0
+          RIVET_SHA256: 53e239684eb1bb05850d78cce6fe04c8a627c392589b05c3112efb59ec7ec94a
         run: |
-          # Pin to rivet v0.7.0 (commit b7a17be) — the release that first ships
-          # `rivet list --filter <sexp>`, which this gate depends on. (The
-          # 4c06709 SHA I tried first is *etch*'s rev — etch is a sibling crate
-          # in the rivet workspace but unrelated to the CLI.)
-          # The rivet repo is a multi-package workspace; the trailing positional
-          # `rivet-cli` selects which crate owns the `rivet` binary, otherwise
-          # cargo errors with "multiple packages with binaries found:
-          # rivet-cli, rivet-fuzz".
-          cargo install --locked --git https://github.com/pulseengine/rivet \
-            --rev b7a17bef \
-            --bin rivet \
-            rivet-cli
+          set -euo pipefail
+          bin="$RUNNER_TEMP/gate-bin"
+          mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          wt="wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
+          curl -fsSL -o "$wt.tar.gz" \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/$wt.tar.gz"
+          echo "${WASM_TOOLS_SHA256}  $wt.tar.gz" | sha256sum -c -
+          tar xzf "$wt.tar.gz"
+          install -m 0755 "$wt/wasm-tools" "$bin/wasm-tools"
+          rv="rivet-v${RIVET_VERSION}-x86_64-unknown-linux-gnu"
+          curl -fsSL -o "$rv.tar.gz" \
+            "https://github.com/pulseengine/rivet/releases/download/v${RIVET_VERSION}/$rv.tar.gz"
+          echo "${RIVET_SHA256}  $rv.tar.gz" | sha256sum -c -
+          tar xzf "$rv.tar.gz" ./rivet
+          install -m 0755 rivet "$bin/rivet"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/wasm-tools" --version
+          "$bin/rivet" --version
 
       - name: Pick verification filter (per-PR override via body)
         id: pick
@@ -159,7 +177,10 @@ jobs:
           # invocations and blow the 30-minute job timeout.
           # rivet v0.7.0 supports: and/or/not/implies/excludes/=/!=/>/</has-tag/
           # has-field/in/matches/contains/linked-* (no `has-status`).
-          DEFAULT='(and (= type "feature") (matches id "^TEST-"))'
+          # TEST-RULE-SOLVER-DIFFERENTIAL is excluded: its command is the
+          # required solver-differential job above, which runs on every PR
+          # and in the merge queue.
+          DEFAULT='(and (= type "feature") (matches id "^TEST-") (!= id "TEST-RULE-SOLVER-DIFFERENTIAL"))'
           OVERRIDE=$(printf '%s' "$PR_BODY" | grep -m1 -E '^Verify-Filter:' | sed 's/^Verify-Filter:[[:space:]]*//' || true)
           if [ -n "${OVERRIDE:-}" ]; then
             printf 'filter=(or %s %s)\n' "$DEFAULT" "$OVERRIDE" >>"$GITHUB_OUTPUT"
