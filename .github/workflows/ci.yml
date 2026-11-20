@@ -97,6 +97,105 @@ jobs:
       - name: Artifact statistics
         run: '"${CARGO_HOME:-$HOME/.cargo}/bin/rivet" stats'
 
+  lockfiles:
+    name: Lockfiles committed, current and audited
+    # Not gated on `changes`: a lockfile or manifest edit is a code change, and
+    # an advisory can land with no change here at all.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-audit@0.22.1
+      # Fails when a Cargo workspace or MODULE.bazel has no committed lockfile,
+      # when a lockfile is gitignored, or when a Cargo.lock no longer matches
+      # its manifests. The control removes one package from each Cargo.lock in
+      # turn and requires the same check to fail on it.
+      - name: Every lockfile is committed and up to date (with control)
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          committed() {
+            if ! git ls-files --error-unmatch -- "$1" > /dev/null 2>&1; then
+              echo "::error::$2 has no committed lockfile $1"; fail=1
+            fi
+            if git check-ignore -q --no-index -- "$1"; then
+              echo "::error::$1 is gitignored"; fail=1
+            fi
+          }
+          while read -r m; do
+            root=$(cargo locate-project --workspace --manifest-path "$m" --message-format plain)
+            lock=$(dirname "${root#"$PWD"/}")/Cargo.lock
+            committed "${lock#./}" "$m"
+          done < <(git ls-files | grep -E '(^|/)Cargo\.toml$')
+          while read -r m; do
+            committed "$m.lock" "$m"
+          done < <(git ls-files | grep -E '(^|/)MODULE\.bazel$')
+
+          locks=(); while IFS= read -r l; do locks+=("$l"); done < <(git ls-files | grep -E '(^|/)Cargo\.lock$')
+          printf 'Cargo.lock files: %s\n' "${locks[*]}"
+          [ "${#locks[@]}" -ge 2 ] || { echo "::error::expected at least 2 Cargo.lock files"; exit 1; }
+          current() {
+            cargo metadata --locked --format-version 1 \
+              --manifest-path "$(dirname "$1")/Cargo.toml" > /dev/null 2> "$RUNNER_TEMP/metadata.err"
+          }
+          for lock in "${locks[@]}"; do
+            if ! current "$lock"; then
+              cat "$RUNNER_TEMP/metadata.err"; echo "::error::$lock is out of date"; fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+
+          for lock in "${locks[@]}"; do
+            awk -v RS= -v ORS='\n\n' '/^\[\[package\]\]/ && !done { done = 1; next } { print }' \
+              "$lock" > "$RUNNER_TEMP/stale.lock"
+            cp "$RUNNER_TEMP/stale.lock" "$lock"
+            if current "$lock"; then
+              echo "::error::control: $lock with a package removed still passes"; fail=1
+            elif ! grep -q -- '--locked' "$RUNNER_TEMP/metadata.err"; then
+              cat "$RUNNER_TEMP/metadata.err"
+              echo "::error::control: $lock failed for another reason than --locked"; fail=1
+            else
+              echo "control: stale $lock fails"
+            fi
+            git checkout -- "$lock"
+          done
+          [ "$fail" = 0 ]
+      # cargo audit exits non-zero on a vulnerability advisory; warnings
+      # (unmaintained, unsound) are printed and do not fail. Every committed
+      # Cargo.lock is audited, nested ones included. The control adds the
+      # vulnerable wasmtime-wasi 50.0.2 (RUSTSEC-2026-0587) to fuzz/Cargo.lock
+      # and requires the same audit loop to fail on it.
+      - name: cargo audit on every Cargo.lock (with control)
+        shell: bash
+        run: |
+          set -euo pipefail
+          locks=(); while IFS= read -r l; do locks+=("$l"); done < <(git ls-files | grep -E '(^|/)Cargo\.lock$')
+          printf '%s\n' "${locks[@]}" | grep -qx 'fuzz/Cargo.lock' \
+            || { echo "::error::fuzz/Cargo.lock is not audited"; exit 1; }
+          audit_all() {
+            local rc=0
+            for lock in "${locks[@]}"; do
+              echo "== $lock"
+              cargo audit --file "$lock" || rc=1
+            done
+            return "$rc"
+          }
+          audit_all
+
+          printf '\n[[package]]\nname = "wasmtime-wasi"\nversion = "50.0.2"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n' >> fuzz/Cargo.lock
+          if audit_all > "$RUNNER_TEMP/audit-control.out" 2>&1; then
+            cat "$RUNNER_TEMP/audit-control.out"
+            echo "::error::control: an advisory in fuzz/Cargo.lock did not fail the audit"; exit 1
+          fi
+          grep -q 'RUSTSEC-2026-0587' "$RUNNER_TEMP/audit-control.out" \
+            || { cat "$RUNNER_TEMP/audit-control.out"; echo "::error::control: failed without reporting RUSTSEC-2026-0587"; exit 1; }
+          git checkout -- fuzz/Cargo.lock
+          echo "control: RUSTSEC-2026-0587 planted in fuzz/Cargo.lock fails the audit"
+
   format:
     name: Format
     needs: changes
@@ -124,7 +223,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   test:
     name: Test
@@ -171,7 +270,7 @@ jobs:
           fi
           echo "LOOM_LEDGER_BASE=$f" >> "$GITHUB_ENV"
       - name: Run tests
-        run: cargo test --all --release --verbose
+        run: cargo test --locked --all --release --verbose
 
   build:
     name: Build
@@ -218,7 +317,7 @@ jobs:
           echo "RUSTFLAGS=-C linker=g++-13 -L native=$LIBSTDCXX_DIR -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
 
       - name: Build release
-        run: cargo build --release --verbose
+        run: cargo build --locked --release --verbose
       - name: Assert the 22.04 runtime floor (GLIBC <= 2.35, GLIBCXX <= 3.4.30 or static libstdc++)
         if: startsWith(matrix.os, 'ubuntu-22.04')
         shell: bash
@@ -249,9 +348,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Install wasm-tools
-        run: cargo install wasm-tools
+        run: cargo install --locked wasm-tools
       - name: Build loom
-        run: cargo build --release
+        run: cargo build --locked --release
       - name: Optimize and validate test fixtures
         run: |
           mkdir -p "$RUNNER_TEMP/loom-optimized"
@@ -334,7 +433,7 @@ jobs:
       - name: Generate coverage
         # Exclude verification feature - it's tested separately in z3-verification job
         # and Z3 compilation + LLVM instrumentation together exhaust disk space
-        run: cargo llvm-cov --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
@@ -355,7 +454,7 @@ jobs:
           key: bench-no-verify
       - name: Run benchmarks
         # Disable verification for benchmarks - we're measuring optimization perf
-        run: cargo bench --no-fail-fast --no-default-features
+        run: cargo bench --locked --no-fail-fast --no-default-features
 
   verify:
     name: Z3 Verification Build
@@ -369,7 +468,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build with verification feature
-        run: cargo build --release --features verification
+        run: cargo build --locked --release --features verification
       - name: Test verification
         run: |
           # Use bench_compare.wat which passes all verification
@@ -427,7 +526,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build loom with the differential gate
-        run: cargo build --release -p loom-cli --features differential
+        run: cargo build --locked --release -p loom-cli --features differential
       - name: Differentially gate the runnable core-module corpus
         run: |
           # Policy (#238): the CLI `--differential` gate HARD-FAILS on BOTH
@@ -499,7 +598,7 @@ jobs:
       # Verification runs in the native jobs.
       - name: Build loom for wasm32-wasip2
         run: |
-          cargo +1.93.1 build --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+          cargo +1.93.1 build --locked --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -516,7 +615,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Install wasm-tools
-        run: cargo install wasm-tools
+        run: cargo install --locked wasm-tools
       - name: Download LOOM binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -625,6 +724,25 @@ jobs:
             grep -v '^Axioms: \(Corelib\|RocqOfRust\|loom\)\.' "$f" || true
             echo "   ($(grep -c '^Axioms: ' "$f") axioms in total)"
           done
+      # .bazelrc sets --lockfile_mode=error, so the steps above fail when
+      # MODULE.bazel.lock does not match MODULE.bazel. Control: drop one
+      # registry hash from the lockfile and require `bazel mod deps` to fail.
+      - name: Stale MODULE.bazel.lock fails (control)
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'common --lockfile_mode=error' .bazelrc
+          jq 'del(.registryFileHashes[(.registryFileHashes | keys | map(select(endswith("/MODULE.bazel"))) | first)])' \
+            MODULE.bazel.lock > "$RUNNER_TEMP/stale.lock"
+          cp "$RUNNER_TEMP/stale.lock" MODULE.bazel.lock
+          if bazel mod deps > "$RUNNER_TEMP/mod.out" 2>&1; then
+            git checkout -- MODULE.bazel.lock
+            echo "::error::control: a lockfile missing a registry hash passed"; exit 1
+          fi
+          git checkout -- MODULE.bazel.lock
+          grep -q 'not permitted with --lockfile_mode=error' "$RUNNER_TEMP/mod.out" \
+            || { cat "$RUNNER_TEMP/mod.out"; echo "::error::control: failed for another reason"; exit 1; }
+          echo "control: stale MODULE.bazel.lock fails"
       # Runs even when a Bazel step failed, so one run reports both gates.
       - name: Trust ledger
         if: ${{ !cancelled() }}
@@ -650,7 +768,7 @@ jobs:
           cargo install wasm-tools --locked
           wasm-tools --version
       - name: Build LOOM
-        run: cargo build --release
+        run: cargo build --locked --release
       - name: Run differential comparison
         run: |
           echo "## Differential Testing: LOOM vs wasm-opt" >> $GITHUB_STEP_SUMMARY

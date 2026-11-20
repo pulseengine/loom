@@ -57,7 +57,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
 
       - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -68,6 +68,12 @@ jobs:
             fuzz/target
           key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock') }}
 
+      # cargo fuzz has no --locked flag, so a stale fuzz/Cargo.lock would be
+      # re-resolved silently by the build below. This step fails instead.
+      - name: fuzz/Cargo.lock is up to date
+        working-directory: fuzz
+        run: cargo +nightly metadata --locked --format-version 1 > /dev/null
+
       - name: Build fuzz targets
         working-directory: fuzz
         run: cargo +nightly fuzz build --target "$FUZZ_TRIPLE"
@@ -75,7 +81,7 @@ jobs:
       - name: Differential oracle self-test (negative control)
         if: matrix.target == 'fuzz_differential'
         working-directory: fuzz
-        run: cargo +nightly test --lib
+        run: cargo +nightly test --locked --lib
 
       - name: Run fuzzer - ${{ matrix.target }}
         # Scheduled runs have no inputs: an empty/unset target means "all".
