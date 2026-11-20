@@ -24,8 +24,11 @@ fn counters() -> &'static Mutex<BTreeMap<String, u64>> {
 
 /// Increment the revert counter for the named pass.
 pub fn record_revert(pass_name: &str) {
-    let mut map = counters().lock().expect("revert counter mutex poisoned");
-    *map.entry(pass_name.to_string()).or_insert(0) += 1;
+    {
+        let mut map = counters().lock().expect("revert counter mutex poisoned");
+        *map.entry(pass_name.to_string()).or_insert(0) += 1;
+    }
+    finish(|_| Outcome::Reverted(pass_name.to_string()));
 }
 
 /// Read a snapshot of the current revert counters.
@@ -140,8 +143,11 @@ impl CoverageSummary {
 
 /// Record an attempt the validator discharged with a real proof.
 pub fn record_proven() {
-    let mut c = coverage().lock().expect("coverage mutex poisoned");
-    c.proven += 1;
+    {
+        let mut c = coverage().lock().expect("coverage mutex poisoned");
+        c.proven += 1;
+    }
+    finish(Outcome::Proven);
 }
 
 /// Record an attempt whose transform was KEPT although nothing was proven.
@@ -152,8 +158,11 @@ pub fn record_proven() {
 /// operator needs to know whether to widen the encoder, raise a threshold, or
 /// stop trusting the result.
 pub fn record_kept_unproven(reason: &str) {
-    let mut c = coverage().lock().expect("coverage mutex poisoned");
-    *c.kept_unproven.entry(reason.to_string()).or_insert(0) += 1;
+    {
+        let mut c = coverage().lock().expect("coverage mutex poisoned");
+        *c.kept_unproven.entry(reason.to_string()).or_insert(0) += 1;
+    }
+    finish(|_| Outcome::KeptUnproven(reason.to_string()));
 }
 
 /// Read a snapshot of verification coverage. Counters are not reset.
@@ -178,6 +187,269 @@ pub fn take_coverage_summary() -> CoverageSummary {
         kept_unproven: snapshot.kept_unproven,
         reverted: total_reverts(),
     }
+}
+
+// ============================================================================
+// Per-attempt accounting (TEST-O3-STATS-JSON-ENGINE)
+// ============================================================================
+//
+// `CoverageSummary` computes its denominator as the sum of its buckets, so it
+// cannot notice an attempt that landed in no bucket. This ledger counts an
+// attempt when the validator is ENTERED, independently of how it ends, and
+// keeps one record per attempt with the deciding engine. The two disagree
+// exactly when the instrumentation has a gap:
+//
+// - `unclassified`: an attempt was entered and a later one began on the same
+//   thread before any outcome was recorded for it;
+// - `outcomes_without_entry`: an outcome was recorded with no attempt open,
+//   for example a structural revert that never reached the validator.
+//
+// The deciding engine is taken from what actually ran during the attempt:
+// ordeal decisions at the solver seam and Z3 `check()` calls in the
+// validator. A Z3 `Unsat` carries no certificate; an ordeal `Unsat` carries
+// one that loom re-checks.
+
+/// Which engine decided an accepted attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Engine {
+    /// Every solver decision in the attempt came from ordeal.
+    Ordeal,
+    /// Every solver decision in the attempt came from Z3.
+    Z3,
+    /// Both engines decided parts of the attempt.
+    Mixed,
+    /// The pass left the function byte-for-byte unchanged.
+    Unchanged,
+    /// Accepted without any solver call, for example when the exact executor
+    /// built the same term for both sides.
+    NoSolver,
+}
+
+impl Engine {
+    /// Stable label used in reports.
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Ordeal => "ordeal",
+            Engine::Z3 => "z3",
+            Engine::Mixed => "mixed",
+            Engine::Unchanged => "unchanged",
+            Engine::NoSolver => "no_solver",
+        }
+    }
+
+    /// True when every decision in the attempt carries a re-checked
+    /// certificate.
+    pub fn is_certified(self) -> bool {
+        matches!(self, Engine::Ordeal)
+    }
+}
+
+/// How one attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Accepted with a proof, decided by the given engine(s).
+    Proven(Engine),
+    /// Accepted although nothing was proven, for the stated reason.
+    KeptUnproven(String),
+    /// Rejected; the function was reverted. Carries the revert key.
+    Reverted(String),
+}
+
+/// One validator attempt: one function after one pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptRecord {
+    /// Pass that produced the candidate.
+    pub pass: String,
+    /// Function name from the name section, when the module has one.
+    pub function: Option<String>,
+    /// How the attempt ended.
+    pub outcome: Outcome,
+}
+
+/// Snapshot of the per-attempt ledger.
+#[derive(Debug, Default, Clone)]
+pub struct AttemptAccounting {
+    /// Attempts counted when the validator was entered.
+    pub entered: u64,
+    /// One record per attempt that reached an outcome.
+    pub records: Vec<AttemptRecord>,
+    /// Attempts entered that never reached an outcome.
+    pub unclassified: u64,
+    /// Outcomes recorded while no attempt was open.
+    pub outcomes_without_entry: u64,
+}
+
+impl AttemptAccounting {
+    /// Accepted attempts by deciding engine.
+    pub fn proven_by_engine(&self) -> BTreeMap<Engine, u64> {
+        let mut m = BTreeMap::new();
+        for r in &self.records {
+            if let Outcome::Proven(e) = r.outcome {
+                *m.entry(e).or_insert(0) += 1;
+            }
+        }
+        m
+    }
+
+    /// Accepted attempts whose every decision carries a re-checked
+    /// certificate.
+    pub fn proven_certified(&self) -> u64 {
+        self.proven_by_engine()
+            .iter()
+            .filter(|(e, _)| e.is_certified())
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// Records with each outcome kind: (proven, kept without proof, reverted).
+    pub fn outcome_counts(&self) -> (u64, u64, u64) {
+        let mut c = (0, 0, 0);
+        for r in &self.records {
+            match r.outcome {
+                Outcome::Proven(_) => c.0 += 1,
+                Outcome::KeptUnproven(_) => c.1 += 1,
+                Outcome::Reverted(_) => c.2 += 1,
+            }
+        }
+        c
+    }
+
+    /// True when every entered attempt reached exactly one outcome and no
+    /// outcome arrived without an attempt.
+    pub fn is_consistent(&self) -> bool {
+        self.unclassified == 0
+            && self.outcomes_without_entry == 0
+            && self.records.len() as u64 == self.entered
+    }
+}
+
+#[derive(Debug)]
+struct Pending {
+    pass: String,
+    function: Option<String>,
+    ordeal: u32,
+    z3: u32,
+    unchanged: bool,
+}
+
+thread_local! {
+    static PENDING: std::cell::RefCell<Option<Pending>> = const { std::cell::RefCell::new(None) };
+}
+
+fn accounting() -> &'static Mutex<AttemptAccounting> {
+    static ACCOUNTING: OnceLock<Mutex<AttemptAccounting>> = OnceLock::new();
+    ACCOUNTING.get_or_init(|| Mutex::new(AttemptAccounting::default()))
+}
+
+/// Open a validator attempt on this thread. An attempt still open from an
+/// earlier call is counted as unclassified.
+pub fn begin_attempt(pass: &str, function: Option<&str>) {
+    let stale = PENDING.with(|p| {
+        p.borrow_mut().replace(Pending {
+            pass: pass.to_string(),
+            function: function.map(str::to_string),
+            ordeal: 0,
+            z3: 0,
+            unchanged: false,
+        })
+    });
+    let mut a = accounting().lock().expect("accounting mutex poisoned");
+    a.entered += 1;
+    if stale.is_some() {
+        a.unclassified += 1;
+    }
+}
+
+/// Open an attempt only if none is open on this thread. For entry points
+/// that can be reached both directly and from inside an open attempt.
+pub fn ensure_attempt(pass: &str, function: Option<&str>) {
+    if PENDING.with(|p| p.borrow().is_none()) {
+        begin_attempt(pass, function);
+    }
+}
+
+/// Note that Z3 decided an obligation inside the open attempt.
+pub fn note_z3_check() {
+    PENDING.with(|p| {
+        if let Some(p) = p.borrow_mut().as_mut() {
+            p.z3 += 1;
+        }
+    });
+}
+
+/// Note that the open attempt compares a function with itself: the pass
+/// changed nothing.
+pub fn note_unchanged() {
+    PENDING.with(|p| {
+        if let Some(p) = p.borrow_mut().as_mut() {
+            p.unchanged = true;
+        }
+    });
+}
+
+/// Note that ordeal decided an obligation inside the open attempt.
+pub fn note_ordeal_decision() {
+    PENDING.with(|p| {
+        if let Some(p) = p.borrow_mut().as_mut() {
+            p.ordeal += 1;
+        }
+    });
+}
+
+fn engine_of(p: &Pending) -> Engine {
+    if p.unchanged && p.ordeal == 0 && p.z3 == 0 {
+        return Engine::Unchanged;
+    }
+    match (p.ordeal > 0, p.z3 > 0) {
+        (true, false) => Engine::Ordeal,
+        (false, true) => Engine::Z3,
+        (true, true) => Engine::Mixed,
+        (false, false) => Engine::NoSolver,
+    }
+}
+
+/// Close the open attempt with `outcome`; `proven` outcomes take their engine
+/// from what ran during the attempt.
+fn finish(make: impl FnOnce(Engine) -> Outcome) {
+    let pending = PENDING.with(|p| p.borrow_mut().take());
+    let mut a = accounting().lock().expect("accounting mutex poisoned");
+    match pending {
+        Some(p) => {
+            let outcome = make(engine_of(&p));
+            a.records.push(AttemptRecord {
+                pass: p.pass,
+                function: p.function,
+                outcome,
+            });
+        }
+        None => a.outcomes_without_entry += 1,
+    }
+}
+
+/// Read a snapshot of the per-attempt ledger. An attempt still open on the
+/// calling thread is reported as unclassified in the snapshot.
+pub fn attempt_accounting() -> AttemptAccounting {
+    let open = PENDING.with(|p| p.borrow().is_some());
+    let mut a = accounting()
+        .lock()
+        .expect("accounting mutex poisoned")
+        .clone();
+    if open {
+        a.unclassified += 1;
+    }
+    a
+}
+
+/// Read the per-attempt ledger and reset it, closing any attempt open on the
+/// calling thread.
+pub fn take_attempt_accounting() -> AttemptAccounting {
+    let open = PENDING.with(|p| p.borrow_mut().take().is_some());
+    let mut guard = accounting().lock().expect("accounting mutex poisoned");
+    let mut a = std::mem::take(&mut *guard);
+    if open {
+        a.unclassified += 1;
+    }
+    a
 }
 
 #[cfg(test)]
@@ -265,6 +537,74 @@ mod tests {
         };
         assert!(c.is_fully_proven());
         assert_eq!(c.proven_percentage(), Some(100.0));
+    }
+
+    fn pending(ordeal: u32, z3: u32, unchanged: bool) -> Pending {
+        Pending {
+            pass: "p".into(),
+            function: None,
+            ordeal,
+            z3,
+            unchanged,
+        }
+    }
+
+    /// The deciding engine is read from what ran: a Z3 call anywhere in the
+    /// attempt makes it uncertified, and "unchanged" applies only when no
+    /// solver ran at all.
+    #[test]
+    fn engine_attribution_reflects_what_ran() {
+        assert_eq!(engine_of(&pending(2, 0, false)), Engine::Ordeal);
+        assert_eq!(engine_of(&pending(0, 1, false)), Engine::Z3);
+        assert_eq!(engine_of(&pending(1, 1, false)), Engine::Mixed);
+        assert_eq!(engine_of(&pending(0, 0, false)), Engine::NoSolver);
+        assert_eq!(engine_of(&pending(0, 0, true)), Engine::Unchanged);
+        assert_eq!(engine_of(&pending(0, 1, true)), Engine::Z3);
+        assert!(Engine::Ordeal.is_certified());
+        for e in [
+            Engine::Z3,
+            Engine::Mixed,
+            Engine::NoSolver,
+            Engine::Unchanged,
+        ] {
+            assert!(!e.is_certified(), "{e:?} must not count as certified");
+        }
+    }
+
+    /// The per-attempt ledger is consistent only when entries and records
+    /// agree; each kind of gap breaks it.
+    #[test]
+    fn attempt_accounting_detects_gaps() {
+        let rec = |o: Outcome| AttemptRecord {
+            pass: "p".into(),
+            function: None,
+            outcome: o,
+        };
+        let ok = AttemptAccounting {
+            entered: 3,
+            records: vec![
+                rec(Outcome::Proven(Engine::Ordeal)),
+                rec(Outcome::KeptUnproven("r".into())),
+                rec(Outcome::Reverted("p".into())),
+            ],
+            unclassified: 0,
+            outcomes_without_entry: 0,
+        };
+        assert!(ok.is_consistent());
+        assert_eq!(ok.outcome_counts(), (1, 1, 1));
+        assert_eq!(ok.proven_certified(), 1);
+
+        let mut more_entered = ok.clone();
+        more_entered.entered = 4;
+        assert!(!more_entered.is_consistent(), "an entry without a record");
+
+        let mut unclassified = ok.clone();
+        unclassified.unclassified = 1;
+        assert!(!unclassified.is_consistent());
+
+        let mut orphan = ok.clone();
+        orphan.outcomes_without_entry = 1;
+        assert!(!orphan.is_consistent());
     }
 
     #[test]

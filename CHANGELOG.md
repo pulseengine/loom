@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `loom optimize --stats-json <file>` writes the validation outcome of every attempt (one function after one pass) as JSON: counts by outcome, the engine that decided each accepted attempt (`unchanged`, `no_solver`, `z3`, `ordeal`, `mixed`), kept-without-proof reasons, revert keys, and one record per attempt. Attempts are counted when the validator is entered, so an attempt that ends without an outcome, or a revert recorded outside any attempt, shows as an inconsistency instead of disappearing. `--stats` prints the same engine split under "Proven".
+
 ### Fixed
 
 - Function summaries index calls by function-space index (imports first) and classify import calls, float-to-int truncation, loops, call cycles, unknown instructions and state reads conservatively; CSE and the verifier's pure-call encoding require callees that read no state (#526).

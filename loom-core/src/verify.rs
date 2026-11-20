@@ -2080,6 +2080,7 @@ fn verify_loops_kinduction(
             solver.assert(all_equal.not());
 
             // Check satisfiability
+            crate::stats::note_z3_check();
             match solver.check() {
                 SatResult::Unsat => {
                     // UNSAT means all_equal is always true
@@ -2755,6 +2756,7 @@ pub fn verify_function_equivalence_with_backend(
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
+                crate::stats::note_z3_check();
                 match solver.check() {
                     SatResult::Unsat => Ok(true), // No counterexample = equivalent
                     SatResult::Sat => {
@@ -2938,6 +2940,7 @@ pub fn verify_function_equivalence_with_result(
 
                 solver.assert(orig.eq(opt).not());
 
+                crate::stats::note_z3_check();
                 match solver.check() {
                     SatResult::Unsat => VerificationResult::Verified,
                     SatResult::Sat => {
@@ -3451,6 +3454,7 @@ fn verify_function_equivalence_with_context_uncounted(
                 // Assert they are NOT equal (looking for counterexample)
                 solver.assert(orig.eq(opt).not());
 
+                crate::stats::note_z3_check();
                 match solver.check() {
                     SatResult::Unsat => Ok(true), // No counterexample = equivalent
                     SatResult::Sat => {
@@ -3783,6 +3787,12 @@ impl TranslationValidator {
         // loom#145: keep z3-internal panic backtraces (always caught +
         // reverted below) out of stderr. Idempotent, race-free (Once).
         install_z3_panic_filter();
+        crate::stats::begin_attempt(&self.pass_name, self.original.name.as_deref());
+        if self.original.instructions == optimized.instructions
+            && self.original.locals == optimized.locals
+        {
+            crate::stats::note_unchanged();
+        }
 
         // PR-K3.2 (Track B): size-threshold fallback. The per-function
         // Z3 translation validator scales poorly on large bodies — the
@@ -4011,6 +4021,10 @@ impl TranslationValidator {
     /// for genuine counterexamples.
     pub fn verify_or_revert_strict(&self, func: &mut Function) -> bool {
         install_z3_panic_filter();
+        crate::stats::begin_attempt(&self.pass_name, self.original.name.as_deref());
+        if self.original.instructions == func.instructions && self.original.locals == func.locals {
+            crate::stats::note_unchanged();
+        }
         let routed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exact_route(
                 &self.original,
@@ -7291,6 +7305,7 @@ fn check_globals_preserved(
     };
     let solver = Solver::new();
     solver.assert(eq.not());
+    crate::stats::note_z3_check();
     match solver.check() {
         SatResult::Unsat => Ok(true),
         SatResult::Sat => {
@@ -10798,6 +10813,7 @@ fn decide_same(same: Cond, backend: VerifyBackend) -> Result<bool> {
     }
     let solver = Solver::new();
     solver.assert(same.not());
+    crate::stats::note_z3_check();
     match solver.check() {
         SatResult::Unsat => Ok(true),
         SatResult::Sat => {
@@ -11375,6 +11391,7 @@ mod tests {
                 Cond::B(b) => b,
             };
             solver.assert(same.not());
+            crate::stats::note_z3_check();
             match solver.check() {
                 SatResult::Unsat => Ok(true),
                 SatResult::Sat => Ok(false),
