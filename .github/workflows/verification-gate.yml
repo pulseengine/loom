@@ -13,9 +13,12 @@ on:
   merge_group:
   workflow_dispatch:
 
+# A new push to a pull request cancels that PR's running gate, so superseded
+# heads stop holding rust-cpu runners. Only pull_request runs cancel: a
+# merge-queue run or a dispatch on main always runs the full gate to the end.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
