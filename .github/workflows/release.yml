@@ -129,7 +129,7 @@ jobs:
           echo "RUSTFLAGS=-C linker=g++-13 -L native=$LIBSTDCXX_DIR -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" >> "$GITHUB_ENV"
 
       - name: Build loom (native)
-        run: cargo build --release --target ${{ matrix.target }} -p loom-cli
+        run: cargo build --locked --release --target ${{ matrix.target }} -p loom-cli
 
       # #311: assert the runtime floor instead of trusting the pin above.
       # The ceiling is what ubuntu-22.04 provides; if the image is raised, or a
