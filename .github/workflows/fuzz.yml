@@ -54,6 +54,7 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@6a52aad76a94a5fbc50d567bb5be24419801c1fb # nightly
         with:
+          toolchain: nightly-2026-11-20
           components: llvm-tools-preview
 
       - name: Install cargo-fuzz
@@ -72,16 +73,16 @@ jobs:
       # re-resolved silently by the build below. This step fails instead.
       - name: fuzz/Cargo.lock is up to date
         working-directory: fuzz
-        run: cargo +nightly metadata --locked --format-version 1 > /dev/null
+        run: cargo +nightly-2026-11-20 metadata --locked --format-version 1 > /dev/null
 
       - name: Build fuzz targets
         working-directory: fuzz
-        run: cargo +nightly fuzz build --target "$FUZZ_TRIPLE"
+        run: cargo +nightly-2026-11-20 fuzz build --target "$FUZZ_TRIPLE"
 
       - name: Differential oracle self-test (negative control)
         if: matrix.target == 'fuzz_differential'
         working-directory: fuzz
-        run: cargo +nightly test --locked --lib
+        run: cargo +nightly-2026-11-20 test --locked --lib
 
       - name: Run fuzzer - ${{ matrix.target }}
         # Scheduled runs have no inputs: an empty/unset target means "all".
@@ -97,7 +98,7 @@ jobs:
           # headroom so it never races the fuzzer's own time limit.
           # libFuzzer requires every corpus dir to exist; corpus/ is gitignored.
           mkdir -p corpus/${{ matrix.target }}
-          timeout $((FUZZ_DURATION + 120))s cargo +nightly fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} corpus/${{ matrix.target }} seeds -- \
+          timeout $((FUZZ_DURATION + 120))s cargo +nightly-2026-11-20 fuzz run --target "$FUZZ_TRIPLE" ${{ matrix.target }} corpus/${{ matrix.target }} seeds -- \
             -max_total_time=${FUZZ_DURATION} \
             -dict=dictionaries/wasm.dict
 
