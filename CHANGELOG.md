@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- wasmtime 50.0.3 in `Cargo.lock` and `fuzz/Cargo.lock` (the fuzz crate moves from 49.0 to 50.0), the version that fixes RUSTSEC-2026-0587; rustix 1.1.6 fixes RUSTSEC-2026-0486.
+
 ### Added
 
 - `loom optimize --stats-json <file>` writes the validation outcome of every attempt (one function after one pass) as JSON: counts by outcome, the engine that decided each accepted attempt (`unchanged`, `no_solver`, `z3`, `ordeal`, `mixed`), kept-without-proof reasons, revert keys, and one record per attempt. Attempts are counted when the validator is entered, so an attempt that ends without an outcome, or a revert recorded outside any attempt, shows as an inconsistency instead of disappearing. `--stats` prints the same engine split under "Proven". Reverts a pass decides by its own check (the forward_carrier_locals size guard, the constant-folding trap backstop, the structural-validity nets) are reported separately as pass-check reverts, not as validator rejections, because no validator attempt corresponds to them.
