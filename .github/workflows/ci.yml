@@ -575,30 +575,25 @@ jobs:
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","light"]') || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Pin to Rust 1.93.1 for WASM build — Rust 1.94.0 bundles a
-      # wasm-component-ld that generates __wasi_init_tp imports which the
-      # wasip2 component model cannot resolve with wasi-sdk-25.
-      # Last known working: 1.93.1 (2026-02-11), confirmed in CI run 22541892477.
-      # TODO: Unpin when Rust stable + wasi-sdk resolves the wasip2 thread init issue.
-      # NB: pin the *toolchain* via the input, not the action ref. `@<X.Y.Z>`
-      # pins the action's git tag, not Rust; that revision derives "stable" from
-      # the calendar. Dependabot #206 bumped this to `@1.100.0`, a Rust that does
-      # not exist yet, breaking the job on main. `@stable` + explicit toolchain
-      # installs exactly 1.93.1. Do NOT let dependabot bump the ref again.
+      # Exact Rust 1.100.0. Its std makes the component
+      # import wasi:cli/exit@0.2.12 exit-with-code, so running it needs
+      # wasmtime >= 46.0.0 (see CHANGELOG). Pin the toolchain through the
+      # `toolchain` input: `@<X.Y.Z>` on the action pins the action's git tag,
+      # not Rust (dependabot #206 broke main that way).
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: "1.93.1"
+          toolchain: "1.100.0"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          key: wasm-z3-build-1.93.1
+          key: wasm-build-1.100.0
 
       # Upstream z3 (crates.io) does not build for wasm32-wasip2, so the wasm
       # artifact is built without the `verification` feature (no Z3, no ordeal).
       # Verification runs in the native jobs.
       - name: Build loom for wasm32-wasip2
         run: |
-          cargo +1.93.1 build --locked --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+          cargo +1.100.0 build --locked --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
