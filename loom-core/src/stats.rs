@@ -178,14 +178,78 @@ pub fn record_proven() {
     finish(Outcome::Proven);
 }
 
+/// Why the validator accepted a transform it did not prove.
+///
+/// Every way an attempt can be kept without a proof is one variant here, so
+/// the compiler, not a text search, enumerates the validator's trust escapes.
+/// `safety/VALIDATOR_TRUST_LEDGER.txt` lists each label; the test
+/// `loom-core/tests/validator_trust_ledger.rs` fails when a variant is added
+/// without a ledger entry or an entry outlives its variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeptReason {
+    /// The body is larger than `LOOM_Z3_MAX_INSTRUCTIONS`.
+    OverSizeThreshold,
+    /// A float load or store, which the encoder models imprecisely.
+    FloatLoadStore,
+    /// An opcode the encoder does not model.
+    UnknownOpcode,
+    /// The main encoder approximates `br`, `br_if`, `br_table` and an early
+    /// `return`.
+    BranchesApproximated,
+    /// An `Instruction::Unknown` in either body.
+    UnknownInstruction,
+    /// A store, memory-changing instruction or call: final memory is not
+    /// compared.
+    FinalMemoryNotCompared,
+    /// A load, division, remainder, truncation or `unreachable`: trap
+    /// behaviour is not compared.
+    TrapsNotCompared,
+    /// A void function: its side effects are not modelled.
+    VoidFunction,
+    /// Loops accepted without k-induction (only reachable if
+    /// `ENABLE_K_INDUCTION` is turned off).
+    KInductionDisabled,
+}
+
+impl KeptReason {
+    /// Every variant, in declaration order.
+    pub const ALL: [KeptReason; 9] = [
+        KeptReason::OverSizeThreshold,
+        KeptReason::FloatLoadStore,
+        KeptReason::UnknownOpcode,
+        KeptReason::BranchesApproximated,
+        KeptReason::UnknownInstruction,
+        KeptReason::FinalMemoryNotCompared,
+        KeptReason::TrapsNotCompared,
+        KeptReason::VoidFunction,
+        KeptReason::KInductionDisabled,
+    ];
+
+    /// The label `--stats` and `--stats-json` print and the ledger lists.
+    pub fn as_str(self) -> &'static str {
+        // A match without a wildcard: a new variant does not compile until
+        // it has a label, and `ALL` is checked against this in the tests.
+        match self {
+            KeptReason::OverSizeThreshold => "body over the solver size threshold",
+            KeptReason::FloatLoadStore => "float load/store",
+            KeptReason::UnknownOpcode => "unknown opcode",
+            KeptReason::BranchesApproximated => "branches approximated",
+            KeptReason::UnknownInstruction => "unknown instruction",
+            KeptReason::FinalMemoryNotCompared => "final memory not compared",
+            KeptReason::TrapsNotCompared => "traps not compared",
+            KeptReason::VoidFunction => "void function — side effects not modelled",
+            KeptReason::KInductionDisabled => "k-induction disabled — loops assumed equivalent",
+        }
+    }
+}
+
 /// Record an attempt whose transform was KEPT although nothing was proven.
 ///
-/// `reason` must name the specific reason the obligation could not be
-/// discharged ("float load/store", "unknown opcode", "body over the solver
-/// size threshold"), because an unattributed count cannot be acted on: the
-/// operator needs to know whether to widen the encoder, raise a threshold, or
-/// stop trusting the result.
-pub fn record_kept_unproven(reason: &str) {
+/// The reason is a [`KeptReason`], because an unattributed count cannot be
+/// acted on: the operator needs to know whether to widen the encoder, raise a
+/// threshold, or stop trusting the result.
+pub fn record_kept_unproven(reason: KeptReason) {
+    let reason = reason.as_str();
     {
         let mut c = coverage().lock().expect("coverage mutex poisoned");
         *c.kept_unproven.entry(reason.to_string()).or_insert(0) += 1;

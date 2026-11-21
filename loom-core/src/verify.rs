@@ -2663,7 +2663,7 @@ pub fn verify_function_equivalence_with_backend(
         } else {
             // Unreachable while ENABLE_K_INDUCTION is true, but if it is
             // ever flipped this is an assumption, not a proof.
-            note_unproven_acceptance("k-induction disabled — loops assumed equivalent");
+            note_unproven_acceptance(crate::stats::KeptReason::KInductionDisabled);
             return Ok(true);
         }
     }
@@ -2688,7 +2688,8 @@ pub fn verify_function_equivalence_with_backend(
     if let Some(reason) = unverifiable_reason(original, optimized) {
         eprintln!(
             "{}: verification skipped (unverifiable instructions: {})",
-            pass_name, reason
+            pass_name,
+            reason.as_str()
         );
         // Kept without proof. Noted so the wrapper reports it under that
         // reason as a number, not just a line of stderr that scrolls past.
@@ -2803,7 +2804,7 @@ pub fn verify_function_equivalence_with_backend(
                 // function out of the proven count. Lesson worth keeping: a
                 // probe that does not reach an arm shows the probe's reach,
                 // not the arm's.
-                note_unproven_acceptance("void function — side effects not modelled");
+                note_unproven_acceptance(crate::stats::KeptReason::VoidFunction);
                 //
                 // KNOWN LIMITATION: void functions can still have side effects
                 // (memory writes, global writes) that differ between original
@@ -3051,7 +3052,7 @@ thread_local! {
     /// an accounting layer starts disagreeing with the thing it accounts for.
     /// Verification runs one function per rayon worker, so a thread-local is
     /// the right scope.
-    static UNPROVEN_ACCEPTANCE: std::cell::Cell<Option<&'static str>> =
+    static UNPROVEN_ACCEPTANCE: std::cell::Cell<Option<crate::stats::KeptReason>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -3078,13 +3079,13 @@ fn take_deferral_reason() -> Option<&'static str> {
 
 /// Record that this attempt is about to be ACCEPTED without a proof.
 #[cfg(feature = "verification")]
-fn note_unproven_acceptance(reason: &'static str) {
+fn note_unproven_acceptance(reason: crate::stats::KeptReason) {
     UNPROVEN_ACCEPTANCE.with(|c| c.set(Some(reason)));
 }
 
 /// Read and clear the pending unproven-acceptance reason.
 #[cfg(feature = "verification")]
-fn take_unproven_acceptance() -> Option<&'static str> {
+fn take_unproven_acceptance() -> Option<crate::stats::KeptReason> {
     UNPROVEN_ACCEPTANCE.with(|c| c.take())
 }
 
@@ -3101,8 +3102,12 @@ fn unmodelled_observable(
     original: &Function,
     optimized: &Function,
     exact_branches: bool,
-) -> Option<&'static str> {
-    fn scan(body: &[Instruction], exact_branches: bool, top: bool) -> Option<&'static str> {
+) -> Option<crate::stats::KeptReason> {
+    fn scan(
+        body: &[Instruction],
+        exact_branches: bool,
+        top: bool,
+    ) -> Option<crate::stats::KeptReason> {
         use Instruction as I;
         let last = body.len().saturating_sub(1);
         for (i, instr) in body.iter().enumerate() {
@@ -3115,12 +3120,12 @@ fn unmodelled_observable(
                 } => scan(then_body, exact_branches, false)
                     .or_else(|| scan(else_body, exact_branches, false)),
                 I::Br(_) | I::BrIf(_) | I::BrTable { .. } if !exact_branches => {
-                    Some("branches approximated")
+                    Some(crate::stats::KeptReason::BranchesApproximated)
                 }
                 I::Return if !exact_branches && !(top && i == last) => {
-                    Some("branches approximated")
+                    Some(crate::stats::KeptReason::BranchesApproximated)
                 }
-                I::Unknown(_) => Some("unknown instruction"),
+                I::Unknown(_) => Some(crate::stats::KeptReason::UnknownInstruction),
                 I::I32Store { .. }
                 | I::I64Store { .. }
                 | I::F32Store { .. }
@@ -3136,7 +3141,7 @@ fn unmodelled_observable(
                 | I::MemoryInit { .. }
                 | I::DataDrop(_)
                 | I::Call(_)
-                | I::CallIndirect { .. } => Some("final memory not compared"),
+                | I::CallIndirect { .. } => Some(crate::stats::KeptReason::FinalMemoryNotCompared),
                 I::I32Load { .. }
                 | I::I64Load { .. }
                 | I::F32Load { .. }
@@ -3167,7 +3172,7 @@ fn unmodelled_observable(
                 | I::I64TruncF32U
                 | I::I64TruncF64S
                 | I::I64TruncF64U
-                | I::Unreachable => Some("traps not compared"),
+                | I::Unreachable => Some(crate::stats::KeptReason::TrapsNotCompared),
                 _ => None,
             };
             if gap.is_some() {
@@ -3203,7 +3208,10 @@ fn record_acceptance(original: &Function, optimized: &Function, exact_branches: 
 /// with the SAME predicate that decides it, rather than a second copy that
 /// could drift out of agreement and mislabel the report.
 #[cfg(feature = "verification")]
-fn unverifiable_reason(original: &Function, optimized: &Function) -> Option<&'static str> {
+fn unverifiable_reason(
+    original: &Function,
+    optimized: &Function,
+) -> Option<crate::stats::KeptReason> {
     if !contains_unverifiable_instructions(&original.instructions)
         && !contains_unverifiable_instructions(&optimized.instructions)
     {
@@ -3212,9 +3220,9 @@ fn unverifiable_reason(original: &Function, optimized: &Function) -> Option<&'st
     if contains_memory_instructions(&original.instructions)
         || contains_memory_instructions(&optimized.instructions)
     {
-        Some("float load/store")
+        Some(crate::stats::KeptReason::FloatLoadStore)
     } else {
-        Some("unknown opcode")
+        Some(crate::stats::KeptReason::UnknownOpcode)
     }
 }
 
@@ -3820,7 +3828,7 @@ impl TranslationValidator {
             // functions that shipped. A stat that names the wrong outcome is
             // worse than no stat: it reads as evidence verification did its
             // job, in exactly the case where it did not run.
-            crate::stats::record_kept_unproven("body over the solver size threshold");
+            crate::stats::record_kept_unproven(crate::stats::KeptReason::OverSizeThreshold);
             return Ok(());
         }
 
@@ -13378,7 +13386,9 @@ mod tests {
                 // bucket that distinguishes "the seam declined" from "no
                 // obligation was ever built".
                 if r == 0 && d == 0 {
-                    let why = take_unproven_acceptance().unwrap_or("no obligation built");
+                    let why = take_unproven_acceptance()
+                        .map(crate::stats::KeptReason::as_str)
+                        .unwrap_or("no obligation built");
                     *skipped.entry(why).or_insert(0) += 1;
                 }
             }

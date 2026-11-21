@@ -1,0 +1,46 @@
+# Validator trust ledger: every way loom's translation validator accepts a
+# transform without proving it, and every LOOM_* variable that changes what
+# it decides.
+#
+# Checked by loom-core/tests/validator_trust_ledger.rs:
+#   kept-unproven  one line per KeptReason variant (loom-core/src/stats.rs),
+#                  the only argument record_kept_unproven takes
+#   env            one line per "LOOM_*" name read in loom-core/src or
+#                  loom-cli/src; an env::var call with a computed name fails
+#   structural     reviewed entries the code cannot derive
+#   removed        an entry whose escape is gone, with the PR or commit that
+#                  removed it
+# A code-derived entry missing here fails; a live entry the code no longer
+# has fails until it becomes a `removed:` line; on pull requests a line that
+# disappears without a linked `removed:` line fails.
+#
+# This first version discloses escapes that already existed at main cef7750.
+# It adds no new escape. From here entries may only shrink.
+#
+# Format: `kind: name | text`.
+
+kept-unproven: body over the solver size threshold | The body has more than LOOM_Z3_MAX_INSTRUCTIONS instructions (default 2000); the transform is kept and nothing is checked (verify.rs, TranslationValidator::verify).
+kept-unproven: float load/store | A float load or store in either body; the encoder models it imprecisely, so the attempt is not encoded (verify.rs, unverifiable_reason).
+kept-unproven: unknown opcode | An opcode the encoder does not model in either body; the attempt is not encoded (verify.rs, unverifiable_reason).
+kept-unproven: branches approximated | Accepted by the main encoder, which approximates br, br_if, br_table and an early return; the acyclic executor models them exactly and is not affected (verify.rs, unmodelled_observable).
+kept-unproven: unknown instruction | An Instruction::Unknown in either body of an accepted attempt (verify.rs, unmodelled_observable).
+kept-unproven: final memory not compared | An accepted attempt whose body stores, changes memory or calls; the encoder compared results but not final memory (verify.rs, unmodelled_observable).
+kept-unproven: traps not compared | An accepted attempt whose body loads, divides, takes a remainder, truncates a float or reaches unreachable; trap behaviour was not compared (verify.rs, unmodelled_observable).
+kept-unproven: void function — side effects not modelled | A function with no results; the obligation is return-value equality, so a void function's effects are not compared (verify.rs).
+kept-unproven: k-induction disabled — loops assumed equivalent | Loops accepted without k-induction; unreachable while ENABLE_K_INDUCTION is true, as it is (verify.rs).
+
+env: LOOM_Z3_MAX_INSTRUCTIONS | Instruction bound, default 2000. Above it the transform is kept without proof (see kept-unproven: body over the solver size threshold).
+env: LOOM_Z3_MAX_MEMORY_OPS | Memory-operation bound for the incumbent solver, default 2. Above it (and above LOOM_Z3_MEMORY_BOUND_FLOOR instructions) ordeal is tried and, unless it proves the transform, the transform is reverted.
+env: LOOM_Z3_MEMORY_BOUND_FLOOR | Bodies with at most this many instructions (default 16) are exempt from LOOM_Z3_MAX_MEMORY_OPS.
+env: LOOM_Z3_TIMEOUT_MS | Z3 per-check timeout, default 5000 ms, 0 disables it. A timeout is Unknown, which every call site treats as not proven and reverts. Wall-clock: which attempts are decided can depend on the machine.
+env: LOOM_ORDEAL_TIMEOUT_MS | ordeal per-obligation deadline, default 5000 ms. Wall-clock, as above.
+env: LOOM_ORDEAL_MAX_MEM_ACCESSES | Memory-access bound for ordeal, default 1024. Above it the obligation is deferred to Z3.
+env: LOOM_VERIFY_BACKEND | Which engine decides: z3 (default and any unrecognised value), ordeal, or both (both decide; a disagreement panics).
+env: LOOM_VERBOSE_REVERTS | Prints each revert to stderr. Changes no verdict.
+
+structural: encoder | A proof is about the SMT encoding of the two bodies. That the encoding states wasm semantics is not proved; it is the largest trusted component.
+structural: parser-and-binary-encoder | Validation compares parsed Function values. The wasmparser-based parser and the binary encoder that writes the output are outside the comparison.
+structural: floats | Float arithmetic on non-constant operands is compared as uninterpreted functions: equal operands give equal results, and no IEEE 754 law is used. Constant operands are evaluated natively.
+structural: nan-payload | When a float operation on constant operands produces a NaN, the evaluator uses the canonical NaN of its width (verify.rs, f32_bits and f64_bits). Wasm allows other NaN payloads, which are not modelled.
+structural: funcref-element-modules | optimize_module and the component optimizer leave a module whose element segments reference functions unchanged (#196; the component optimizer reports it as skipped since #531). Nothing in such a module is validated.
+structural: library-cli-difference | The CLI core-module pipeline does not apply the #196 element guard that optimize_module applies, so the library and the binary optimize such modules differently (#345, open).
