@@ -1037,6 +1037,7 @@ dependencies = [
  "loom-isle",
  "loom-testing",
  "serde_json",
+ "wasmparser 0.261.0",
  "wsc-attestation",
 ]
 
