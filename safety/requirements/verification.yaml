@@ -197,7 +197,7 @@ artifacts:
             LOOM_DOGFOOD_WASM="$target_dir/wasm32-wasip2/release/loom.wasm" \
             LOOM_DOGFOOD_WASMTIME="$dir/$wt/wasmtime" \
               cargo test --release -p loom-cli --test dogfood -- --ignored --nocapture --exact optimized_loom_produces_the_same_results_as_loom 2>&1 | tee "$dir/dogfood.out"
-            grep -E '^dogfood: |core modules optimized' "$dir/dogfood.out"
+            grep -E '^dogfood: |core modules optimized' "$dir/dogfood.out" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
             grep -qE '^test result: ok\. 1 passed' "$dir/dogfood.out"
     status: verified
     release: v1.6.0
