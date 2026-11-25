@@ -1,19 +1,25 @@
 version: 2
-# One pull request per ecosystem per week, not one per crate per directory.
+# Grouped monthly updates. One entry per ecosystem, its directories in one
+# `directories:` list, so an upstream release opens one PR and not one per
+# directory. Every entry runs monthly (the 1st, 02:00 UTC), keeps at most 2
+# PRs open, and waits 7 days after a release (cooldown). Lockstep groups come
+# first because Dependabot puts a dependency in the FIRST group it matches;
+# then one minor-patch group. Majors stay ungrouped, one PR each, so a
+# breaking change is read on its own. Security updates ignore the schedule
+# and the limit.
 #
-# Each dependabot PR runs the full CI matrix, and every merge leaves the
-# others behind main, so each of them then re-runs the whole matrix again.
-# On 2026-11-05 nine bumps were open at once: the wasm-tools family alone
-# came as five PRs (wasmprinter and wit-component in / and in /fuzz, plus
-# wat in /fuzz) for one upstream release. Grouping turns that into one run.
-#
-# The trade-off: one bad bump holds the whole group back. When that happens,
-# drop it from the group PR and land it on its own.
+# Every dtolnay/rust-toolchain step sets `toolchain:`, because the action's
+# master requires that input; a grouped bump moves every pin at once.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+      time: "02:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
     groups:
@@ -21,9 +27,6 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: cargo
-    # Every cargo manifest dependabot watches, in one entry, so the group
-    # below spans all of them and a release that touches / and /fuzz arrives
-    # as one PR.
     directories:
       - /
       - /fuzz
@@ -31,37 +34,47 @@ updates:
       - /loom-core
       - /loom-isle
     schedule:
-      interval: weekly
+      interval: monthly
+      time: "02:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
     groups:
-      cargo:
+      # One upstream wasm-tools release moves all of these at once.
+      wasm-tools-family:
         patterns:
-          - "*"
+          - "wasmparser"
+          - "wasm-encoder"
+          - "wasmprinter"
+          - "wit-component"
+          - "wit-parser"
+          - "wasm-metadata"
+          - "wat"
+      wasmtime:
+        patterns:
+          - "wasmtime"
+          - "wasmtime-*"
+      minor-patch:
+        update-types:
+          - minor
+          - patch
     ignore:
-      # cranelift-isle is PINNED to the 0.132.x line: 0.133+ raises its MSRV to
-      # rustc 1.94.0, which is not yet stable, so a wider constraint breaks the
-      # wasm32-wasip2 build and reddens main.
-      #
-      # This entry exists because the pin was re-floated TWICE by automation
-      # (#298 → fixed in #304, then #310 again) — both times past a comment in
-      # Cargo.toml that explained precisely why not to. Dependabot does not read
-      # comments, and these PRs auto-merge, so no human saw the warning either
-      # time. A pin defended only by prose is not defended; this makes it
-      # mechanical.
-      #
-      # It used to be repeated in one entry per directory, because #318 was
-      # titled "in /fuzz" and re-floated the ROOT workspace pin anyway: every
-      # cargo ecosystem needed the entry or the bot found the open door. With
-      # all directories in one entry, this single ignore covers all of them.
-      #
-      # Remove this ignore ONLY when rustc 1.94 is stable on the CI image, or
-      # when the lockfile is committed (#320) — and raise the release workflow's
-      # asserted glibc ceiling in the same change if the runner image moves.
+      # cranelift-isle is pinned to the 0.132.x line in Cargo.toml. Dependabot
+      # does not read the comment there, and it re-floated the pin twice
+      # (#298, #310), so the pin is defended here. Remove this entry in the
+      # same change that moves the pin.
       - dependency-name: cranelift-isle
   - package-ecosystem: docker
     directory: /fuzz/oss-fuzz/projects/loom
     schedule:
-      interval: weekly
+      interval: monthly
+      time: "02:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
     labels:
       - dependencies
