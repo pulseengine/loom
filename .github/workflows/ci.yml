@@ -442,7 +442,13 @@ jobs:
         with:
           key: coverage
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@5b56535d0239d0a46e7d74f64d83712fad4564d3 # cargo-llvm-cov
+        # The generic action with an explicit `tool:` input. A per-tool branch
+        # pin relies on that branch's default `tool`, and a grouped bump moves
+        # it to a release commit with no default, which installs nothing
+        # (#548: `no such command: llvm-cov`).
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-llvm-cov@0.9.1
       - name: Generate coverage
         # Exclude verification feature - it's tested separately in z3-verification job
         # and Z3 compilation + LLVM instrumentation together exhaust disk space
