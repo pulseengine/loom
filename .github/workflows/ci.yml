@@ -683,6 +683,120 @@ jobs:
           echo "   Output: $OUTPUT_SIZE bytes"
           echo "   Reduction: $REDUCTION%"
 
+  # Advisory: the shipped loom.wasm, fused by meld into a core module, must
+  # behave like native loom under kiln (the covalent 2026.11.28 versions in
+  # varve.toml). Asserts `--version`, byte-identical `optimize` output on
+  # tests/corpus/state_machine.wasm, and every documented exit code: 0, 1 (an
+  # ordinary failure) and 2 (`loom verify`, EXIT_VERIFY_UNIMPLEMENTED).
+  # Advisory because it is not a required check; a failure shows red, and a
+  # hang is parked explicitly rather than hidden.
+  kiln-dogfood:
+    name: loom.wasm fused by meld under kiln
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    needs: [build, wasm-build]
+    # kiln 0.9.0 hangs on larger fused modules on x86_64 Linux (kiln#748);
+    # each call is capped at KILN_TIMEOUT seconds and the job at 20 minutes.
+    timeout-minutes: 20
+    env:
+      # x86_64-unknown-linux-musl archives; each hash matches the release's
+      # own SHA256SUMS.txt (checked 2026-11-27).
+      MELD_VERSION: v0.70.0
+      MELD_SHA256: 9ff3e50d538a54fd129a8962733b766569218eb9dbb8b9be642b389b6063895c
+      KILN_VERSION: v0.9.0
+      KILN_SHA256: 768a1f5971656635d24b614d48fb50337e810da0e8c8006f8e863d40bc550ec2
+      KILN_TIMEOUT: "120"
+      # Parked (2026-11-27): kiln 0.9.0 hung on the first call (`--version`)
+      # on the x86_64 Linux runner, run 46041632429: "kiln hung (kiln#748):
+      # no result after 120 s". The same call passes on macOS in about 17 s.
+      # Set "false" together with the KILN_VERSION and KILN_SHA256 of the
+      # kiln release that ships the kiln#748 fix.
+      KILN_PARKED: "true"
+    steps:
+      - name: kiln parked (kiln#748)
+        if: env.KILN_PARKED == 'true'
+        run: |
+          echo "kiln job parked: kiln 0.9.0 hangs on x86_64 Linux (kiln#748); unpark with the kiln release that fixes it"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.KILN_PARKED != 'true'
+      - name: Download LOOM binary
+        if: env.KILN_PARKED != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: loom-ubuntu-24.04
+          path: ./loom-bin
+      - name: Download LOOM WASM
+        if: env.KILN_PARKED != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: loom-wasm
+          path: ./loom-wasm
+      - name: Fetch pinned meld and kiln
+        if: env.KILN_PARKED != 'true'
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/chain"; mkdir -p "$d"; cd "$d"
+          m="meld-$MELD_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          k="kiln-$KILN_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$m" "https://github.com/pulseengine/meld/releases/download/$MELD_VERSION/$m"
+          curl -fsSL -o "$k" "https://github.com/pulseengine/kiln/releases/download/$KILN_VERSION/$k"
+          printf '%s  %s\n%s  %s\n' "$MELD_SHA256" "$m" "$KILN_SHA256" "$k" | sha256sum -c -
+          tar -xzf "$m" --strip-components=1 "meld-$MELD_VERSION-x86_64-unknown-linux-musl/meld"
+          tar -xzf "$k" ./kiln
+          ./meld --version
+          ./kiln --version
+      - name: loom.wasm under kiln matches native loom
+        if: env.KILN_PARKED != 'true'
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/chain"
+          native="$PWD/loom-bin/loom"
+          chmod +x "$native"
+          wasm="$PWD/loom-wasm/loom.wasm"
+          w="$RUNNER_TEMP/kiln-work"; mkdir -p "$w"
+          cp tests/corpus/state_machine.wasm "$w/"
+          echo junk > "$w/junk.isle"
+
+          # Codes other than 0 and 1 reach the host only through
+          # wasi:cli/exit exit-with-code; without that import the code
+          # assertions below would be testing the wrong thing.
+          grep -aq exit-with-code "$wasm" || { echo "loom.wasm does not import exit-with-code"; exit 1; }
+
+          "$c/meld" fuse --reproducible --memory multi -o "$c/loom.fused.wasm" "$wasm"
+          "$c/meld" fuse --reproducible --memory multi -o "$c/again.fused.wasm" "$wasm"
+          cmp "$c/loom.fused.wasm" "$c/again.fused.wasm"
+          sha256sum "$c/loom.fused.wasm"
+
+          # One kiln call, capped; a timeout is reported as the known hang.
+          kiln_run() {
+            local rc=0
+            (cd "$w" && timeout "$KILN_TIMEOUT" "$c/kiln" --wasi --wasi-fs . "$c/loom.fused.wasm" "$@") || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "kiln hung (kiln#748): no result after $KILN_TIMEOUT s" >&2
+            fi
+            return "$rc"
+          }
+          expect_rc() {
+            local want=$1; shift
+            local rc=0
+            kiln_run "$@" >/dev/null 2>&1 || rc=$?
+            [ "$rc" -ne 124 ] || { echo "kiln hung (kiln#748): no result after $KILN_TIMEOUT s"; exit 1; }
+            [ "$rc" -eq "$want" ] || { echo "kiln: '$*' exited $rc, expected $want"; exit 1; }
+            echo "exit $rc as documented: $*"
+          }
+
+          got=$(kiln_run --version)
+          want=$("$native" --version)
+          [ "$got" = "$want" ] || { echo "--version: kiln '$got', native '$want'"; exit 1; }
+          echo "--version: $got"
+
+          expect_rc 0 optimize state_machine.wasm -o kiln.wasm
+          (cd "$w" && "$native" optimize state_machine.wasm -o native.wasm >/dev/null)
+          cmp "$w/kiln.wasm" "$w/native.wasm"
+          echo "optimize output byte-identical to native ($(stat -c%s "$w/kiln.wasm") bytes)"
+
+          expect_rc 1 optimize missing.wasm -o out.wasm
+          expect_rc 2 verify junk.isle
+
   rocq-proofs:
     name: Rocq Formal Proofs
     needs: changes

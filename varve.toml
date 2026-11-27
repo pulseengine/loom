@@ -8,4 +8,5 @@ manifest-version = 1
 [toolchain]
 realm   = "covalent"
 channel = "rolling"
-layer   = "2026.11.16"
+layer   = "2026.11.28"
+digest  = "sha256:da7f6b48f875349c020e46ba52958f022db4c03b90b70bf91c718ccbbebbbbce"
