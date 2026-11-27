@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `loom optimize --stats` names the direction of every change: "+17.9% growth", "5.9% reduction" or "no change" on the instruction, binary-size, component and module-size lines, "+N bytes growth" for the optimization effect, and a per-pass delta of after minus before (#554). Growth used to print as a negative reduction ("-13.5% reduction"), so a module that got larger read as if it got smaller.
 - `loom optimize` no longer optimizes a core module whose element segments reference functions. It applies the #196 guard that `optimize_module` and the component optimizer already applied: the output is the input byte for byte, stdout names the reason, and `--stats-json` records it as `module_skipped` (#345). Such modules, which include meld-fused Rust tools, were rewritten before without any check that could see a wrong function-pointer table.
 - Function summaries index calls by function-space index (imports first) and classify import calls, float-to-int truncation, loops, call cycles, unknown instructions and state reads conservatively; CSE and the verifier's pure-call encoding require callees that read no state (#526).
 - `parse_wasm` validated a module's sections but never ran the validator for

@@ -1591,6 +1591,36 @@ artifacts:
       - type: verifies
         target: REQ-1
 
+  - id: TEST-554-STATS-DIRECTION
+    type: feature
+    title: loom optimize --stats names the direction of every change (#554)
+    description: >
+      Growth used to print as a negative reduction ("-17.9% reduction",
+      "-650461 bytes reduction", and "-34 instructions" for a pass that added
+      34), so a module that got larger read as if it got smaller. The
+      instruction, binary-size, component and module-size lines now print
+      "+N% growth", "N% reduction" or "no change", the optimization effect
+      prints "+N bytes growth" or "N bytes reduction", and the per-pass delta
+      is after minus before. Fixture loom-core/tests/fixtures/inline-grows.wasm
+      (97 bytes) grows to 145 bytes through inlining. Control:
+      tests/corpus/state_machine.wasm still prints a reduction. Confirmed
+      discriminating: against the previous main.rs the growth test fails on
+      the Instructions line.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a module that optimization grows, every stats line says growth with a + sign and none prints a negative reduction"
+        - "Given a module that optimization shrinks, the size line says reduction without a sign"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test stats_direction
+    status: verified
+    release: v1.6.0
+    tags: [v160, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-10
+
   # ============================================================================
   # #347 — v1.4.1: bound the quantity that actually drives solver cost.
   #
