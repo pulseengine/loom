@@ -145,16 +145,16 @@ impl OptimizationStats {
         println!("\n📊 Optimization Statistics");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!(
-            "Instructions: {} → {} ({:.1}% reduction)",
+            "Instructions: {} → {} ({})",
             self.instructions_before,
             self.instructions_after,
-            self.reduction_percentage(self.instructions_before, self.instructions_after)
+            describe_change(self.instructions_before, self.instructions_after)
         );
         println!(
-            "Binary size:  {} → {} bytes ({:.1}% reduction)",
+            "Binary size:  {} → {} bytes ({})",
             self.bytes_before,
             self.bytes_after,
-            self.reduction_percentage(self.bytes_before, self.bytes_after)
+            describe_change(self.bytes_before, self.bytes_after)
         );
 
         // Show re-encoding baseline if available
@@ -166,7 +166,13 @@ impl OptimizationStats {
                 "  Re-encoding effect: {} bytes ({:+})",
                 reenc, -reenc_effect
             );
-            println!("  Optimization effect: {} bytes reduction", opt_effect);
+            if opt_effect > 0 {
+                println!("  Optimization effect: {} bytes reduction", opt_effect);
+            } else if opt_effect == 0 {
+                println!("  Optimization effect: no change");
+            } else {
+                println!("  Optimization effect: +{} bytes growth", -opt_effect);
+            }
         }
 
         println!("Constant folds: {}", self.constant_folds);
@@ -178,7 +184,8 @@ impl OptimizationStats {
             println!("📈 Per-Pass Breakdown");
             println!("─────────────────────────────────────────");
             for pass in &self.pass_stats {
-                let delta = pass.instructions_before as i64 - pass.instructions_after as i64;
+                // after - before: growth is +N, a reduction -N, as on the re-encoding line (#554)
+                let delta = pass.instructions_after as i64 - pass.instructions_before as i64;
                 if delta != 0 {
                     println!(
                         "  {:20} {:4} → {:4} ({:+} instructions)",
@@ -282,13 +289,25 @@ impl OptimizationStats {
         }
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
+}
 
-    fn reduction_percentage(&self, before: usize, after: usize) -> f64 {
-        if before == 0 {
-            0.0
-        } else {
-            ((before as f64 - after as f64) / before as f64) * 100.0
-        }
+/// The change from `before` to `after` as a percentage of `before`, with a
+/// word that matches its sign: "12.3% reduction", "+17.9% growth" or
+/// "no change". The word comes from the sign of the raw difference, so a
+/// change too small to show at one decimal still names its direction (#554).
+fn describe_change(before: usize, after: usize) -> String {
+    if after == before {
+        return "no change".to_string();
+    }
+    if before == 0 {
+        // after != before, so after > 0
+        return "growth from 0".to_string();
+    }
+    let pct = before.abs_diff(after) as f64 / before as f64 * 100.0;
+    if after < before {
+        format!("{:.1}% reduction", pct)
+    } else {
+        format!("+{:.1}% growth", pct)
     }
 }
 
@@ -643,16 +662,10 @@ fn optimize_command(
                     println!("\n📊 Component Optimization Results");
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                     println!(
-                        "Component:    {} → {} bytes ({:.1}% reduction)",
+                        "Component:    {} → {} bytes ({})",
                         stats.original_size,
                         stats.optimized_size,
-                        if stats.original_size > 0 {
-                            ((stats.original_size as f64 - stats.optimized_size as f64)
-                                / stats.original_size as f64)
-                                * 100.0
-                        } else {
-                            0.0
-                        }
+                        describe_change(stats.original_size, stats.optimized_size)
                     );
                     println!(
                         "Core modules: {} found, {} optimized, {} skipped, {} failed",
@@ -663,13 +676,13 @@ fn optimize_command(
                     );
                     if stats.original_module_size > 0 {
                         println!(
-                            "Module size:  {} → {} bytes ({:.1}% reduction)",
+                            "Module size:  {} → {} bytes ({})",
                             stats.original_module_size,
                             stats.optimized_module_size,
-                            ((stats.original_module_size as f64
-                                - stats.optimized_module_size as f64)
-                                / stats.original_module_size as f64)
-                                * 100.0
+                            describe_change(
+                                stats.original_module_size,
+                                stats.optimized_module_size
+                            )
                         );
                     }
                     println!("Status:       {}", stats.message);
@@ -1777,21 +1790,18 @@ mod tests {
     }
 
     #[test]
-    fn test_optimization_stats_reduction_percentage() {
-        let stats = OptimizationStats {
-            instructions_before: 10,
-            instructions_after: 5,
-            bytes_before: 100,
-            bytes_after: 50,
-            optimization_time_ms: 1,
-            constant_folds: 2,
-            pass_stats: vec![],
-            reencoding_bytes: None,
-        };
-
-        assert_eq!(stats.reduction_percentage(10, 5), 50.0);
-        assert_eq!(stats.reduction_percentage(100, 25), 75.0);
-        assert_eq!(stats.reduction_percentage(0, 0), 0.0);
+    fn test_describe_change_names_the_direction() {
+        // #554: growth used to print as "-17.9% reduction".
+        assert_eq!(describe_change(10, 5), "50.0% reduction");
+        assert_eq!(describe_change(100, 25), "75.0% reduction");
+        assert_eq!(describe_change(154043, 181652), "+17.9% growth");
+        assert_eq!(describe_change(4799493, 5448897), "+13.5% growth");
+        assert_eq!(describe_change(0, 0), "no change");
+        assert_eq!(describe_change(7, 7), "no change");
+        assert_eq!(describe_change(0, 3), "growth from 0");
+        // A change below 0.05% still names its direction.
+        assert_eq!(describe_change(100000, 100001), "+0.0% growth");
+        assert_eq!(describe_change(100001, 100000), "0.0% reduction");
     }
 
     /// The #346 backstop, tested directly on its refusal path.
