@@ -705,19 +705,33 @@ jobs:
       KILN_VERSION: v0.9.0
       KILN_SHA256: 768a1f5971656635d24b614d48fb50337e810da0e8c8006f8e863d40bc550ec2
       KILN_TIMEOUT: "120"
+      # Parked (2026-11-27): kiln 0.9.0 hung on the first call (`--version`)
+      # on the x86_64 Linux runner, run 46041632429: "kiln hung (kiln#748):
+      # no result after 120 s". The same call passes on macOS in about 17 s.
+      # Set "false" together with the KILN_VERSION and KILN_SHA256 of the
+      # kiln release that ships the kiln#748 fix.
+      KILN_PARKED: "true"
     steps:
+      - name: kiln parked (kiln#748)
+        if: env.KILN_PARKED == 'true'
+        run: |
+          echo "kiln job parked: kiln 0.9.0 hangs on x86_64 Linux (kiln#748); unpark with the kiln release that fixes it"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.KILN_PARKED != 'true'
       - name: Download LOOM binary
+        if: env.KILN_PARKED != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: loom-ubuntu-24.04
           path: ./loom-bin
       - name: Download LOOM WASM
+        if: env.KILN_PARKED != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: loom-wasm
           path: ./loom-wasm
       - name: Fetch pinned meld and kiln
+        if: env.KILN_PARKED != 'true'
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/chain"; mkdir -p "$d"; cd "$d"
@@ -731,6 +745,7 @@ jobs:
           ./meld --version
           ./kiln --version
       - name: loom.wasm under kiln matches native loom
+        if: env.KILN_PARKED != 'true'
         run: |
           set -euo pipefail
           c="$RUNNER_TEMP/chain"
