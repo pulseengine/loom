@@ -568,7 +568,15 @@ jobs:
           for w in "${corpus[@]}"; do
             [ -f "$w" ] || continue
             name=$(basename "$w")
-            if log=$(./target/release/loom optimize "$w" -o "$RUNNER_TEMP/diff_out.wasm" --differential 2>&1); then
+            log=$(./target/release/loom optimize "$w" -o "$RUNNER_TEMP/diff_out.wasm" --differential 2>&1)
+            rc=$?
+            # #345: a module with a function-referencing element table exits 0
+            # without being optimized, so nothing was compared; it is not
+            # certified.
+            if [ "$rc" -eq 0 ] && echo "$log" | grep -q "Module not optimized"; then
+              echo "⏭️  not optimized (element table, #345): $name"
+              skipped=$((skipped + 1))
+            elif [ "$rc" -eq 0 ]; then
               echo "✅ certified: $name"
               certified=$((certified + 1))
             elif echo "$log" | grep -q "inconclusive"; then
@@ -581,7 +589,7 @@ jobs:
             fi
           done
           echo ""
-          echo "Differential gate: $certified certified, $skipped inconclusive-skipped, ${#diverged[@]} diverged"
+          echo "Differential gate: $certified certified, $skipped skipped (inconclusive or not optimized), ${#diverged[@]} diverged"
           if [ "${#diverged[@]}" -gt 0 ]; then
             echo "❌ behavioral divergence on: ${diverged[*]}"
             exit 1

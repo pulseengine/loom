@@ -420,8 +420,9 @@ enum CoreModuleOutcome {
     Skipped(&'static str),
 }
 
-/// Reason recorded for a module skipped under #196.
-const SKIP_REASON_FUNCREF_ELEMENTS: &str =
+/// Reason recorded for a module skipped under #196, by the component optimizer
+/// and by the CLI's core-module path (#345).
+pub const SKIP_REASON_FUNCREF_ELEMENTS: &str =
     "function-referencing element table, pending a behavioral gate (#196)";
 
 /// Is `name` the `component-type` metadata section?

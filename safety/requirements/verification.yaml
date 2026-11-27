@@ -1560,6 +1560,37 @@ artifacts:
       - type: verifies
         target: REQ-1
 
+  - id: TEST-345-CLI-ELEMENT-GUARD
+    type: feature
+    title: loom optimize leaves a module with a function-referencing element table unchanged (#345)
+    description: >
+      The CLI core-module path applies the #196 guard that optimize_module and
+      the component optimizer apply: a module whose element segments reference
+      functions is written out byte for byte, stdout names the reason, and
+      --stats-json records it as module_skipped with no validator attempt.
+      Structural checks and per-function translation validation cannot see a
+      scrambled or stale function-pointer table, so no unproven table rewrite
+      reaches the output. Control: the same 724-function module with its
+      element section removed is optimized and module_skipped is null.
+      Confirmed discriminating: with the guard disabled, the byte-identity
+      assertion fails ("the CLI rewrote a module whose element segments
+      reference functions").
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a module whose element segments reference functions, loom optimize writes it unchanged and exits 0"
+        - "Given that module, stdout and --stats-json module_skipped name the #196 reason, and no validator attempt is entered"
+        - "Given the same module without its element section, the output differs and module_skipped is null"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test element_guard
+    status: verified
+    release: v1.6.0
+    tags: [v160, safety, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-1
+
   # ============================================================================
   # #347 — v1.4.1: bound the quantity that actually drives solver cost.
   #
