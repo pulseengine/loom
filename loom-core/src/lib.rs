@@ -7330,14 +7330,9 @@ pub mod optimize {
         // For backwards compatibility, this function applies the core optimizations
         // The full optimization pipeline is in loom-cli/src/main.rs lines 237-246
 
-        // #196 (CRITICAL): a module with a function-referencing element segment
-        // (indirect-call table) cannot currently be optimized with behavioral
-        // certainty — loom's structural verification can't detect a scrambled or
-        // stale function-pointer table (v1.1.11 silent-miscompiled falcon's
-        // flight controller). Skip optimization entirely and leave the module
-        // unchanged, mirroring the component path's fail-safe. Correctness over
-        // optimization; re-enable behind a behavioral-differential gate (#196).
-        if super::fused_optimizer::element_section_references_functions(module) {
+        // #196: a table module whose GC type identity the encoder does not
+        // preserve is left unchanged; see `table_handling_is_sound`.
+        if super::fused_optimizer::table_handling_is_sound(module).is_err() {
             return Ok(());
         }
 
@@ -8812,16 +8807,41 @@ pub mod optimize {
     pub(crate) type TableResolver = std::collections::HashMap<(u32, u32), u32>;
 
     /// Parse the raw element section bytes and build a resolver
-    /// `(table_idx, slot_offset) -> func_idx` for active segments whose
-    /// offset is a literal `i32.const`. Non-trivial segments are
-    /// silently ignored — the resolver simply doesn't cover those slots,
-    /// so `directize_instructions` will leave their call_indirects alone.
+    /// `(table_idx, slot_offset) -> func_idx` holding what each slot contains
+    /// once instantiation has applied every active segment, in order.
     ///
-    /// Returns an error if the section bytes themselves are malformed.
+    /// A slot is in the map only when its content is known for the whole run:
+    /// - a table that is imported or exported is left out entirely, because
+    ///   code outside the module can change it (#196);
+    /// - a later active segment overwrites earlier ones, so an item that is
+    ///   not a single `ref.func F` (for example `ref.null func`) removes the
+    ///   slot instead of leaving the earlier function in place (#196);
+    /// - an active segment whose offset is not a literal non-negative
+    ///   `i32.const` could land on any slot, so the whole resolver is refused.
+    ///
+    /// Table-mutating instructions are rejected by the parser, so no code in
+    /// the module changes a slot after instantiation.
+    ///
+    /// Returns an error if the section is malformed or a segment cannot be
+    /// placed; callers then resolve no slot at all.
     pub(crate) fn build_table_resolver(module: &Module) -> Result<TableResolver> {
         use wasmparser::{BinaryReader, ElementItems, ElementKind, FromReader};
 
         let mut resolver = TableResolver::new();
+
+        // Tables reachable from outside the module: imported tables come first
+        // in the table index space, and exported ones may be any index.
+        let num_imported_tables = module
+            .imports
+            .iter()
+            .filter(|i| matches!(i.kind, crate::ImportKind::Table(_)))
+            .count() as u32;
+        let mut host_visible: std::collections::HashSet<u32> = (0..num_imported_tables).collect();
+        for export in &module.exports {
+            if let crate::ExportKind::Table(idx) = export.kind {
+                host_visible.insert(idx);
+            }
+        }
 
         let element_bytes = match &module.element_section_bytes {
             Some(b) => b,
@@ -8863,7 +8883,13 @@ pub mod optimize {
                     let resolved_table_idx = table_index.unwrap_or(0);
                     match offset_val {
                         Some(v) if v >= 0 => (resolved_table_idx, v as u32),
-                        _ => continue,
+                        // This segment may overwrite any slot, so no slot of
+                        // any table can be trusted.
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "active element segment with a non-literal or negative offset"
+                            ));
+                        }
                     }
                 }
                 // Passive / declared segments don't populate the table at instantiation.
@@ -8878,7 +8904,7 @@ pub mod optimize {
                             Ok(func_idx) => {
                                 resolver.insert((table_index, slot), func_idx);
                             }
-                            Err(_) => break,
+                            Err(e) => return Err(anyhow::anyhow!("element function index: {e}")),
                         }
                         slot = slot.saturating_add(1);
                     }
@@ -8888,7 +8914,7 @@ pub mod optimize {
                     for expr_res in expr_reader.clone() {
                         let const_expr = match expr_res {
                             Ok(e) => e,
-                            Err(_) => break,
+                            Err(e) => return Err(anyhow::anyhow!("element expression: {e}")),
                         };
                         // We only fold when the expression is a single `ref.func F`.
                         // `ref.null` and any other shape leaves the slot unresolved.
@@ -8909,9 +8935,14 @@ pub mod optimize {
                                 }
                             }
                         }
-                        if !other {
-                            if let Some(f) = func_idx {
+                        match (other, func_idx) {
+                            (false, Some(f)) => {
                                 resolver.insert((table_index, slot), f);
+                            }
+                            // `ref.null` or any other item replaces whatever an
+                            // earlier segment put in this slot.
+                            _ => {
+                                resolver.remove(&(table_index, slot));
                             }
                         }
                         slot = slot.saturating_add(1);
@@ -8920,6 +8951,7 @@ pub mod optimize {
             }
         }
 
+        resolver.retain(|(table, _), _| !host_visible.contains(table));
         Ok(resolver)
     }
 
@@ -21943,6 +21975,106 @@ mod tests {
             indirects_after, 1,
             "call_indirect to unresolved slot must survive"
         );
+    }
+
+    /// Runs directize on `wat` and returns the last function's body afterwards.
+    fn directized_last_body(wat: &str) -> Vec<Instruction> {
+        let mut module = parse::parse_wat(wat).expect("parse");
+        optimize::directize(&mut module).expect("directize");
+        let bytes = encode::encode_wasm(&module).expect("encode");
+        wasmparser::validate(&bytes).expect("output validates");
+        module.functions.last().unwrap().instructions.clone()
+    }
+
+    fn count_indirect(body: &[Instruction]) -> usize {
+        body.iter()
+            .filter(|i| matches!(i, Instruction::CallIndirect { .. }))
+            .count()
+    }
+
+    #[test]
+    fn test_directize_respects_a_later_null_segment() {
+        // #196: the second segment overwrites slot 0 with null, so the call
+        // traps. Folding it to `call $f0` would turn a trap into a result.
+        let body = directized_last_body(
+            r#"(module
+            (type $sig (func (param i32) (result i32)))
+            (table 1 funcref)
+            (elem (i32.const 0) func $f0)
+            (elem (i32.const 0) funcref (ref.null func))
+            (func $f0 (type $sig) local.get 0)
+            (func (export "test") (param i32) (result i32)
+                local.get 0 i32.const 0 call_indirect (type $sig)))"#,
+        );
+        assert_eq!(count_indirect(&body), 1, "{body:?}");
+    }
+
+    #[test]
+    fn test_directize_follows_a_later_function_segment() {
+        // Control for the test above: when the later segment holds a function,
+        // the slot resolves to that function, not the earlier one.
+        let body = directized_last_body(
+            r#"(module
+            (type $sig (func (param i32) (result i32)))
+            (table 1 funcref)
+            (elem (i32.const 0) func $f0)
+            (elem (i32.const 0) func $f1)
+            (func $f0 (type $sig) local.get 0)
+            (func $f1 (type $sig) local.get 0 i32.const 1 i32.add)
+            (func (export "test") (param i32) (result i32)
+                local.get 0 i32.const 0 call_indirect (type $sig)))"#,
+        );
+        assert_eq!(count_indirect(&body), 0, "{body:?}");
+        assert!(body.contains(&Instruction::Call(1)), "{body:?}");
+    }
+
+    #[test]
+    fn test_directize_skips_a_slot_a_global_offset_segment_may_overwrite() {
+        // #196: the second segment's offset is only known at instantiation and
+        // may be 0, so slot 0 is not known to hold $f0.
+        let body = directized_last_body(
+            r#"(module
+            (import "env" "off" (global $off i32))
+            (type $sig (func (param i32) (result i32)))
+            (table 4 funcref)
+            (elem (i32.const 0) func $f0)
+            (elem (global.get $off) func $f1)
+            (func $f0 (type $sig) local.get 0)
+            (func $f1 (type $sig) local.get 0 i32.const 1 i32.add)
+            (func (export "test") (param i32) (result i32)
+                local.get 0 i32.const 0 call_indirect (type $sig)))"#,
+        );
+        assert_eq!(count_indirect(&body), 1, "{body:?}");
+    }
+
+    #[test]
+    fn test_directize_skips_an_exported_table() {
+        // #196: the host can `set` an exported table between calls.
+        let body = directized_last_body(
+            r#"(module
+            (type $sig (func (param i32) (result i32)))
+            (table (export "t") 1 funcref)
+            (elem (i32.const 0) func $f0)
+            (func $f0 (type $sig) local.get 0)
+            (func (export "test") (param i32) (result i32)
+                local.get 0 i32.const 0 call_indirect (type $sig)))"#,
+        );
+        assert_eq!(count_indirect(&body), 1, "{body:?}");
+    }
+
+    #[test]
+    fn test_directize_skips_an_imported_table() {
+        // #196: an imported table is shared with whoever provides it.
+        let body = directized_last_body(
+            r#"(module
+            (import "env" "t" (table 1 funcref))
+            (type $sig (func (param i32) (result i32)))
+            (elem (i32.const 0) func $f0)
+            (func $f0 (type $sig) local.get 0)
+            (func (export "test") (param i32) (result i32)
+                local.get 0 i32.const 0 call_indirect (type $sig)))"#,
+        );
+        assert_eq!(count_indirect(&body), 1, "{body:?}");
     }
 
     // v1.0.5 Track 1: ægraph pipeline integration tests.

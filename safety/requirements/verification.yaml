@@ -1562,25 +1562,25 @@ artifacts:
 
   - id: TEST-345-CLI-ELEMENT-GUARD
     type: feature
-    title: loom optimize leaves a module with a function-referencing element table unchanged (#345)
+    title: loom optimize leaves a table module unchanged when it cannot preserve GC type identity (#196, #345)
     description: >
-      The CLI core-module path applies the #196 guard that optimize_module and
-      the component optimizer apply: a module whose element segments reference
-      functions is written out byte for byte, stdout names the reason, and
+      The CLI core-module path applies the same table guard as optimize_module
+      and the component optimizer. A module whose element segments reference
+      functions and whose types are not all final function types in singleton
+      rec groups is written out byte for byte, stdout names the reason, and
       --stats-json records it as module_skipped with no validator attempt.
-      Structural checks and per-function translation validation cannot see a
-      scrambled or stale function-pointer table, so no unproven table rewrite
-      reaches the output. Control: the same 724-function module with its
-      element section removed is optimized and module_skipped is null.
-      Confirmed discriminating: with the guard disabled, the byte-identity
-      assertion fails ("the CLI rewrote a module whose element segments
-      reference functions").
+      The encoder declares functions by structural signature, so it would
+      re-declare a function typed with a non-final (sub (func)) under an equal
+      final type, and a call_indirect that traps would return a value
+      (table-sub-type.wasm: call_b traps before, returned 42 after with the
+      guard lifted). Control: the 724-function meld-fused table module with
+      MVP types is optimized and module_skipped is null.
     fields:
       method: automated-test
       acceptance-criteria:
-        - "Given a module whose element segments reference functions, loom optimize writes it unchanged and exits 0"
+        - "Given a table module with a non-final function type, loom optimize writes it unchanged and exits 0"
         - "Given that module, stdout and --stats-json module_skipped name the #196 reason, and no validator attempt is entered"
-        - "Given the same module without its element section, the output differs and module_skipped is null"
+        - "Given a table module with MVP types, the output differs and module_skipped is null"
       steps:
         - run: |
             cargo test --release -p loom-cli --test element_guard
@@ -1620,6 +1620,43 @@ artifacts:
     links:
       - type: verifies
         target: REQ-10
+
+  - id: TEST-196-TABLE-SOUNDNESS
+    type: feature
+    title: Modules with function tables are optimized without changing what call_indirect calls (#196)
+    description: >
+      directize folds `i32.const N; call_indirect` only when slot N holds the
+      same function for the whole run: tables that are imported or exported
+      are not resolved, a later segment with ref.null or another non-ref.func
+      item clears the slot, and an active segment whose offset is not a
+      literal non-negative i32.const refuses every slot. Its Z3 check shares
+      the resolver, so it proved the unsound fold before this change.
+      Confirmed discriminating: with the previous resolver, the four hazard
+      tests fail and the later-function-segment control passes. Behavioral
+      gate: the CI differential job runs table-dispatch.wasm,
+      table-null-overwrite.wasm (which diverged before the fix) and the
+      meld-fused table module under the differential executor, and the
+      self-optimization job runs the optimized loom.wasm (whose core modules
+      dispatch through function tables) against native loom on every corpus
+      and table fixture, comparing exit codes and output bytes.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a later ref.null segment over slot N, an exported table, an imported table, or a global.get-offset segment, directize keeps the call_indirect"
+        - "Given a later ref.func segment over slot N, directize calls the later function"
+        - "Given the table fixtures under --differential, every executed export behaves the same before and after"
+        - "Given loom.wasm optimized with every core module optimized, it matches native loom's exit code and output on each input"
+      steps:
+        - run: |
+            cargo test --release -p loom-core --lib test_directize
+    status: verified
+    release: v1.6.0
+    tags: [v160, safety, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-1
+      - type: verifies
+        target: REQ-3
 
   # ============================================================================
   # #347 — v1.4.1: bound the quantity that actually drives solver cost.

@@ -563,18 +563,19 @@ jobs:
           # Component fixtures are excluded: component-model execution is not
           # wired yet, so they are always inconclusive (gap tracked in #238/#239).
           set -u
-          corpus=(tests/corpus/*.wasm loom-core/tests/fixtures/repro-219/sem.loom.wasm)
+          # table-*.wasm (#196): call_indirect through function tables.
+          corpus=(tests/corpus/*.wasm loom-core/tests/fixtures/repro-219/sem.loom.wasm loom-core/tests/fixtures/issue254-records-fused.wasm loom-core/tests/fixtures/table-*.wasm)
           certified=0; skipped=0; diverged=()
           for w in "${corpus[@]}"; do
             [ -f "$w" ] || continue
             name=$(basename "$w")
             log=$(./target/release/loom optimize "$w" -o "$RUNNER_TEMP/diff_out.wasm" --differential 2>&1)
             rc=$?
-            # #345: a module with a function-referencing element table exits 0
-            # without being optimized, so nothing was compared; it is not
-            # certified.
+            # #196: a table module whose type identity loom does not preserve
+            # exits 0 without being optimized, so nothing was compared; it is
+            # not certified.
             if [ "$rc" -eq 0 ] && echo "$log" | grep -q "Module not optimized"; then
-              echo "⏭️  not optimized (element table, #345): $name"
+              echo "⏭️  not optimized (table with GC type identity, #196): $name"
               skipped=$((skipped + 1))
             elif [ "$rc" -eq 0 ]; then
               echo "✅ certified: $name"
@@ -682,6 +683,40 @@ jobs:
           echo "   Input:  $INPUT_SIZE bytes"
           echo "   Output: $OUTPUT_SIZE bytes"
           echo "   Reduction: $REDUCTION%"
+      # #196: loom.wasm's core modules dispatch through function tables
+      # (thousands of call_indirect sites). Validation cannot see a table that
+      # calls the wrong function, so the optimized loom must also BEHAVE like
+      # native loom: same exit code and byte-identical output on every input.
+      - name: Install wasmtime (crates.io, the version in Cargo.lock)
+        run: cargo install --locked wasmtime-cli --version 50.0.3
+      - name: Optimized loom.wasm behaves like native loom (#196)
+        run: |
+          set -euo pipefail
+          OPT="$RUNNER_TEMP/loom-optimized.wasm"
+          log="$RUNNER_TEMP/self-opt.log"
+          ./loom-bin/loom optimize ./loom-wasm/loom.wasm -o "$OPT" > "$log"
+          # Not vacuous: every core module, tables included, was optimized.
+          grep -E "Core modules: [0-9]+ found, [0-9]+ optimized, 0 skipped, 0 failed" "$log" \
+            || { echo "::error::a core module of loom.wasm was not optimized"; tail -20 "$log"; exit 1; }
+          w="$RUNNER_TEMP/self-opt-run"; mkdir -p "$w"
+          cp tests/corpus/*.wasm loom-core/tests/fixtures/issue254-records-fused.wasm \
+             loom-core/tests/fixtures/table-*.wasm "$w/"
+          cd "$w"
+          run() { wasmtime run -S cli-exit-with-code=y --dir . "$OPT" "$@"; }
+          n=0
+          for f in *.wasm; do
+            rc_n=0; "$GITHUB_WORKSPACE/loom-bin/loom" optimize "$f" -o native.out > /dev/null 2>&1 || rc_n=$?
+            rc_w=0; run optimize "$f" -o wasm.out > /dev/null 2>&1 || rc_w=$?
+            [ "$rc_n" = "$rc_w" ] || { echo "::error::$f: native exit $rc_n, optimized loom.wasm exit $rc_w"; exit 1; }
+            cmp native.out wasm.out || { echo "::error::$f: optimized loom.wasm output differs from native"; exit 1; }
+            rm -f native.out wasm.out; n=$((n + 1))
+          done
+          for args in "optimize missing.wasm:1" "verify junk.isle:2"; do
+            rc=0; run ${args%:*} > /dev/null 2>&1 || rc=$?
+            [ "$rc" = "${args##*:}" ] || { echo "::error::'${args%:*}' exited $rc, want ${args##*:}"; exit 1; }
+          done
+          [ "$(run --version)" = "$("$GITHUB_WORKSPACE/loom-bin/loom" --version)" ]
+          echo "optimized loom.wasm matched native loom on $n inputs, exit codes 1 and 2, and --version"
 
   # Advisory: the shipped loom.wasm, fused by meld into a core module, must
   # behave like native loom under kiln (the covalent 2026.11.28 versions in

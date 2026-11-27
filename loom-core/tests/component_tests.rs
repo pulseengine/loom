@@ -395,8 +395,8 @@ fn test_component_optimization_verifies_output() {
     );
 }
 
-/// #530: a core module skipped under #196 (function-referencing element table)
-/// must be reported as skipped, never counted as optimized.
+/// #530: a core module skipped under #196 (a function table and a non-final
+/// function type) must be reported as skipped, never counted as optimized.
 #[test]
 fn test_skipped_module_not_reported_as_optimized() {
     let component = wat::parse_str(
@@ -405,11 +405,12 @@ fn test_skipped_module_not_reported_as_optimized() {
               (func (export "add") (param i32 i32) (result i32)
                 local.get 0 local.get 1 i32.add))
             (core module $table
+              (type $t (sub (func (result i32))))
               (table 1 funcref)
-              (func $f (result i32) i32.const 7)
+              (func $f (type $t) i32.const 7)
               (elem (i32.const 0) $f)
               (func (export "call") (result i32)
-                i32.const 0 call_indirect (result i32)))
+                i32.const 0 call_indirect (type $t)))
           )"#,
     )
     .expect("fixture parses");

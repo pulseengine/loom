@@ -423,7 +423,7 @@ enum CoreModuleOutcome {
 /// Reason recorded for a module skipped under #196, by the component optimizer
 /// and by the CLI's core-module path (#345).
 pub const SKIP_REASON_FUNCREF_ELEMENTS: &str =
-    "function-referencing element table, pending a behavioral gate (#196)";
+    "function-referencing element table with GC type identity loom does not preserve (#196)";
 
 /// Is `name` the `component-type` metadata section?
 ///
@@ -481,21 +481,11 @@ fn optimize_core_module(
     // Parse the module
     let mut module = crate::parse::parse_wasm(module_bytes)?;
 
-    // #196 (CRITICAL — flight-control silent miscompile). A core module with a
-    // function-referencing element segment (a populated `call_indirect` table)
-    // is one loom cannot currently optimize with *behavioral* certainty: the
-    // fused pass's multi-sub-pass function-index changes are not remapped into
-    // the table consistently, and the parse→re-encode round-trip has further
-    // latent corruption on such modules — all of which pass `wasm-tools
-    // validate` AND loom `--verify` (both structural) while flying wrong
-    // (v1.1.11 on falcon: SIL gate 0.13 m → 593.8 m). v1.1.10 was accidentally
-    // safe here (it fell back to the original bytes); we now do so DELIBERATELY:
-    // keep the original module untouched rather than ship a valid-but-wrong
-    // optimization. Correctness over optimization (LOOM's prime directive).
-    // Re-enabling optimization for these modules is gated on a behavioral
-    // differential (run exports before/after and compare) — see #196.
-    if crate::fused_optimizer::element_section_references_functions(&module) {
-        return Ok(CoreModuleOutcome::Skipped(SKIP_REASON_FUNCREF_ELEMENTS));
+    // #196: a core module with a populated `call_indirect` table is optimized
+    // only when its tables stay sound; see `table_handling_is_sound`. Otherwise
+    // the original bytes are kept and the reason is reported.
+    if let Err(reason) = crate::fused_optimizer::table_handling_is_sound(&module) {
+        return Ok(CoreModuleOutcome::Skipped(reason));
     }
 
     // Phase B (#239 / #303): component-level reachability GC. Drop the function
@@ -1433,9 +1423,7 @@ pub fn analyze_core_export_liveness(component_bytes: &[u8]) -> Option<CoreExport
 /// only what we can prove, rather than pruning unless we spot a problem.
 fn core_module_gc_eligibility(module: &Module) -> std::result::Result<(), &'static str> {
     // #196. A populated `call_indirect` table means functions are reachable
-    // through an index loom does not track behaviourally. `optimize_core_module`
-    // already refuses such modules outright; this is the same gate stated
-    // locally so the pass is safe wherever it is called from.
+    // through table slots this pass does not trace, so it prunes nothing.
     if crate::fused_optimizer::element_section_references_functions(module) {
         return Err("module has a function-referencing element table (#196)");
     }
@@ -3462,13 +3450,6 @@ mod phase_b_reachability_gc_tests {
             "indirectly-reachable function must be preserved, got {exports:?}"
         );
         assert_eq!(core_func_count(&after[0]), 2, "both functions must survive");
-
-        // Stronger: a module with a function-referencing element segment is not
-        // touched at all — the bytes come through verbatim (#196).
-        assert_eq!(
-            after[0], before[0],
-            "a module with an indirect-call table must be byte-identical (#196)"
-        );
     }
 
     // ==================================================================
@@ -3720,9 +3701,9 @@ mod phase_b_reachability_gc_tests {
         assert!(core_module_gc_eligibility(&module).is_ok());
     }
 
-    /// The eligibility gate refuses a module with a function-referencing
-    /// element segment even when it is called directly (i.e. independently of
-    /// the whole-module #196 skip in `optimize_core_module`).
+    /// Phase B export pruning refuses a module with a function-referencing
+    /// element segment, even though the per-module optimizer now optimizes
+    /// such a module (#196): pruning does not trace table slots.
     #[test]
     fn test_239b_eligibility_rejects_element_table() {
         let bytes = wat::parse_str(

@@ -1,20 +1,23 @@
-//! `loom optimize` leaves a core module whose element segments reference
-//! functions unoptimized, as `optimize_module` and the component optimizer
-//! do (#196, #345). Structural checks and per-function translation validation
-//! cannot see a scrambled or stale function-pointer table, so no unproven
-//! table rewrite may reach the output.
+//! How `loom optimize` treats a core module whose element segments reference
+//! functions (#196, #345).
+//!
+//! Such a module is optimized when its tables stay sound: function renumbering
+//! rewrites the element section, and `directize` folds only slots fixed for the
+//! whole run. The exception is a module whose GC type identity loom's encoder
+//! does not preserve: re-declaring a function under a structurally equal but
+//! distinct type would turn a `call_indirect` signature trap into a call. That
+//! module is written out unchanged, and the reason is reported.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod common;
-use common::without_element_section;
+const REASON: &str =
+    "function-referencing element table with GC type identity loom does not preserve (#196)";
 
-const REASON: &str = "function-referencing element table, pending a behavioral gate (#196)";
-
-fn fixture() -> PathBuf {
+fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../loom-core/tests/fixtures/issue254-records-fused.wasm")
+        .join("../loom-core/tests/fixtures")
+        .join(name)
 }
 
 /// Runs `loom optimize <input> -o <dir>/out.wasm --stats-json <dir>/stats.json`
@@ -48,21 +51,24 @@ fn optimize(input: &Path, dir: &Path) -> (String, Vec<u8>, serde_json::Value) {
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("loom-345-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("loom-196-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
 }
 
 #[test]
-fn a_module_with_a_function_table_comes_out_byte_identical_and_says_why() {
-    let input = fixture();
-    let dir = scratch("table");
+fn a_table_module_with_a_non_final_function_type_comes_out_byte_identical() {
+    // `$f` is declared with a non-final `(sub (func (result i32)))`, so
+    // `call_indirect (type $b)` on it traps. Re-declared under the final `$b`,
+    // the call would return 42.
+    let input = fixture("table-sub-type.wasm");
+    let dir = scratch("sub-type");
     let (stdout, output, stats) = optimize(&input, &dir);
 
     assert_eq!(
         output,
         std::fs::read(&input).expect("read fixture"),
-        "the CLI rewrote a module whose element segments reference functions (#345)"
+        "the CLI rewrote a table module whose type identity it does not preserve"
     );
     assert!(
         stdout.contains(REASON),
@@ -75,18 +81,20 @@ fn a_module_with_a_function_table_comes_out_byte_identical_and_says_why() {
     );
 }
 
-/// Control: the same module without its element section is optimized, and
-/// `module_skipped` is null. Without this, the test above passes for a CLI
-/// that never optimizes anything.
+/// Control: a 724-function meld-fused module with function tables and MVP
+/// types is optimized, and `module_skipped` is null. Before #196 it was
+/// skipped like the module above.
 #[test]
-fn the_same_module_without_its_element_section_is_optimized() {
-    let dir = scratch("control");
-    let input = dir.join("no-elements.wasm");
-    let bytes = without_element_section(&std::fs::read(fixture()).expect("read fixture"));
-    std::fs::write(&input, &bytes).expect("write input");
+fn a_table_module_with_mvp_types_is_optimized() {
+    let input = fixture("issue254-records-fused.wasm");
+    let dir = scratch("mvp");
     let (_, output, stats) = optimize(&input, &dir);
 
-    assert_ne!(output, bytes, "the element-free module was not optimized");
+    assert_ne!(
+        output,
+        std::fs::read(&input).expect("read fixture"),
+        "the table module was not optimized"
+    );
     assert!(stats["module_skipped"].is_null(), "stats: {stats}");
     assert!(
         stats["attempts"]["entered"].as_u64().unwrap_or(0) > 0,
