@@ -688,10 +688,10 @@ jobs:
   # varve.toml). Asserts `--version`, byte-identical `optimize` output on
   # tests/corpus/state_machine.wasm, and every documented exit code: 0, 1 (an
   # ordinary failure) and 2 (`loom verify`, EXIT_VERIFY_UNIMPLEMENTED).
-  # It warns about the chain and never gates.
+  # Advisory because it is not a required check; a failure shows red, and a
+  # hang is parked explicitly rather than hidden.
   kiln-dogfood:
     name: loom.wasm fused by meld under kiln
-    continue-on-error: true
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     needs: [build, wasm-build]
     # kiln 0.9.0 hangs on larger fused modules on x86_64 Linux (kiln#748);
