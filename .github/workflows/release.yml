@@ -236,13 +236,100 @@ jobs:
           path: ${{ env.ARCHIVE }}
           retention-days: 7
 
+  # ── loom.wasm: the wasm32-wasip2 component, without Z3 ────────────────
+  # The same build as CI's "WASM Build (wasm32-wasip2, no Z3)" job. Upstream
+  # z3 does not build for wasm32-wasip2, so the component has no
+  # `verification` feature. It is validated, then run under the pinned
+  # wasmtime 50.0.3 the dogfood test uses (Rust 1.100 components need
+  # wasmtime >= 46.0.0). create-release lists it in SHA256SUMS.txt, so the
+  # cosign signature covers it, and attests its provenance.
+  build-wasm:
+    name: Build wasm32-wasip2 component
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: "1.100.0"
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: release-wasm32-wasip2
+
+      - name: Build loom.wasm
+        run: cargo +1.100.0 build --locked --release --target wasm32-wasip2 --package loom-cli --no-default-features --features attestation
+
+      - name: Install wasm-tools and wasmtime (pinned release binaries)
+        env:
+          WASM_TOOLS_VERSION: 1.263.0
+          WASM_TOOLS_SHA256: 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431
+          WASMTIME_VERSION: 50.0.3
+          WASMTIME_SHA256: c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/wasm-bin"
+          mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          wt="wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
+          curl -fsSL -o "$wt.tar.gz" \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/$wt.tar.gz"
+          echo "${WASM_TOOLS_SHA256}  $wt.tar.gz" | sha256sum -c -
+          tar xzf "$wt.tar.gz"
+          install -m 0755 "$wt/wasm-tools" "$bin/wasm-tools"
+          wm="wasmtime-v${WASMTIME_VERSION}-x86_64-linux"
+          curl -fsSL -o "$wm.tar.xz" \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VERSION}/$wm.tar.xz"
+          echo "${WASMTIME_SHA256}  $wm.tar.xz" | sha256sum -c -
+          tar xJf "$wm.tar.xz"
+          install -m 0755 "$wm/wasmtime" "$bin/wasmtime"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # A core module would also validate, so check the header: the wasm
+      # magic followed by version 0x0d, layer 1, marks a component. Then run
+      # it: `--version` must print the tag's version.
+      - name: Validate and smoke-run loom.wasm
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          WASM: target/wasm32-wasip2/release/loom.wasm
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          wasm-tools validate --features all "$WASM"
+          header=$(head -c 8 "$WASM" | od -An -tx1 | tr -d ' \n')
+          [ "$header" = "0061736d0d000100" ] \
+            || { echo "::error::$WASM is not a component (header $header)"; exit 1; }
+          out=$(wasmtime run "$WASM" --version)
+          echo "$out"
+          [ "$out" = "loom ${VERSION#v}" ] \
+            || { echo "::error::expected 'loom ${VERSION#v}', got '$out'"; exit 1; }
+
+      - name: Name the asset
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          ASSET="loom-${VERSION}-wasm32-wasip2.wasm"
+          cp target/wasm32-wasip2/release/loom.wasm "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-wasm32-wasip2
+          path: ${{ env.ASSET }}
+          retention-days: 7
+
   # ── Create the GitHub Release: checksums, provenance, signing ─────────
   # Verbatim from pulseengine/synth's release.yml Phase-6 block, only the
   # SBOM manifest path is adapted (loom-cli/Cargo.toml vs.
   # crates/synth-cli/Cargo.toml).
   create-release:
     name: Create GitHub Release
-    needs: [build-binaries]
+    needs: [build-binaries, build-wasm]
     runs-on: ubuntu-24.04
     permissions:
       # Keyless signing + provenance need an OIDC token; release-asset
@@ -265,7 +352,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.wasm" \) -exec cp {} release-assets/ \;
           ls -la release-assets/
 
       # Phase 6: CycloneDX SBOM for the loom toolchain itself. The SBOM
@@ -318,6 +405,7 @@ jobs:
           subject-path: |
             release-assets/*.tar.gz
             release-assets/*.zip
+            release-assets/*.wasm
 
       # ── Sigstore keyless signing (cosign) ──────────────────────────────
       # Signs SHA256SUMS.txt so a consumer can verify the checksum file
