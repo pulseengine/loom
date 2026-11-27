@@ -1618,7 +1618,7 @@ fn remove_trivial_calls_from_block(
 /// these modules and keep the original bytes. Anything that can't be parsed as
 /// a plain empty section is treated conservatively as "yes, references
 /// functions" so we err toward not optimizing.
-pub(crate) fn element_section_references_functions(module: &Module) -> bool {
+pub fn element_section_references_functions(module: &Module) -> bool {
     use wasmparser::{BinaryReader, ElementItems, FromReader};
     let bytes = match &module.element_section_bytes {
         Some(b) => b,

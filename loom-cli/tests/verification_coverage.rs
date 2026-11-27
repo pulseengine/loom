@@ -7,6 +7,9 @@
 use std::path::Path;
 use std::process::Command;
 
+mod common;
+use common::without_element_section;
+
 /// Two things were wrong before this.
 ///
 /// First, nothing surfaced a **denominator**. `--stats` printed revert counts,
@@ -28,12 +31,22 @@ use std::process::Command;
 /// user-visible reporting surface rather than the arithmetic behind it.
 #[test]
 fn coverage_is_reported_with_a_denominator_and_size_skips_are_not_reverts() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../loom-core/tests/fixtures/issue254-records-fused.wasm");
-    assert!(fixture.exists(), "missing fixture: {}", fixture.display());
+    assert!(source.exists(), "missing fixture: {}", source.display());
 
     let out_dir = std::env::temp_dir().join(format!("loom-331-{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).expect("create scratch dir");
+    // The fixture's element segments reference functions, so since #345 the
+    // CLI leaves it unoptimized. Without its element section it is still
+    // valid wasm (`call_indirect` into an empty table traps at run time) and
+    // still crosses the solver size threshold, which is what this test needs.
+    let fixture = out_dir.join("records-fused-no-elements.wasm");
+    std::fs::write(
+        &fixture,
+        without_element_section(&std::fs::read(&source).expect("read fixture")),
+    )
+    .expect("write the element-free fixture");
     let out_wasm = out_dir.join("optimized.wasm");
 
     let out = Command::new(env!("CARGO_BIN_EXE_loom"))

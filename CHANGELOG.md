@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `loom optimize` no longer optimizes a core module whose element segments reference functions. It applies the #196 guard that `optimize_module` and the component optimizer already applied: the output is the input byte for byte, stdout names the reason, and `--stats-json` records it as `module_skipped` (#345). Such modules, which include meld-fused Rust tools, were rewritten before without any check that could see a wrong function-pointer table.
 - Function summaries index calls by function-space index (imports first) and classify import calls, float-to-int truncation, loops, call cycles, unknown instructions and state reads conservatively; CSE and the verifier's pure-call encoding require callees that read no state (#526).
 - `parse_wasm` validated a module's sections but never ran the validator for
   function bodies, so a body the spec rejects (operators after its final

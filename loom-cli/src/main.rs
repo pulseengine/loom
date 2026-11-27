@@ -418,6 +418,10 @@ fn loom_budgets_in_effect() -> serde_json::Map<String, serde_json::Value> {
     m
 }
 
+/// Set when `optimize_command` leaves the module unoptimized under the #196
+/// element guard (#345); reported as `module_skipped` in --stats-json.
+static MODULE_SKIP_REASON: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
 /// Build the `--stats-json` document from the process-wide counters.
 fn stats_json_document() -> serde_json::Value {
     use loom_core::stats::Outcome;
@@ -462,6 +466,7 @@ fn stats_json_document() -> serde_json::Value {
         "schema": "loom-stats/1",
         "loom_version": env!("CARGO_PKG_VERSION"),
         "verification_feature": cfg!(feature = "verification"),
+        "module_skipped": MODULE_SKIP_REASON.get().copied(),
         "budgets_set": loom_budgets_in_effect(),
         "attempts": {
             "entered": acc.entered,
@@ -745,6 +750,42 @@ fn optimize_command(
     };
     let parse_time = start_parse.elapsed();
     println!("✓ Parsed in {:?}", parse_time);
+
+    // #345: the same #196 guard as `optimize_module` and the component
+    // optimizer. Structural checks and per-function translation validation
+    // cannot see a scrambled or stale function-pointer table, so a module whose
+    // element segments reference functions is not optimized: the output is
+    // the input, and the skip is reported on stdout and in --stats-json.
+    if loom_core::fused_optimizer::element_section_references_functions(&module) {
+        let reason = loom_core::component_optimizer::SKIP_REASON_FUNCREF_ELEMENTS;
+        println!(
+            "⚠️  Module not optimized: {}; output is the input unchanged (#345)",
+            reason
+        );
+        let _ = MODULE_SKIP_REASON.set(reason);
+        let output_path = output.unwrap_or_else(|| {
+            if output_wat {
+                "output.wat".to_string()
+            } else {
+                "output.wasm".to_string()
+            }
+        });
+        let wasm_bytes = if is_wat_input {
+            loom_core::encode::encode_wasm(&module)
+                .context("Failed to encode the unoptimized module")?
+        } else {
+            input_bytes.clone()
+        };
+        let output_bytes = if output_wat {
+            loom_core::encode::encode_wat(&module)
+                .context("Failed to encode to WAT")?
+                .into_bytes()
+        } else {
+            wasm_bytes.clone()
+        };
+        write_validated_output(&output_path, &output_bytes, &wasm_bytes, &input_bytes)?;
+        return Ok(());
+    }
 
     // Save original module for verification (if requested)
     let original_module = if run_verify {
