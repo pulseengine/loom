@@ -78,23 +78,23 @@ This directory contains comprehensive analysis of all optimization passes in Loo
 ### Implementation Files
 
 ```
-/home/user/loom/loom-core/src/lib.rs
+loom-core/src/lib.rs
   - optimize module: lines 2954-5741
   - parse module: lines 335-839
   - encode module: lines 840-2953
   - terms module: (term conversion utilities)
 
-/home/user/loom/loom-core/src/component_optimizer.rs
+loom-core/src/component_optimizer.rs
   - Component optimization (all phases)
 
-/home/user/loom/loom-shared/isle/wasm_terms.isle
+loom-shared/isle/wasm_terms.isle
   - ISLE type system and rules (all 583 lines)
 
-/home/user/loom/loom-cli/src/main.rs
+loom-cli/src/main.rs
   - CLI optimization pipeline: lines 237-246
   - optimize_command: lines 123-291
 
-/home/user/loom/loom-core/tests/optimization_tests.rs
+loom-core/tests/optimization_tests.rs
   - Comprehensive test suite
 ```
 
@@ -174,7 +174,7 @@ This directory contains comprehensive analysis of all optimization passes in Loo
 
 ## ISLE Infrastructure Status
 
-**File:** `/home/user/loom/loom-shared/isle/wasm_terms.isle`
+**File:** `loom-shared/isle/wasm_terms.isle`
 
 ### What's Implemented
 - Value/ValueData enum (lines 40-155)
@@ -222,7 +222,7 @@ Pattern: x % 1    → 0
 
 ## Testing Coverage
 
-**File:** `/home/user/loom/loom-core/tests/optimization_tests.rs`
+**File:** `loom-core/tests/optimization_tests.rs`
 
 Test Categories:
 - Strength reduction (mul/div/rem by power of 2)
@@ -260,7 +260,7 @@ Examples: Lines 29-105 contain comprehensive test cases.
 ## Component Model Optimization
 
 Component optimization is handled separately in:
-`/home/user/loom/loom-core/src/component_optimizer.rs`
+`loom-core/src/component_optimizer.rs`
 
 Three phases:
 1. **Phase 1** (lines 93-207): Extract and optimize core modules

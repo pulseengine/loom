@@ -16,7 +16,7 @@ WarpL (Zeng et al., ICSE '26, arXiv:2604.13693v1, 15 Apr 2026) is a **mutation-b
 
 ## 2. PulseEngine corpus survey
 
-Confirmed in `/Users/r/git/pulseengine/loom/tests/corpus/`:
+Confirmed in `tests/corpus/`:
 
 | Fixture | Path | Role |
 |---|---|---|
@@ -26,7 +26,7 @@ Confirmed in `/Users/r/git/pulseengine/loom/tests/corpus/`:
 | json_lite | `tests/corpus/json_lite.wasm` | minimal JSON tokenizer |
 | loom (self) | `tests/corpus/loom.wasm` | LOOM compiled to Wasm — dogfood target |
 
-Sibling projects `/Users/r/git/pulseengine/witness` and `/Users/r/git/pulseengine/meld` exist on disk but were outside the read-permission scope of this session; the loom-side mirror at `tests/corpus/` already holds the witness-derived fixtures the user named, so the five above are representative without cross-repo access. `loom-testing/Cargo.toml` already depends on `wasmtime = "17.0"` — the runtime WarpL primarily targets.
+Sibling checkouts of witness and meld exist on disk but were outside the read-permission scope of this session; the loom-side mirror at `tests/corpus/` already holds the witness-derived fixtures the user named, so the five above are representative without cross-repo access. `loom-testing/Cargo.toml` already depends on `wasmtime = "17.0"` — the runtime WarpL primarily targets.
 
 ## 3. Feasibility
 

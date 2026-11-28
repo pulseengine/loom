@@ -442,7 +442,7 @@ passes that are then going to change shape.
 - [WCET-Aware Loop Unrolling](https://www.tuhh.de/es/esd/research/wcc/optimizations/loop-unrolling)
 
 ### Internal references (read-only)
-- `/Users/r/git/pulseengine/loom/docs/research/gale-v0.5.0/wasm-opt-gap-analysis.md`
-- `/Users/r/git/pulseengine/loom/docs/research/gale-v0.5.0/source-pattern-analysis.md`
-- `/Users/r/git/pulseengine/loom/docs/research/gale-v0.4.0/measurement-report.md`
-- `/Users/r/git/pulseengine/loom/docs/research/mutation-perf-inference-eval.md`
+- `docs/research/gale-v0.5.0/wasm-opt-gap-analysis.md`
+- `docs/research/gale-v0.5.0/source-pattern-analysis.md`
+- `docs/research/gale-v0.4.0/measurement-report.md`
+- `docs/research/mutation-perf-inference-eval.md`

@@ -70,7 +70,7 @@ trait SMTSolver {
 **ISLE Investigation** (already attempted):
 - ❌ Compiler panics on LOOM's recursive Value/ValueData structure
 - ❌ Architectural mismatch: ISLE expects instructions AS enums, LOOM has enums WRAPPED in primitives
-- ✅ Investigation documented in `/Users/r/git/loom/docs/analysis/ISLE_DEEP_DIVE.md`
+- ✅ Investigation documented in `docs/analysis/ISLE_DEEP_DIVE.md`
 
 **Peepmatic**:
 - ❌ **Deprecated** - Superseded by ISLE
@@ -302,7 +302,7 @@ fn egraph_optimize(module: &mut Module) {
 ### 5.3 What LOOM Already Has (✅ Working)
 
 1. **Z3 Translation Validation** - Like Alive2 for LLVM
-   - Location: `/Users/r/git/loom/loom-core/src/verify.rs`
+   - Location: `loom-core/src/verify.rs`
    - Coverage: i32/i64 arithmetic and bitwise ops
    - Performance: ~10-100ms per function
 
