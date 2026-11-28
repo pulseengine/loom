@@ -5,7 +5,7 @@ LOOM: v0.4.0 (branch `feat/wave3-links-float-helpers`, commit `f15f593`)
 wasm-opt: binaryen v116
 Workload: `gale_ffi` cdylib (sem + timer + spinlock + ring_buf + bitarray + rbtree features)
 Source artifacts copied from
-`/Users/r/git/pulseengine/z/gale/benches/engine_control/build{,_noloom}/modules/gale/`.
+`<gale checkout>/benches/engine_control/build{,_noloom}/modules/gale/`.
 
 > Note on input. The "raw" cargo-rustc wasm32 output (`gale_ffi.wasm`)
 > was not present in the gale tree at measurement time and rebuilding it
@@ -237,7 +237,7 @@ LOOM.
 ## Files
 
 All sizes/wat/wasm artifacts are in
-`/Users/r/git/pulseengine/loom/scripts/mythos/gale_measure/`:
+`scripts/mythos/gale_measure/`:
 
 - `gale_in_baseline.wasm` — input (post wasm-opt -Oz, 1941 B)
 - `gale.loom.wasm` — LOOM only (2863 B incl. attestation, 862 B code)

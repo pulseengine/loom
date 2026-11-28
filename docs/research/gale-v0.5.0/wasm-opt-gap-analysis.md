@@ -4,10 +4,10 @@ Date: 2026-04-29
 Target: LOOM v0.5.0 vs Binaryen wasm-opt (v116) on gale-style code
 (small dispatchers, br_table, bit-manip, state machines, early-exit guards).
 Source: gale v0.4.0 measurement report
-(`/Users/r/git/pulseengine/loom/docs/research/gale-v0.4.0/measurement-report.md`).
+(`docs/research/gale-v0.4.0/measurement-report.md`).
 LOOM pipeline confirmed by reading
-`/Users/r/git/pulseengine/loom/loom-core/src/lib.rs` (lines 6713-6829, 7689-7770)
-and `/Users/r/git/pulseengine/loom/docs/design/{simplify-locals,cse}.md`.
+`loom-core/src/lib.rs` (lines 6713-6829, 7689-7770)
+and `docs/design/{simplify-locals,cse}.md`.
 
 ## Executive summary
 
@@ -391,6 +391,6 @@ a 50-LOC fix to a known regression.
 - [wasm-opt: The WebAssembly Optimizer (DeepWiki)](https://deepwiki.com/WebAssembly/binaryen/4.1-wasm-opt:-the-webassembly-optimizer)
 - [Compiling to and optimizing Wasm with Binaryen (web.dev)](https://web.dev/articles/binaryen)
 - [RedundantSetElimination nondeterminism issue #4524](https://github.com/WebAssembly/binaryen/issues/4524)
-- gale measurement report (local): `/Users/r/git/pulseengine/loom/docs/research/gale-v0.4.0/measurement-report.md`
-- LOOM pipeline source (local): `/Users/r/git/pulseengine/loom/loom-core/src/lib.rs` (lines 6713-6829, 7689-7770, 8042-8200)
-- LOOM design docs (local): `/Users/r/git/pulseengine/loom/docs/design/{simplify-locals,cse,dce,vacuum,branch-simplification}.md`
+- gale measurement report (local): `docs/research/gale-v0.4.0/measurement-report.md`
+- LOOM pipeline source (local): `loom-core/src/lib.rs` (lines 6713-6829, 7689-7770, 8042-8200)
+- LOOM design docs (local): `docs/design/{simplify-locals,cse,dce,vacuum,branch-simplification}.md`

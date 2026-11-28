@@ -7,10 +7,10 @@ Loom implements a sophisticated 12-phase WebAssembly optimization pipeline with 
 
 ## PART 1: CORE OPTIMIZATION PIPELINE
 
-The main optimization pipeline is defined in `/home/user/loom/loom-cli/src/main.rs` (lines 237-246) and executed in the following order:
+The main optimization pipeline is defined in `loom-cli/src/main.rs` (lines 237-246) and executed in the following order:
 
 ### 1. **Precompute / Global Constant Propagation (Phase 19)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 4070-4120)
+**File:** `loom-core/src/lib.rs` (lines 4070-4120)
 
 **What it does:**
 Propagates immutable global constants throughout the module by replacing `global.get $x` with constant values when:
@@ -49,13 +49,13 @@ After:
 ---
 
 ### 2. **Constant Folding (Phase 12 - ISLE-Based)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 2974-3007)
+**File:** `loom-core/src/lib.rs` (lines 2974-3007)
 
 **What it does:**
 Uses ISLE pattern matching rules to fold constants at optimization time. Converts expressions with constant operands into single constant results.
 
 **Pattern Matching Rules (ISLE):**
-ISLE rules defined in `/home/user/loom/loom-shared/isle/wasm_terms.isle` (lines 508-549):
+ISLE rules defined in `loom-shared/isle/wasm_terms.isle` (lines 508-549):
 
 The ISLE file defines:
 - Helper functions: `imm32_add`, `imm32_sub`, `imm32_mul`, `imm32_and`, `imm32_or`, `imm32_xor`, `imm32_shl`, `imm32_shr_s`, `imm32_shr_u` (lines 436-481)
@@ -88,7 +88,7 @@ Lines 2985-3003: Converts instructions to ISLE Value terms, applies simplificati
 ---
 
 ### 3. **Common Subexpression Elimination (CSE - Phase 20)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 4115-4270)
+**File:** `loom-core/src/lib.rs` (lines 4115-4270)
 
 **State:** Conservative/MVP implementation
 
@@ -136,7 +136,7 @@ After:
 ---
 
 ### 4. **Optimize Advanced Instructions (Issue #21)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 4645-5178)
+**File:** `loom-core/src/lib.rs` (lines 4645-5178)
 
 **What it does:**
 Peephole optimizations including:
@@ -216,7 +216,7 @@ Lines 29-105 contain tests for:
 ---
 
 ### 5. **Branch Simplification (Phase 15 - Issue #16)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3127-3240)
+**File:** `loom-core/src/lib.rs` (lines 3127-3240)
 
 **What it does:**
 Removes redundant branches and folds constant conditions in if/br_if statements.
@@ -264,7 +264,7 @@ After:
 ---
 
 ### 6. **Dead Code Elimination (Phase 14 - Issue #13)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3008-3125)
+**File:** `loom-core/src/lib.rs` (lines 3008-3125)
 
 **What it does:**
 Removes unreachable code that follows terminators (return, br, unreachable).
@@ -301,7 +301,7 @@ After:
 ---
 
 ### 7. **Block Merging (Phase 16 - Issue #17)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3241-3407)
+**File:** `loom-core/src/lib.rs` (lines 3241-3407)
 
 **What it does:**
 Merges nested blocks with compatible types to reduce CFG complexity.
@@ -343,7 +343,7 @@ After:
 ---
 
 ### 8. **Vacuum Cleanup Pass (Phase 17 - Issue #20)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3408-3548)
+**File:** `loom-core/src/lib.rs` (lines 3408-3548)
 
 **What it does:**
 Final cleanup pass that:
@@ -369,7 +369,7 @@ Loops are special because they contain `br_if` targeting the loop's outer block.
 ---
 
 ### 9. **SimplifyLocals (Phase 18 - Issue #15)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3549-3764)
+**File:** `loom-core/src/lib.rs` (lines 3549-3764)
 
 **What it does:**
 Optimizes local variable usage by:
@@ -407,7 +407,7 @@ local.set $x → marked as dead if $x has no gets
 ---
 
 ### 10. **CoalesceLocals - Register Allocation (Phase 12.5)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 3765-3996)
+**File:** `loom-core/src/lib.rs` (lines 3765-3996)
 
 **What it does:**
 Merges non-overlapping local variables using graph coloring algorithm.
@@ -464,7 +464,7 @@ Result: 2 registers instead of 3
 ---
 
 ### 11. **Function Inlining (Issue #14 - CRITICAL)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 5179-5400)
+**File:** `loom-core/src/lib.rs` (lines 5179-5400)
 
 **What it does:**
 Inlines small functions and single-call-site functions to:
@@ -522,7 +522,7 @@ After:
 ---
 
 ### 12. **Code Folding and Flattening (Issue #22)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 5401-5480)
+**File:** `loom-core/src/lib.rs` (lines 5401-5480)
 
 **What it does:**
 Eliminates single-use temporary variables and flattens nested blocks.
@@ -567,7 +567,7 @@ After:
 ---
 
 ### 13. **Loop Optimizations (Issue #23)**
-**File:** `/home/user/loom/loom-core/src/lib.rs` (lines 5481-5741)
+**File:** `loom-core/src/lib.rs` (lines 5481-5741)
 
 **What it does:**
 Optimizes loops through loop-invariant code motion (LICM).
@@ -612,7 +612,7 @@ After (ideally):
 
 ## PART 2: ISLE OPTIMIZATION RULES
 
-**File:** `/home/user/loom/loom-shared/isle/wasm_terms.isle`
+**File:** `loom-shared/isle/wasm_terms.isle`
 
 ### ISLE Type System Definition (lines 1-159)
 
@@ -734,7 +734,7 @@ Planned control flow optimizations (pending ISLE list support):
 
 ## PART 3: COMPONENT MODEL OPTIMIZATION
 
-**File:** `/home/user/loom/loom-core/src/component_optimizer.rs`
+**File:** `loom-core/src/component_optimizer.rs`
 
 ### Phase 1: Core Module Optimization (lines 1-207)
 
@@ -880,7 +880,7 @@ Analyzes component structure without modification:
 ## PART 5: OPTIMIZATION STATISTICS & TESTING
 
 ### Test Coverage
-File: `/home/user/loom/loom-core/tests/optimization_tests.rs`
+File: `loom-core/tests/optimization_tests.rs`
 
 **Test Categories:**
 1. Strength reduction (mul/div/rem by power of 2)
@@ -899,7 +899,7 @@ File: `/home/user/loom/loom-core/tests/optimization_tests.rs`
 
 ## PART 6: OPTIMIZATION PIPELINE EXECUTION ORDER
 
-Complete pipeline from `/home/user/loom/loom-cli/src/main.rs` lines 237-246:
+Complete pipeline from `loom-cli/src/main.rs` lines 237-246:
 
 ```
 1. precompute()  →  Global constant propagation

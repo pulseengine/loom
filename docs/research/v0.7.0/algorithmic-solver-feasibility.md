@@ -277,8 +277,8 @@ alongside the ægraph effort.
 - [Programming Z3 (Bjørner, Stanford notes)](https://theory.stanford.edu/~nikolaj/programmingz3.html)
 
 ### Internal references
-- `/Users/r/git/pulseengine/loom/docs/research/v0.7.0/optimization-methods-survey.md` (companion survey — picks 1, 2, 5 from there)
-- `/Users/r/git/pulseengine/loom/docs/research/gale-v0.5.0/source-pattern-analysis.md` §6 (bit-manip targets)
-- `/Users/r/git/pulseengine/loom/loom-core/src/verify_rules.rs` (2172 LOC, existing rule-verification harness — extension point for Souper re-verification)
-- `/Users/r/git/pulseengine/loom/loom-core/src/summary.rs` (433 LOC, function-summary IPA shipped in v0.6.x — pattern for adding new analyses)
-- `/Users/r/git/pulseengine/loom/loom-shared/isle/rules/` (where synthesized rules would land as `synthesized.isle`)
+- `docs/research/v0.7.0/optimization-methods-survey.md` (companion survey — picks 1, 2, 5 from there)
+- `docs/research/gale-v0.5.0/source-pattern-analysis.md` §6 (bit-manip targets)
+- `loom-core/src/verify_rules.rs` (2172 LOC, existing rule-verification harness — extension point for Souper re-verification)
+- `loom-core/src/summary.rs` (433 LOC, function-summary IPA shipped in v0.6.x — pattern for adding new analyses)
+- `loom-shared/isle/rules/` (where synthesized rules would land as `synthesized.isle`)

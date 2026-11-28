@@ -1,8 +1,8 @@
 # Gale deep-scan — optimization opportunities beyond the v0.5.0 pattern analysis
 
 Date: 2026-05-03
-Source: `/Users/r/git/pulseengine/z/gale/` (read-only)
-Loom: `/Users/r/git/pulseengine/loom/` (read-only)
+Source: `<gale checkout>/` (read-only)
+Loom: the loom repository root (read-only)
 Prior art: `docs/research/gale-v0.5.0/source-pattern-analysis.md` (8 patterns),
 `docs/research/gale-v0.5.0/wasm-opt-gap-analysis.md` (7 picks),
 `docs/research/gale-v0.4.0/measurement-report.md` (baseline +6.3 % code regression).
@@ -325,7 +325,7 @@ gale.
 
 ## Sources
 
-- Gale source: `/Users/r/git/pulseengine/z/gale/src/` and `.../ffi/src/`
+- Gale source: `<gale checkout>/src/` and `.../ffi/src/`
 - Gale wasm artifacts: `.../benches/engine_control/build/modules/gale/{gale_ffi.opt.wasm, gale_ffi.loom.wasm}` (1941 / 1913 bytes)
 - LOOM pipeline: `loom-core/src/lib.rs` lines 6713 (eligibility), 7506 (vacuum), 7650 (peephole-const-drop), 9996 (eliminate_dead_locals), 10228 (eliminate_dead_stores), 10486 (DeadStoreApplier)
 - Prior pattern catalogue: `docs/research/gale-v0.5.0/source-pattern-analysis.md`

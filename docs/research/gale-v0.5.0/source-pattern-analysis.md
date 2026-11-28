@@ -1,6 +1,6 @@
 # Gale Pattern Analysis for LOOM Optimization Research
 
-**Source tree:** `/Users/r/git/pulseengine/z/gale/src/` (Verus-verified Rust
+**Source tree:** `<gale checkout>/src/` (Verus-verified Rust
 model of Zephyr's kernel-scheduler primitives — sem / mutex / sched /
 wait_queue / timeout / event / futex / cpu_mask / atomic).
 
@@ -358,5 +358,5 @@ primary research lever.
 ---
 
 *Generated 2026-04-29 from gale source tree at
-`/Users/r/git/pulseengine/z/gale/`. Read-only inspection; no files
+`<gale checkout>/`. Read-only inspection; no files
 modified.*
