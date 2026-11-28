@@ -104,6 +104,13 @@ enum Commands {
         /// execution semantics.
         #[arg(long)]
         facts: bool,
+
+        /// (#555) Keep the optimized output even when it is larger than the
+        /// input. By default a module or component that optimization made
+        /// larger is not written: the input is written unchanged instead, and
+        /// stdout and --stats-json say so.
+        #[arg(long)]
+        allow_growth: bool,
     },
 
     /// Verify ISLE optimization rules (NOT YET IMPLEMENTED — always exits 2)
@@ -486,6 +493,7 @@ fn stats_json_document() -> serde_json::Value {
         "loom_version": env!("CARGO_PKG_VERSION"),
         "verification_feature": cfg!(feature = "verification"),
         "module_skipped": MODULE_SKIP_REASON.get().copied(),
+        "size_gate": SIZE_GATE.get().cloned(),
         "budgets_set": loom_budgets_in_effect(),
         "attempts": {
             "entered": acc.entered,
@@ -554,6 +562,74 @@ fn write_validated_output(
     Ok(())
 }
 
+/// The output-size gate's decision (#555), reported as `size_gate` in
+/// --stats-json. Unset when no optimized output was produced.
+static SIZE_GATE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// Output-size gate (#555). Compares the optimized wasm with the input's wasm
+/// size, records the decision, and returns true when the caller must write
+/// the input instead: the optimized output is larger and `--allow-growth` was
+/// not given. Both sizes exclude the attestation and facts sections, which
+/// are added after this decision.
+fn size_gate_keeps_input(input_len: usize, optimized_len: usize, allow_growth: bool) -> bool {
+    let grew = optimized_len > input_len;
+    let keep_input = grew && !allow_growth;
+    let _ = SIZE_GATE.set(serde_json::json!({
+        "input_bytes": input_len,
+        "optimized_bytes": optimized_len,
+        "allow_growth": allow_growth,
+        "written": if keep_input { "input" } else { "optimized" },
+    }));
+    if keep_input {
+        println!(
+            "⚠️  Output-size gate: the optimized output is larger than the input \
+             ({optimized_len} > {input_len} bytes); writing the input unchanged. \
+             --allow-growth keeps the larger output (#555)"
+        );
+    } else if grew {
+        println!(
+            "⚠️  Output-size gate: the optimized output is larger than the input \
+             ({optimized_len} > {input_len} bytes); kept because of --allow-growth (#555)"
+        );
+    }
+    keep_input
+}
+
+/// The wasm encoding of the input: the bytes themselves for a binary input,
+/// the re-encoded parse for a WAT input.
+fn input_as_wasm(input_bytes: &[u8], is_wat_input: bool) -> Result<Vec<u8>> {
+    if is_wat_input {
+        let module = loom_core::parse::parse_wat(std::str::from_utf8(input_bytes)?)
+            .context("Failed to parse WAT file")?;
+        loom_core::encode::encode_wasm(&module).context("Failed to encode the input")
+    } else {
+        Ok(input_bytes.to_vec())
+    }
+}
+
+/// Write the input unchanged to `output_path`, in the requested output format
+/// (#345, #555). A binary input written as binary is copied byte for byte.
+fn write_input_unchanged(
+    output_path: &str,
+    input_bytes: &[u8],
+    is_wat_input: bool,
+    output_wat: bool,
+) -> Result<()> {
+    let wasm_bytes = input_as_wasm(input_bytes, is_wat_input)?;
+    let output_bytes = if !output_wat {
+        wasm_bytes.clone()
+    } else if is_wat_input {
+        input_bytes.to_vec()
+    } else {
+        let module =
+            loom_core::parse::parse_wasm(input_bytes).context("Failed to parse WASM file")?;
+        loom_core::encode::encode_wat(&module)
+            .context("Failed to encode to WAT")?
+            .into_bytes()
+    };
+    write_validated_output(output_path, &output_bytes, &wasm_bytes, input_bytes)
+}
+
 fn maybe_differential_gate(
     original: Option<&[u8]>,
     // Underscored: these are read only inside the `differential` cfg block
@@ -616,6 +692,7 @@ fn optimize_command(
     strip_component_type: bool,
     no_reachability_gc: bool,
     emit_facts: bool,
+    allow_growth: bool,
 ) -> Result<()> {
     println!("🔧 LOOM Optimizer v{}", env!("CARGO_PKG_VERSION"));
     println!("Input: {}", input);
@@ -732,14 +809,20 @@ fn optimize_command(
 
                     // Write optimized component
                     let output_path = output.unwrap_or_else(|| "output.wasm".to_string());
+                    // #555: a component that optimization made larger is not
+                    // written; the input component is, byte for byte.
+                    let written = if size_gate_keeps_input(
+                        input_bytes.len(),
+                        optimized_bytes.len(),
+                        allow_growth,
+                    ) {
+                        &input_bytes
+                    } else {
+                        &optimized_bytes
+                    };
                     // #346: components go through the same gate. `validate`
                     // handles the component grammar as well as core modules.
-                    write_validated_output(
-                        &output_path,
-                        &optimized_bytes,
-                        &optimized_bytes,
-                        &input_bytes,
-                    )?;
+                    write_validated_output(&output_path, written, written, &input_bytes)?;
                     println!("\n✅ Optimization complete!");
                     return Ok(());
                 }
@@ -781,20 +864,7 @@ fn optimize_command(
                 "output.wasm".to_string()
             }
         });
-        let wasm_bytes = if is_wat_input {
-            loom_core::encode::encode_wasm(&module)
-                .context("Failed to encode the unoptimized module")?
-        } else {
-            input_bytes.clone()
-        };
-        let output_bytes = if output_wat {
-            loom_core::encode::encode_wat(&module)
-                .context("Failed to encode to WAT")?
-                .into_bytes()
-        } else {
-            wasm_bytes.clone()
-        };
-        write_validated_output(&output_path, &output_bytes, &wasm_bytes, &input_bytes)?;
+        write_input_unchanged(&output_path, &input_bytes, is_wat_input, output_wat)?;
         return Ok(());
     }
 
@@ -867,6 +937,27 @@ fn optimize_command(
 
         // #242: drop stale .debug_* (code offsets changed under optimization).
         loom_core::fused_optimizer::strip_debug_sections(&mut module);
+
+        // #555 output-size gate, decided before facts are added.
+        let optimized_len = loom_core::encode::encode_wasm(&module)
+            .context("Failed to encode the optimized module")?
+            .len();
+        let input_wasm_len = input_as_wasm(&input_bytes, is_wat_input)?.len();
+        if size_gate_keeps_input(input_wasm_len, optimized_len, allow_growth) {
+            let output_path = output.unwrap_or_else(|| {
+                if output_wat {
+                    "output.wat".to_string()
+                } else {
+                    "output.wasm".to_string()
+                }
+            });
+            write_input_unchanged(&output_path, &input_bytes, is_wat_input, output_wat)?;
+            if show_stats {
+                stats.bytes_after = optimized_len;
+                stats.print();
+            }
+            return Ok(());
+        }
 
         // Skip the serial pipeline below — the islands already ran a full
         // pass sequence on the winning module. Jump directly to encoding.
@@ -971,7 +1062,16 @@ fn optimize_command(
     if should_run("inline") {
         println!("  Running: inline");
         let before = count_instructions(&module);
-        loom_core::optimize::inline_functions(&mut module).context("Function inlining failed")?;
+        // #555: without --allow-growth, inline within the default growth budget.
+        if allow_growth {
+            loom_core::optimize::inline_functions(&mut module)
+        } else {
+            loom_core::optimize::inline_functions_within_budget(
+                &mut module,
+                loom_core::optimize::DEFAULT_INLINE_GROWTH_BUDGET_PCT,
+            )
+        }
+        .context("Function inlining failed")?;
         let after = count_instructions(&module);
         track_pass("inline", before, after);
     }
@@ -1172,6 +1272,27 @@ fn optimize_command(
 
     // Collect statistics after optimization
     stats.instructions_after = count_instructions(&module);
+
+    // #555 output-size gate, decided before attestation and facts are added.
+    let optimized_len = loom_core::encode::encode_wasm(&module)
+        .context("Failed to encode the optimized module")?
+        .len();
+    let input_wasm_len = input_as_wasm(&input_bytes, is_wat_input)?.len();
+    if size_gate_keeps_input(input_wasm_len, optimized_len, allow_growth) {
+        let output_path = output.unwrap_or_else(|| {
+            if output_wat {
+                "output.wat".to_string()
+            } else {
+                "output.wasm".to_string()
+            }
+        });
+        write_input_unchanged(&output_path, &input_bytes, is_wat_input, output_wat)?;
+        if show_stats {
+            stats.bytes_after = optimized_len;
+            stats.print();
+        }
+        return Ok(());
+    }
 
     // Add transformation attestation if enabled
     #[cfg(feature = "attestation")]
@@ -1470,6 +1591,7 @@ fn main() -> Result<()> {
             strip_component_type,
             no_reachability_gc,
             facts,
+            allow_growth,
         }) => {
             #[cfg(feature = "attestation")]
             let add_attestation = attestation;
@@ -1492,6 +1614,7 @@ fn main() -> Result<()> {
                 strip_component_type,
                 no_reachability_gc,
                 facts,
+                allow_growth,
             )?;
             if let Some(path) = stats_json {
                 write_stats_json(&path)?;
@@ -1569,6 +1692,7 @@ mod tests {
             false, // strip_component_type
             false, // no_reachability_gc
             false, // emit_facts
+            false, // allow_growth
         );
 
         assert!(result.is_ok(), "Optimization should succeed");
@@ -1610,6 +1734,7 @@ mod tests {
             false, // strip_component_type
             false, // no_reachability_gc
             false, // emit_facts
+            false, // allow_growth
         );
 
         assert!(result.is_ok(), "Optimization with stats should succeed");
@@ -1648,6 +1773,7 @@ mod tests {
             false, // strip_component_type
             false, // no_reachability_gc
             false, // emit_facts
+            false, // allow_growth
         );
 
         assert!(
@@ -1689,6 +1815,7 @@ mod tests {
             false, // strip_component_type
             false, // no_reachability_gc
             false, // emit_facts
+            false, // allow_growth
         );
 
         assert!(

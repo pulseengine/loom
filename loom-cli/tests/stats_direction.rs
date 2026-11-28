@@ -12,7 +12,7 @@ fn fixture(rel: &str) -> PathBuf {
 }
 
 /// Runs `loom optimize <input> -o <tmp>/out.wasm --stats` and returns stdout.
-fn stats_stdout(input: &Path, name: &str) -> String {
+fn stats_stdout(input: &Path, name: &str, extra: &[&str]) -> String {
     let out_wasm = std::env::temp_dir().join(format!(
         "loom-stats-direction-{}-{}.wasm",
         name,
@@ -26,6 +26,7 @@ fn stats_stdout(input: &Path, name: &str) -> String {
             out_wasm.to_str().unwrap(),
             "--stats",
         ])
+        .args(extra)
         .output()
         .expect("failed to run the loom binary");
     let _ = std::fs::remove_file(&out_wasm);
@@ -66,6 +67,9 @@ fn growth_is_reported_as_growth() {
     let stdout = stats_stdout(
         &fixture("../loom-core/tests/fixtures/inline-grows.wasm"),
         "grows",
+        // Without --allow-growth the inline budget (#555) keeps this module
+        // from growing.
+        &["--allow-growth"],
     );
 
     let instr = line(&stdout, "Instructions:");
@@ -95,7 +99,11 @@ fn growth_is_reported_as_growth() {
 fn reduction_is_still_reported_as_reduction() {
     // Control: state_machine.wasm shrinks on re-encoding (1655 -> 1558 bytes
     // with loom 1.5.4), so the size line must say reduction, without a sign.
-    let stdout = stats_stdout(&fixture("../tests/corpus/state_machine.wasm"), "shrinks");
+    let stdout = stats_stdout(
+        &fixture("../tests/corpus/state_machine.wasm"),
+        "shrinks",
+        &[],
+    );
     let bytes = line(&stdout, "Binary size:");
     assert!(bytes.ends_with("% reduction)"), "{bytes}");
     assert!(!bytes.contains("(-") && !bytes.contains("(+"), "{bytes}");

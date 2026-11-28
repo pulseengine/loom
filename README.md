@@ -50,7 +50,12 @@ loom optimize input.wasm -o output.wasm --stats
 
 # With Z3 verification
 loom optimize input.wasm -o output.wasm --verify
+
+# Keep an output larger than the input (inlining for speed)
+loom optimize input.wasm -o output.wasm --allow-growth
 ```
+
+`loom optimize` writes the input unchanged when the optimized output would be larger, and says so on stdout and in `--stats-json` (`size_gate`). The CLI inliner works within a growth budget: a function with several call sites is copied only while the call overhead saved by moving single-site functions pays for it. `--allow-growth` lifts both limits.
 
 ## Architecture
 

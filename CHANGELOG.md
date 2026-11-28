@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `loom optimize` no longer writes an output larger than its input (#555). When the optimized module or component encodes larger than the input (attestation and facts sections excluded), the input is written unchanged, stdout prints both sizes, and `--stats-json` records them as `size_gate`. `--allow-growth` keeps the larger output. Callers that inline for speed rather than size pass `--allow-growth`.
+- Without `--allow-growth`, the CLI core-module path inlines within a growth budget of 0% of the module's instruction count. A callee with several call sites is copied only while single-site inlines, whose body moves and then dies, have saved enough instructions to pay for it. With `--allow-growth` inlining is unbudgeted, as before. On a 4,809,987-byte meld-fused loom.wasm core module the output is 4,805,095 bytes (unbudgeted: 5,571,946); on `issue254-records-fused.wasm`, 108,701 bytes in and 106,498 out (unbudgeted: 134,858). The fused module's largest function keeps 76 declared locals (unbudgeted: 1,112). The component path is not budgeted yet; a component that grows is caught by the size gate.
 - Translation validation decides functions with loops with the exact
   executor too. Loops are paired in order with their counterparts and
   proven one iteration at a time: from the same header state, both bodies

@@ -1658,6 +1658,40 @@ artifacts:
       - type: verifies
         target: REQ-3
 
+  - id: TEST-555-OUTPUT-SIZE-GATE
+    type: feature
+    title: loom optimize does not write an output larger than its input unless --allow-growth is given (#555)
+    description: >
+      Output-size gate: when the optimized module or component encodes larger
+      than the input (attestation and facts sections excluded, since they are
+      added after the decision), the CLI writes the input unchanged, prints
+      the two sizes on stdout and records them in --stats-json size_gate;
+      --allow-growth keeps the larger output. Inline growth budget: without
+      --allow-growth the CLI core path inlines within 0% of the module's
+      instruction count, so a multi-site callee is copied only while
+      single-site inlines (which move a body that dies) have saved enough.
+      Measured on a 4,809,987-byte meld-fused loom.wasm core module:
+      unlimited 5,571,946 bytes, 0% 4,805,095; issue254-records-fused.wasm
+      unlimited 134,858, 0% 106,498 (108,701 in). Confirmed discriminating: with
+      the gate disabled and the budget lifted, the growth and budget tests
+      fail and the three controls pass.
+    fields:
+      method: automated-test
+      acceptance-criteria:
+        - "Given a module that optimization makes larger, loom optimize writes the input unchanged, says so on stdout, and --stats-json size_gate.written is input"
+        - "Given the same module and --allow-growth, the larger output is written and size_gate.written is optimized"
+        - "Given a module with a four-site callee and no --allow-growth, the callee is not copied and the output is not larger than the input"
+        - "Given a module that optimization shrinks, it is written optimized with no gate message"
+      steps:
+        - run: |
+            cargo test --release -p loom-cli --test size_gate
+    status: verified
+    release: v1.6.0
+    tags: [v160, no-silent-failures]
+    links:
+      - type: verifies
+        target: REQ-10
+
   # ============================================================================
   # #347 — v1.4.1: bound the quantity that actually drives solver cost.
   #

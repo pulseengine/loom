@@ -1891,7 +1891,7 @@ fn remapped_element_section(element_bytes: &[u8], remap: &HashMap<u32, u32>) -> 
 /// This allows dead function elimination to work even when element segments
 /// exist, by marking only the actually-referenced functions as live rather
 /// than conservatively keeping all functions.
-fn extract_element_func_refs(element_bytes: &[u8]) -> Result<HashSet<u32>> {
+pub(crate) fn extract_element_func_refs(element_bytes: &[u8]) -> Result<HashSet<u32>> {
     use wasmparser::{BinaryReader, ElementItems, FromReader};
 
     let mut refs = HashSet::new();

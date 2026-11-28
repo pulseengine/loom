@@ -14838,7 +14838,31 @@ pub mod optimize {
     /// - Eliminate parameter passing overhead
     ///
     /// Benefits 40-50% of typical WebAssembly code.
+    ///
+    /// No growth budget: callers that want the output no larger than the
+    /// input use [`inline_functions_within_budget`].
     pub fn inline_functions(module: &mut Module) -> Result<()> {
+        inline_functions_budgeted(module, None)
+    }
+
+    /// The inline growth budget the CLI uses unless `--allow-growth` is given
+    /// (#555): 0% of the module's instruction count, so a multi-site inline
+    /// runs only while the call overhead saved by single-site inlines pays
+    /// for it. Measured with `loom optimize`: a 4,809,987-byte meld-fused
+    /// loom.wasm core module comes out at 5,571,946 bytes unbudgeted and
+    /// 4,805,095 at 0%; the 108,701-byte issue254-records-fused.wasm at 134,858
+    /// and 106,498. Every budget above 0% that was tried (2, 5, 10, 25) made
+    /// both modules larger than 0% did, and the corpus modules came out the
+    /// same at every budget.
+    pub const DEFAULT_INLINE_GROWTH_BUDGET_PCT: usize = 0;
+
+    /// [`inline_functions`] with a per-module growth budget of `budget_pct`
+    /// percent of the module's instruction count (#555).
+    pub fn inline_functions_within_budget(module: &mut Module, budget_pct: usize) -> Result<()> {
+        inline_functions_budgeted(module, Some(budget_pct))
+    }
+
+    fn inline_functions_budgeted(module: &mut Module, budget_pct: Option<usize>) -> Result<()> {
         use crate::stack::validation::{ValidationContext, ValidationGuard};
         use crate::verify::TranslationValidator;
         use std::collections::BTreeMap;
@@ -14859,6 +14883,43 @@ pub mod optimize {
         // a backstop.
         let mut iteration: u32 = 0;
         const MAX_INLINE_ITERATIONS: u32 = 64;
+
+        // #555 per-module growth budget. Each kept inline charges the
+        // caller's net instruction growth, less the size of every single-site
+        // callee it absorbed that dies afterwards (not exported, not the start
+        // function, not in a table): that body is moved, not copied, and
+        // dce-functions removes the original. Once the charge reaches the
+        // budget, only single-site callees are still inlined.
+        let baseline: usize = module
+            .functions
+            .iter()
+            .map(|f| count_instructions_recursive(&f.instructions))
+            .sum();
+        let budget = match budget_pct {
+            Some(pct) => (baseline.saturating_mul(pct) / 100) as isize,
+            None => isize::MAX,
+        };
+        let mut growth: isize = 0;
+        let mut kept_alive: std::collections::HashSet<u32> = module
+            .exports
+            .iter()
+            .filter_map(|e| match e.kind {
+                crate::ExportKind::Func(idx) => Some(idx),
+                _ => None,
+            })
+            .collect();
+        kept_alive.extend(module.start_function);
+        // A table that cannot be read keeps every callee alive: no credit.
+        let table_unreadable = match &module.element_section_bytes {
+            Some(bytes) => match crate::fused_optimizer::extract_element_func_refs(bytes) {
+                Ok(refs) => {
+                    kept_alive.extend(refs);
+                    false
+                }
+                Err(_) => true,
+            },
+            None => false,
+        };
         loop {
             iteration += 1;
             if iteration > MAX_INLINE_ITERATIONS {
@@ -14970,6 +15031,15 @@ pub mod optimize {
             // For each function, inline calls to candidate functions
             let inline_set: std::collections::HashSet<u32> =
                 inline_candidates.iter().copied().collect();
+            // #555: the candidates still allowed once the growth budget is
+            // spent: single-site callees that die once absorbed.
+            let single_site_set: std::collections::HashSet<u32> = inline_candidates
+                .iter()
+                .copied()
+                .filter(|c| {
+                    call_counts.get(c) == Some(&1) && !table_unreadable && !kept_alive.contains(c)
+                })
+                .collect();
 
             // Clone functions to avoid borrow checker issues
             let all_functions = module.functions.clone();
@@ -15008,9 +15078,14 @@ pub mod optimize {
                     verify_sig_ctx.clone(),
                 );
 
+                let allowed = if growth >= budget {
+                    &single_site_set
+                } else {
+                    &inline_set
+                };
                 func.instructions = inline_calls_in_block(
                     &func.instructions,
-                    &inline_set,
+                    allowed,
                     &all_functions,
                     num_imported_funcs,
                     func.signature.params.len() as u32,
@@ -15019,6 +15094,27 @@ pub mod optimize {
 
                 let _ = guard.validate(func);
                 translator.verify_or_revert(func);
+                if func.instructions != before {
+                    // #555: charge this caller's net growth, crediting each
+                    // single-site callee it absorbed that dies afterwards.
+                    let mut charge = count_instructions_recursive(&func.instructions) as isize
+                        - count_instructions_recursive(&before) as isize;
+                    let mut calls_before = BTreeMap::new();
+                    count_calls_recursive(&before, &mut calls_before);
+                    let mut calls_after = BTreeMap::new();
+                    count_calls_recursive(&func.instructions, &mut calls_after);
+                    for (callee, n) in calls_before {
+                        let absorbed = calls_after.get(&callee).copied().unwrap_or(0) < n;
+                        if absorbed
+                            && call_counts.get(&callee) == Some(&1)
+                            && !table_unreadable
+                            && !kept_alive.contains(&callee)
+                        {
+                            charge -= function_sizes.get(&callee).copied().unwrap_or(0) as isize;
+                        }
+                    }
+                    growth += charge;
+                }
 
                 // After verify_or_revert, func.instructions is either the
                 // inlined body (kept) or restored to `before` (reverted).
