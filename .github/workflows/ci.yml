@@ -685,11 +685,14 @@ jobs:
           echo "   Reduction: $REDUCTION%"
       # #196: loom.wasm's core modules dispatch through function tables
       # (thousands of call_indirect sites). Validation cannot see a table that
-      # calls the wrong function, so the optimized loom must also BEHAVE like
-      # native loom: same exit code and byte-identical output on every input.
+      # calls the wrong function, so the optimized loom.wasm must also BEHAVE
+      # like the loom.wasm it came from: same exit code and byte-identical
+      # output on every input. The reference is the unoptimized loom.wasm, not
+      # native loom: native is built with Z3, loom.wasm without, and the two
+      # may accept different transforms.
       - name: Install wasmtime (crates.io, the version in Cargo.lock)
         run: cargo install --locked wasmtime-cli --version 50.0.3
-      - name: Optimized loom.wasm behaves like native loom (#196)
+      - name: Optimized loom.wasm behaves like the unoptimized loom.wasm (#196)
         run: |
           set -euo pipefail
           OPT="$RUNNER_TEMP/loom-optimized.wasm"
@@ -702,21 +705,26 @@ jobs:
           cp tests/corpus/*.wasm loom-core/tests/fixtures/issue254-records-fused.wasm \
              loom-core/tests/fixtures/table-*.wasm "$w/"
           cd "$w"
+          ORIG="$GITHUB_WORKSPACE/loom-wasm/loom.wasm"
           run() { wasmtime run -S cli-exit-with-code=y --dir . "$OPT" "$@"; }
+          ref() { wasmtime run -S cli-exit-with-code=y --dir . "$ORIG" "$@"; }
           n=0
           for f in *.wasm; do
-            rc_n=0; "$GITHUB_WORKSPACE/loom-bin/loom" optimize "$f" -o native.out > /dev/null 2>&1 || rc_n=$?
+            rc_r=0; ref optimize "$f" -o ref.out > /dev/null 2>&1 || rc_r=$?
             rc_w=0; run optimize "$f" -o wasm.out > /dev/null 2>&1 || rc_w=$?
-            [ "$rc_n" = "$rc_w" ] || { echo "::error::$f: native exit $rc_n, optimized loom.wasm exit $rc_w"; exit 1; }
-            cmp native.out wasm.out || { echo "::error::$f: optimized loom.wasm output differs from native"; exit 1; }
-            rm -f native.out wasm.out; n=$((n + 1))
+            [ "$rc_r" = "$rc_w" ] || { echo "::error::$f: loom.wasm exit $rc_r, optimized loom.wasm exit $rc_w"; exit 1; }
+            cmp ref.out wasm.out || { echo "::error::$f: optimized loom.wasm output differs from loom.wasm"; exit 1; }
+            # Informational: how often the Z3 build and the no-Z3 build disagree.
+            "$GITHUB_WORKSPACE/loom-bin/loom" optimize "$f" -o native.out > /dev/null 2>&1 || true
+            cmp -s native.out ref.out || echo "::notice::$f: native loom (Z3) output differs from loom.wasm (no Z3)"
+            rm -f ref.out wasm.out native.out; n=$((n + 1))
           done
           for args in "optimize missing.wasm:1" "verify junk.isle:2"; do
             rc=0; run ${args%:*} > /dev/null 2>&1 || rc=$?
             [ "$rc" = "${args##*:}" ] || { echo "::error::'${args%:*}' exited $rc, want ${args##*:}"; exit 1; }
           done
           [ "$(run --version)" = "$("$GITHUB_WORKSPACE/loom-bin/loom" --version)" ]
-          echo "optimized loom.wasm matched native loom on $n inputs, exit codes 1 and 2, and --version"
+          echo "optimized loom.wasm matched loom.wasm on $n inputs, exit codes 1 and 2, and native loom's --version"
 
   # Advisory: the shipped loom.wasm, fused by meld into a core module, must
   # behave like native loom under kiln (the covalent 2026.11.28 versions in
