@@ -727,8 +727,8 @@ jobs:
           echo "optimized loom.wasm matched loom.wasm on $n inputs, exit codes 1 and 2, and native loom's --version"
 
   # Advisory: the shipped loom.wasm, fused by meld into a core module, must
-  # behave like native loom under kiln (the covalent 2026.11.28 versions in
-  # varve.toml). Asserts `--version`, byte-identical `optimize` output on
+  # behave like native loom under kiln (meld 0.70.0 as in varve.toml's covalent
+  # 2026.11.28, kiln v0.9.1). Asserts `--version`, byte-identical `optimize` output on
   # tests/corpus/state_machine.wasm, and every documented exit code: 0, 1 (an
   # ordinary failure) and 2 (`loom verify`, EXIT_VERIFY_UNIMPLEMENTED).
   # Advisory because it is not a required check; a failure shows red, and a
@@ -737,28 +737,29 @@ jobs:
     name: loom.wasm fused by meld under kiln
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     needs: [build, wasm-build]
-    # kiln 0.9.0 hangs on larger fused modules on x86_64 Linux (kiln#748);
-    # each call is capped at KILN_TIMEOUT seconds and the job at 20 minutes.
+    # It fuses the unoptimized loom.wasm: an optimized one can exceed kiln
+    # 0.9.x's 256 declared locals per function (kiln#745). Each kiln call is
+    # capped at KILN_TIMEOUT seconds and the job at 20 minutes.
     timeout-minutes: 20
     env:
       # x86_64-unknown-linux-musl archives; each hash matches the release's
-      # own SHA256SUMS.txt (checked 2026-11-27).
+      # own SHA256SUMS.txt (meld checked 2026-11-27; kiln v0.9.1 checked
+      # 2026-11-28, its SHA256SUMS.txt cosign-verified against kiln's release
+      # workflow).
       MELD_VERSION: v0.70.0
       MELD_SHA256: 9ff3e50d538a54fd129a8962733b766569218eb9dbb8b9be642b389b6063895c
-      KILN_VERSION: v0.9.0
-      KILN_SHA256: 768a1f5971656635d24b614d48fb50337e810da0e8c8006f8e863d40bc550ec2
+      KILN_VERSION: v0.9.1
+      KILN_SHA256: d4cd934fff5c576734cae96dd78750fb8f9aa10855c40eaddbb997f47f84224e
       KILN_TIMEOUT: "120"
-      # Parked (2026-11-27): kiln 0.9.0 hung on the first call (`--version`)
-      # on the x86_64 Linux runner, run 46041632429: "kiln hung (kiln#748):
-      # no result after 120 s". The same call passes on macOS in about 17 s.
-      # Set "false" together with the KILN_VERSION and KILN_SHA256 of the
-      # kiln release that ships the kiln#748 fix.
-      KILN_PARKED: "true"
+      # kiln 0.9.0 hung on its first call on the x86_64 Linux runner (run
+      # 46041632429, kiln#748, a duplicate of kiln#737); v0.9.1 ships the
+      # kiln#737 startup fix. Set "true" to park the job again.
+      KILN_PARKED: "false"
     steps:
-      - name: kiln parked (kiln#748)
+      - name: kiln parked
         if: env.KILN_PARKED == 'true'
         run: |
-          echo "kiln job parked: kiln 0.9.0 hangs on x86_64 Linux (kiln#748); unpark with the kiln release that fixes it"
+          echo "kiln job parked (KILN_PARKED); see the comment above KILN_PARKED"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.KILN_PARKED != 'true'
       - name: Download LOOM binary
@@ -814,7 +815,7 @@ jobs:
             local rc=0
             (cd "$w" && timeout "$KILN_TIMEOUT" "$c/kiln" --wasi --wasi-fs . "$c/loom.fused.wasm" "$@") || rc=$?
             if [ "$rc" -eq 124 ]; then
-              echo "kiln hung (kiln#748): no result after $KILN_TIMEOUT s" >&2
+              echo "kiln hung (kiln#737): no result after $KILN_TIMEOUT s" >&2
             fi
             return "$rc"
           }
@@ -822,7 +823,7 @@ jobs:
             local want=$1; shift
             local rc=0
             kiln_run "$@" >/dev/null 2>&1 || rc=$?
-            [ "$rc" -ne 124 ] || { echo "kiln hung (kiln#748): no result after $KILN_TIMEOUT s"; exit 1; }
+            [ "$rc" -ne 124 ] || { echo "kiln hung (kiln#737): no result after $KILN_TIMEOUT s"; exit 1; }
             [ "$rc" -eq "$want" ] || { echo "kiln: '$*' exited $rc, expected $want"; exit 1; }
             echo "exit $rc as documented: $*"
           }
