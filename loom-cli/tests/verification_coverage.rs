@@ -37,8 +37,7 @@ fn coverage_is_reported_with_a_denominator_and_size_skips_are_not_reverts() {
 
     let out_dir = std::env::temp_dir().join(format!("loom-331-{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).expect("create scratch dir");
-    // The fixture's element segments reference functions, so since #345 the
-    // CLI leaves it unoptimized. Without its element section it is still
+    // The test runs on the fixture without its element section. That is still
     // valid wasm (`call_indirect` into an empty table traps at run time) and
     // still crosses the solver size threshold, which is what this test needs.
     let fixture = out_dir.join("records-fused-no-elements.wasm");

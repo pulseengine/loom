@@ -1646,6 +1646,80 @@ pub fn element_section_references_functions(module: &Module) -> bool {
     false
 }
 
+/// True when every wasm type in the module is identified by its parameter and
+/// result types alone, so loom's `FunctionSignature` equality is wasm type
+/// equality and `module.types[i]` is type `i`.
+///
+/// The encoder declares each function with the index of a type whose
+/// signature equals the function's (#196). Under the MVP type system that is
+/// the same type. With GC types it may not be: a non-final `(sub (func))`, a
+/// type with a supertype, or a member of a multi-type rec group is a distinct
+/// type from a structurally equal final function type, and `call_indirect`
+/// checks that identity. Re-declaring a function under the other type turns a
+/// signature-mismatch trap into a call. So this holds only when each rec group
+/// is a single final function type with no supertype, not shared, and with
+/// parameters and results that are numbers, `v128`, `funcref` or `externref`.
+/// A section that cannot be read counts as not structural.
+pub fn type_identity_is_structural(module: &Module) -> bool {
+    use wasmparser::{BinaryReader, CompositeInnerType, RefType, TypeSectionReader, ValType};
+    let bytes = match &module.type_section_bytes {
+        Some(b) => b,
+        // Built by loom from `module.types`: every type is a plain final
+        // function type.
+        None => return true,
+    };
+    let reader = match TypeSectionReader::new(BinaryReader::new(bytes, 0)) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let plain = |v: &ValType| match v {
+        ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64 | ValType::V128 => true,
+        ValType::Ref(r) => *r == RefType::FUNCREF || *r == RefType::EXTERNREF,
+    };
+    for group in reader {
+        let group = match group {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let mut types = group.types();
+        if types.len() != 1 {
+            return false;
+        }
+        let sub = types.next().expect("one type");
+        if !sub.is_final
+            || !sub.supertype_idxs.is_empty()
+            || sub.composite_type.shared
+            || sub.composite_type.descriptor_idx.is_some()
+            || sub.composite_type.describes_idx.is_some()
+        {
+            return false;
+        }
+        match &sub.composite_type.inner {
+            CompositeInnerType::Func(f) => {
+                if !f.params().iter().all(plain) || !f.results().iter().all(plain) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Can loom optimize this module without changing what its tables call (#196)?
+///
+/// `Err` names why not. A module whose element segments reference no function
+/// has no `call_indirect` target to get wrong. Otherwise the module must have
+/// structural type identity ([`type_identity_is_structural`]); the passes that
+/// renumber functions rewrite the element section or decline, and `directize`
+/// folds only slots whose content is fixed for the whole run.
+pub fn table_handling_is_sound(module: &Module) -> std::result::Result<(), &'static str> {
+    if element_section_references_functions(module) && !type_identity_is_structural(module) {
+        return Err(crate::component_optimizer::SKIP_REASON_FUNCREF_ELEMENTS);
+    }
+    Ok(())
+}
+
 /// Rewrite the element section in place through `remap`. Errors (and leaves
 /// the section untouched) when any segment cannot be rewritten; see
 /// [`remapped_element_section`].
